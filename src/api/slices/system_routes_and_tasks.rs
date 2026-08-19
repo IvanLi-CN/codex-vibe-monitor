@@ -837,7 +837,6 @@ pub(crate) async fn set_system_raw_metrics_health_override(
         return;
     }
     cache.raw_metrics_health_override = override_state;
-    cache.latest = None;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1084,61 +1083,79 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
-    loop {
-        let mut cached_response = None;
-        let wait_for = {
-            let mut cache = state.system_status_cache.lock().await;
-            if let Some(entry) = cache.latest.as_ref()
-                && entry.cached_at.elapsed() < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-            {
-                cached_response = Some(entry.response.clone());
-                None
-            } else if let Some(signal) = cache.in_flight.clone() {
-                cache.waiter_count = cache.waiter_count.saturating_add(1);
-                Some(signal.subscribe())
-            } else {
-                let (signal, _) = watch::channel(false);
-                cache.in_flight = Some(signal);
-                None
-            }
-        };
-
-        if let Some(mut response) = cached_response {
-            response.runtime_pressure_health = Some(load_runtime_pressure_health(state).await);
-            return Ok(response);
-        }
-
-        if let Some(mut signal) = wait_for {
-            let _ = signal.changed().await;
-            continue;
-        }
-
-        let response = load_system_status_uncached(state).await;
-        let mut cache = state.system_status_cache.lock().await;
-        if let Ok(response) = &response {
-            cache.latest = Some(SystemStatusCacheEntry {
-                cached_at: Instant::now(),
-                response: response.clone(),
-            });
-        }
-        let waiter_count = cache.waiter_count;
-        cache.waiter_count = 0;
-        if let Some(signal) = cache.in_flight.take() {
-            let _ = signal.send(true);
-        }
+    if let Some((response, snapshot_age_ms)) = state
+        .system_status_cache
+        .lock()
+        .await
+        .latest
+        .as_ref()
+        .map(|entry| {
+            (
+                entry.response.clone(),
+                entry.cached_at.elapsed().as_millis() as u64,
+            )
+        })
+    {
         debug!(
-            metrics_source = "system_status_cache",
-            cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
-            singleflight_waiter_count = waiter_count,
-            "system status cache refresh completed"
+            metrics_source = "system_status_memory_snapshot",
+            snapshot_age_ms, "serving system status from last-good memory snapshot"
         );
-        return response;
+        return Ok(response);
     }
+
+    #[cfg(test)]
+    return load_system_status_uncached(state).await;
+
+    #[cfg(not(test))]
+    Err(anyhow!("system status snapshot is warming"))
 }
 
 pub(crate) async fn invalidate_system_status_cache(state: &AppState) {
+    // A failed background refresh must never turn a previously good response into an empty
+    // request-side cache miss. The maintainer will refresh this last-good entry on its cadence.
+    let cache = state.system_status_cache.lock().await;
+    debug!(
+        has_last_good = cache.latest.is_some(),
+        "system status snapshot marked for background refresh"
+    );
+}
+
+pub(crate) async fn hydrate_system_status_snapshot(state: &AppState) -> Result<()> {
+    refresh_system_status_snapshot(state).await
+}
+
+async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
+    let response = load_system_status_uncached(state).await?;
     let mut cache = state.system_status_cache.lock().await;
-    cache.latest = None;
+    cache.latest = Some(SystemStatusCacheEntry {
+        cached_at: Instant::now(),
+        response,
+    });
+    debug!(
+        metrics_source = "system_status_memory_snapshot",
+        cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
+        "system status background snapshot refresh completed"
+    );
+    Ok(())
+}
+
+pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut cadence = tokio::time::interval(Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS));
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {}
+            }
+            if let Err(error) = refresh_system_status_snapshot(state.as_ref()).await {
+                warn!(
+                    ?error,
+                    "system status background refresh failed; retaining last-good snapshot"
+                );
+            }
+        }
+    });
 }
 
 pub(crate) async fn begin_system_task_run(

@@ -16,6 +16,15 @@
 - 每个 topic revision 只序列化一次，并以共享不可变 frame 进入 cache、replay ring、broadcaster 与 subscriber。
 - 修复 writer accounting 的所有权和不变量，使运行健康与内存归因可被验证；生产镜像默认 `MALLOC_ARENA_MAX=8`，同时保留部署环境覆盖能力。
 - `GET /api/system/status` additive 暴露 `runtimePressureHealth`，不改变 Dashboard、统计、raw detail 或 SSE 的既有 wire shape。
+- `GET /api/stats/summary` 由事件驱动的内存 last-good snapshots 提供，启动 hydration 后后台刷新最长间隔为 15 秒；HTTP 请求（包括 cache miss 或 TTL 到期）不得执行 SQLite 或启动 snapshot rebuild，刷新失败必须保留既有响应形状的 last-good 数据。
+
+### Summary Projection
+
+`GET /api/stats/summary` 的真值是 `SummaryProjection`，不是按 URL 参数保存的一组 SQL 结果。readiness 前，projection 从 invocation、hourly rollup、archive、账号 usage、recent invocation、maintenance 与 runtime overlay 的持久化基线完成 hydration；readiness 后 HTTP 只解析和规范化参数，并从 projection 精确派生原有 `StatsResponse`。任何合法 `window`、`timeZone`、`upstreamAccountId` 与 `limit` 组合不得借用另一组合的结果，也不得在 HTTP 内查询 SQLite、检查路径或扫描文件。
+
+projection 按账号（含全局合并）、UTC 时间桶和 recent invocation 顺序保留以下可组合输入：成功/失败/非成功计数与成本、token 和 usage/model/reasoning 细目、延迟样本与直方图、archive/rollup coverage、活动 runtime phase/等待计数、terminal overlay，以及 maintenance 的 last-good 快照。calendar 和 previous-day 选择在请求内由 canonical timezone 将内存 UTC bucket 切为精确区间；rolling window、all-time 和 current-limit 分别从 bucket、累计聚合和 bounded recent index 派生。48 条限制仅约束可选的已序列化 response LRU，不能限制 projection 对合法选择的精确性。
+
+持久写入完成和 typed runtime mutation 都更新或标记 projection 的对应账号/时间桶；后台 reconciler 合并 dirty scope，以有界并发重读持久化基线。每个成功 projection revision 记录单调时钟；HTTP 只返回精确 revision 年龄不超过 15 秒的 response。刷新失败时，同一选择的 last-good 只在该 15 秒边界内可用；超过边界，服务 readiness 必须撤销或端点必须采用已定义的 unavailable 契约，绝不返回过期、空值或跨选择数据。
 
 ## Architecture
 

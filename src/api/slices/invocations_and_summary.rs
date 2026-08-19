@@ -10,7 +10,7 @@ use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{FromRow, SqliteConnection};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -6987,10 +6987,934 @@ pub(crate) async fn load_in_progress_conversation_count(
     )
 }
 
+pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
+pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
+const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = SUMMARY_SNAPSHOT_MAX_STALE;
+// Leave a small hand-off budget before the advertised 15s freshness cadence. A timed-out build
+// is discarded atomically, so it can never turn the request path into a partial projection.
+const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(14);
+const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SummarySnapshotKey {
+    window: String,
+    limit: Option<i64>,
+    time_zone: String,
+    upstream_account_id: Option<i64>,
+}
+
+impl SummarySnapshotKey {
+    pub(crate) fn try_from_query(query: &SummaryQuery, default_limit: i64) -> Result<Self> {
+        let (window, limit) = match parse_summary_window(query, default_limit)? {
+            SummaryWindow::All => ("all".to_string(), None),
+            SummaryWindow::Current(limit) => ("current".to_string(), Some(limit)),
+            SummaryWindow::Duration(duration) => (format!("{}m", duration.num_minutes()), None),
+            SummaryWindow::Calendar(window) => (window, None),
+            SummaryWindow::PreviousFullDays(7) => ("previous7d".to_string(), None),
+            SummaryWindow::PreviousFullDays(days) => (format!("previous{days}d"), None),
+        };
+        let time_zone = parse_reporting_tz(query.time_zone.as_deref())?.to_string();
+        let upstream_account_id = match query.upstream_account_id {
+            Some(account_id) if account_id > 0 => Some(account_id),
+            Some(_) => return Err(anyhow!("invalid upstream account")),
+            None => None,
+        };
+
+        Ok(Self {
+            window,
+            limit,
+            time_zone,
+            upstream_account_id,
+        })
+    }
+
+    pub(crate) fn from_query(query: &SummaryQuery) -> Self {
+        Self::try_from_query(query, 50).expect("test summary snapshot query must be valid")
+    }
+
+    fn query(&self) -> SummaryQuery {
+        SummaryQuery {
+            window: Some(self.window.clone()),
+            limit: self.limit,
+            time_zone: Some(self.time_zone.clone()),
+            upstream_account_id: self.upstream_account_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SummarySnapshotEntry {
+    pub(crate) response: Option<StatsResponse>,
+    pub(crate) refreshed_at: Option<Instant>,
+}
+
+/// Canonical, process-local source for summary reads.  The projection intentionally stores
+/// records rather than URL-keyed responses: a timezone, account, rolling window, or current-N
+/// selection is a pure view over the same durable input and can therefore never borrow another
+/// selection's result.
+#[derive(Debug, Clone)]
+pub(crate) struct SummaryProjectionRecord {
+    row: UpstreamAccountInvocationPreviewRow,
+    occurred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SummaryProjection {
+    records: Vec<SummaryProjectionRecord>,
+    // Buckets are an index over canonical records, not a second source of truth.  They bound
+    // rolling/calendar selection work without approximating a timezone boundary.
+    hourly_buckets: BTreeMap<i64, Vec<usize>>,
+    // Materialized history fallback.  Only compact totals remain resident; archive rows are
+    // released after hydration.
+    hourly_rollup_totals: HashMap<(i64, Option<i64>), StatsTotals>,
+    // These indexes are constructed once off-request.  They retain only the largest legal
+    // current-window result for the global view and each account, so a hot `current` read never
+    // sorts or allocates in proportion to retained history.
+    recent_indexes: HashMap<Option<i64>, Vec<usize>>,
+    // `all` has no reporting-timezone boundary.  Hydration therefore folds the legacy
+    // archive/rollup coverage rules into a canonical aggregate per account once, instead of
+    // attempting to recreate those rules from raw archive rows on every request.
+    all_time_by_account: HashMap<Option<i64>, StatsResponse>,
+    // Closed calendar windows are immutable at a projection revision. This retains account
+    // aggregates after source archive detail has been retired, without ever crossing keys.
+    closed_window_by_key: HashMap<SummarySnapshotKey, StatsResponse>,
+    // In-progress state is not the same thing as a row whose persisted status happens to be
+    // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
+    // Keep that reconciled view alongside the immutable history projection.
+    in_progress_by_account: HashMap<Option<i64>, InProgressSummarySnapshot>,
+    maintenance: Option<StatsMaintenanceResponse>,
+    refreshed_at: Option<Instant>,
+    revision: u64,
+}
+
+impl SummaryProjection {
+    fn response_for_query(
+        &self,
+        params: &SummaryQuery,
+        default_limit: i64,
+    ) -> Result<StatsResponse, ApiError> {
+        // A failed or deadline-cancelled background rebuild retains this complete, exact
+        // projection.  Do not manufacture a zero response or turn a recoverable refresh miss
+        // into an HTTP error; readiness supervision owns the stale-age availability boundary.
+        let last_good_age_ms = self
+            .refreshed_at
+            .map(|refreshed_at| refreshed_at.elapsed().as_millis() as u64);
+        debug!(
+            ?last_good_age_ms,
+            revision = self.revision,
+            "serving summary projection from memory"
+        );
+
+        let window = parse_summary_window(params, default_limit)?;
+        let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+        let upstream_account_id = match params.upstream_account_id {
+            Some(account_id) if account_id > 0 => Some(account_id),
+            Some(_) => return Err(ApiError::bad_request(anyhow!("invalid upstream account"))),
+            None => None,
+        };
+        let key = SummarySnapshotKey::try_from_query(params, default_limit)
+            .map_err(ApiError::bad_request)?;
+        if let Some(response) = self.closed_window_by_key.get(&key) {
+            return Ok(response.clone());
+        }
+        if matches!(window, SummaryWindow::All)
+            && let Some(response) = self.all_time_by_account.get(&upstream_account_id)
+        {
+            return Ok(response.clone());
+        }
+        let now = Utc::now();
+        let range = summary_window_range(&window, reporting_tz, now)?;
+
+        let candidate_indexes = range.map_or_else(
+            || {
+                if let SummaryWindow::Current(_) = window {
+                    return self
+                        .recent_indexes
+                        .get(&upstream_account_id)
+                        .cloned()
+                        .unwrap_or_default();
+                }
+                (0..self.records.len()).collect::<Vec<_>>()
+            },
+            |(start, end)| {
+                let first_bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+                let last_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+                self.hourly_buckets
+                    .range(first_bucket..=last_bucket)
+                    .flat_map(|(_, indexes)| indexes.iter().copied())
+                    .collect()
+            },
+        );
+        let full_rollup_range = range.and_then(|(start, end)| {
+            let first_full_hour = ceil_hour_epoch(start.timestamp());
+            let end_full_hour = align_bucket_epoch(end.timestamp(), 3_600, 0);
+            (first_full_hour < end_full_hour).then_some((first_full_hour, end_full_hour))
+        });
+        let mut selected = candidate_indexes
+            .into_iter()
+            .map(|index| &self.records[index])
+            .filter(|record| {
+                upstream_account_id
+                    .is_none_or(|account_id| record.row.upstream_account_id == Some(account_id))
+            })
+            .filter(|record| {
+                range.is_none_or(|(start, end)| {
+                    record.occurred_at >= start && record.occurred_at < end
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let exact_buckets = selected
+            .iter()
+            .map(|record| {
+                (
+                    align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0),
+                    record.row.upstream_account_id,
+                )
+            })
+            .collect::<HashSet<_>>();
+
+        if let SummaryWindow::Current(limit) = window {
+            selected.truncate(limit.max(0) as usize);
+        }
+
+        let mut totals = StatsTotals::default();
+        let mut usage_breakdown = UsageBreakdownAccumulator::default();
+        let mut non_success_tokens = 0_i64;
+
+        for record in &selected {
+            let row = &record.row;
+            let classification = resolve_failure_classification(
+                Some(row.status.as_str()),
+                row.error_message.as_deref(),
+                row.failure_kind.as_deref(),
+                row.failure_class.as_deref(),
+                row.is_actionable,
+            );
+            let status = normalized_runtime_text(Some(row.status.as_str()));
+            let terminal = !matches!(status.as_str(), "running" | "pending");
+            let success = runtime_record_is_success_for_summary_row(row)
+                && classification.failure_class == FailureClass::None;
+            let failure = terminal && classification.failure_class != FailureClass::None;
+
+            totals.total_count += 1;
+            totals.total_cost += row.cost.unwrap_or_default();
+            totals.total_tokens += row.total_tokens;
+            if success {
+                totals.success_count += 1;
+            }
+            if failure {
+                totals.failure_count += 1;
+                totals.non_success_cost += row.cost.unwrap_or_default();
+                non_success_tokens += row.total_tokens.max(0);
+            }
+            usage_breakdown.add_row(row);
+        }
+
+        if let Some((start, end)) = full_rollup_range {
+            for ((bucket, account), bucket_totals) in &self.hourly_rollup_totals {
+                if *bucket < start || *bucket >= end {
+                    continue;
+                }
+                if upstream_account_id.is_none() || *account == upstream_account_id {
+                    if exact_buckets.contains(&(*bucket, *account)) {
+                        continue;
+                    }
+                    totals = totals.add(*bucket_totals);
+                }
+            }
+        }
+
+        let mut response = totals.into_response();
+        response.non_success_cost = Some(totals.non_success_cost);
+        if range.is_some() {
+            response.usage_breakdown = Some(usage_breakdown.into_response());
+        }
+
+        let policy = summary_live_augmentation_policy(&window, range, now);
+        if policy.include_in_progress {
+            let in_progress = self
+                .in_progress_by_account
+                .get(&upstream_account_id)
+                .copied()
+                .unwrap_or_default();
+            response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+            response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+            response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+            response.in_progress_phase_counts = Some(in_progress.phase_counts);
+        }
+        if policy.include_non_success_tokens {
+            response.non_success_tokens = Some(non_success_tokens);
+        }
+        response.maintenance = self.maintenance.clone();
+        Ok(response)
+    }
+}
+
+fn runtime_record_is_success_for_summary_row(row: &UpstreamAccountInvocationPreviewRow) -> bool {
+    let status = normalized_runtime_text(Some(row.status.as_str()));
+    matches!(
+        status.as_str(),
+        "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS
+    ) || (status == "http_200" && normalized_runtime_text(row.error_message.as_deref()).is_empty())
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryProjectionArchiveRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    source: String,
+    model: Option<String>,
+    response_model: Option<String>,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    reasoning_tokens: i64,
+    reasoning_effort: Option<String>,
+    total_tokens: i64,
+    cost: Option<f64>,
+    cost_input: Option<f64>,
+    cost_cache_write: Option<f64>,
+    cost_cache_read: Option<f64>,
+    cost_output: Option<f64>,
+    cost_reasoning: Option<f64>,
+    status: String,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    failure_class: Option<String>,
+    upstream_account_id: Option<i64>,
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryProjectionRollupRow {
+    bucket_start_epoch: i64,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+}
+
+async fn load_summary_projection_rollup_totals(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<(i64, Option<i64>), StatsTotals>> {
+    let mut totals = HashMap::new();
+    let overall_rows = sqlx::query_as::<_, SummaryProjectionRollupRow>(
+        "SELECT bucket_start_epoch, total_count, success_count, failure_count, total_tokens, \
+         total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost \
+         FROM invocation_rollup_hourly",
+    )
+    .fetch_all(pool)
+    .await
+    .context("summary projection overall rollup hydration failed")?;
+    for row in overall_rows {
+        totals.insert(
+            (row.bucket_start_epoch, None),
+            StatsTotals {
+                total_count: row.total_count,
+                success_count: row.success_count,
+                failure_count: row.failure_count,
+                total_tokens: row.total_tokens,
+                total_cost: row.total_cost,
+                non_success_cost: row.non_success_cost,
+            },
+        );
+    }
+    #[derive(Debug, FromRow)]
+    struct AccountRollupRow {
+        upstream_account_id: i64,
+        bucket_start_epoch: i64,
+        total_count: i64,
+        success_count: i64,
+        failure_count: i64,
+        total_tokens: i64,
+        total_cost: f64,
+        non_success_cost: f64,
+    }
+    let account_rows = sqlx::query_as::<_, AccountRollupRow>(
+        "SELECT upstream_account_id, bucket_start_epoch, total_count, success_count, \
+         failure_count, total_tokens, total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost \
+         FROM upstream_account_stats_hourly WHERE upstream_account_id > 0",
+    )
+    .fetch_all(pool)
+    .await
+    .context("summary projection account rollup hydration failed")?;
+    for row in account_rows {
+        totals.insert(
+            (row.bucket_start_epoch, Some(row.upstream_account_id)),
+            StatsTotals {
+                total_count: row.total_count,
+                success_count: row.success_count,
+                failure_count: row.failure_count,
+                total_tokens: row.total_tokens,
+                total_cost: row.total_cost,
+                non_success_cost: row.non_success_cost,
+            },
+        );
+    }
+    Ok(totals)
+}
+
+fn summary_projection_archive_column(column: &str, available: bool, fallback: &str) -> String {
+    if available {
+        format!("{column} AS {column}")
+    } else {
+        format!("{fallback} AS {column}")
+    }
+}
+
+async fn load_summary_projection_archive_records(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<SummaryProjectionRecord>> {
+    let mut columns = HashMap::new();
+    for column in [
+        "source",
+        "model",
+        "payload",
+        "input_tokens",
+        "output_tokens",
+        "cache_input_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+        "cost",
+        "cost_input",
+        "cost_cache_write",
+        "cost_cache_read",
+        "cost_output",
+        "cost_reasoning",
+        "status",
+        "error_message",
+        "failure_kind",
+        "failure_class",
+    ] {
+        columns.insert(
+            column,
+            crate::stats::sqlite_table_has_column(pool, "codex_invocations", column).await?,
+        );
+    }
+    let has = |column| columns.get(column).copied().unwrap_or(false);
+    let payload_expression = |path: &str, cast: &str| {
+        if has("payload") {
+            format!(
+                "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '{path}') AS {cast}) END"
+            )
+        } else {
+            "NULL".to_string()
+        }
+    };
+
+    let response_model = payload_expression("$.responseModel", "TEXT");
+    let reasoning_effort = payload_expression("$.reasoningEffort", "TEXT");
+    let upstream_account_id = payload_expression("$.upstreamAccountId", "INTEGER");
+    let query = format!(
+        "SELECT id, invoke_id, occurred_at, \
+         COALESCE({}, '') AS source, {}, {} AS response_model, \
+         COALESCE({}, 0) AS input_tokens, COALESCE({}, 0) AS output_tokens, \
+         COALESCE({}, 0) AS cache_input_tokens, COALESCE({}, 0) AS reasoning_tokens, \
+         {} AS reasoning_effort, COALESCE({}, 0) AS total_tokens, {}, {}, {}, {}, {}, {}, \
+         COALESCE({}, '') AS status, {}, {}, {}, {} AS upstream_account_id \
+         FROM codex_invocations",
+        if has("source") { "source" } else { "NULL" },
+        summary_projection_archive_column("model", has("model"), "NULL"),
+        response_model,
+        if has("input_tokens") {
+            "input_tokens"
+        } else {
+            "NULL"
+        },
+        if has("output_tokens") {
+            "output_tokens"
+        } else {
+            "NULL"
+        },
+        if has("cache_input_tokens") {
+            "cache_input_tokens"
+        } else {
+            "NULL"
+        },
+        if has("reasoning_tokens") {
+            "reasoning_tokens"
+        } else {
+            "NULL"
+        },
+        reasoning_effort,
+        if has("total_tokens") {
+            "total_tokens"
+        } else {
+            "NULL"
+        },
+        summary_projection_archive_column("cost", has("cost"), "NULL"),
+        summary_projection_archive_column("cost_input", has("cost_input"), "NULL"),
+        summary_projection_archive_column("cost_cache_write", has("cost_cache_write"), "NULL"),
+        summary_projection_archive_column("cost_cache_read", has("cost_cache_read"), "NULL"),
+        summary_projection_archive_column("cost_output", has("cost_output"), "NULL"),
+        summary_projection_archive_column("cost_reasoning", has("cost_reasoning"), "NULL"),
+        if has("status") { "status" } else { "NULL" },
+        summary_projection_archive_column("error_message", has("error_message"), "NULL"),
+        summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL"),
+        summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
+        upstream_account_id,
+    );
+    let rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
+            Some(SummaryProjectionRecord {
+                occurred_at,
+                row: UpstreamAccountInvocationPreviewRow {
+                    upstream_account_id: row.upstream_account_id,
+                    id: row.id,
+                    invoke_id: row.invoke_id,
+                    prompt_cache_key: None,
+                    occurred_at: row.occurred_at,
+                    conversation_created_at: None,
+                    status: row.status,
+                    live_phase: None,
+                    failure_class: row.failure_class,
+                    route_mode: None,
+                    model: row.model,
+                    request_model: None,
+                    response_model: row.response_model,
+                    total_tokens: row.total_tokens,
+                    cost: row.cost,
+                    cost_input: row.cost_input,
+                    cost_cache_write: row.cost_cache_write,
+                    cost_cache_read: row.cost_cache_read,
+                    cost_output: row.cost_output,
+                    cost_reasoning: row.cost_reasoning,
+                    source: Some(row.source),
+                    input_tokens: Some(row.input_tokens),
+                    output_tokens: Some(row.output_tokens),
+                    cache_input_tokens: Some(row.cache_input_tokens),
+                    reasoning_tokens: Some(row.reasoning_tokens),
+                    reasoning_effort: row.reasoning_effort,
+                    error_message: row.error_message,
+                    downstream_status_code: None,
+                    downstream_error_message: None,
+                    failure_kind: row.failure_kind,
+                    is_actionable: None,
+                    proxy_display_name: None,
+                    upstream_account_name: None,
+                    upstream_account_plan_type: None,
+                    response_content_encoding: None,
+                    request_compression_algorithm: None,
+                    transport: None,
+                    requested_service_tier: None,
+                    service_tier: None,
+                    billing_service_tier: None,
+                    t_req_read_ms: None,
+                    t_req_parse_ms: None,
+                    t_upstream_connect_ms: None,
+                    t_upstream_ttfb_ms: None,
+                    first_token_ms: None,
+                    t_upstream_stream_ms: None,
+                    t_resp_parse_ms: None,
+                    t_persist_ms: None,
+                    t_total_ms: None,
+                    endpoint: None,
+                    compaction_request_kind: None,
+                    compaction_response_kind: None,
+                    image_intent: None,
+                },
+            })
+        })
+        .collect())
+}
+
+impl SummarySnapshotEntry {
+    pub(crate) fn ready(response: StatsResponse) -> Self {
+        Self {
+            response: Some(response),
+            refreshed_at: Some(Instant::now()),
+        }
+    }
+
+    pub(crate) fn fresh_response(&self) -> Option<StatsResponse> {
+        self.refreshed_at
+            .filter(|refreshed_at| refreshed_at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+            .and_then(|_| self.response.clone())
+    }
+
+    pub(crate) fn needs_refresh(&self) -> bool {
+        self.fresh_response().is_none()
+    }
+}
+
+fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = SummarySnapshotKey> {
+    [
+        SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(50),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("30m".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("1h".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("thisWeek".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("1mo".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("thisMonth".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+        SummaryQuery {
+            window: Some("previous7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        },
+    ]
+    .into_iter()
+    .map(move |query| {
+        SummarySnapshotKey::try_from_query(&query, default_limit)
+            .expect("summary snapshot bootstrap query must be valid")
+    })
+}
+
+pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
+    refresh_summary_snapshots(state).await
+}
+
+async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
+    let projection = tokio::time::timeout(
+        SUMMARY_PROJECTION_BUILD_DEADLINE,
+        build_summary_projection(state),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "summary projection build exceeded {:?}",
+            SUMMARY_PROJECTION_BUILD_DEADLINE
+        )
+    })??;
+    state
+        .subscription_hub
+        .store_summary_projection(projection)
+        .await;
+    Ok(())
+}
+
+/// Reads every input needed by the hot path while running off-request.  The resulting projection
+/// is swapped atomically in the subscription hub only after the complete baseline is available.
+async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection> {
+    let start = Utc
+        .timestamp_opt(0, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid summary projection epoch"))?;
+    let end = Utc::now() + ChronoDuration::seconds(1);
+    let hourly_rollup_totals = load_summary_projection_rollup_totals(&state.pool).await?;
+    let mut rows = query_live_upstream_account_activity_preview_rows(
+        &state.pool,
+        InvocationSourceScope::All,
+        ExactUtcRange { start, end },
+    )
+    .await
+    .map_err(|error| anyhow!("summary projection live-record hydration failed: {error:?}"))?;
+    // The activity preview intentionally maps a persisted running/pending row with terminal
+    // metadata to the UI's display status `failed`. Summary aggregation has a stricter contract:
+    // that row remains in-flight until its persisted terminal status changes. Restore the durable
+    // source status before this becomes canonical projection input.
+    let persisted_statuses =
+        sqlx::query_as::<_, (i64, Option<String>)>("SELECT id, status FROM codex_invocations")
+            .fetch_all(&state.pool)
+            .await
+            .context("summary projection status hydration failed")?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+    for row in &mut rows {
+        if let Some(status) = persisted_statuses
+            .get(&row.id)
+            .and_then(|status| status.clone())
+        {
+            row.status = status;
+        }
+    }
+    // `invoke_id` is the durable identity used by the archive preview contract.  In particular,
+    // an archive replay can carry a different timestamp from the richer persisted live row; a
+    // `(invoke_id, occurred_at)` key would double count it or overwrite live detail.
+    let mut records_by_invoke_id = rows
+        .into_iter()
+        .filter_map(|row| {
+            let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
+            Some((
+                row.invoke_id.clone(),
+                SummaryProjectionRecord { row, occurred_at },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+    let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
+    if records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by live data"
+        ));
+    }
+    // Boundary-hour selection is record-exact, including when the range starts or ends inside
+    // an archived hour. Read those durable rows only while constructing the projection. A
+    // missing/unreadable archive is intentionally skipped here: HTTP never opens or probes
+    // archive files, and materialized coverage remains available through aggregate buckets.
+    let mut exact_record_budget = records_by_invoke_id.len();
+    for archive in crate::stats::load_completed_invocation_archive_paths(&state.pool).await? {
+        let Some((archive_pool, temp_cleanup)) =
+            crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
+                .await?
+        else {
+            continue;
+        };
+        let archive_rows = load_summary_projection_archive_records(&archive_pool)
+            .await
+            .map_err(|error| {
+                anyhow!(
+                    "summary projection archive hydration failed for {}: {error:?}",
+                    archive.file_path()
+                )
+            })?;
+        archive_pool.close().await;
+        drop(temp_cleanup);
+        for record in archive_rows {
+            // Match the established archive preview contract: persisted/live rows are the
+            // authoritative representation and archive replays are excluded by invocation id.
+            let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+            // Once a durable overall rollup covers this hour, the archive row is represented by
+            // its compact aggregate and must not be retained in the canonical exact-record set.
+            if !persisted_live_ids.contains(&record.row.invoke_id)
+                && !hourly_rollup_totals.contains_key(&(bucket, None))
+            {
+                exact_record_budget = exact_record_budget.saturating_add(1);
+                if exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+                    return Err(anyhow!(
+                        "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
+                    ));
+                }
+                records_by_invoke_id
+                    .entry(record.row.invoke_id.clone())
+                    .or_insert(record);
+            }
+        }
+    }
+    // Runtime is an authoritative typed overlay until the terminal writer persists it.  Replace
+    // only matching live keys; a new in-flight record is inserted exactly once.
+    for runtime_record in state.proxy_runtime_invocations.snapshot() {
+        let Some(row) = runtime_upstream_account_activity_preview_row_with_terminal(
+            runtime_record,
+            InvocationSourceScope::All,
+            true,
+        ) else {
+            continue;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        records_by_invoke_id.insert(
+            row.invoke_id.clone(),
+            SummaryProjectionRecord { row, occurred_at },
+        );
+    }
+
+    let maintenance = load_stats_maintenance_response(state)
+        .await
+        .map_err(|error| anyhow!("summary projection maintenance hydration failed: {error:?}"))?;
+    let mut records = records_by_invoke_id.into_values().collect::<Vec<_>>();
+    records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.row.id.cmp(&right.row.id))
+    });
+    let mut hourly_buckets = BTreeMap::<i64, Vec<usize>>::new();
+    for (index, record) in records.iter().enumerate() {
+        hourly_buckets
+            .entry(align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0))
+            .or_default()
+            .push(index);
+    }
+    let recent_limit = state.config.list_limit_max;
+    let mut recent_indexes = HashMap::<Option<i64>, Vec<usize>>::new();
+    for index in (0..records.len()).rev() {
+        let account_id = records[index].row.upstream_account_id;
+        for key in std::iter::once(None).chain(account_id.map(Some)) {
+            let index_entries = recent_indexes.entry(key).or_default();
+            if index_entries.len() < recent_limit {
+                index_entries.push(index);
+            }
+        }
+    }
+
+    // Account ids are finite durable state at the hydration boundary. Include ids which only
+    // survive in archived/rollup data as well as ids visible in the live record view, so `all`
+    // never falls back to a differently scoped aggregate.
+    let mut account_ids = records
+        .iter()
+        .filter_map(|record| record.row.upstream_account_id)
+        .filter(|account_id| *account_id > 0)
+        .collect::<HashSet<_>>();
+    account_ids.extend(
+        sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts")
+            .fetch_all(&state.pool)
+            .await
+            .context("summary projection account hydration failed")?,
+    );
+    account_ids.extend(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT DISTINCT upstream_account_id \
+             FROM upstream_account_stats_hourly \
+             WHERE upstream_account_id > 0",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .context("summary projection historical account hydration failed")?,
+    );
+    let mut all_time_by_account = HashMap::new();
+    let mut closed_window_by_key = HashMap::new();
+    let mut in_progress_by_account = HashMap::new();
+    for upstream_account_id in std::iter::once(None).chain(account_ids.into_iter().map(Some)) {
+        let params = SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id,
+        };
+        let response =
+            load_summary_response_from_query(state, &params, SummaryBuildRoute::Background)
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection all-time hydration failed: {error:?}")
+                })?;
+        all_time_by_account.insert(upstream_account_id, response);
+        let closed_params = SummaryQuery {
+            window: Some("yesterday".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id,
+        };
+        let closed_key =
+            SummarySnapshotKey::try_from_query(&closed_params, state.config.list_limit_max as i64)
+                .expect("summary projection closed-window key must be valid");
+        let closed_response =
+            load_summary_response_from_query(state, &closed_params, SummaryBuildRoute::Background)
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection closed-window hydration failed: {error:?}")
+                })?;
+        closed_window_by_key.insert(closed_key, closed_response);
+        let in_progress = load_in_progress_summary_snapshot(
+            state,
+            InvocationSourceScope::All,
+            upstream_account_id,
+        )
+        .await
+        .map_err(|error| anyhow!("summary projection in-progress hydration failed: {error:?}"))?;
+        in_progress_by_account.insert(upstream_account_id, in_progress);
+    }
+    let revision = state
+        .subscription_hub
+        .next_summary_projection_revision()
+        .await;
+    Ok(SummaryProjection {
+        records,
+        hourly_buckets,
+        recent_indexes,
+        hourly_rollup_totals,
+        all_time_by_account,
+        closed_window_by_key,
+        in_progress_by_account,
+        maintenance: Some(maintenance),
+        refreshed_at: Some(Instant::now()),
+        revision,
+    })
+}
+
+pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut receiver = state.broadcaster.subscribe();
+        let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_MAX_STALE);
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_refresh = Instant::now() - SUMMARY_SNAPSHOT_EVENT_DEBOUNCE;
+        loop {
+            let should_refresh = tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => true,
+                payload = receiver.recv() => matches!(
+                    payload,
+                    Ok(BroadcastPayload::DashboardCurrentSlice { .. })
+                        | Ok(BroadcastPayload::DashboardTerminalSlice { .. })
+                        | Ok(BroadcastPayload::DashboardActivityLive { .. })
+                        | Err(broadcast::error::RecvError::Lagged(_))
+                ),
+            };
+            if !should_refresh || last_refresh.elapsed() < SUMMARY_SNAPSHOT_EVENT_DEBOUNCE {
+                continue;
+            }
+            if let Err(error) = refresh_summary_snapshots(state.as_ref()).await {
+                warn!(
+                    ?error,
+                    "summary snapshot maintenance failed; retaining last-good responses"
+                );
+            }
+            last_refresh = Instant::now();
+        }
+    });
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SummaryBuildRoute {
     Http,
     Topic,
+    Background,
 }
 
 impl SummaryBuildRoute {
@@ -6998,6 +7922,7 @@ impl SummaryBuildRoute {
         match self {
             Self::Http => "summary_http",
             Self::Topic => "summary_topic",
+            Self::Background => "summary_background",
         }
     }
 
@@ -7005,6 +7930,7 @@ impl SummaryBuildRoute {
         match self {
             Self::Http => "http_closed",
             Self::Topic => "sse_topic",
+            Self::Background => "background_snapshot",
         }
     }
 }
@@ -19539,9 +20465,19 @@ pub(crate) async fn fetch_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SummaryQuery>,
 ) -> Result<Json<StatsResponse>, ApiError> {
-    Ok(Json(
-        load_summary_response_from_query(state.as_ref(), &params, SummaryBuildRoute::Http).await?,
-    ))
+    // Parse before touching the hub so invalid requests retain their former 400 contract without
+    // creating cache state or touching SQLite/filesystem state.
+    let _key = SummarySnapshotKey::try_from_query(&params, state.config.list_limit_max as i64)
+        .map_err(ApiError::bad_request)?;
+    let projection = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .ok_or_else(|| ApiError::from(anyhow!("summary projection has not completed hydration")))?;
+    Ok(Json(projection.response_for_query(
+        &params,
+        state.config.list_limit_max as i64,
+    )?))
 }
 
 pub(crate) async fn load_stats_maintenance_response(
@@ -21863,5 +22799,238 @@ mod request_compression_query_tests {
                 ),
             ]
         );
+    }
+
+    async fn hydrate_summary_projection_fixture(state: &Arc<AppState>) {
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-projection-fixture', datetime('now'), 'proxy', 'success', 17, 1.25, '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert summary projection fixture");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection fixture");
+    }
+
+    #[tokio::test]
+    async fn summary_handler_serves_hydrated_projection_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        let query = SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("America/Los_Angeles".to_string()),
+            upstream_account_id: Some(42),
+        };
+        state.pool.close().await;
+
+        let Json(actual) = fetch_summary(State(state), Query(query))
+            .await
+            .expect("serve hydrated projection");
+
+        assert_eq!(actual.total_count, 1);
+        assert_eq!(actual.total_tokens, 17);
+        assert_eq!(actual.total_cost, 1.25);
+    }
+
+    #[tokio::test]
+    async fn summary_handler_cold_key_and_invalid_window_do_not_require_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("Pacific/Auckland".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve an unrendered but valid projection selection");
+        assert_eq!(response.total_count, 1);
+
+        let invalid = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("not-a-summary-window".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(matches!(invalid, Err(ApiError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_handler_serves_expired_last_good_projection_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        let query = SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        };
+        let mut projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        projection.refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state
+            .subscription_hub
+            .store_summary_projection(projection)
+            .await;
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(State(state), Query(query))
+            .await
+            .expect("serve exact last-good projection after its refresh deadline");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
+    async fn summary_handler_after_refresh_failure_does_not_require_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        let query = SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        };
+        state.pool.close().await;
+
+        assert!(refresh_summary_snapshots(state.as_ref()).await.is_err());
+        let Json(response) = fetch_summary(State(state), Query(query))
+            .await
+            .expect("serve in-memory summary response after refresh failure");
+
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_uses_materialized_hourly_rollup_when_archive_is_unavailable() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let bucket = align_bucket_epoch(
+            (Utc::now() - ChronoDuration::hours(2)).timestamp(),
+            3_600,
+            0,
+        );
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 3, 2, 1, 91, 4.5, 1.5)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert materialized hourly rollup");
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, historical_rollups_materialized_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', '/definitely/missing/summary.sqlite.gz', 'summary-test', 3, 'completed', datetime('now'), datetime('now'))",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert unavailable materialized archive manifest");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection from materialized rollup");
+        let expected = query_hourly_backed_summary_range(
+            state.as_ref(),
+            Utc::now() - ChronoDuration::days(1),
+            Utc::now(),
+            InvocationSourceScope::All,
+        )
+        .await
+        .expect("load legacy rollup-backed summary");
+        state.pool.close().await;
+
+        let Json(actual) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve rollup-backed projection without sqlite");
+        assert_eq!(actual.total_count, expected.total_count);
+        assert_eq!(actual.success_count, expected.success_count);
+        assert_eq!(actual.failure_count, expected.failure_count);
+        assert_eq!(actual.total_tokens, expected.total_tokens);
+        assert_eq!(actual.total_cost, expected.total_cost);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_bounds_current_index_and_serves_recent_limit_from_it() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        for index in 0..80_i64 {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+                 VALUES (?1, datetime('now', ?2), 'proxy', 'success', ?3, 1.0, '{\"upstreamAccountId\":42}', '', 'full')",
+            )
+            .bind(format!("summary-current-{index}"))
+            .bind(format!("-{index} seconds"))
+            .bind(index + 1)
+            .execute(&state.pool)
+            .await
+            .expect("insert current fixture row");
+        }
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate bounded recent index");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        let max = state.config.list_limit_max as usize;
+        assert!(projection.recent_indexes[&None].len() <= max);
+        assert!(projection.recent_indexes[&Some(42)].len() <= max);
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(3),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve bounded current index from memory");
+        assert_eq!(response.total_count, 3);
+        assert_eq!(response.total_tokens, 3 + 2 + 1);
     }
 }

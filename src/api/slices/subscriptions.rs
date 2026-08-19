@@ -731,6 +731,9 @@ struct SubscriptionHubState {
     dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
+    summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
+    summary_projection: Option<SummaryProjection>,
+    summary_projection_revision: u64,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
     prompt_cache_prebaseline_key_hydrations: HashMap<String, BTreeSet<String>>,
     parallel_work_prebaseline_mutations:
@@ -2992,6 +2995,92 @@ impl SubscriptionHub {
             #[cfg(test)]
             dashboard_topology_sse_frame_observations: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) async fn summary_snapshot(&self, key: &SummarySnapshotKey) -> Option<StatsResponse> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .get(key)
+            .and_then(SummarySnapshotEntry::fresh_response)
+    }
+
+    pub(crate) async fn summary_projection(&self) -> Option<SummaryProjection> {
+        self.state.lock().await.summary_projection.clone()
+    }
+
+    pub(crate) async fn next_summary_projection_revision(&self) -> u64 {
+        let mut state = self.state.lock().await;
+        state.summary_projection_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision
+    }
+
+    pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
+        self.state.lock().await.summary_projection = Some(projection);
+    }
+
+    pub(crate) async fn ensure_summary_snapshot_key(&self, key: SummarySnapshotKey) -> bool {
+        let mut state = self.state.lock().await;
+        if state.summary_snapshots.contains_key(&key) {
+            return true;
+        }
+        if state.summary_snapshots.len() >= SUMMARY_SNAPSHOT_MAX_KEYS {
+            return false;
+        }
+        state
+            .summary_snapshots
+            .insert(key, SummarySnapshotEntry::default());
+        true
+    }
+
+    pub(crate) async fn summary_snapshot_keys(&self) -> Vec<SummarySnapshotKey> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn summary_snapshot_keys_needing_refresh(&self) -> Vec<SummarySnapshotKey> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .iter()
+            .filter(|(_, entry)| entry.needs_refresh())
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    pub(crate) async fn store_summary_snapshot(
+        &self,
+        key: SummarySnapshotKey,
+        response: StatsResponse,
+    ) {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .insert(key, SummarySnapshotEntry::ready(response));
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn store_summary_snapshot_at(
+        &self,
+        key: SummarySnapshotKey,
+        response: StatsResponse,
+        refreshed_at: Instant,
+    ) {
+        self.state.lock().await.summary_snapshots.insert(
+            key,
+            SummarySnapshotEntry {
+                response: Some(response),
+                refreshed_at: Some(refreshed_at),
+            },
+        );
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
@@ -11304,6 +11393,86 @@ fn prompt_cache_selection_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn summary_snapshot_registration_preserves_last_good_response() {
+        let hub = SubscriptionHub::new();
+        let key = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+        let mut response = StatsTotals::default().into_response();
+        response.total_count = 7;
+
+        hub.store_summary_snapshot(key.clone(), response).await;
+        hub.ensure_summary_snapshot_key(key.clone()).await;
+
+        assert_eq!(
+            hub.summary_snapshot(&key)
+                .await
+                .expect("registered key should retain its last-good response")
+                .total_count,
+            7
+        );
+    }
+
+    #[test]
+    fn stale_summary_snapshot_does_not_serve_last_good_indefinitely() {
+        let entry = SummarySnapshotEntry {
+            response: Some(StatsTotals::default().into_response()),
+            refreshed_at: Some(
+                Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1),
+            ),
+        };
+
+        assert!(entry.fresh_response().is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_snapshot_admission_rejects_keys_after_the_bounded_capacity() {
+        let hub = SubscriptionHub::new();
+        for index in 0..SUMMARY_SNAPSHOT_MAX_KEYS {
+            assert!(
+                hub.ensure_summary_snapshot_key(SummarySnapshotKey::from_query(&SummaryQuery {
+                    window: Some("1d".to_string()),
+                    limit: Some(index as i64 + 1),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: Some(index as i64 + 1),
+                }))
+                .await
+            );
+        }
+
+        assert!(
+            !hub.ensure_summary_snapshot_key(SummarySnapshotKey::from_query(&SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: Some(99),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: Some(99),
+            }))
+            .await
+        );
+    }
+
+    #[test]
+    fn summary_snapshot_key_canonicalizes_equivalent_query_forms() {
+        let one_day = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: Some(99),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+        let twenty_four_hours = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("24h".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+
+        assert_eq!(one_day, twenty_four_hours);
+    }
 
     #[test]
     fn runtime_mutation_sequence_gap_discards_partial_batch() {
