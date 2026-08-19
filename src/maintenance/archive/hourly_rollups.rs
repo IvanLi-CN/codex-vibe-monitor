@@ -3255,6 +3255,7 @@ async fn select_active_account_activity_v2_priority_buckets(
         started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
         None,
         1_000,
+        false,
     )
     .await
 }
@@ -3266,6 +3267,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     selection_deadline: Instant,
     progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     progress_handler_ops: i32,
+    progress_abort_on_probe: bool,
 ) -> Result<Option<Vec<i64>>> {
     let selection_deadline = std::cmp::min(
         selection_deadline,
@@ -3282,20 +3284,29 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         connection.close_on_drop();
         return Ok(None);
     };
-    let mut handle = {
+    let lock_timed_out = {
         let handle_result = timeout(remaining_budget, connection.lock_handle()).await;
         match handle_result {
-            Ok(handle) => handle?,
-            Err(_) => return Ok(None),
+            Ok(Ok(mut handle)) => {
+                handle.set_progress_handler(progress_handler_ops, move || {
+                    if let Some(progress_probe) = progress_probe.as_ref() {
+                        progress_probe.store(true, std::sync::atomic::Ordering::Relaxed);
+                        if progress_abort_on_probe {
+                            return false;
+                        }
+                    }
+                    Instant::now() < selection_deadline
+                });
+                false
+            }
+            Ok(Err(error)) => return Err(error.into()),
+            Err(_) => true,
         }
     };
-    handle.set_progress_handler(progress_handler_ops, move || {
-        if let Some(progress_probe) = progress_probe.as_ref() {
-            progress_probe.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        Instant::now() < selection_deadline
-    });
-    drop(handle);
+    if lock_timed_out {
+        connection.close_on_drop();
+        return Ok(None);
+    }
     let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
@@ -3326,7 +3337,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             return Ok(Vec::new());
         }
 
-        let covered_buckets = sqlx::query_scalar::<_, i64>(
+        let covered_bucket_rows = sqlx::query_scalar::<_, i64>(
             "SELECT bucket_start_epoch \
              FROM hourly_rollup_materialized_buckets \
              WHERE target = ?1 AND source = ?2 \
@@ -3337,9 +3348,16 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         .bind(oldest_bucket)
         .bind(current_bucket)
         .fetch_all(&mut *connection)
-        .await?
-        .into_iter()
-        .collect::<HashSet<_>>();
+        .await?;
+        let mut covered_buckets = HashSet::new();
+        for bucket_start_epoch in covered_bucket_rows {
+            if Instant::now() >= selection_deadline {
+                return Err(anyhow!(
+                    "active account activity v2 coverage selection deadline reached during coverage scan"
+                ));
+            }
+            covered_buckets.insert(bucket_start_epoch);
+        }
         let archive_epoch_coverage = build_active_account_activity_v2_archive_epoch_coverage_query(
             "",
             oldest_bucket,
@@ -3352,19 +3370,31 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         let mut active_month_keys = Vec::new();
         let mut bucket_start_epoch = current_bucket - 3_600;
         while bucket_start_epoch >= oldest_bucket {
+            if Instant::now() >= selection_deadline {
+                return Err(anyhow!(
+                    "active account activity v2 coverage selection deadline reached during legacy month scan"
+                ));
+            }
             let month_key = active_account_activity_v2_month_key(bucket_start_epoch)?;
             if !active_month_keys.contains(&month_key) {
                 active_month_keys.push(month_key);
             }
             bucket_start_epoch -= 3_600;
         }
-        let archive_legacy_month_keys =
+        let archive_legacy_month_rows =
             build_active_account_activity_v2_legacy_coverage_query("", &active_month_keys)
                 .build_query_scalar::<String>()
                 .fetch_all(&mut *connection)
-                .await?
-                .into_iter()
-                .collect::<HashSet<_>>();
+                .await?;
+        let mut archive_legacy_month_keys = HashSet::new();
+        for month_key in archive_legacy_month_rows {
+            if Instant::now() >= selection_deadline {
+                return Err(anyhow!(
+                    "active account activity v2 coverage selection deadline reached during legacy coverage scan"
+                ));
+            }
+            archive_legacy_month_keys.insert(month_key);
+        }
 
         let mut missing_buckets =
             Vec::with_capacity(ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT);
@@ -3423,6 +3453,14 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
                     ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
                 error = %error,
                 "active account activity v2 coverage selection interrupted at its SQLite budget"
+            );
+            Ok(None)
+        }
+        Ok(Err(error)) if progress_abort_on_probe => {
+            connection.close_on_drop();
+            warn!(
+                error = %error,
+                "active account activity v2 coverage selection interrupted by test progress probe"
             );
             Ok(None)
         }

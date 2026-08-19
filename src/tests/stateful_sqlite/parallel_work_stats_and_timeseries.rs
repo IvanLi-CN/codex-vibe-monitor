@@ -17415,13 +17415,15 @@ async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round()
         &state.pool,
         current_hour_epoch,
         started_at,
-        started_at,
+        started_at + std::time::Duration::from_secs(1),
         Some(progress_probe.clone()),
         1,
+        true,
     )
     .await
     .expect("handle interrupted selection round");
     assert!(outcome.is_none());
+    assert!(progress_probe.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[tokio::test]
