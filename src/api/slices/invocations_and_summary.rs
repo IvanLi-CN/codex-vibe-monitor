@@ -11380,7 +11380,17 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
     {
         return None;
     }
-    let live_phase = effective_runtime_invocation_live_phase(&record).map(str::to_string);
+    // The runtime snapshot stores TTFT once per invocation, while pool retries can replace the
+    // final attempt. Until attempt-owned TTFT exists, suppress that invocation-level measurement
+    // for retries so account previews cannot attribute an earlier attempt to the current one.
+    let suppress_live_first_token = runtime_record_is_retry(&record);
+    let live_phase = if suppress_live_first_token {
+        let mut phase_record = record.clone();
+        phase_record.first_token_ms = None;
+        effective_runtime_invocation_live_phase(&phase_record).map(str::to_string)
+    } else {
+        effective_runtime_invocation_live_phase(&record).map(str::to_string)
+    };
     Some(UpstreamAccountInvocationPreviewRow {
         upstream_account_id: record.upstream_account_id,
         id: record.id,
@@ -11426,7 +11436,9 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: record.first_token_ms,
+        first_token_ms: (!suppress_live_first_token)
+            .then_some(finite_nonnegative_timing(record.first_token_ms))
+            .flatten(),
         t_upstream_stream_ms: finite_positive_timing(record.t_upstream_stream_ms),
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,
@@ -20920,6 +20932,40 @@ mod invocation_cost_audit_tests {
 
         assert_eq!(mapped.first_token_ms, None);
         assert_eq!(mapped.stream_latency_ms, None);
+    }
+
+    #[test]
+    fn runtime_account_preview_suppresses_invocation_ttft_after_retry() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        record.pool_attempt_count = Some(2);
+
+        let row = runtime_upstream_account_activity_preview_row(record, InvocationSourceScope::All)
+            .expect("running pool invocation preview");
+
+        assert_eq!(row.first_token_ms, None);
+        assert_ne!(
+            row.live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn runtime_account_preview_keeps_invocation_ttft_for_first_attempt() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        record.pool_attempt_count = Some(1);
+
+        let row = runtime_upstream_account_activity_preview_row(record, InvocationSourceScope::All)
+            .expect("running pool invocation preview");
+
+        assert_eq!(row.first_token_ms, Some(720.0));
+        assert_eq!(
+            row.live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
     }
 
     #[test]
