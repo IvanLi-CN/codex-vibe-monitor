@@ -6674,3 +6674,259 @@ async fn sticky_key_preview_uses_the_final_attempt_request_compression() {
         Some("zstd")
     );
 }
+
+#[tokio::test]
+async fn sticky_key_recent_preview_uses_compatible_composite_index_without_sql_sort() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Sticky preview index").await;
+    let index_sql = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_codex_invocations_account_sticky_key_recent'
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load sticky preview index");
+    assert!(index_sql.contains("$.upstreamAccountId"));
+    assert!(index_sql.contains("$.stickyKey"));
+    assert!(index_sql.contains("$.promptCacheKey"));
+    assert!(index_sql.contains("occurred_at DESC"));
+    assert!(index_sql.contains("id DESC"));
+
+    let plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        WITH ranked AS (
+            SELECT
+                id,
+                occurred_at,
+                CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                )) END AS sticky_key,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                        CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                        CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                    )) END
+                    ORDER BY occurred_at DESC, id DESC
+                ) AS row_number
+            FROM codex_invocations
+            WHERE CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END = ?1
+              AND CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                  )) END IN (?2, ?3)
+        )
+        SELECT sticky_key, id
+        FROM ranked
+        WHERE row_number <= 5
+        "#,
+    )
+    .bind(account_id)
+    .bind("sticky-primary")
+    .bind("sticky-fallback")
+    .fetch_all(&state.pool)
+    .await
+    .expect("load sticky preview explain plan")
+    .into_iter()
+    .map(|row| row.get::<String, _>("detail"))
+    .collect::<Vec<_>>()
+    .join(" | ");
+    assert!(
+        plan.contains("idx_codex_invocations_account_sticky_key_recent"),
+        "unexpected sticky preview plan: {plan}"
+    );
+    assert!(
+        !plan.contains("USE TEMP B-TREE"),
+        "sticky preview should not sort in SQLite: {plan}"
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (invoke_id, occurred_at, source, payload, raw_response)
+        VALUES
+            ('sticky-primary-old', '2026-08-20 10:00:00', 'proxy', ?1, ''),
+            ('sticky-primary-new', '2026-08-20 10:01:00', 'proxy', ?1, ''),
+            ('sticky-fallback-new', '2026-08-20 10:02:00', 'proxy', ?2, '')
+        "#,
+    )
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+            "stickyKey": "sticky-primary",
+        })
+        .to_string(),
+    )
+    .bind(
+        json!({
+            "upstreamAccountId": account_id,
+            "promptCacheKey": "sticky-fallback",
+        })
+        .to_string(),
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky preview invocations");
+
+    let rows = query_account_sticky_key_recent_invocations(
+        &state.pool,
+        account_id,
+        &["sticky-primary".to_string(), "sticky-fallback".to_string()],
+        1,
+        None,
+    )
+    .await
+    .expect("load indexed sticky preview");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].sticky_key, "sticky-fallback");
+    assert_eq!(rows[0].invoke_id, "sticky-fallback-new");
+    assert_eq!(rows[1].sticky_key, "sticky-primary");
+    assert_eq!(rows[1].invoke_id, "sticky-primary-new");
+}
+
+#[tokio::test]
+#[ignore = "manual benchmark: measures indexed sticky previews on an isolated 300k fixture"]
+async fn benchmark_sticky_key_recent_preview_on_three_hundred_thousand_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open sticky preview benchmark sqlite");
+    sqlx::query(
+        r#"
+        CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY,
+            occurred_at TEXT NOT NULL,
+            payload TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create sticky preview benchmark table");
+    let account_id = 42_i64;
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            thousands(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM thousands WHERE value < 999
+            ),
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 299
+            )
+        INSERT INTO codex_invocations (id, occurred_at, payload)
+        SELECT
+            thousands.value * 300 + hundreds.value + 1,
+            datetime('2026-08-20 00:00:00', printf('+%d seconds', thousands.value * 300 + hundreds.value)),
+            json_object(
+                'upstreamAccountId', CASE WHEN (thousands.value * 300 + hundreds.value) % 10 = 0 THEN ?1 ELSE ?1 + 1 END,
+                CASE WHEN (thousands.value * 300 + hundreds.value) % 2 = 0 THEN 'stickyKey' ELSE 'promptCacheKey' END,
+                printf('sticky-%02d', (thousands.value * 300 + hundreds.value) % 12)
+            )
+        FROM thousands
+        CROSS JOIN hundreds
+        "#,
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("seed 300k sticky preview fixture");
+    sqlx::query(
+        r#"
+        CREATE INDEX idx_codex_invocations_account_sticky_key_recent
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END),
+            (CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END),
+            occurred_at DESC,
+            id DESC
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create sticky preview benchmark index");
+
+    let query = r#"
+        WITH ranked AS (
+            SELECT
+                id,
+                occurred_at,
+                CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                )) END AS sticky_key,
+                ROW_NUMBER() OVER (
+                    PARTITION BY CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                        CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                        CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                    )) END
+                    ORDER BY occurred_at DESC, id DESC
+                ) AS row_number
+            FROM codex_invocations
+            WHERE CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END = ?1
+              AND CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
+                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
+                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
+                  )) END IN (?2, ?3, ?4)
+        )
+        SELECT sticky_key, id
+        FROM ranked
+        WHERE row_number <= 5
+        "#;
+    let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {query}"))
+        .bind(account_id)
+        .bind("sticky-00")
+        .bind("sticky-02")
+        .bind("sticky-04")
+        .fetch_all(&pool)
+        .await
+        .expect("load 300k sticky preview explain plan")
+        .into_iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        plan.contains("idx_codex_invocations_account_sticky_key_recent"),
+        "unexpected 300k sticky preview plan: {plan}"
+    );
+    assert!(
+        !plan.contains("USE TEMP B-TREE"),
+        "300k sticky preview should not sort in SQLite: {plan}"
+    );
+
+    let rows = sqlx::query(query)
+        .bind(account_id)
+        .bind("sticky-00")
+        .bind("sticky-02")
+        .bind("sticky-04")
+        .fetch_all(&pool)
+        .await
+        .expect("warm indexed sticky preview");
+    assert_eq!(rows.len(), 15);
+
+    let started_at = std::time::Instant::now();
+    let rows = sqlx::query(query)
+        .bind(account_id)
+        .bind("sticky-00")
+        .bind("sticky-02")
+        .bind("sticky-04")
+        .fetch_all(&pool)
+        .await
+        .expect("load indexed sticky preview");
+    let elapsed = started_at.elapsed();
+
+    assert_eq!(rows.len(), 15);
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "indexed sticky preview exceeded one second on the 300k-row fixture: {elapsed:?}"
+    );
+    eprintln!("indexed 300k sticky preview completed in {elapsed:?}");
+}
