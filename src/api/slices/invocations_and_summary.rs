@@ -7177,8 +7177,9 @@ pub(crate) struct SummaryProjection {
     // Archive files are immutable once completed. Reuse their bounded account-key discovery on
     // later refreshes so maintenance never repeatedly scans a large low-cardinality archive.
     archive_account_ids_by_file: HashMap<String, HashSet<i64>>,
-    // Closed calendar windows are immutable at a projection revision. This retains account
-    // aggregates after source archive detail has been retired, without ever crossing keys.
+    // Closed calendar windows are immutable at a projection revision. Only the small global
+    // bootstrap set is pre-rendered; account-scoped selections remain pure views over canonical
+    // buckets so account count cannot multiply refresh allocations.
     closed_window_by_key: HashMap<SummarySnapshotKey, StatsResponse>,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
@@ -8314,18 +8315,49 @@ async fn build_summary_projection(
         .iter()
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
+    let archive_path_set = archive_paths.iter().cloned().collect::<HashSet<_>>();
+    archive_account_ids_by_file.retain(|path, _| archive_path_set.contains(path));
     let usage_rollup_progress =
         load_usage_breakdown_archive_progress_by_file_path(&state.pool, &archive_paths)
             .await
             .map_err(|error| {
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
-    // Discover accounts from archive rows before planning full-hour coverage. Keep each opened
-    // archive pool for the subsequent merge so a refresh does not inflate and scan every gzip
-    // archive twice. An account can outlive the pool roster and its account rollup can lag the
-    // global marker; omitting it here would incorrectly treat a global-covered bucket as exact
-    // for that account.
-    let mut opened_archives = Vec::with_capacity(archives.len());
+    // Discover accounts from archive rows before planning full-hour coverage. Pools are opened
+    // and closed one at a time so a large retention horizon never keeps every inflated archive
+    // resident concurrently. Immutable completed archives reuse the cached account set on later
+    // refreshes; only a new path pays the discovery pass.
+    for archive in &archives {
+        if archive_account_ids_by_file.contains_key(archive.file_path()) {
+            if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
+                known_account_ids.extend(account_ids.iter().copied());
+            }
+            continue;
+        }
+        let Some((archive_pool, temp_cleanup)) =
+            crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
+        else {
+            continue;
+        };
+        let account_ids = load_summary_projection_archive_account_ids(
+            &archive_pool,
+            ExactUtcRange {
+                start: archive_start,
+                end,
+            },
+        )
+        .await
+        .map_err(|error| {
+            anyhow!(
+                "summary projection archive account discovery failed for {}: {error:?}",
+                archive.file_path()
+            )
+        })?;
+        known_account_ids.extend(account_ids.iter().copied());
+        archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
     for archive in archives {
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
@@ -8333,29 +8365,6 @@ async fn build_summary_projection(
         else {
             continue;
         };
-        if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
-            known_account_ids.extend(account_ids.iter().copied());
-        } else {
-            let account_ids = load_summary_projection_archive_account_ids(
-                &archive_pool,
-                ExactUtcRange {
-                    start: archive_start,
-                    end,
-                },
-            )
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "summary projection archive account discovery failed for {}: {error:?}",
-                    archive.file_path()
-                )
-            })?;
-            known_account_ids.extend(account_ids.iter().copied());
-            archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
-        }
-        opened_archives.push((archive, archive_pool, temp_cleanup));
-    }
-    for (archive, archive_pool, temp_cleanup) in opened_archives {
         merge_summary_projection_archive_records(
             &archive_pool,
             &persisted_live_ids,
@@ -8515,19 +8524,21 @@ async fn build_summary_projection(
                     })?;
             all_time_by_account.insert(upstream_account_id, response);
         }
-        for closed_window in ["yesterday", "previous7d"] {
-            let closed_params = SummaryQuery {
-                window: Some(closed_window.to_string()),
-                limit: None,
-                time_zone: Some("Asia/Shanghai".to_string()),
-                upstream_account_id,
-            };
-            let closed_key = SummarySnapshotKey::try_from_query(
-                &closed_params,
-                state.config.list_limit_max as i64,
-            )
-            .expect("summary projection closed-window key must be valid");
-            closed_window_requests.push((closed_key, closed_params));
+        if upstream_account_id.is_none() {
+            for closed_window in ["yesterday", "previous7d"] {
+                let closed_params = SummaryQuery {
+                    window: Some(closed_window.to_string()),
+                    limit: None,
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id,
+                };
+                let closed_key = SummarySnapshotKey::try_from_query(
+                    &closed_params,
+                    state.config.list_limit_max as i64,
+                )
+                .expect("summary projection closed-window key must be valid");
+                closed_window_requests.push((closed_key, closed_params));
+            }
         }
         let in_progress = match upstream_account_id {
             None => global_in_progress,
