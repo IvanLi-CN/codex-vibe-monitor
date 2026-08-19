@@ -10,6 +10,8 @@ pub(crate) const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
 pub(crate) const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
 const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
     "invocation_rollup_hourly_token_components_v1";
+const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
+const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
 
 pub(crate) fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
@@ -1193,6 +1195,115 @@ pub(crate) async fn reopen_upstream_account_stats_rollup_archives(
     Ok(())
 }
 
+async fn ensure_invocation_raw_codec_backfill(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS codex_invocation_raw_codec_migrations (
+            migration_name TEXT PRIMARY KEY,
+            completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure raw codec migration marker table")?;
+
+    let already_completed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM codex_invocation_raw_codec_migrations WHERE migration_name = ?1)",
+    )
+    .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if already_completed {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin raw codec backfill migration")?;
+    let already_completed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM codex_invocation_raw_codec_migrations WHERE migration_name = ?1)",
+    )
+    .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0;
+    if already_completed {
+        tx.commit()
+            .await
+            .context("failed to commit raw codec migration marker check")?;
+        return Ok(());
+    }
+
+    if !legacy_raw_blob_link_seed_completed(&mut tx).await? {
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET request_raw_codec = CASE
+                    WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
+                    ELSE 'identity'
+                END
+            WHERE COALESCE(TRIM(request_raw_codec), '') = ''
+               OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
+            "#,
+        )
+        .execute(tx.as_mut())
+        .await
+        .context("failed to backfill codex_invocations request_raw_codec")?;
+
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET response_raw_codec = CASE
+                    WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
+                    ELSE 'identity'
+                END
+            WHERE COALESCE(TRIM(response_raw_codec), '') = ''
+               OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
+            "#,
+        )
+        .execute(tx.as_mut())
+        .await
+        .context("failed to backfill codex_invocations response_raw_codec")?;
+    }
+
+    sqlx::query("INSERT INTO codex_invocation_raw_codec_migrations (migration_name) VALUES (?1)")
+        .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to record raw codec backfill completion")?;
+    tx.commit()
+        .await
+        .context("failed to commit raw codec backfill migration")?;
+
+    Ok(())
+}
+
+async fn legacy_raw_blob_link_seed_completed(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<bool> {
+    let migration_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind("proxy_raw_payload_blob_link_migrations")
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0;
+    if !migration_table_exists {
+        return Ok(false);
+    }
+
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM proxy_raw_payload_blob_link_migrations WHERE migration_name = ?1)",
+    )
+    .bind(LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0)
+}
+
 pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let schema_lock = ensure_schema_lock(pool);
     let _schema_guard = schema_lock.lock_owned().await;
@@ -1264,35 +1375,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         }
     }
 
-    sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET request_raw_codec = CASE
-                WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
-                ELSE 'identity'
-            END
-        WHERE COALESCE(TRIM(request_raw_codec), '') = ''
-           OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to backfill codex_invocations request_raw_codec")?;
-
-    sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET response_raw_codec = CASE
-                WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
-                ELSE 'identity'
-            END
-        WHERE COALESCE(TRIM(response_raw_codec), '') = ''
-           OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to backfill codex_invocations response_raw_codec")?;
+    ensure_invocation_raw_codec_backfill(pool).await?;
 
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
@@ -4419,11 +4502,10 @@ async fn ensure_proxy_raw_payload_blob_link_schema(pool: &Pool<Sqlite>) -> Resul
 }
 
 async fn seed_legacy_proxy_raw_payload_blob_links(pool: &Pool<Sqlite>) -> Result<()> {
-    const MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
     let already_seeded = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM proxy_raw_payload_blob_link_migrations WHERE migration_name = ?1)",
     )
-    .bind(MIGRATION_NAME)
+    .bind(LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME)
     .fetch_one(pool)
     .await?
         != 0;
@@ -4467,7 +4549,7 @@ async fn seed_legacy_proxy_raw_payload_blob_links(pool: &Pool<Sqlite>) -> Result
     .execute(tx.as_mut())
     .await?;
     sqlx::query("INSERT INTO proxy_raw_payload_blob_link_migrations (migration_name) VALUES (?1)")
-        .bind(MIGRATION_NAME)
+        .bind(LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME)
         .execute(tx.as_mut())
         .await?;
     tx.commit().await?;
