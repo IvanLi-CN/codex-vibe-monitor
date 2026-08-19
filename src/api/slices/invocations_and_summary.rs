@@ -22941,7 +22941,7 @@ mod request_compression_query_tests {
             Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
         state
             .subscription_hub
-            .store_summary_projection(projection)
+            .store_summary_projection(Arc::unwrap_or_clone(projection))
             .await;
         state.pool.close().await;
 
