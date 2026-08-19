@@ -2119,10 +2119,21 @@ mod startup_backfill_tests {
 
     #[test]
     fn historical_rollup_budget_retry_stays_short_after_cursor_wrap() {
-        assert!(historical_rollup_should_retry_soon(true, 1));
+        let retry_soon = historical_rollup_should_retry_soon(true, 1);
+        assert!(retry_soon);
         assert!(historical_rollup_should_retry_soon(true, 32));
         assert!(!historical_rollup_should_retry_soon(true, 0));
         assert!(!historical_rollup_should_retry_soon(false, 1));
+
+        let run = StartupBackfillRunState {
+            retry_soon,
+            ..StartupBackfillRunState::default()
+        };
+        assert_eq!(
+            startup_backfill_next_delay(&run, 0),
+            Duration::from_secs(15)
+        );
+        assert!(!startup_backfill_run_is_actionable(&run));
     }
 
     #[test]
