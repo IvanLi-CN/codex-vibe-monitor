@@ -1803,17 +1803,21 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     }
 }
 
-pub(crate) async fn persist_pool_route_success_then_release<T, E>(
+pub(crate) async fn persist_pool_route_success_then_release<E>(
     state: &AppState,
     reservation_key: &str,
-    persist_success: impl std::future::Future<Output = Result<T, E>>,
-) -> Result<T, E> {
+    persist_success: impl std::future::Future<Output = Result<bool, E>>,
+) -> Result<(), E> {
     match persist_success.await {
-        Ok(value) => {
-            // Success observers publish only when they actually restore a route.
-            // Releasing an occupied slot alone must not bypass a newer failure fence.
-            release_pool_routing_reservation_without_availability(state, reservation_key);
-            Ok(value)
+        Ok(publish_availability) => {
+            // Successful capacity release wakes waiters only while its account is
+            // still selectable. A stale success keeps the newer failure fenced.
+            release_pool_routing_reservation_with_availability(
+                state,
+                reservation_key,
+                publish_availability,
+            );
+            Ok(())
         }
         Err(err) => {
             release_pool_routing_reservation_without_availability(state, reservation_key);

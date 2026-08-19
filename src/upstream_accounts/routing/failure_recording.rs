@@ -66,18 +66,20 @@ pub(crate) async fn pool_account_allows_model_route_availability_publish(
     Ok(eligible != 0)
 }
 
-async fn publish_pool_routing_availability_if_account_eligible(state: &AppState, account_id: i64) {
+async fn pool_route_success_allows_reservation_release_publish(
+    state: &AppState,
+    account_id: i64,
+) -> bool {
     match pool_account_allows_model_route_availability_publish(&state.pool, account_id).await {
-        Ok(true) => publish_pool_routing_availability(state),
-        Ok(false) => debug!(
-            account_id,
-            "suppressing pool availability publication because the recovered account is not selectable"
-        ),
-        Err(err) => warn!(
-            account_id,
-            error = %err,
-            "failed to verify account eligibility before publishing pool availability"
-        ),
+        Ok(eligible) => eligible,
+        Err(err) => {
+            warn!(
+                account_id,
+                error = %err,
+                "failed to verify account eligibility before publishing pool availability"
+            );
+            false
+        }
     }
 }
 
@@ -180,7 +182,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<()> {
+) -> Result<bool> {
     let outcome = record_pool_route_success_inner(
         &state.pool,
         account_id,
@@ -208,10 +210,12 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
             account_id,
         );
     }
-    if outcome.availability_increased {
-        publish_pool_routing_availability_if_account_eligible(state, account_id).await;
+    let reservation_release_wakes_waiters =
+        pool_route_success_allows_reservation_release_publish(state, account_id).await;
+    if outcome.availability_increased && reservation_release_wakes_waiters {
+        publish_pool_routing_availability(state);
     }
-    Ok(())
+    Ok(reservation_release_wakes_waiters)
 }
 
 pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
@@ -503,7 +507,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     codex_imagegen_rewrite: Option<&Value>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<()> {
+) -> Result<bool> {
     let outcome = record_pool_route_success_inner(
         &state.pool,
         account_id,
@@ -531,8 +535,10 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
             account_id,
         );
     }
-    if outcome.availability_increased {
-        publish_pool_routing_availability_if_account_eligible(state, account_id).await;
+    let reservation_release_wakes_waiters =
+        pool_route_success_allows_reservation_release_publish(state, account_id).await;
+    if outcome.availability_increased && reservation_release_wakes_waiters {
+        publish_pool_routing_availability(state);
     }
     record_pool_route_success_capability_observations(
         &state.pool,
@@ -541,7 +547,8 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         image_intent,
         codex_imagegen_rewrite,
     )
-    .await
+    .await?;
+    Ok(reservation_release_wakes_waiters)
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(

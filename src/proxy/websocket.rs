@@ -338,6 +338,10 @@ impl PoolRoutingReservationGuard {
         self.publish_availability = false;
     }
 
+    fn set_availability_publish(&mut self, publish_availability: bool) {
+        self.publish_availability = publish_availability;
+    }
+
     fn release_after_persisted_failure(&mut self) {
         if !self.armed {
             return;
@@ -1159,7 +1163,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    if let Err(err) = record_pool_route_success_with_affinity_generation_and_broadcast(
+    match record_pool_route_success_with_affinity_generation_and_broadcast(
         state.as_ref(),
         account.account_id,
         connect_started_at_utc,
@@ -1173,13 +1177,18 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     )
     .await
     {
-        reservation_guard.suppress_availability_publish();
-        warn!(
-            invoke_id = %trace.invoke_id,
-            account_id = account.account_id,
-            error = %err,
-            "failed to record websocket pool route success"
-        );
+        Ok(publish_availability) => {
+            reservation_guard.set_availability_publish(publish_availability);
+        }
+        Err(err) => {
+            reservation_guard.suppress_availability_publish();
+            warn!(
+                invoke_id = %trace.invoke_id,
+                account_id = account.account_id,
+                error = %err,
+                "failed to record websocket pool route success"
+            );
+        }
     }
 
     Ok(PreparedUpstreamWebSocket {
@@ -3503,6 +3512,52 @@ mod websocket_tests {
             *availability.borrow(),
             initial_generation,
             "websocket cancellation before a failure fence commits must not wake waiters"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_success_guard_releases_stale_account_without_waking_waiters() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let reservation_key = "websocket-stale-success";
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                reservation_key.to_string(),
+                PoolRoutingReservation {
+                    account_id: 42,
+                    model: Some("gpt-ws-stale-success".to_string()),
+                    proxy_key: None,
+                    created_at: Instant::now(),
+                },
+            );
+        let availability = state.pool_routing_availability.subscribe();
+        let initial_generation = *availability.borrow();
+
+        {
+            let mut reservation_guard =
+                PoolRoutingReservationGuard::new(state.clone(), reservation_key.to_string());
+            // A success record returns false when a newer account failure fences
+            // the request. WebSocket cleanup must release without publishing.
+            reservation_guard.set_availability_publish(false);
+        }
+
+        assert!(
+            !state
+                .pool_routing_reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned")
+                .contains_key(reservation_key),
+            "stale websocket success must release its reservation"
+        );
+        assert_eq!(
+            *availability.borrow(),
+            initial_generation,
+            "stale websocket success must not wake pool waiters"
         );
     }
 

@@ -3040,11 +3040,20 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let release_state = state.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
     let release_task = std::thread::spawn(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("waiter should subscribe before release");
-        release_pool_routing_reservation(&release_state, "model-reservation-holder");
+        runtime_handle.block_on(async move {
+            persist_pool_route_success_then_release(
+                release_state.as_ref(),
+                "model-reservation-holder",
+                async { Ok::<bool, ()>(true) },
+            )
+            .await
+            .expect("healthy reservation release should persist");
+        });
     });
 
     let started = Instant::now();
