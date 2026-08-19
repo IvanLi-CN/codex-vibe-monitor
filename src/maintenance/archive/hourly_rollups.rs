@@ -3360,7 +3360,18 @@ async fn select_active_account_activity_v2_priority_buckets(
         );
         return Ok(None);
     }
-    selection.map(Some)
+    match selection {
+        Err(error) if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET => {
+            warn!(
+                priority_elapsed_budget_ms =
+                    ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                error = %error,
+                "active account activity v2 coverage selection interrupted at its SQLite budget"
+            );
+            Ok(None)
+        }
+        result => result.map(Some),
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3374,9 +3385,32 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     pool: &Pool<Sqlite>,
 ) -> Result<ActiveAccountActivityV2RepairOutcome> {
     let started_at = Instant::now();
-    let mut generation_tx = pool.begin().await?;
-    ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
-    generation_tx.commit().await?;
+    let Some(remaining_budget) =
+        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+    else {
+        return Ok(ActiveAccountActivityV2RepairOutcome::default());
+    };
+    match timeout(remaining_budget, async {
+        let mut generation_tx = pool.begin().await?;
+        ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
+        generation_tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            warn!(
+                priority_elapsed_budget_ms =
+                    ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                "active account activity v2 coverage generation exhausted its budget"
+            );
+            return Ok(ActiveAccountActivityV2RepairOutcome {
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+                ..ActiveAccountActivityV2RepairOutcome::default()
+            });
+        }
+    }
     let current_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
     let Some(missing_buckets) =
         select_active_account_activity_v2_priority_buckets(pool, current_bucket, started_at)
@@ -3391,79 +3425,99 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     let mut repaired_bucket_count = 0usize;
 
     for bucket_start_epoch in missing_buckets {
-        if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
+        let Some(remaining_budget) =
+            ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+        else {
             break;
+        };
+        match timeout(remaining_budget, async {
+            let mut tx = pool.begin().await?;
+            ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
+            sqlx::query(
+                r#"
+                UPDATE upstream_account_stats_hourly
+                SET activity_v2_request_count = 0,
+                    activity_v2_success_count = 0,
+                    activity_v2_failure_count = 0,
+                    activity_v2_non_success_count = 0,
+                    activity_v2_total_tokens = 0,
+                    activity_v2_success_tokens = 0,
+                    activity_v2_non_success_tokens = 0,
+                    activity_v2_failure_tokens = 0,
+                    activity_v2_failure_cost = 0,
+                    activity_v2_non_success_cost = 0,
+                    activity_v2_cache_input_tokens = 0,
+                    activity_v2_total_cost = 0,
+                    activity_v2_first_response_sample_count = 0,
+                    activity_v2_first_response_sum_ms = 0,
+                    activity_v2_first_token_sample_count = 0,
+                    activity_v2_first_token_sum_ms = 0,
+                    activity_v2_first_token_max_ms = 0,
+                    activity_v2_first_token_histogram = '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+                    activity_v2_total_latency_sample_count = 0,
+                    activity_v2_total_latency_sum_ms = 0,
+                    activity_v2_last_invocation_at = NULL,
+                    activity_v2_latest_unkeyed_conversation_at = NULL,
+                    activity_v2_latest_first_response_at = NULL,
+                    activity_v2_latest_first_response_ms = NULL,
+                    activity_v2_latest_total_latency_at = NULL,
+                    activity_v2_latest_total_latency_ms = NULL,
+                    updated_at = datetime('now')
+                WHERE bucket_start_epoch = ?1
+                "#,
+            )
+            .bind(bucket_start_epoch)
+            .execute(tx.as_mut())
+            .await?;
+            let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+                tx.as_mut(),
+                &[bucket_start_epoch],
+            )
+            .await?;
+            upsert_invocation_hourly_rollups_tx(
+                tx.as_mut(),
+                &rows,
+                &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
+            )
+            .await?;
+            let bucket_max_id = rows
+                .iter()
+                .filter(|row| invocation_row_counts_toward_account_activity_v2(row))
+                .map(|row| row.id)
+                .max()
+                .unwrap_or_default();
+            save_account_activity_v2_bucket_repair_watermark_tx(
+                tx.as_mut(),
+                bucket_start_epoch,
+                bucket_max_id,
+            )
+            .await?;
+            mark_hourly_rollup_bucket_materialized_tx(
+                tx.as_mut(),
+                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
+                bucket_start_epoch,
+                HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        {
+            Ok(result) => {
+                result?;
+                repaired_bucket_count += 1;
+            }
+            Err(_) => {
+                warn!(
+                    priority_elapsed_budget_ms =
+                        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                    bucket_start_epoch,
+                    "active account activity v2 coverage repair exhausted its budget"
+                );
+                break;
+            }
         }
-        let mut tx = pool.begin().await?;
-        ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
-        sqlx::query(
-            r#"
-            UPDATE upstream_account_stats_hourly
-            SET activity_v2_request_count = 0,
-                activity_v2_success_count = 0,
-                activity_v2_failure_count = 0,
-                activity_v2_non_success_count = 0,
-                activity_v2_total_tokens = 0,
-                activity_v2_success_tokens = 0,
-                activity_v2_non_success_tokens = 0,
-                activity_v2_failure_tokens = 0,
-                activity_v2_failure_cost = 0,
-                activity_v2_non_success_cost = 0,
-                activity_v2_cache_input_tokens = 0,
-                activity_v2_total_cost = 0,
-                activity_v2_first_response_sample_count = 0,
-                activity_v2_first_response_sum_ms = 0,
-                activity_v2_first_token_sample_count = 0,
-                activity_v2_first_token_sum_ms = 0,
-                activity_v2_first_token_max_ms = 0,
-                activity_v2_first_token_histogram = '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
-                activity_v2_total_latency_sample_count = 0,
-                activity_v2_total_latency_sum_ms = 0,
-                activity_v2_last_invocation_at = NULL,
-                activity_v2_latest_unkeyed_conversation_at = NULL,
-                activity_v2_latest_first_response_at = NULL,
-                activity_v2_latest_first_response_ms = NULL,
-                activity_v2_latest_total_latency_at = NULL,
-                activity_v2_latest_total_latency_ms = NULL,
-                updated_at = datetime('now')
-            WHERE bucket_start_epoch = ?1
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .execute(tx.as_mut())
-        .await?;
-        let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
-            tx.as_mut(),
-            &[bucket_start_epoch],
-        )
-        .await?;
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &rows,
-            &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
-        )
-        .await?;
-        let bucket_max_id = rows
-            .iter()
-            .filter(|row| invocation_row_counts_toward_account_activity_v2(row))
-            .map(|row| row.id)
-            .max()
-            .unwrap_or_default();
-        save_account_activity_v2_bucket_repair_watermark_tx(
-            tx.as_mut(),
-            bucket_start_epoch,
-            bucket_max_id,
-        )
-        .await?;
-        mark_hourly_rollup_bucket_materialized_tx(
-            tx.as_mut(),
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
-            bucket_start_epoch,
-            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
-        )
-        .await?;
-        tx.commit().await?;
-        repaired_bucket_count += 1;
     }
 
     let outcome = ActiveAccountActivityV2RepairOutcome {

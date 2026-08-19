@@ -17544,16 +17544,30 @@ async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage
         )
         SELECT
             'codex_invocations',
-            '2020-01',
+            ?1,
             '/tmp/v2-priority-coverage-' || (hundreds.value * 100 + units.value) || '.sqlite.gz',
             'fixture-sha',
             1,
             'completed',
-            '2020-01-01 00:00:00',
-            '2020-01-01 00:00:00'
+            ?2,
+            ?3
         FROM hundreds CROSS JOIN units
         "#,
     )
+    .bind(
+        oldest_occurred_at
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        (oldest_occurred_at + ChronoDuration::seconds(3_599))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
     .execute(&state.pool)
     .await
     .expect("seed archive coverage fixture");
