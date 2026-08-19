@@ -227,6 +227,10 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
     attempt_ref: &str,
     invocation_ref: &str,
 ) -> String {
+    let first_token_sql =
+        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
+    let final_attempt_evidence_sql =
+        final_pool_attempt_timing_evidence_sql(attempt_ref, invocation_ref, "first_token_ms");
     format!(
         "CASE WHEN {attempt_ref}.id = (SELECT final_attempt.id \
            FROM pool_upstream_request_attempts AS final_attempt \
@@ -234,27 +238,59 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
              AND final_attempt.occurred_at = {attempt_ref}.occurred_at \
              AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
            ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
-           LIMIT 1) THEN {invocation_ref}.first_token_ms END AS first_token_ms"
+           LIMIT 1) \
+          AND ({final_attempt_evidence_sql}) \
+        THEN CASE WHEN {first_token_sql} THEN {invocation_ref}.first_token_ms END END AS first_token_ms"
     )
 }
 
 pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &str) -> String {
+    let timing_sql = match column {
+        "first_token_ms" => sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.{column}")),
+        "t_upstream_stream_ms" => sqlite_positive_timing_sql(&format!("{invocation_ref}.{column}")),
+        _ => panic!("unsupported pool invocation timing column: {column}"),
+    };
+    let final_attempt_evidence_sql =
+        final_pool_attempt_timing_evidence_sql("final_attempt", invocation_ref, column);
     format!(
         "CASE WHEN NOT EXISTS (SELECT 1 \
            FROM pool_upstream_request_attempts AS final_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at) \
-          OR COALESCE((SELECT CASE \
-             WHEN LOWER(TRIM(COALESCE(final_attempt.status, ''))) IN ('success', 'completed', 'warning_success', 'http_200') THEN 1 \
-             WHEN final_attempt.first_byte_latency_ms IS NOT NULL AND final_attempt.first_byte_latency_ms > 0 THEN 1 \
+           OR COALESCE((SELECT CASE \
+             WHEN ({final_attempt_evidence_sql}) THEN 1 \
              ELSE 0 END \
            FROM pool_upstream_request_attempts AS final_attempt \
           WHERE final_attempt.invoke_id = {invocation_ref}.invoke_id \
             AND final_attempt.occurred_at = {invocation_ref}.occurred_at \
             AND LOWER(TRIM(COALESCE(final_attempt.status, ''))) <> 'budget_exhausted_final' \
-          ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
-          LIMIT 1), 0) = 1 \
-        THEN {invocation_ref}.{column} END"
+           ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC \
+           LIMIT 1), 0) = 1 \
+        THEN CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END END"
+    )
+}
+
+fn final_pool_attempt_timing_evidence_sql(
+    attempt_ref: &str,
+    invocation_ref: &str,
+    column: &str,
+) -> String {
+    let stream_measured_sql =
+        sqlite_positive_timing_sql(&format!("{attempt_ref}.stream_latency_ms"));
+    let zero_first_token_sql = if column == "first_token_ms" {
+        let first_byte_sql =
+            sqlite_nonnegative_timing_sql(&format!("{attempt_ref}.first_byte_latency_ms"));
+        format!(
+            " OR ({invocation_ref}.first_token_ms = 0 AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final') AND {first_byte_sql} AND {attempt_ref}.first_byte_latency_ms = 0)"
+        )
+    } else {
+        String::new()
+    };
+    let stream_evidence_sql = format!(
+        "({stream_measured_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final'))"
+    );
+    format!(
+        "LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('success', 'completed', 'warning_success', 'http_200') OR {stream_evidence_sql}{zero_first_token_sql}"
     )
 }
 
@@ -319,6 +355,10 @@ fn has_measured_first_token(value: Option<f64>) -> bool {
 
 fn finite_nonnegative_timing(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn finite_positive_timing(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > 0.0)
 }
 
 pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
@@ -387,18 +427,28 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("attempts.id"));
         assert!(sql.contains("final_attempt.invoke_id = attempts.invoke_id"));
         assert!(sql.contains("final_attempt.occurred_at = attempts.occurred_at"));
+        assert!(sql.contains("attempts.status, ''))) IN ('success', 'completed'"));
+        assert!(sql.contains("attempts.stream_latency_ms > 0"));
+        assert!(sql.contains("inv.first_token_ms = 0"));
+        assert!(sql.contains(
+            "attempts.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final')"
+        ));
         assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
-        assert!(sql.ends_with("THEN inv.first_token_ms END AS first_token_ms"));
+        assert!(sql.contains("THEN CASE WHEN inv.first_token_ms IS NOT NULL"));
+        assert!(sql.ends_with("END END AS first_token_ms"));
     }
 
     #[test]
     fn invocation_timing_sql_requires_a_real_final_attempt_measurement() {
         let sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
 
-        assert!(sql.contains("final_attempt.first_byte_latency_ms IS NOT NULL"));
+        assert!(!sql.contains("final_attempt.first_byte_latency_ms"));
+        assert!(sql.contains("final_attempt.stream_latency_ms > 0"));
+        assert!(!sql.contains("inv.first_token_ms = 0"));
+        assert!(sql.contains("inv.first_token_ms >= 0"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
-        assert!(sql.contains("THEN inv.first_token_ms END"));
+        assert!(sql.contains("THEN inv.first_token_ms END END"));
     }
 }
 
@@ -4486,14 +4536,14 @@ fn build_attempt_response_summary(
             "reason": attempt.compact_support_reason.clone(),
         },
         "latencyMs": {
-            "connect": attempt.connect_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_connect_ms).flatten()),
-            "firstByte": attempt.first_byte_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_ttfb_ms).flatten()),
-            "stream": attempt.stream_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_stream_ms).flatten()),
-            "requestRead": is_final_attempt.then_some(record.t_req_read_ms).flatten(),
-            "requestParse": is_final_attempt.then_some(record.t_req_parse_ms).flatten(),
-            "responseParse": is_final_attempt.then_some(record.t_resp_parse_ms).flatten(),
-            "persist": is_final_attempt.then_some(record.t_persist_ms).flatten(),
-            "total": is_final_attempt.then_some(record.t_total_ms).flatten(),
+            "connect": finite_nonnegative_timing(attempt.connect_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_connect_ms).flatten())),
+            "firstByte": finite_nonnegative_timing(attempt.first_byte_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_ttfb_ms).flatten())),
+            "stream": finite_positive_timing(attempt.stream_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_stream_ms).flatten())),
+            "requestRead": is_final_attempt.then_some(finite_nonnegative_timing(record.t_req_read_ms)).flatten(),
+            "requestParse": is_final_attempt.then_some(finite_nonnegative_timing(record.t_req_parse_ms)).flatten(),
+            "responseParse": is_final_attempt.then_some(finite_nonnegative_timing(record.t_resp_parse_ms)).flatten(),
+            "persist": is_final_attempt.then_some(finite_nonnegative_timing(record.t_persist_ms)).flatten(),
+            "total": is_final_attempt.then_some(finite_nonnegative_timing(record.t_total_ms)).flatten(),
         },
         "responseBodyCapture": {
             "availableAtAttemptLevel": attempt_response_body_captured,
@@ -4569,24 +4619,26 @@ fn build_workflow_attempt_from_row(
             .downstream_error_message
             .clone()
             .or(invocation_downstream_error_message),
-        connect_latency_ms: attempt.connect_latency_ms.or_else(|| {
+        connect_latency_ms: finite_nonnegative_timing(attempt.connect_latency_ms.or_else(|| {
             is_final_attempt
                 .then_some(record.t_upstream_connect_ms)
                 .flatten()
-        }),
+        })),
         first_token_ms: is_final_attempt
             .then_some(finite_nonnegative_timing(record.first_token_ms))
             .flatten(),
-        first_byte_latency_ms: attempt.first_byte_latency_ms.or_else(|| {
-            is_final_attempt
-                .then_some(record.t_upstream_ttfb_ms)
-                .flatten()
-        }),
-        stream_latency_ms: attempt.stream_latency_ms.or_else(|| {
+        first_byte_latency_ms: finite_nonnegative_timing(attempt.first_byte_latency_ms.or_else(
+            || {
+                is_final_attempt
+                    .then_some(record.t_upstream_ttfb_ms)
+                    .flatten()
+            },
+        )),
+        stream_latency_ms: finite_positive_timing(attempt.stream_latency_ms.or_else(|| {
             is_final_attempt
                 .then_some(record.t_upstream_stream_ms)
                 .flatten()
-        }),
+        })),
         upstream_request_id: attempt
             .upstream_request_id
             .clone()
@@ -4673,14 +4725,14 @@ fn build_synthetic_workflow_attempt(
         "headers": build_response_header_snapshot(record, None, payload, true),
         "delivery": build_response_delivery_snapshot(payload),
         "latencyMs": {
-            "connect": record.t_upstream_connect_ms,
-            "firstByte": record.t_upstream_ttfb_ms,
-            "stream": record.t_upstream_stream_ms,
-            "requestRead": record.t_req_read_ms,
-            "requestParse": record.t_req_parse_ms,
-            "responseParse": record.t_resp_parse_ms,
-            "persist": record.t_persist_ms,
-            "total": record.t_total_ms,
+            "connect": finite_nonnegative_timing(record.t_upstream_connect_ms),
+            "firstByte": finite_nonnegative_timing(record.t_upstream_ttfb_ms),
+            "stream": finite_positive_timing(record.t_upstream_stream_ms),
+            "requestRead": finite_nonnegative_timing(record.t_req_read_ms),
+            "requestParse": finite_nonnegative_timing(record.t_req_parse_ms),
+            "responseParse": finite_nonnegative_timing(record.t_resp_parse_ms),
+            "persist": finite_nonnegative_timing(record.t_persist_ms),
+            "total": finite_nonnegative_timing(record.t_total_ms),
         },
         "responseBodyCapture": {
             "availableAtInvocationLevel": record.response_raw_path.is_some(),
@@ -4731,10 +4783,10 @@ fn build_synthetic_workflow_attempt(
         failure_kind: record.failure_kind.clone(),
         error_message: record.error_message.clone(),
         downstream_error_message: record.downstream_error_message.clone(),
-        connect_latency_ms: record.t_upstream_connect_ms,
+        connect_latency_ms: finite_nonnegative_timing(record.t_upstream_connect_ms),
         first_token_ms: finite_nonnegative_timing(record.first_token_ms),
-        first_byte_latency_ms: record.t_upstream_ttfb_ms,
-        stream_latency_ms: record.t_upstream_stream_ms,
+        first_byte_latency_ms: finite_nonnegative_timing(record.t_upstream_ttfb_ms),
+        stream_latency_ms: finite_positive_timing(record.t_upstream_stream_ms),
         upstream_request_id: record.upstream_request_id.clone(),
         request_summary: Some(request_summary),
         response_summary: Some(response_summary),

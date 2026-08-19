@@ -848,6 +848,7 @@ async fn load_upstream_account_attempt_page(
         .build_query_as::<ApiPoolUpstreamRequestAttempt>()
         .fetch_all(pool)
         .await?;
+    sanitize_pool_attempt_timing_fields(&mut items);
     hydrate_pool_attempt_request_compression_fields(&mut items);
     hydrate_upstream_account_attempt_workflow_entries(state, &mut items)
         .await

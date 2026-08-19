@@ -217,7 +217,7 @@ pub(crate) fn record_proxy_perf_stage_sample(
     let Some(value_ms) = value_ms else {
         return;
     };
-    if !value_ms.is_finite() || value_ms < 0.0 {
+    if !value_ms.is_finite() || value_ms < 0.0 || (stage == "upstreamStream" && value_ms <= 0.0) {
         return;
     }
     let entry = map
@@ -723,5 +723,19 @@ mod tests {
         assert_eq!(delta.terminal_count, 1);
         assert_eq!(delta.terminal_tokens, 100);
         assert_eq!(delta.terminal_cost, 0.0);
+    }
+
+    #[test]
+    fn proxy_perf_rollup_excludes_zero_upstream_stream_samples() {
+        let mut perf = BTreeMap::new();
+
+        record_proxy_perf_stage_sample(&mut perf, 1_700_000_000, "upstreamStream", Some(0.0));
+        record_proxy_perf_stage_sample(&mut perf, 1_700_000_000, "upstreamStream", Some(1.0));
+
+        let delta = perf
+            .get(&(1_700_000_000, "upstreamStream".to_string()))
+            .expect("positive upstream stream sample");
+        assert_eq!(delta.sample_count, 1);
+        assert_eq!(delta.sum_ms, 1.0);
     }
 }

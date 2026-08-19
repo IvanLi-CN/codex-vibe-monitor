@@ -746,9 +746,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
           const modelIdentity = reasoningEffort
             .closest<HTMLElement>('[data-testid="dashboard-working-conversation-slot-model"]')
             ?.querySelector<HTMLElement>(
-              '[data-testid="dashboard-working-conversation-model-identity"]',
+              '[data-testid="dashboard-working-conversation-model-name"]',
             );
-          if (!modelIdentity) return 0;
+          if (!modelIdentity) throw new Error("missing model geometry anchor");
           return (
             reasoningEffort.getBoundingClientRect().left -
             modelIdentity.getBoundingClientRect().right

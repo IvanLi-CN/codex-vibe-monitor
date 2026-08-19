@@ -3517,6 +3517,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const CurrentAndPrevious: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(currentAndPreviousResponse),
@@ -3542,7 +3543,7 @@ export const CurrentAndPrevious: Story = {
     );
     const reasoningText = reasoningEffort?.querySelector("span");
     const modelIdentity = currentSlot.querySelector(
-      '[data-testid="dashboard-working-conversation-model-identity"]',
+      '[data-testid="dashboard-working-conversation-model-name"]',
     );
     if (
       !(firstByteLatency instanceof HTMLElement) ||
@@ -3650,6 +3651,7 @@ export const GPT56ModelContextCluster: Story = {
 };
 
 export const CurrentOnlyPlaceholder: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(currentOnlyResponse),
@@ -3845,6 +3847,7 @@ export const ManualBindingBadges: Story = {
 };
 
 export const RunningOnlyConversation: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: [],
@@ -3971,6 +3974,7 @@ export const PoolRoutingAccountStates: Story = {
 };
 
 export const FailedStatusIconDedup: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(failedStatusDedupResponse),
@@ -4725,6 +4729,7 @@ export const UpstreamAccountWarningSuccess: Story = {
 };
 
 export const UpstreamAccountRecentLayout: Story = {
+  tags: ["test"],
   args: UpstreamAccountTab.args,
   render: () => (
     <ForcedWorkspaceViewStory view="upstreamAccounts">

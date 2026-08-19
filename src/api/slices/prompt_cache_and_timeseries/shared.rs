@@ -301,6 +301,7 @@ pub(crate) async fn query_pool_attempt_records_from_live(
         .bind(invoke_id)
         .fetch_all(pool)
         .await?;
+    sanitize_pool_attempt_timing_fields(&mut records);
     hydrate_pool_attempt_request_compression_fields(&mut records);
     hydrate_pool_attempt_routing_selection_audits(&mut records);
     load_pool_attempt_account_names(pool, &mut records).await?;

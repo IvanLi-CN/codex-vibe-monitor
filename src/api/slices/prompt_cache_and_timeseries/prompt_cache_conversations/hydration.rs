@@ -653,17 +653,27 @@ fn merged_runtime_preview_progress(
     runtime_first_token_ms: Option<f64>,
     runtime_live_phase: Option<&str>,
 ) -> (Option<f64>, Option<String>) {
+    let measured_persisted_first_token_ms =
+        persisted_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
     let measured_runtime_first_token_ms =
         runtime_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
     let runtime_is_responding = measured_runtime_first_token_ms.is_some()
         && runtime_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING);
 
-    (
-        measured_runtime_first_token_ms.or(persisted_first_token_ms),
-        runtime_is_responding
-            .then_some(INVOCATION_LIVE_PHASE_RESPONDING.to_string())
-            .or_else(|| persisted_live_phase.map(str::to_string)),
-    )
+    let first_token_ms = measured_runtime_first_token_ms.or(measured_persisted_first_token_ms);
+    let live_phase = runtime_is_responding
+        .then_some(INVOCATION_LIVE_PHASE_RESPONDING.to_string())
+        .or_else(|| {
+            if persisted_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING)
+                && first_token_ms.is_none()
+            {
+                None
+            } else {
+                persisted_live_phase.map(str::to_string)
+            }
+        });
+
+    (first_token_ms, live_phase)
 }
 
 pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
@@ -975,5 +985,20 @@ mod runtime_preview_progress_tests {
             live_phase.as_deref(),
             Some(INVOCATION_LIVE_PHASE_RESPONDING)
         );
+    }
+
+    #[test]
+    fn invalid_persisted_first_token_is_treated_as_unavailable() {
+        for persisted in [Some(-1.0), Some(f64::INFINITY), Some(f64::NAN)] {
+            let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+                persisted,
+                Some(INVOCATION_LIVE_PHASE_RESPONDING),
+                None,
+                Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            );
+
+            assert_eq!(first_token_ms, None);
+            assert_eq!(live_phase, None);
+        }
     }
 }

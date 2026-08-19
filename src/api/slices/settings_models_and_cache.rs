@@ -220,6 +220,23 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) workflow_entry: Option<InvocationWorkflowTimelineEntry>,
 }
 
+pub(crate) fn sanitize_pool_attempt_timing_fields(records: &mut [ApiPoolUpstreamRequestAttempt]) {
+    for record in records {
+        record.connect_latency_ms = record
+            .connect_latency_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.first_token_ms = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.first_byte_latency_ms = record
+            .first_byte_latency_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.stream_latency_ms = record
+            .stream_latency_ms
+            .filter(|value| value.is_finite() && *value > 0.0);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StatsResponse {
