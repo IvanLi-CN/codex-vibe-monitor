@@ -404,29 +404,28 @@ pub(crate) fn account_accepts_concurrency_limit(
         || effective_load < rule.concurrency_limit
 }
 
-pub(crate) async fn account_accepts_sticky_assignment(
-    _pool: &Pool<Sqlite>,
+pub(crate) fn account_accepts_sticky_assignment(
     account_id: i64,
     sticky_key: Option<&str>,
     source_account_id: Option<i64>,
     rule: &EffectiveRoutingRule,
     bypass_transfer_policy: bool,
-) -> Result<bool> {
+) -> bool {
     let is_transfer = source_account_id.is_some_and(|source_id| source_id != account_id);
     let is_new_assignment = source_account_id.is_none();
     if is_new_assignment && rule.priority_tier == TagPriorityTier::NoNew {
-        return Ok(false);
+        return false;
     }
     let Some(_) = sticky_key else {
-        return Ok(true);
+        return true;
     };
     if !is_transfer && !is_new_assignment {
-        return Ok(true);
+        return true;
     }
     if is_transfer && !bypass_transfer_policy && !rule.allow_cut_in {
-        return Ok(false);
+        return false;
     }
-    Ok(true)
+    true
 }
 
 pub(crate) async fn resolve_pool_account_group_proxy_routing_readiness(
@@ -435,6 +434,20 @@ pub(crate) async fn resolve_pool_account_group_proxy_routing_readiness(
 ) -> Result<PoolAccountGroupProxyRoutingReadiness> {
     let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
     let group_metadata = load_group_metadata(&state.pool, normalized_group_name).await?;
+    resolve_pool_account_group_proxy_routing_readiness_with_metadata(
+        state,
+        normalized_group_name,
+        group_metadata,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_group_proxy_routing_readiness_with_metadata(
+    state: &AppState,
+    group_name: Option<&str>,
+    group_metadata: UpstreamAccountGroupMetadata,
+) -> Result<PoolAccountGroupProxyRoutingReadiness> {
+    let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
     if group_metadata.node_shunt_enabled {
         if normalized_group_name.is_none() {
             return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
@@ -448,12 +461,9 @@ pub(crate) async fn resolve_pool_account_group_proxy_routing_readiness(
             missing_account_group_error_message(),
         ));
     };
-    let scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        state,
-        Some(group_name),
-    )
-    .await
-    {
+    let bound_proxy_keys =
+        canonicalize_forward_proxy_bound_keys(state, &group_metadata.bound_proxy_keys).await?;
+    let scope = match required_account_forward_proxy_scope(Some(group_name), bound_proxy_keys) {
         Ok(scope) => scope,
         Err(err) => {
             return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(

@@ -1545,6 +1545,36 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
+    state.pool_routing_snapshot.request_refresh();
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_availability.publish();
+    Ok(())
+}
+
+pub(crate) async fn record_pool_route_transport_failure_for_model_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    record_pool_route_transport_failure_for_model(
+        &state.pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        model,
+    )
+    .await?;
+    state.pool_routing_snapshot.request_refresh();
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_availability.publish();
     Ok(())
 }
 

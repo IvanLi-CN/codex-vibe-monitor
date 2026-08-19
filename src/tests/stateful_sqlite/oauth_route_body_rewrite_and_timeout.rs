@@ -802,7 +802,7 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     .await;
     let sticky_last_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-oauth-timeout-switch",
         oauth_id,
         &sticky_last_seen_at,

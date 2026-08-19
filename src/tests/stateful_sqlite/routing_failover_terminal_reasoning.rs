@@ -26,7 +26,7 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_al
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-after-cutout-failure",
         primary_id,
         &format_utc_iso(Utc::now()),
@@ -128,7 +128,7 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_distinct_
     let tertiary_id =
         insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-after-distinct-budget",
         primary_id,
         &format_utc_iso(Utc::now()),
@@ -395,7 +395,7 @@ async fn pool_route_cuts_out_from_ungrouped_sticky_account_when_allowed() {
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-ungrouped-cut-out",
         sticky_source_id,
         &sticky_seen_at,
@@ -468,7 +468,7 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-ungrouped-forbidden",
         sticky_source_id,
         &sticky_seen_at,
@@ -2866,7 +2866,7 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
 
     let sticky_key = "sticky-timeout-switch-001";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_id, &sticky_seen_at).await;
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("refresh routing snapshot after timeout no-cut-out setup");
@@ -3023,7 +3023,7 @@ async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_stic
 
     let sticky_key = "sticky-timeout-no-cut-out-owner";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_id, &sticky_seen_at).await;
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("refresh routing snapshot after timeout no-cut-out setup");

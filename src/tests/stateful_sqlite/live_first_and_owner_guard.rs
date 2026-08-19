@@ -5559,7 +5559,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
     set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-rate-limited-sticky",
         rate_limited_id,
         &sticky_seen_at,
@@ -5644,7 +5644,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-blocked-policy-sticky",
         sticky_source_id,
         &sticky_seen_at,
@@ -5760,7 +5760,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-blocked-policy-sticky",
         sticky_source_id,
         &sticky_seen_at,
@@ -5873,20 +5873,10 @@ fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_fa
             insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
         set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
         let sticky_seen_at = format_utc_iso(Utc::now());
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "header-stale-sticky",
-            blocked_id,
-            &sticky_seen_at,
-        )
-        .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "header-stale-sticky", blocked_id, &sticky_seen_at)
+            .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -6560,13 +6550,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
     let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "header-stale-sticky",
-        primary_id,
-        &sticky_seen_at,
-    )
-    .await;
+    upsert_test_sticky_route_at(&state, "header-stale-sticky", primary_id, &sticky_seen_at).await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -6653,19 +6637,14 @@ fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_header(
         set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-rate-limited-sticky",
             rate_limited_id,
             &sticky_seen_at,
         )
         .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -6770,7 +6749,7 @@ fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_termina
         set_test_account_rate_limited_cooldown(&state.pool, sticky_account_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-binding-rate-limited-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -6887,7 +6866,7 @@ fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_resolution
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-model-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -6981,7 +6960,7 @@ fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_header_res
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-image-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -7082,7 +7061,7 @@ fn proxy_openai_v1_header_sticky_rechecks_codex_imagegen_capability_before_reuse
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-codex-imagegen-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -8873,19 +8852,14 @@ fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_heade
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-blocked-policy-sticky",
             blocked_id,
             &sticky_seen_at,
         )
         .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -9474,6 +9448,112 @@ fn pool_account_supports_live_request_body_transforms_codex_rewrite() {
         &Method::POST,
         &headers,
     ));
+}
+
+#[tokio::test]
+async fn pool_no_candidate_wait_bulkhead_rejects_the_thirty_third_waiter() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let mut wait_deadline = None;
+    let result = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        true,
+        &mut wait_deadline,
+        None,
+    )
+    .await
+    .expect("resolve saturated pool wait");
+    assert!(matches!(
+        result,
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(audit))
+            if audit.terminal_reason_code == "capacitySaturated"
+    ));
+
+    for waiter in waiters {
+        waiter.abort();
+    }
+}
+
+#[tokio::test]
+async fn pool_no_candidate_bulkhead_does_not_limit_healthy_parallel_resolutions() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(1),
+        Duration::ZERO,
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Healthy", "healthy-upstream-key").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh healthy routing snapshot");
+
+    let mut requests = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let state = state.clone();
+        requests.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    for request in requests {
+        assert!(matches!(
+            request
+                .await
+                .expect("healthy request task should join")
+                .expect("resolve healthy pool"),
+            PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(_))
+        ));
+    }
+    assert_eq!(
+        state.pool_no_candidate_waiters.available_permits(),
+        POOL_NO_CANDIDATE_WAITER_LIMIT,
+        "healthy resolutions must not acquire NoCandidate waiter capacity"
+    );
 }
 
 #[test]

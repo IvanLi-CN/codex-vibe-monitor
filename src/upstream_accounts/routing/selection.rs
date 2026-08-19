@@ -1037,14 +1037,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut sticky_assigned_blocked = None;
     let mut group_proxy_blocked_messages = Vec::new();
     let mut node_shunt_assignments = routing_snapshot.node_shunt_assignments();
-    let route_binding_failure_penalties =
-        load_recent_route_binding_failure_penalties(&state.pool).await?;
+    let route_binding_failure_penalties = routing_snapshot.route_binding_failure_penalties();
     let mut resolved_candidates = Vec::new();
     let mut sticky_queue_reservation_conflict: Option<(i64, String)> = None;
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
         let (route, generation) =
-            load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
-                .await?;
+            routing_snapshot.sticky_route_with_model_generation(sticky_key, requested_model);
         (route, Some(generation))
     } else {
         (None, None)
@@ -1084,8 +1082,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     );
     let sticky_source_transport_decode_escape = if non_explicit_sticky_escape_enabled {
         if let Some(account_id) = sticky_source_id {
-            load_transport_decode_sticky_escape_states(&state.pool, &[account_id])
-                .await?
+            routing_snapshot
+                .transport_decode_sticky_escape_states(&[account_id])
                 .contains_key(&account_id)
         } else {
             false
@@ -1278,14 +1276,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
                     let group_readiness = if row.bound_proxy_keys().is_empty() {
-                        resolve_pool_account_group_proxy_routing_readiness(
+                        resolve_pool_account_group_proxy_routing_readiness_with_metadata(
                             state,
                             row.group_name.as_deref(),
+                            routing_snapshot.group_metadata(row.group_name.as_deref()),
                         )
                         .await?
                     } else {
                         PoolAccountGroupProxyRoutingReadiness::Ready(
-                            load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+                            routing_snapshot.group_metadata(row.group_name.as_deref()),
                         )
                     };
                     match group_readiness {
@@ -1554,14 +1553,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut candidates = routing_snapshot.candidates(&tried);
     let candidate_count = candidates.len();
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
-        load_transport_decode_sticky_escape_states(
-            &state.pool,
+        routing_snapshot.transport_decode_sticky_escape_states(
             &candidates
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>(),
         )
-        .await?
     } else {
         HashMap::new()
     };
@@ -1798,15 +1795,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             continue;
         }
         if !account_accepts_sticky_assignment(
-            &state.pool,
             row.id,
             sticky_key,
             sticky_source_id,
             effective_rule,
             forced_binding_account_id == Some(row.id),
-        )
-        .await?
-        {
+        ) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
                 &row,
@@ -1816,11 +1810,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             continue;
         }
         let group_readiness = if row.bound_proxy_keys().is_empty() {
-            resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
-                .await?
+            resolve_pool_account_group_proxy_routing_readiness_with_metadata(
+                state,
+                row.group_name.as_deref(),
+                routing_snapshot.group_metadata(row.group_name.as_deref()),
+            )
+            .await?
         } else {
             PoolAccountGroupProxyRoutingReadiness::Ready(
-                load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+                routing_snapshot.group_metadata(row.group_name.as_deref()),
             )
         };
         let group_metadata = match group_readiness {

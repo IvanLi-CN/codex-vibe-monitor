@@ -2386,6 +2386,9 @@ pub(crate) async fn insert_test_pool_limit_sample_with_windows(
     .execute(&state.pool)
     .await
     .expect("insert test pool limit sample");
+    Box::pin(refresh_pool_routing_snapshot(state.as_ref()))
+        .await
+        .expect("refresh routing snapshot after test pool limit sample");
 }
 
 pub(crate) async fn reserve_test_pool_routing_account(
@@ -2461,7 +2464,7 @@ pub(crate) async fn set_test_account_status(pool: &SqlitePool, account_id: i64, 
         .expect("set test pool account status");
 }
 
-pub(crate) async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
+pub(crate) async fn clear_test_account_credentials(state: &Arc<AppState>, account_id: i64) {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -2473,9 +2476,12 @@ pub(crate) async fn clear_test_account_credentials(pool: &SqlitePool, account_id
     )
     .bind(&now_iso)
     .bind(account_id)
-    .execute(pool)
+    .execute(&state.pool)
     .await
     .expect("clear test pool account credentials");
+    Box::pin(refresh_pool_routing_snapshot(state.as_ref()))
+        .await
+        .expect("refresh routing snapshot after test account credentials clear");
 }
 
 pub(crate) async fn set_test_account_rate_limited_cooldown(
@@ -2581,7 +2587,7 @@ async fn set_test_account_route_cooldown(
 }
 
 pub(crate) async fn upsert_test_sticky_route_at(
-    pool: &SqlitePool,
+    state: &Arc<AppState>,
     sticky_key: &str,
     account_id: i64,
     last_seen_at: &str,
@@ -2600,9 +2606,12 @@ pub(crate) async fn upsert_test_sticky_route_at(
     .bind(sticky_key)
     .bind(account_id)
     .bind(last_seen_at)
-    .execute(pool)
+    .execute(&state.pool)
     .await
     .expect("upsert test sticky route");
+    Box::pin(refresh_pool_routing_snapshot(state.as_ref()))
+        .await
+        .expect("refresh routing snapshot after test sticky route update");
 }
 
 pub(crate) fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {

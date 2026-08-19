@@ -711,7 +711,7 @@ async fn capture_target_pool_route_total_timeout_can_succeed_on_second_route() {
 
     let sticky_key = "sticky-timeout-budget-success-004";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_one_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_one_id, &sticky_seen_at).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),

@@ -3067,6 +3067,11 @@ pub(crate) async fn persist_ws_usage_event(
                 .await?;
             }
         }
+        state.pool_routing_snapshot.request_refresh();
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+        state.pool_routing_availability.publish();
     }
     if is_completed_terminal_event
         && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)

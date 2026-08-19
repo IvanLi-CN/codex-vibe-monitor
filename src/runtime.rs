@@ -243,6 +243,8 @@ pub(crate) async fn refresh_pool_routing_runtime_cache_best_effort(
 
 pub(crate) async fn warm_pool_routing_snapshot_best_effort(state: &AppState) {
     if let Err(err) = refresh_pool_routing_snapshot(state).await {
+        state.pool_routing_snapshot.invalidate();
+        state.pool_routing_availability.publish();
         warn!(error = %err, "failed to warm pool routing snapshot; routing will fail closed");
     }
 }
@@ -261,6 +263,8 @@ pub(crate) fn spawn_pool_routing_snapshot_reconcile(state: Arc<AppState>) {
                 _ = ticker.tick() => {},
             }
             if let Err(err) = refresh_pool_routing_snapshot(state.as_ref()).await {
+                state.pool_routing_snapshot.invalidate();
+                state.pool_routing_availability.publish();
                 warn!(error = %err, "failed to reconcile pool routing snapshot");
             }
         }
