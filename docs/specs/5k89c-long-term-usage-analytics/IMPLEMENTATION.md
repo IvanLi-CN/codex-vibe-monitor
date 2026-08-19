@@ -6,6 +6,8 @@
 - 运行态 terminal 通过 projection cursor 增量写入热小时/自然日；每 60 秒只合并新 terminal 与明确 dirty bucket。全量 `refresh_long_term_stats` 仅保留给首次无 durable baseline 的准备阶段，不是生产周期性路径。
 - 现有 Stats 查询、筛选、bucket、SSE 与图表路径保持不变；长期区使用独立 endpoint、hooks 和组件状态。
 - 新增 schema 必须兼容旧 SQLite：启动迁移可重复执行，回填状态可恢复，archive purge 只有在长期汇总 target materialized 后才可继续。
+- 长期墙时 state 使用一条调用级 canonical interval 记录保存区间与模型/上游身份；内存 index 在读写边界派生三维日/小时 union。旧六路展开 state 在迁移期间与 canonical state 合并读取，并按调用压缩写入后再分批删除；目标日 live 读取先以标准上海 `occurred_at` 的半开文本范围走索引，再以独立表达式分支兼容 RFC3339 与跨日记录。
+- interval state 删除、插入与兼容清理按 `512` 行上限切成独立低优先级写事务。每个批次重新检查 cancellation 和 SQLite background admission；未完成的 repair 保持 dirty，cursor 和 last-good rollup 只在完整替换后推进。
 - 完整性审计和修复只在长期统计链路运行：初始全量和增量候选日/小时都要先对照 `invocation_rollup_hourly` 的可信终态 overall 证明，再在单个事务内替换所有维度；有界 canonical 增量一律保持未证明，只有完整来源对账才能标记可信；修复队列持久化检测、重试时间和失败原因。archive manifest 与 live 调用必须在同一 SQLite 读取快照枚举，避免 retention 交接被认证成完整空洞。
 - 对账会先校验 completed 调用 archive 的文件 SHA-256；manifest 不匹配即按不可用来源处理。归档清理把无法立即跨越的安全下界持久化为 pending 候选，只有全部仍保留的调用/请求尝试来源都位于候选之后，才提交连续来源边界。旧 schema 增加终态证明列时，既有 canonical 历史先被固定在升级当天之前的迁移下界；该下界字段同时是迁移完成标记，因此即使所有 `ALTER TABLE` 已执行后进程中断，下次启动也会补齐边界。缺失的调用或请求尝试 archive 均保留 manifest，不能被误认作成功清理。
 

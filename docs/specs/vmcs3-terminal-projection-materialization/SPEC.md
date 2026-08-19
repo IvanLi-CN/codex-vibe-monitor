@@ -18,9 +18,9 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 ## Requirements
 
 - Hub pending event 同时受 `10,000` 条和 `64 MiB` 限制。触限、未知 ACK 或重启恢复不阻塞 P1；对应消费者必须进入 `dirty_last_good`，由持久 cursor 精确补齐。
-- long-term projection state 至少持久化 consumer cursor、最近 flush 结果、可恢复的脏桶和区间片段。进程重启后可从 `codex_invocations.id > cursor` 恢复，不依赖内存事件仍然存在。
+- long-term projection state 至少持久化 consumer cursor、最近 flush 结果、可恢复的脏桶和调用级 canonical interval。canonical interval 保存真实区间以及模型/上游身份，日/小时和三维 union 在 read/write 边界派生；进程重启后可从 `codex_invocations.id > cursor` 恢复，不依赖内存事件仍然存在。
 - 每个 dirty bucket 的重建必须使用半开上海自然日边界，并覆盖跨日/跨小时调用。archive 或 retained-source 覆盖不能证明完整时保留 last-good，不得用局部 live 行覆盖已有完整 rollup。
-- P2 flush、repair 和每日低优先级复检必须通过全局 SQLite pressure gate。压力期保留已有长期统计页和 Dashboard 内存快照；只能记录 deferred，不能竞争 P1。
+- P2 flush、repair 和每日低优先级复检必须通过全局 SQLite pressure gate。interval 删除、重建和兼容清理的每个 SQLite 写事务至多处理 `512` 行，并在事务边界重新检查 pressure 和 shutdown。压力期保留已有长期统计页和 Dashboard 内存快照；只能记录 deferred，不能竞争 P1。
 - archive rewrite、价格/归属修正和 archive replay 必须标记对应 target bucket repair；目标重建必须读取所有可验证的 live 与重叠 archive source，任何 source 不可读时保留 last-good。桶替换、cursor 推进和已消费 repair marker 必须同事务提交。
 - telemetry 至少包含 `projection`、`trigger`、`event_count`、`cursor_lag`、`dirty_bucket_count`、`interval_bytes`、`flush_outcome`、`repair_scope`、`gate_outcome` 与 `defer_reason`。
 
@@ -45,6 +45,7 @@ Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 
 - terminal burst 下，每个长期 projection 最多一次固定 60 秒 P2 flush；P1 ACK 和 Dashboard terminal overlay 不依赖该 flush。
 - P2 admission 使用独立固定 250ms deadline。pressure gate 拒绝后按 eligibility/cooldown 事件唤醒，实际 SQLite busy/locked 才进入 250ms 到 5s 的失败退避；pressure defer 不属于 retry。
 - 重启、journal replay、重复 terminal、hard limit、跨自然日 interval、unassigned/model/reasoning 分组和 archive rewrite 与 exact builder 对账一致。
+- canonical interval 迁移、分批 pressure/cancel 停止、标准 `occurred_at` range seek 与 RFC3339 compatibility fallback 均有确定 SQLite 回归；Summary、路由和 archive replay 保持原有行为。
 - System Status 展示只读取内存 health，不增加 status route 的 SQLite 查询数；健康、deferred、dirty-last-good 均可读且详情可展开。
 
 ## Visual Evidence
