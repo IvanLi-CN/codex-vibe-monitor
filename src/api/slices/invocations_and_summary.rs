@@ -1744,7 +1744,11 @@ pub(crate) fn runtime_record_first_token_ms_with_retry(
     record: &ApiInvocation,
     is_retry: bool,
 ) -> Option<f64> {
-    (!is_retry || !runtime_record_is_in_flight(record))
+    let terminal_retry_has_trustworthy_timing = matches!(
+        normalized_runtime_text(record.status.as_deref()).as_str(),
+        "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS | "http_200"
+    );
+    (!is_retry || (!runtime_record_is_in_flight(record) && terminal_retry_has_trustworthy_timing))
         .then_some(finite_nonnegative_timing(record.first_token_ms))
         .flatten()
 }
@@ -9631,7 +9635,10 @@ where
         "CASE WHEN {first_response_byte_components_valid_sql} THEN COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0) END"
     );
     let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
-    let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
+    let final_first_token_sql =
+        final_pool_invocation_timing_sql("filtered_invocations", "first_token_ms");
+    let first_token_nonnegative_sql =
+        sqlite_nonnegative_timing_sql(&format!("({final_first_token_sql})"));
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
     let filtered_prompt_cache_key_sql = "filtered_invocations.prompt_cache_key";
@@ -9645,6 +9652,7 @@ where
         WITH filtered_invocations AS (
             SELECT
                 id,
+                invoke_id,
                 occurred_at,
                 status,
                 total_tokens,
@@ -9778,7 +9786,7 @@ where
             SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
             SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END) AS first_token_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
+            CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN {final_first_token_sql} ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
             SUM(CASE WHEN {success_sql} AND {total_nonnegative_sql} THEN 1 ELSE 0 END) AS total_latency_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {total_nonnegative_sql} THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
             latest_first_response_byte_total_by_account.latest_first_response_byte_total_at AS latest_first_response_byte_total_at,
@@ -19646,6 +19654,84 @@ mod dashboard_activity_read_model_tests {
     }
 
     #[tokio::test]
+    async fn account_activity_aggregate_uses_only_final_retry_timing() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+                id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
+                status TEXT, total_tokens INTEGER, cost REAL, cache_input_tokens INTEGER, \
+                payload TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT, \
+                is_actionable INTEGER, t_req_read_ms REAL, t_req_parse_ms REAL, \
+                t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, first_token_ms REAL, \
+                t_total_ms REAL, source TEXT\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create invocations table");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (\
+                id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
+                attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, \
+                stream_latency_ms REAL, first_byte_latency_ms REAL\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create attempts table");
+        sqlx::query(
+            "INSERT INTO codex_invocations (\
+                id, invoke_id, occurred_at, status, total_tokens, cost, cache_input_tokens, \
+                payload, failure_class, first_token_ms, source\
+             ) VALUES \
+                (1, 'valid-final', '2026-08-03 08:00:00', 'success', 10, 0.01, 0, \
+                 '{\"promptCacheKey\":\"valid\",\"upstreamAccountId\":7}', 'none', 720.0, 'proxy'), \
+                (2, 'stale-final', '2026-08-03 08:01:00', 'failed', 10, 0.01, 0, \
+                 '{\"promptCacheKey\":\"stale\",\"upstreamAccountId\":7}', 'service_failure', 900.0, 'proxy')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert invocations");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (\
+                id, invoke_id, occurred_at, attempt_index, status, phase, \
+                stream_latency_ms, first_byte_latency_ms\
+             ) VALUES \
+                (1, 'valid-final', '2026-08-03 08:00:00', 1, 'failed', 'completed', 300.0, 100.0), \
+                (2, 'valid-final', '2026-08-03 08:00:00', 2, 'success', 'completed', 500.0, 120.0), \
+                (3, 'stale-final', '2026-08-03 08:01:00', 1, 'failed', 'completed', 800.0, 100.0), \
+                (4, 'stale-final', '2026-08-03 08:01:00', 2, 'failed', 'completed', NULL, NULL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert attempts");
+
+        let rows = query_live_upstream_account_activity_aggregate_rows(
+            &pool,
+            InvocationSourceScope::All,
+            ExactUtcRange {
+                start: "2026-08-03T00:00:00Z".parse().expect("range start"),
+                end: "2026-08-04T00:00:00Z".parse().expect("range end"),
+            },
+            false,
+            DashboardActivityExcludedInvocationIdsFilter::None,
+        )
+        .await
+        .expect("query account activity aggregate");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].upstream_account_id, Some(7));
+        assert_eq!(rows[0].first_token_sample_count, 1);
+        assert_eq!(rows[0].first_token_sum_ms, 720.0);
+    }
+
+    #[tokio::test]
     async fn dashboard_activity_persisted_terminal_lookup_accepts_multiple_keys() {
         use sqlx::sqlite::SqlitePoolOptions;
 
@@ -21033,6 +21119,20 @@ mod invocation_cost_audit_tests {
         assert_eq!(
             dashboard_activity_terminal_delta(&record).first_token_ms,
             Some(720.0)
+        );
+    }
+
+    #[test]
+    fn failed_terminal_retry_projection_hides_unowned_first_token_measurement() {
+        let mut record = sample_invocation(None);
+        record.status = Some("failed".to_string());
+        record.first_token_ms = Some(720.0);
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), None);
+        assert_eq!(
+            dashboard_activity_terminal_delta(&record).first_token_ms,
+            None
         );
     }
 
