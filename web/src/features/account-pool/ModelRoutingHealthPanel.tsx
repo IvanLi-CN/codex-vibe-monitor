@@ -323,6 +323,7 @@ export function ModelRoutingHealthPanel({
                         disabled={!writesEnabled || resettingModel === route.model}
                         onClick={() => onReset(route.model)}
                         data-testid={`model-routing-reset-${route.model}`}
+                        aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
                       >
                         {resettingModel === route.model
                           ? t("accountPool.upstreamAccounts.modelRouting.resetting")

@@ -2437,6 +2437,7 @@ fn http_prebuffered_no_candidate_persists_invocation_audit_without_attempt() {
         .expect("load HTTP no-candidate invocation payload");
         let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
         assert_eq!(payload["poolAttemptCount"], 0);
+        assert_eq!(payload["requestModel"], model);
         assert_eq!(
             payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
             "modelConcurrencyLimit"
@@ -2448,6 +2449,31 @@ fn http_prebuffered_no_candidate_persists_invocation_audit_without_attempt() {
         .await
         .expect("count HTTP no-candidate attempts");
         assert_eq!(attempt_count, 0);
+
+        let (invocation_id, persisted_model): (i64, Option<String>) = sqlx::query_as(
+            "SELECT id, model FROM codex_invocations WHERE invoke_id = 'pool-via-5355'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load HTTP no-candidate invocation model");
+        assert_eq!(persisted_model.as_deref(), Some(model));
+        let Json(workflow) = fetch_invocation_workflow_detail(
+            State(state.clone()),
+            axum::extract::Path(invocation_id),
+        )
+        .await
+        .expect("load HTTP no-candidate workflow detail");
+        let workflow = serde_json::to_value(workflow).expect("serialize workflow detail");
+        let final_failure = workflow["timeline"]
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry["kind"] == "systemFinalFailure")
+            })
+            .expect("workflow should expose the zero-attempt final failure");
+        assert_eq!(final_failure["responseBody"]["available"], true);
+        assert!(final_failure["responseBody"]["bodyText"].as_str().is_some());
 
         release_pool_routing_reservation(&state, "http-no-candidate-holder");
     });
@@ -2704,11 +2730,28 @@ async fn account_route_failure_writer_persists_millisecond_fence() {
         failure_at.contains('.'),
         "new account route failures must retain sub-second precision: {failure_at}"
     );
-    assert!(parse_to_utc_datetime(&failure_at).is_some());
+    let parsed_failure_at =
+        parse_to_utc_datetime(&failure_at).expect("parse precise failure fence");
+    let reloaded = load_upstream_account_row(&state.pool, account_id)
+        .await
+        .expect("reload precise failure row")
+        .expect("precise failure row exists");
+    assert_eq!(
+        reloaded.last_route_failure_at.as_deref(),
+        Some(failure_at.as_str())
+    );
+    assert_eq!(
+        reloaded
+            .last_route_failure_at
+            .as_deref()
+            .and_then(parse_to_utc_datetime),
+        Some(parsed_failure_at),
+        "SQLite reload must preserve the exact millisecond failure fence"
+    );
 }
 
 #[tokio::test]
-async fn http_and_websocket_success_terminals_share_cache_route_observation() {
+async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_records() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2897,6 +2940,48 @@ async fn http_and_websocket_cache_recovery_do_not_publish_through_account_failur
     .await
     .expect("load account failure fence");
     assert_eq!(account_failure.as_deref(), Some(failure_at.as_str()));
+}
+
+#[tokio::test]
+async fn disabled_or_deleted_accounts_cannot_publish_model_route_availability() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Availability Eligibility",
+        "availability-eligibility-key",
+    )
+    .await;
+    assert!(
+        pool_account_allows_model_route_availability_publish(&state.pool, account_id)
+            .await
+            .expect("check active account")
+    );
+
+    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("disable account");
+    assert!(
+        !pool_account_allows_model_route_availability_publish(&state.pool, account_id)
+            .await
+            .expect("check disabled account")
+    );
+
+    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 1, deleted_at = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(shanghai_now_string())
+        .execute(&state.pool)
+        .await
+        .expect("soft-delete account");
+    assert!(
+        !pool_account_allows_model_route_availability_publish(&state.pool, account_id)
+            .await
+            .expect("check deleted account")
+    );
 }
 
 #[tokio::test]

@@ -174,7 +174,9 @@ export const ResetCoolingModel: Story = {
   args: { states, writesEnabled: true, onReset: fn() },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByTestId("model-routing-reset-o4-mini"));
+    const reset = canvas.getByRole("button", { name: "恢复可用: o4-mini" });
+    await expect(reset).toBeVisible();
+    await userEvent.click(reset);
     await expect(args.onReset).toHaveBeenCalledWith("o4-mini");
   },
 };

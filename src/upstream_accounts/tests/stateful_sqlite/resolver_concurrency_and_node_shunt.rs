@@ -2806,10 +2806,28 @@ async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_se
     .await
     .expect("record capped transport failure");
 
+    let (raw_failure_at, raw_cooldown_until): (String, String) = sqlx::query_as(
+        "SELECT last_route_failure_at, cooldown_until FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load raw millisecond cooldown values");
+    assert!(raw_failure_at.contains('.'));
+    assert!(raw_cooldown_until.contains('.'));
+
     let row = load_upstream_account_row(&pool, account_id)
         .await
         .expect("load capped row")
         .expect("capped row exists");
+    assert_eq!(
+        row.last_route_failure_at.as_deref(),
+        Some(raw_failure_at.as_str())
+    );
+    assert_eq!(
+        row.cooldown_until.as_deref(),
+        Some(raw_cooldown_until.as_str())
+    );
     let cooldown_until = row
         .cooldown_until
         .as_deref()
@@ -2826,6 +2844,7 @@ async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_se
         .as_deref()
         .and_then(parse_rfc3339_utc)
         .expect("route failure timestamp should be set");
+    assert_eq!(parse_rfc3339_utc(&raw_cooldown_until), Some(cooldown_until));
     assert_eq!(
         cooldown_until - route_failure_at,
         ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS)

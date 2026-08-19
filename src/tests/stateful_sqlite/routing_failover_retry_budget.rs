@@ -2453,14 +2453,18 @@ async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
 
     let dropped = Arc::new(AtomicBool::new(false));
     let inner_dropped = dropped.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let _drop_signal = DropSignal(inner_dropped);
+        let _ = started_tx.send(());
         std::future::pending::<()>().await;
         #[allow(unreachable_code)]
         (Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired), None)
     }));
     let outer = tokio::spawn(await_pool_route_selection_task(task, None));
-    tokio::task::yield_now().await;
+    started_rx
+        .await
+        .expect("inner selection task should start before the outer wait is aborted");
 
     outer.abort();
     let join_error = outer
@@ -2474,6 +2478,164 @@ async fn dropping_pool_route_selection_task_wait_aborts_the_inner_task() {
     })
     .await
     .expect("inner route selection task should be aborted and dropped");
+}
+
+#[tokio::test]
+async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_the_fence_commits() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Failure Fence", "failure-fence-key").await;
+    let reservation_key = "failure-fence-reservation";
+    let model = "gpt-failure-fence";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (persistence_started_tx, persistence_started_rx) = tokio::sync::oneshot::channel();
+    let (allow_persistence_tx, allow_persistence_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let persistence_state = task_state.clone();
+    let task = tokio::spawn(async move {
+        persist_pool_route_failure_then_release(task_state.as_ref(), reservation_key, async move {
+            let _ = persistence_started_tx.send(());
+            allow_persistence_rx
+                .await
+                .expect("test should allow failure persistence");
+            record_pool_route_transport_failure_for_model(
+                &persistence_state.pool,
+                account_id,
+                None,
+                "upstream transport failure",
+                Some("failure-fence-invoke"),
+                Some(model),
+            )
+            .await
+        })
+        .await
+    });
+
+    persistence_started_rx
+        .await
+        .expect("failure future should begin before release");
+    assert!(
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "reservation must remain occupied while the failure fence is pending"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "failure persistence must not wake waiters before its transaction completes"
+    );
+
+    allow_persistence_tx
+        .send(())
+        .expect("allow failure persistence once assertions complete");
+    task.await
+        .expect("failure persistence task should join")
+        .expect("failure persistence should succeed");
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "reservation should be released after the failure fence commits"
+    );
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "release after persistence should wake waiters"
+    );
+    let failure_at: Option<String> = sqlx::query_scalar(
+        "SELECT last_failure_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted failure fence");
+    assert!(failure_at.is_some());
+}
+
+#[tokio::test]
+async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Orphan Failure Fence", "orphan-fence-token").await;
+    let invoke_id = "proxy-98765-orphan-failure-fence";
+    let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id)
+        .expect("legacy proxy invoke id should map to its reservation");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.clone(),
+            PoolRoutingReservation {
+                account_id,
+                model: None,
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    clean_up_pool_route_after_orphan_recovery(
+        state.as_ref(),
+        invoke_id,
+        None,
+        Some(account_id),
+        "test",
+        true,
+    )
+    .await;
+
+    let failure_at: Option<String> = sqlx::query_scalar(
+        "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load orphan recovery route failure");
+    assert!(
+        failure_at.is_some(),
+        "orphan cleanup must commit the route failure before making the slot available"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(&reservation_key),
+        "orphan cleanup should release only after the failure write returns"
+    );
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "reservation release should notify waiting routing requests"
+    );
 }
 
 #[tokio::test]
@@ -2853,6 +3015,99 @@ async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
     assert_eq!(audit.reservation_conflict_count, 2);
     assert_eq!(audit.excluded_reason_counts["modelConcurrencyLimit"], 2);
     assert_eq!(audit.candidates.len(), 2);
+}
+
+#[tokio::test]
+async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_without_rerouting() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Capacity", "sticky-capacity").await;
+    let other_id =
+        insert_test_pool_api_key_account(&state, "Other Capacity", "other-capacity").await;
+    let sticky_key = "sticky-queue-capacity-audit";
+    let model = "gpt-sticky-queued-capacity-audit";
+    upsert_test_sticky_route_at(&state.pool, sticky_key, sticky_id, &shanghai_now_string()).await;
+    for account_id in [sticky_id, other_id] {
+        observe_model_route_seen(&state.pool, account_id, Some(model))
+            .await
+            .expect("seed sticky audit model route");
+        sqlx::query(
+            "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1, cache_recovery_limit = 2 WHERE account_id = ?1 AND model = ?2",
+        )
+        .bind(account_id)
+        .bind(model)
+        .execute(&state.pool)
+        .await
+        .expect("limit sticky audit model route capacity");
+    }
+    sqlx::query(
+        "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    {
+        let mut reservations = state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned");
+        for (key, account_id) in [
+            ("sticky-capacity-holder", sticky_id),
+            ("other-capacity-holder", other_id),
+        ] {
+            reservations.insert(
+                key.to_string(),
+                PoolRoutingReservation {
+                    account_id,
+                    model: Some(model.to_string()),
+                    proxy_key: None,
+                    created_at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        Some(sticky_key),
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("sticky-capacity-audit-waiter"),
+    )
+    .await
+    .expect("resolve queued sticky capacity audit");
+    let PoolAccountResolution::NoCandidate(audit) = resolution else {
+        panic!("sticky conflict in queue mode must remain NoCandidate");
+    };
+    assert_eq!(audit.terminal_reason_code, "stickyRouteReservationConflict");
+    assert_eq!(audit.candidate_count, 2);
+    assert_eq!(audit.eligible_candidate_count, 2);
+    assert_eq!(audit.reservation_conflict_count, 2);
+    assert_eq!(
+        audit.excluded_reason_counts["stickyRouteReservationConflict"],
+        1
+    );
+    assert_eq!(audit.excluded_reason_counts["modelConcurrencyLimit"], 1);
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key("sticky-capacity-audit-waiter"),
+        "queue auditing must not reserve a later candidate"
+    );
 }
 
 #[tokio::test]

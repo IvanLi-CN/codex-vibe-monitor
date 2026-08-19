@@ -3532,11 +3532,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         .as_deref()
                         .unwrap_or("upstream stream error")
                         .to_string();
-                    release_pool_routing_reservation(
-                        state_for_task.as_ref(),
-                        &reservation_key_for_task,
-                    );
-                    record_pool_route_transport_failure_for_attempt_with_kind(
+                    let result = record_pool_route_transport_failure_for_attempt_with_kind(
                         &state_for_task.pool,
                         account.account_id,
                         sticky_key_for_task.as_deref(),
@@ -3547,17 +3543,18 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
                     )
-                    .await
+                    .await;
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
+                    result
                 } else {
                     let route_message = error_message
                         .as_deref()
                         .unwrap_or("upstream request failed")
                         .to_string();
-                    release_pool_routing_reservation(
-                        state_for_task.as_ref(),
-                        &reservation_key_for_task,
-                    );
-                    if response_info_is_retryable_responses_overload(
+                    let result = if response_info_is_retryable_responses_overload(
                         upstream_status,
                         &response_info,
                     ) {
@@ -3593,7 +3590,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 .or(request_info_for_task.sticky_key.as_deref()),
                         )
                         .await
-                    }
+                    };
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
+                    result
                 };
                 if let Err(err) = route_result {
                     warn!(account_id = account.account_id, error = %err, "failed to record pool capture route state");

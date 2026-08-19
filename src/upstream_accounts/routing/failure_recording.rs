@@ -48,6 +48,8 @@ pub(crate) async fn pool_account_allows_model_route_availability_publish(
             SELECT 1
             FROM pool_upstream_accounts
             WHERE id = ?1
+              AND enabled != 0
+              AND deleted_at IS NULL
               AND status = ?2
               AND last_route_failure_at IS NULL
               AND last_route_failure_kind IS NULL

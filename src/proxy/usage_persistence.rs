@@ -1806,34 +1806,29 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     recovery_trigger: &'static str,
     record_route_failure: bool,
 ) {
+    if record_route_failure && let Some(account_id) = upstream_account_id {
+        let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
+        if let Err(err) = record_pool_route_transport_failure(
+            &state.pool,
+            account_id,
+            sticky_key,
+            &error_message,
+            Some(invoke_id),
+        )
+        .await
+        {
+            warn!(
+                invoke_id,
+                account_id,
+                recovery_trigger,
+                error = %err,
+                "failed to record pool route transport failure during orphan recovery cleanup"
+            );
+        }
+    }
+
     if let Some(reservation_key) = pool_routing_reservation_key_for_invoke_id(invoke_id) {
         release_pool_routing_reservation(state, &reservation_key);
-    }
-
-    if !record_route_failure {
-        return;
-    }
-
-    let Some(account_id) = upstream_account_id else {
-        return;
-    };
-    let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
-    if let Err(err) = record_pool_route_transport_failure(
-        &state.pool,
-        account_id,
-        sticky_key,
-        &error_message,
-        Some(invoke_id),
-    )
-    .await
-    {
-        warn!(
-            invoke_id,
-            account_id,
-            recovery_trigger,
-            error = %err,
-            "failed to record pool route transport failure during orphan recovery cleanup"
-        );
     }
 }
 

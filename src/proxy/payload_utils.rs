@@ -1719,6 +1719,16 @@ pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key
     }
 }
 
+pub(crate) async fn persist_pool_route_failure_then_release<T>(
+    state: &AppState,
+    reservation_key: &str,
+    persist_failure: impl std::future::Future<Output = T>,
+) -> T {
+    let persisted_failure = persist_failure.await;
+    release_pool_routing_reservation(state, reservation_key);
+    persisted_failure
+}
+
 pub(crate) fn publish_pool_routing_availability(state: &AppState) {
     state.pool_routing_availability.publish();
 }

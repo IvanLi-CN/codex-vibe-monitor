@@ -125,6 +125,22 @@ function formatNoCandidateReason(code: string, isZh: boolean) {
     stickyRouteReservationConflict: ["粘性路由预约冲突", "Sticky-route reservation conflict"],
     policyExcluded: ["路由策略已排除", "Routing policy excluded the candidate"],
     noEligibleCandidate: ["没有符合条件的候选账号", "No eligible account candidate"],
+    bindingConstraint: ["不符合当前会话绑定条件", "Excluded by the current binding constraint"],
+    requiredRouteMismatch: ["不符合要求的路由", "Does not match the required route"],
+    recentTransportFailure: ["最近发生过传输失败", "Recently had a transport failure"],
+    previousAttemptExcluded: ["已被本请求的先前尝试排除", "Excluded by an earlier attempt"],
+    stickyReuseUnavailable: ["无法继续复用粘性路由", "Sticky route cannot be reused"],
+    rateLimited: ["账号已被限流", "Account is rate limited"],
+    degraded: ["账号处于降级状态", "Account is degraded"],
+    notSelectableForFreshAssignment: ["不允许接收重新分配", "Not selectable for reassignment"],
+    unavailable: ["账号当前不可用", "Account is unavailable"],
+    modelNotAllowed: ["不允许当前请求模型", "Requested model is not allowed"],
+    capabilityUnsupported: ["不支持当前请求能力", "Requested capability is unsupported"],
+    concurrencyLimit: ["账号并发容量已满", "Account concurrency capacity is full"],
+    stickyPolicy: ["粘性策略已排除", "Excluded by sticky routing policy"],
+    forwardProxyUnavailable: ["转发代理不可用", "Forward proxy is unavailable"],
+    modelTemporarilyExcluded: ["模型路由暂时不可用", "Model route is temporarily unavailable"],
+    notAssignable: ["账号不可分配", "Account is not assignable"],
   };
   return labels[code]?.[isZh ? 0 : 1] ?? (isZh ? "未知路由原因" : "Unknown routing reason");
 }

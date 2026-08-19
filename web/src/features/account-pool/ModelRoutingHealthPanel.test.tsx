@@ -41,6 +41,7 @@ describe("ModelRoutingHealthPanel", () => {
     expect(html).toContain("gpt-5.5-codex");
     expect(html).toContain("未知结果");
     expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-label="恢复可用: gpt-5.5-codex"');
     expect(html).not.toContain("加载更多");
   });
 
