@@ -982,6 +982,16 @@ async fn load_historical_rollup_startup_candidates(
     .context("failed to load historical rollup startup keyset candidates")
 }
 
+pub(crate) async fn count_historical_rollup_startup_pending_hint(
+    pool: &Pool<Sqlite>,
+) -> Result<usize> {
+    let candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
+    Ok(candidates
+        .iter()
+        .filter(|candidate| Path::new(&candidate.file_path).exists())
+        .count())
+}
+
 pub(crate) async fn materialize_historical_rollups_startup_window(
     pool: &Pool<Sqlite>,
     cursor_id: i64,

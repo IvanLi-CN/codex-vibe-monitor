@@ -1115,6 +1115,11 @@ async fn historical_rollup_startup_window_bounds_a_twenty_thousand_batch_fixture
     .await;
     let last_id = seed_missing_historical_rollup_startup_candidates(&state.pool, 20_000).await;
 
+    let pending_hint = count_historical_rollup_startup_pending_hint(&state.pool)
+        .await
+        .expect("load bounded historical rollup startup pending hint");
+    assert_eq!(pending_hint, 0);
+
     let first =
         materialize_historical_rollups_startup_window(&state.pool, 0, Duration::from_secs(6))
             .await
