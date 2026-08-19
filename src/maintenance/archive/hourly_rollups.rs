@@ -3183,6 +3183,186 @@ pub(crate) async fn repair_live_invocation_account_activity_v2_once(
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT: usize = 2;
 const ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET: Duration = Duration::from_secs(2);
 
+pub(crate) fn build_active_account_activity_v2_archive_epoch_coverage_query(
+    prefix: &'static str,
+    oldest_bucket: i64,
+    current_bucket: i64,
+) -> QueryBuilder<'static, Sqlite> {
+    let mut query = QueryBuilder::<Sqlite>::new(prefix);
+    query.push(
+        "SELECT coverage_start_epoch, coverage_end_epoch \
+         FROM archive_batches INDEXED BY idx_archive_batches_invocation_coverage_epoch \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND coverage_start_epoch IS NOT NULL \
+           AND coverage_end_epoch IS NOT NULL \
+           AND coverage_start_epoch < ",
+    );
+    query.push_bind(current_bucket);
+    query.push(" AND coverage_end_epoch >= ");
+    query.push_bind(oldest_bucket);
+    query
+}
+
+pub(crate) fn build_active_account_activity_v2_legacy_coverage_query(
+    prefix: &'static str,
+    active_month_keys: &[String],
+) -> QueryBuilder<'static, Sqlite> {
+    let mut query = QueryBuilder::<Sqlite>::new(prefix);
+    query.push(
+        "SELECT month_key \
+         FROM archive_batches INDEXED BY idx_archive_batches_invocation_legacy_coverage_month \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND (coverage_start_at IS NULL OR coverage_end_at IS NULL)",
+    );
+    if active_month_keys.is_empty() {
+        query.push(" AND 0");
+        return query;
+    }
+    query.push(" AND month_key IN (");
+    {
+        let mut separated = query.separated(", ");
+        for month_key in active_month_keys {
+            separated.push_bind(month_key.clone());
+        }
+    }
+    query.push(")");
+    query
+}
+
+fn active_account_activity_v2_month_key(bucket_start_epoch: i64) -> Result<String> {
+    Utc.timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .map(|bucket_start| {
+            bucket_start
+                .with_timezone(&Shanghai)
+                .format("%Y-%m")
+                .to_string()
+        })
+        .ok_or_else(|| anyhow!("invalid account activity v2 priority bucket start"))
+}
+
+async fn select_active_account_activity_v2_priority_buckets(
+    pool: &Pool<Sqlite>,
+    current_bucket: i64,
+    started_at: Instant,
+) -> Result<Option<Vec<i64>>> {
+    let Some(remaining_budget) =
+        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+    else {
+        return Ok(None);
+    };
+    let mut connection = match timeout(remaining_budget, pool.acquire()).await {
+        Ok(connection) => connection?,
+        Err(_) => return Ok(None),
+    };
+    let selection_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
+    connection
+        .lock_handle()
+        .await?
+        .set_progress_handler(1_000, move || Instant::now() < selection_deadline);
+
+    let selection = async {
+        let oldest_live_occurred_at = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT MIN(occurred_at) FROM codex_invocations",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        let Some(oldest_live_occurred_at) = oldest_live_occurred_at else {
+            return Ok(Vec::new());
+        };
+        let oldest_live_bucket = align_bucket_epoch(
+            parse_to_utc_datetime(&oldest_live_occurred_at)
+                .ok_or_else(|| anyhow!("failed to parse oldest live invocation timestamp"))?
+                .timestamp(),
+            3_600,
+            0,
+        );
+        let configured_oldest_bucket = current_bucket - 7 * 24 * 3_600;
+        // This priority path is intentionally live-only. Archive buckets are repaired by archive
+        // replay; selecting them here would clear valid archive-derived v2 values before loading no
+        // live rows and then incorrectly mark the zero bucket covered.
+        let oldest_bucket = configured_oldest_bucket.max(oldest_live_bucket);
+        if oldest_bucket >= current_bucket {
+            return Ok(Vec::new());
+        }
+
+        let covered_buckets = sqlx::query_scalar::<_, i64>(
+            "SELECT bucket_start_epoch \
+             FROM hourly_rollup_materialized_buckets \
+             WHERE target = ?1 AND source = ?2 \
+               AND bucket_start_epoch >= ?3 AND bucket_start_epoch < ?4",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
+        .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
+        .bind(oldest_bucket)
+        .bind(current_bucket)
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+        let archive_epoch_coverage = build_active_account_activity_v2_archive_epoch_coverage_query(
+            "",
+            oldest_bucket,
+            current_bucket,
+        )
+        .build_query_as::<(i64, i64)>()
+        .fetch_all(&mut *connection)
+        .await?;
+
+        let mut active_month_keys = Vec::new();
+        let mut bucket_start_epoch = current_bucket - 3_600;
+        while bucket_start_epoch >= oldest_bucket {
+            let month_key = active_account_activity_v2_month_key(bucket_start_epoch)?;
+            if !active_month_keys.contains(&month_key) {
+                active_month_keys.push(month_key);
+            }
+            bucket_start_epoch -= 3_600;
+        }
+        let archive_legacy_month_keys =
+            build_active_account_activity_v2_legacy_coverage_query("", &active_month_keys)
+                .build_query_scalar::<String>()
+                .fetch_all(&mut *connection)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>();
+
+        let mut missing_buckets =
+            Vec::with_capacity(ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT);
+        let mut bucket_start_epoch = current_bucket - 3_600;
+        while bucket_start_epoch >= oldest_bucket
+            && missing_buckets.len() < ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT
+        {
+            let month_key = active_account_activity_v2_month_key(bucket_start_epoch)?;
+            let is_archive_covered = archive_legacy_month_keys.contains(&month_key)
+                || archive_epoch_coverage.iter().any(
+                    |(coverage_start_epoch, coverage_end_epoch)| {
+                        *coverage_start_epoch < bucket_start_epoch + 3_600
+                            && *coverage_end_epoch >= bucket_start_epoch
+                    },
+                );
+            if !covered_buckets.contains(&bucket_start_epoch) && !is_archive_covered {
+                missing_buckets.push(bucket_start_epoch);
+            }
+            bucket_start_epoch -= 3_600;
+        }
+        Ok(missing_buckets)
+    }
+    .await;
+
+    connection.lock_handle().await?.remove_progress_handler();
+    if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
+        warn!(
+            priority_elapsed_budget_ms =
+                ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+            "active account activity v2 coverage selection exhausted its SQLite budget"
+        );
+        return Ok(None);
+    }
+    selection.map(Some)
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ActiveAccountActivityV2RepairOutcome {
     pub(crate) priority_bucket_count: usize,
@@ -3198,10 +3378,8 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
     generation_tx.commit().await?;
     let current_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
-    let configured_oldest_bucket = current_bucket - 7 * 24 * 3_600;
-    let Some(oldest_live_occurred_at) =
-        sqlx::query_scalar::<_, Option<String>>("SELECT MIN(occurred_at) FROM codex_invocations")
-            .fetch_one(pool)
+    let Some(missing_buckets) =
+        select_active_account_activity_v2_priority_buckets(pool, current_bucket, started_at)
             .await?
     else {
         return Ok(ActiveAccountActivityV2RepairOutcome {
@@ -3209,83 +3387,6 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
             ..ActiveAccountActivityV2RepairOutcome::default()
         });
     };
-    let oldest_live_bucket = align_bucket_epoch(
-        parse_to_utc_datetime(&oldest_live_occurred_at)
-            .ok_or_else(|| anyhow!("failed to parse oldest live invocation timestamp"))?
-            .timestamp(),
-        3_600,
-        0,
-    );
-    // This priority path is intentionally live-only. Archive buckets are repaired by archive
-    // replay; selecting them here would clear valid archive-derived v2 values before loading no
-    // live rows and then incorrectly mark the zero bucket covered.
-    let oldest_bucket = configured_oldest_bucket.max(oldest_live_bucket);
-    if oldest_bucket >= current_bucket {
-        return Ok(ActiveAccountActivityV2RepairOutcome {
-            elapsed_ms: started_at.elapsed().as_millis() as u64,
-            ..ActiveAccountActivityV2RepairOutcome::default()
-        });
-    }
-    let missing_buckets = sqlx::query_scalar::<_, i64>(
-        r#"
-        WITH RECURSIVE active_buckets(bucket_start_epoch) AS (
-            SELECT ?1
-            UNION ALL
-            SELECT bucket_start_epoch + 3600
-            FROM active_buckets
-            WHERE bucket_start_epoch + 3600 < ?2
-        )
-        SELECT active_buckets.bucket_start_epoch
-        FROM active_buckets
-        LEFT JOIN hourly_rollup_materialized_buckets AS coverage
-          ON coverage.target = ?3
-         AND coverage.source = ?4
-         AND coverage.bucket_start_epoch = active_buckets.bucket_start_epoch
-        WHERE coverage.bucket_start_epoch IS NULL
-          AND NOT EXISTS (
-              SELECT 1
-              FROM archive_batches AS archived
-              WHERE archived.dataset = ?5
-                AND archived.status = ?6
-                AND (
-                    (
-                        (archived.coverage_start_at IS NULL OR archived.coverage_end_at IS NULL)
-                        AND archived.month_key = strftime(
-                            '%Y-%m',
-                            active_buckets.bucket_start_epoch,
-                            'unixepoch',
-                            '+8 hours'
-                        )
-                    )
-                    OR (
-                        archived.coverage_start_at IS NOT NULL
-                        AND archived.coverage_end_at IS NOT NULL
-                        AND (CASE
-                                WHEN instr(archived.coverage_start_at, 'T') > 0
-                                    THEN CAST(strftime('%s', archived.coverage_start_at) AS INTEGER)
-                                ELSE CAST(strftime('%s', archived.coverage_start_at || '+08:00') AS INTEGER)
-                             END) < active_buckets.bucket_start_epoch + 3600
-                        AND (CASE
-                                WHEN instr(archived.coverage_end_at, 'T') > 0
-                                    THEN CAST(strftime('%s', archived.coverage_end_at) AS INTEGER)
-                                ELSE CAST(strftime('%s', archived.coverage_end_at || '+08:00') AS INTEGER)
-                             END) >= active_buckets.bucket_start_epoch
-                    )
-                )
-          )
-        ORDER BY active_buckets.bucket_start_epoch DESC
-        LIMIT ?7
-        "#,
-    )
-    .bind(oldest_bucket)
-    .bind(current_bucket)
-    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2)
-    .bind(HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE)
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUCKET_LIMIT as i64)
-    .fetch_all(pool)
-    .await?;
     let priority_bucket_count = missing_buckets.len();
     let mut repaired_bucket_count = 0usize;
 

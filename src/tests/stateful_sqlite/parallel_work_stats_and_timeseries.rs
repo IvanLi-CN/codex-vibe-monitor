@@ -17487,6 +17487,112 @@ async fn account_activity_v2_priority_repair_preserves_unknown_archive_coverage(
 }
 
 #[tokio::test]
+async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage_within_budget() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    let oldest_hour_epoch = current_hour_epoch - 7 * 24 * 3_600;
+    let oldest_occurred_at = Utc
+        .timestamp_opt(oldest_hour_epoch + 60, 0)
+        .single()
+        .expect("oldest active window timestamp");
+
+    sqlx::query(
+        "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+         VALUES (?1, 1, datetime('now'))",
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-priority-window-floor', ?1, ?2, 'success', ?3, 1, 0.01, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert active-window floor invocation");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 199
+            ),
+            units(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM units WHERE value < 99
+            )
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at
+        )
+        SELECT
+            'codex_invocations',
+            '2020-01',
+            '/tmp/v2-priority-coverage-' || (hundreds.value * 100 + units.value) || '.sqlite.gz',
+            'fixture-sha',
+            1,
+            'completed',
+            '2020-01-01 00:00:00',
+            '2020-01-01 00:00:00'
+        FROM hundreds CROSS JOIN units
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed archive coverage fixture");
+
+    let explain = build_active_account_activity_v2_archive_epoch_coverage_query(
+        "EXPLAIN QUERY PLAN ",
+        oldest_hour_epoch,
+        current_hour_epoch,
+    )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(&state.pool)
+    .await
+    .expect("explain indexed archive epoch coverage query");
+    let explain_details = explain
+        .iter()
+        .map(|(_, _, _, detail)| detail.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        explain_details
+            .iter()
+            .any(|detail| { detail.contains("idx_archive_batches_invocation_coverage_epoch") }),
+        "unexpected archive epoch coverage plan: {explain_details:?}"
+    );
+
+    let started_at = std::time::Instant::now();
+    let outcome = repair_active_account_activity_v2_coverage(&state.pool)
+        .await
+        .expect("repair active coverage against archive fixture");
+    assert!(
+        started_at.elapsed() < Duration::from_secs(2),
+        "priority coverage repair exceeded its two-second budget: {:?}",
+        started_at.elapsed()
+    );
+    assert_eq!(outcome.priority_bucket_count, 2);
+    assert_eq!(outcome.repaired_bucket_count, 2);
+    assert!(outcome.elapsed_ms < 2_000);
+}
+
+#[tokio::test]
 async fn summary_non_success_tokens_includes_unreplayed_live_tail_in_covered_hour() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
