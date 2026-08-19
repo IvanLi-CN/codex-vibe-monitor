@@ -3253,6 +3253,8 @@ async fn select_active_account_activity_v2_priority_buckets(
         current_bucket,
         started_at,
         started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
+        None,
+        1_000,
     )
     .await
 }
@@ -3262,6 +3264,8 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     current_bucket: i64,
     started_at: Instant,
     selection_deadline: Instant,
+    progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    progress_handler_ops: i32,
 ) -> Result<Option<Vec<i64>>> {
     let Some(remaining_budget) =
         ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
@@ -3285,7 +3289,12 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             Err(_) => return Ok(None),
         }
     };
-    handle.set_progress_handler(1_000, move || Instant::now() < selection_deadline);
+    handle.set_progress_handler(progress_handler_ops, move || {
+        if let Some(progress_probe) = progress_probe.as_ref() {
+            progress_probe.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Instant::now() < selection_deadline
+    });
     drop(handle);
     let Some(remaining_budget) =
         ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
@@ -3433,43 +3442,12 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     pool: &Pool<Sqlite>,
 ) -> Result<ActiveAccountActivityV2RepairOutcome> {
     let started_at = Instant::now();
-    let Some(remaining_budget) =
-        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
-    else {
+    if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
         return Ok(ActiveAccountActivityV2RepairOutcome::default());
-    };
-    match timeout(remaining_budget, async {
-        let mut generation_tx = pool.begin().await?;
-        let generation_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
-        generation_tx
-            .as_mut()
-            .lock_handle()
-            .await?
-            .set_progress_handler(1_000, move || Instant::now() < generation_deadline);
-        ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
-        generation_tx
-            .as_mut()
-            .lock_handle()
-            .await?
-            .remove_progress_handler();
-        generation_tx.commit().await?;
-        Ok::<(), anyhow::Error>(())
-    })
-    .await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            warn!(
-                priority_elapsed_budget_ms =
-                    ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
-                "active account activity v2 coverage generation exhausted its budget"
-            );
-            return Ok(ActiveAccountActivityV2RepairOutcome {
-                elapsed_ms: started_at.elapsed().as_millis() as u64,
-                ..ActiveAccountActivityV2RepairOutcome::default()
-            });
-        }
     }
+    let mut generation_tx = pool.begin().await?;
+    ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
+    generation_tx.commit().await?;
     let current_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
     let Some(missing_buckets) =
         select_active_account_activity_v2_priority_buckets(pool, current_bucket, started_at)
@@ -3484,20 +3462,12 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     let mut repaired_bucket_count = 0usize;
 
     for bucket_start_epoch in missing_buckets {
-        let Some(remaining_budget) =
-            ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
-        else {
+        if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
             break;
-        };
-        match timeout(remaining_budget, async {
-            let mut tx = pool.begin().await?;
-            let repair_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
-            tx.as_mut()
-                .lock_handle()
-                .await?
-                .set_progress_handler(1_000, move || Instant::now() < repair_deadline);
-            ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
-            sqlx::query(
+        }
+        let mut tx = pool.begin().await?;
+        ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
+        sqlx::query(
                 r#"
                 UPDATE upstream_account_stats_hourly
                 SET activity_v2_request_count = 0,
@@ -3533,69 +3503,38 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
             .bind(bucket_start_epoch)
             .execute(tx.as_mut())
             .await?;
-            let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
-                tx.as_mut(),
-                &[bucket_start_epoch],
-            )
-            .await?;
-            upsert_invocation_hourly_rollups_tx(
-                tx.as_mut(),
-                &rows,
-                &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
-            )
-            .await?;
-            let bucket_max_id = rows
-                .iter()
-                .filter(|row| invocation_row_counts_toward_account_activity_v2(row))
-                .map(|row| row.id)
-                .max()
-                .unwrap_or_default();
-            save_account_activity_v2_bucket_repair_watermark_tx(
-                tx.as_mut(),
-                bucket_start_epoch,
-                bucket_max_id,
-            )
-            .await?;
-            mark_hourly_rollup_bucket_materialized_tx(
-                tx.as_mut(),
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
-                bucket_start_epoch,
-                HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
-            )
-            .await?;
-            tx.as_mut()
-                .lock_handle()
-                .await?
-                .remove_progress_handler();
-            tx.commit().await?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        {
-            Ok(Ok(())) => {
-                repaired_bucket_count += 1;
-            }
-            Ok(Err(error)) if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET => {
-                warn!(
-                    priority_elapsed_budget_ms =
-                        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
-                    bucket_start_epoch,
-                    error = %error,
-                    "active account activity v2 coverage repair interrupted at its budget"
-                );
-                break;
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(_) => {
-                warn!(
-                    priority_elapsed_budget_ms =
-                        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
-                    bucket_start_epoch,
-                    "active account activity v2 coverage repair exhausted its budget"
-                );
-                break;
-            }
-        }
+        let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+            tx.as_mut(),
+            &[bucket_start_epoch],
+        )
+        .await?;
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &rows,
+            &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2],
+        )
+        .await?;
+        let bucket_max_id = rows
+            .iter()
+            .filter(|row| invocation_row_counts_toward_account_activity_v2(row))
+            .map(|row| row.id)
+            .max()
+            .unwrap_or_default();
+        save_account_activity_v2_bucket_repair_watermark_tx(
+            tx.as_mut(),
+            bucket_start_epoch,
+            bucket_max_id,
+        )
+        .await?;
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_ACTIVITY_V2,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
+        tx.commit().await?;
+        repaired_bucket_count += 1;
     }
 
     let outcome = ActiveAccountActivityV2RepairOutcome {

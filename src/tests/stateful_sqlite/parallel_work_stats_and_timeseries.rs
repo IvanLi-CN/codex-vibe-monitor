@@ -17409,16 +17409,20 @@ async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round()
     .await
     .expect("insert selection interruption fixture");
 
+    let progress_probe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let started_at = std::time::Instant::now();
     let outcome = crate::select_active_account_activity_v2_priority_buckets_with_deadline(
         &state.pool,
         current_hour_epoch,
         started_at,
         std::time::Instant::now(),
+        Some(progress_probe.clone()),
+        1,
     )
     .await
     .expect("handle interrupted selection round");
     assert!(outcome.is_none());
+    assert!(progress_probe.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 #[tokio::test]
@@ -17607,16 +17611,53 @@ async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage
     .execute(&state.pool)
     .await
     .expect("seed archive coverage fixture");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at
+        )
+        VALUES
+            ('forward_proxy_attempts', ?1, '/tmp/v2-priority-other-dataset.sqlite.gz', 'other-sha', 1, 'completed', ?2, ?3),
+            ('codex_invocations', ?1, '/tmp/v2-priority-pending.sqlite.gz', 'pending-sha', 1, 'pending', ?2, ?3)
+        "#,
+    )
+    .bind(
+        oldest_occurred_at
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        (oldest_occurred_at + ChronoDuration::seconds(3_599))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("seed archive coverage filter controls");
+    let matching_archive_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed' AND coverage_start_epoch IS NOT NULL AND coverage_end_epoch IS NOT NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count matching archive coverage fixture rows");
+    assert_eq!(matching_archive_rows, 20_000);
 
-    let explain = build_active_account_activity_v2_archive_epoch_coverage_query(
+    let mut explain_query = build_active_account_activity_v2_archive_epoch_coverage_query(
         "EXPLAIN QUERY PLAN ",
         oldest_hour_epoch,
         current_hour_epoch,
-    )
-    .build_query_as::<(i64, i64, i64, String)>()
-    .fetch_all(&state.pool)
-    .await
-    .expect("explain indexed archive epoch coverage query");
+    );
+    assert!(explain_query.sql().contains("coverage_start_epoch <"));
+    let explain = explain_query
+        .build_query_as::<(i64, i64, i64, String)>()
+        .fetch_all(&state.pool)
+        .await
+        .expect("explain indexed archive epoch coverage query");
     let explain_details = explain
         .iter()
         .map(|(_, _, _, detail)| detail.as_str())

@@ -3262,6 +3262,8 @@ async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
             sha256 TEXT NOT NULL,
             row_count INTEGER NOT NULL,
             status TEXT NOT NULL,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(dataset, month_key, file_path)
         )
@@ -3282,6 +3284,22 @@ async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
     .execute(&pool)
     .await
     .expect("insert legacy archive manifest without coverage bounds");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at, created_at
+        )
+        VALUES (
+            'codex_invocations', '2026-03', '/tmp/legacy-coverage-backfill.sqlite.gz',
+            'backfill-sha', 1, 'completed', '2026-03-01 08:00:00',
+            '2026-03-01 09:00:00', '2026-03-01 08:00:00'
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("insert legacy archive manifest with text coverage bounds");
 
     ensure_schema(&pool).await.expect("ensure schema migration");
 
@@ -3318,6 +3336,16 @@ async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
     .expect("load normalized archive coverage");
     assert_eq!(normalized_coverage.0, Some(1_772_323_200));
     assert_eq!(normalized_coverage.1, Some(1_772_326_800));
+    let backfilled_coverage = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+        "SELECT coverage_start_epoch, coverage_end_epoch FROM archive_batches WHERE file_path = '/tmp/legacy-coverage-backfill.sqlite.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled archive coverage");
+    assert_eq!(
+        backfilled_coverage,
+        (Some(1_772_323_200), Some(1_772_326_800))
+    );
     let coverage_index: Option<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_archive_batches_invocation_coverage_epoch'",
     )
