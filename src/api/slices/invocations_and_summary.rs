@@ -7073,6 +7073,7 @@ pub(crate) struct SummaryProjection {
     // Materialized history fallback.  Only compact totals remain resident; archive rows are
     // released after hydration.
     hourly_rollup_totals: HashMap<(i64, Option<i64>), StatsTotals>,
+    hourly_rollup_non_success_tokens: HashMap<(i64, Option<i64>), i64>,
     // These indexes are constructed once off-request.  They retain only the largest legal
     // current-window result for the global view and each account, so a hot `current` read never
     // sorts or allocates in proportion to retained history.
@@ -7178,10 +7179,11 @@ impl SummaryProjection {
         let exact_buckets = selected
             .iter()
             .map(|record| {
-                (
-                    align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0),
-                    record.row.upstream_account_id,
-                )
+                let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+                // Global rollups and account rollups are alternative representations of the same
+                // rows. Keep the coverage key aligned to the layer selected for this request so
+                // a global range never adds its account rows a second time.
+                (bucket, upstream_account_id)
             })
             .collect::<HashSet<_>>();
 
@@ -7227,12 +7229,18 @@ impl SummaryProjection {
                 if *bucket < start || *bucket >= end {
                     continue;
                 }
-                if upstream_account_id.is_none() || *account == upstream_account_id {
-                    if exact_buckets.contains(&(*bucket, *account)) {
-                        continue;
-                    }
-                    totals = totals.add(*bucket_totals);
+                if *account != upstream_account_id {
+                    continue;
                 }
+                if exact_buckets.contains(&(*bucket, *account)) {
+                    continue;
+                }
+                totals = totals.add(*bucket_totals);
+                non_success_tokens += self
+                    .hourly_rollup_non_success_tokens
+                    .get(&(*bucket, *account))
+                    .copied()
+                    .unwrap_or_default();
             }
         }
 
@@ -7306,15 +7314,20 @@ struct SummaryProjectionRollupRow {
     total_tokens: i64,
     total_cost: f64,
     non_success_cost: f64,
+    non_success_tokens: i64,
 }
 
 async fn load_summary_projection_rollup_totals(
     pool: &Pool<Sqlite>,
-) -> Result<HashMap<(i64, Option<i64>), StatsTotals>> {
+) -> Result<(
+    HashMap<(i64, Option<i64>), StatsTotals>,
+    HashMap<(i64, Option<i64>), i64>,
+)> {
     let mut totals = HashMap::new();
+    let mut non_success_tokens = HashMap::new();
     let overall_rows = sqlx::query_as::<_, SummaryProjectionRollupRow>(
         "SELECT bucket_start_epoch, total_count, success_count, failure_count, total_tokens, \
-         total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost \
+         total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost, 0 AS non_success_tokens \
          FROM invocation_rollup_hourly",
     )
     .fetch_all(pool)
@@ -7343,29 +7356,40 @@ async fn load_summary_projection_rollup_totals(
         total_tokens: i64,
         total_cost: f64,
         non_success_cost: f64,
+        non_success_tokens: i64,
     }
     let account_rows = sqlx::query_as::<_, AccountRollupRow>(
         "SELECT upstream_account_id, bucket_start_epoch, total_count, success_count, \
-         failure_count, total_tokens, total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost \
-         FROM upstream_account_stats_hourly WHERE upstream_account_id > 0",
+         failure_count, total_tokens, total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost, \
+         COALESCE(activity_v2_non_success_tokens, 0) AS non_success_tokens \
+         FROM upstream_account_stats_hourly WHERE upstream_account_id <> 0",
     )
     .fetch_all(pool)
     .await
     .context("summary projection account rollup hydration failed")?;
     for row in account_rows {
-        totals.insert(
-            (row.bucket_start_epoch, Some(row.upstream_account_id)),
-            StatsTotals {
-                total_count: row.total_count,
-                success_count: row.success_count,
-                failure_count: row.failure_count,
-                total_tokens: row.total_tokens,
-                total_cost: row.total_cost,
-                non_success_cost: row.non_success_cost,
-            },
-        );
+        if row.upstream_account_id > 0 {
+            totals.insert(
+                (row.bucket_start_epoch, Some(row.upstream_account_id)),
+                StatsTotals {
+                    total_count: row.total_count,
+                    success_count: row.success_count,
+                    failure_count: row.failure_count,
+                    total_tokens: row.total_tokens,
+                    total_cost: row.total_cost,
+                    non_success_cost: row.non_success_cost,
+                },
+            );
+            non_success_tokens.insert(
+                (row.bucket_start_epoch, Some(row.upstream_account_id)),
+                row.non_success_tokens,
+            );
+        }
+        *non_success_tokens
+            .entry((row.bucket_start_epoch, None))
+            .or_default() += row.non_success_tokens;
     }
-    Ok(totals)
+    Ok((totals, non_success_tokens))
 }
 
 fn summary_projection_archive_column(column: &str, available: bool, fallback: &str) -> String {
@@ -7661,7 +7685,10 @@ pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
-    let _refresh_guard = SUMMARY_PROJECTION_REFRESH_LOCK.lock().await;
+    let Ok(_refresh_guard) = SUMMARY_PROJECTION_REFRESH_LOCK.try_lock() else {
+        debug!("summary projection refresh already in flight; coalescing trigger");
+        return Ok(());
+    };
     let projection = tokio::time::timeout(
         SUMMARY_PROJECTION_BUILD_DEADLINE,
         build_summary_projection(state),
@@ -7688,7 +7715,8 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         .single()
         .ok_or_else(|| anyhow!("invalid summary projection epoch"))?;
     let end = Utc::now() + ChronoDuration::seconds(1);
-    let hourly_rollup_totals = load_summary_projection_rollup_totals(&state.pool).await?;
+    let (hourly_rollup_totals, hourly_rollup_non_success_tokens) =
+        load_summary_projection_rollup_totals(&state.pool).await?;
     let mut rows = query_live_upstream_account_activity_preview_rows(
         &state.pool,
         InvocationSourceScope::All,
@@ -7884,6 +7912,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         hourly_buckets,
         recent_indexes,
         hourly_rollup_totals,
+        hourly_rollup_non_success_tokens,
         all_time_by_account,
         closed_window_by_key,
         in_progress_by_account,
@@ -22963,6 +22992,14 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert materialized hourly rollup");
+        sqlx::query(
+            "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \\
+             VALUES (?1, 'proxy', 42, 3, 2, 1, 91, 4.5, 1.5)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert account rollup for global dedup regression");
         sqlx::query(
             "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, historical_rollups_materialized_at, created_at) \
              VALUES ('codex_invocations', '2026-01', '/definitely/missing/summary.sqlite.gz', 'summary-test', 3, 'completed', datetime('now'), datetime('now'))",
