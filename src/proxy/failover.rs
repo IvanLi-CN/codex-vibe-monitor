@@ -39,13 +39,19 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 #[cfg(not(test))]
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
-fn no_candidate_next_eligible_delay(audit: &PoolRoutingNoCandidateAudit) -> Option<Duration> {
+pub(crate) fn no_candidate_next_eligible_delay(
+    audit: &PoolRoutingNoCandidateAudit,
+) -> Option<Duration> {
     audit
         .next_eligible_at
         .as_deref()
         .and_then(parse_to_utc_datetime)
-        .and_then(|eligible_at| (eligible_at - Utc::now()).to_std().ok())
-        .filter(|delay| !delay.is_zero())
+        .map(|eligible_at| {
+            (eligible_at - Utc::now())
+                .to_std()
+                .unwrap_or_default()
+                .max(Duration::from_millis(25))
+        })
 }
 
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
@@ -1056,7 +1062,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
     let request_connection_scoped = connection_scoped_header_names(headers);
     let codex_imagegen_request = codex_imagegen_protocol_from_headers(headers).is_some();
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    let mut reservation_guard =
+    let reservation_guard =
         PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
     let direct_image_request = matches!(
         capture_target_for_request(original_uri.path(), &method),
@@ -3640,7 +3646,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
-                    reservation_guard.disarm();
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
                         response: ProxyUpstreamResponseBody::Axum(response),
@@ -3675,6 +3680,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         requested_service_tier: attempted_requested_service_tier,
                         request_body_for_capture: attempted_request_body_for_capture,
                         codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
+                        reservation_guard: Some(reservation_guard),
                     });
                 }
                 let http_failure_classification =
@@ -4568,7 +4574,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 )
                 .await;
             }
-            reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
@@ -4599,6 +4604,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
                 codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
+                reservation_guard: Some(reservation_guard),
             });
         }
     }

@@ -353,6 +353,7 @@ pub(crate) struct WsPrepareError {
 pub(crate) struct WsAttemptFailure {
     status: StatusCode,
     message: String,
+    failure_kind: &'static str,
     retryable: bool,
     account_id: Option<i64>,
     upstream_route_key: Option<String>,
@@ -438,6 +439,22 @@ pub(crate) async fn prepare_upstream_websocket(
                         ws_retry_account_ids.len(),
                         distinct_account_count,
                     );
+                    let _ = persist_pool_routing_no_candidate_invocation_with_error(
+                        state.clone(),
+                        trace,
+                        prompt_cache_key,
+                        &audit,
+                        err.status,
+                        err.failure_kind,
+                        &err.message,
+                        err.attempt_summary.pool_attempt_count,
+                        err.attempt_summary.pool_distinct_account_count,
+                        err.attempt_summary
+                            .pool_attempt_terminal_reason
+                            .as_deref()
+                            .unwrap_or(err.failure_kind),
+                    )
+                    .await;
                     let _ = insert_and_broadcast_pool_upstream_terminal_attempt(
                         state.as_ref(),
                         trace,
@@ -452,13 +469,29 @@ pub(crate) async fn prepare_upstream_websocket(
                         message: err.message,
                     });
                 }
-                let _ = persist_pool_routing_no_candidate_invocation(
-                    state.as_ref(),
-                    trace,
-                    prompt_cache_key,
-                    &audit,
-                )
-                .await;
+                if let Some(failure) = last_failure.as_ref() {
+                    let _ = persist_pool_routing_no_candidate_invocation_with_error(
+                        state.clone(),
+                        trace,
+                        prompt_cache_key,
+                        &audit,
+                        failure.status,
+                        failure.failure_kind,
+                        &failure.message,
+                        ws_retry_account_ids.len(),
+                        distinct_account_count,
+                        failure.failure_kind,
+                    )
+                    .await;
+                } else {
+                    let _ = persist_pool_routing_no_candidate_invocation(
+                        state.clone(),
+                        trace,
+                        prompt_cache_key,
+                        &audit,
+                    )
+                    .await;
+                }
                 return Err(WsPrepareError {
                     status: last_failure
                         .as_ref()
@@ -634,6 +667,7 @@ pub(crate) async fn prepare_upstream_websocket(
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message: "selected upstream account is tagged as not supporting websocket"
                         .to_string(),
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     retryable: true,
                     account_id: Some(account.account_id),
                     upstream_route_key: Some(account.upstream_route_key()),
@@ -758,6 +792,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 return Err(WsAttemptFailure {
                     status: StatusCode::BAD_GATEWAY,
                     message,
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     retryable: false,
                     account_id: Some(account.account_id),
                     upstream_route_key: Some(account.upstream_route_key()),
@@ -888,6 +923,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 retryable: false,
                 account_id: Some(account.account_id),
                 upstream_route_key: Some(account.upstream_route_key()),
@@ -990,6 +1026,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                 retryable: true,
                 account_id: Some(account.account_id),
                 upstream_route_key: Some(account.upstream_route_key()),
@@ -1042,6 +1079,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
+                failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                 retryable: true,
                 account_id: Some(account.account_id),
                 upstream_route_key: Some(account.upstream_route_key()),
@@ -1096,6 +1134,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         return Err(WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message,
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             retryable: true,
             account_id: Some(account.account_id),
             upstream_route_key: Some(account.upstream_route_key()),
@@ -4035,6 +4074,7 @@ mod websocket_tests {
         let failure = WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message: "failed to contact websocket upstream".to_string(),
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             retryable: true,
             account_id: Some(42),
             upstream_route_key: Some("api_key:42".to_string()),
@@ -4058,6 +4098,7 @@ mod websocket_tests {
         let failure = WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message: "failed without account".to_string(),
+            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             retryable: true,
             account_id: None,
             upstream_route_key: None,

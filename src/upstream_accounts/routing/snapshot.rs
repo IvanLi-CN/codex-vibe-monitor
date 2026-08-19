@@ -105,6 +105,19 @@ impl PoolRoutingSnapshot {
             .map(|limit| limit.max(1))
     }
 
+    pub(crate) fn model_route_requires_expired_cooldown_probe(
+        &self,
+        account_id: i64,
+        model: Option<&str>,
+    ) -> bool {
+        let Some(model) = normalized_model_key(model) else {
+            return false;
+        };
+        self.model_routes
+            .get(&(account_id, model))
+            .is_some_and(|route| route.probe_required_at(Utc::now()))
+    }
+
     pub(crate) fn route_binding_failure_penalties(&self) -> &HashMap<String, i64> {
         &self.route_binding_failure_penalties
     }
@@ -167,16 +180,17 @@ impl PoolRoutingSnapshot {
         (route, pack_sticky_affinity_token(epoch, generation))
     }
 
-    pub(crate) fn earliest_model_route_cooldown_expiry(
+    pub(crate) fn earliest_model_route_cooldown_expiry_for_accounts(
         &self,
         model: Option<&str>,
+        account_ids: &[i64],
     ) -> Option<String> {
         let model = normalized_model_key(model)?;
         let now = Utc::now();
-        self.model_routes
+        account_ids
             .iter()
-            .filter(|((_, route_model), _)| route_model == &model)
-            .filter_map(|(_, route)| route.cooldown_until.as_deref())
+            .filter_map(|account_id| self.model_routes.get(&(*account_id, model.clone())))
+            .filter_map(|route| route.cooldown_until.as_deref())
             .filter_map(parse_to_utc_datetime)
             .filter(|until| *until > now)
             .min()

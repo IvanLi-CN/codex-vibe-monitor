@@ -1649,7 +1649,7 @@ pub(crate) async fn maybe_persist_single_account_binding_terminal_error(
 }
 
 pub(crate) async fn unwrap_via_pool_initial_account(
-    state: &AppState,
+    state: Arc<AppState>,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     resolution: Result<PoolAccountResolutionWithWait>,
     no_available_wait_deadline: Option<Instant>,
@@ -1657,6 +1657,31 @@ pub(crate) async fn unwrap_via_pool_initial_account(
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     owner_auto_guard_active: bool,
     prompt_cache_key: Option<&str>,
+) -> Result<(PoolResolvedAccount, Option<Instant>), ProxyErrorResponse> {
+    unwrap_via_pool_initial_account_with_request_body(
+        state,
+        trace_context,
+        resolution,
+        no_available_wait_deadline,
+        responses_total_timeout,
+        binding_constraint,
+        owner_auto_guard_active,
+        prompt_cache_key,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn unwrap_via_pool_initial_account_with_request_body(
+    state: Arc<AppState>,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    resolution: Result<PoolAccountResolutionWithWait>,
+    no_available_wait_deadline: Option<Instant>,
+    responses_total_timeout: Option<Duration>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    owner_auto_guard_active: bool,
+    prompt_cache_key: Option<&str>,
+    request_body_snapshot: Option<PoolReplayBodySnapshot>,
 ) -> Result<(PoolResolvedAccount, Option<Instant>), ProxyErrorResponse> {
     let initial_account = match resolution {
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(account))) => {
@@ -1672,7 +1697,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Unavailable)) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
-                state,
+                state.as_ref(),
                 trace_context,
                 binding_constraint,
                 owner_auto_guard_active,
@@ -1695,11 +1720,18 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             audit,
         ))) => {
             if let Some(trace_context) = trace_context
-                && let Err(err) = persist_pool_routing_no_candidate_invocation(
-                    state,
+                && let Err(err) = persist_pool_routing_no_candidate_invocation_with_snapshot(
+                    state.clone(),
                     trace_context,
                     prompt_cache_key,
                     &audit,
+                    request_body_snapshot,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+                    POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+                    0,
+                    0,
+                    PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
                 )
                 .await
             {
@@ -1716,7 +1748,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::RateLimited)) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
-                state,
+                state.as_ref(),
                 trace_context,
                 binding_constraint,
                 owner_auto_guard_active,
@@ -1737,7 +1769,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
         }
         Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::DegradedOnly)) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
-                state,
+                state.as_ref(),
                 trace_context,
                 binding_constraint,
                 owner_auto_guard_active,
@@ -1760,7 +1792,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             blocked,
         ))) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
-                state,
+                state.as_ref(),
                 trace_context,
                 binding_constraint,
                 owner_auto_guard_active,
@@ -1775,7 +1807,9 @@ pub(crate) async fn unwrap_via_pool_initial_account(
                 return Err(err);
             }
             let terminal_error = ViaPoolResolutionTerminalError::assigned_blocked(blocked);
-            terminal_error.persist_if_needed(state, trace_context).await;
+            terminal_error
+                .persist_if_needed(state.as_ref(), trace_context)
+                .await;
             return Err(plain_proxy_error(
                 terminal_error.status,
                 terminal_error.message,
@@ -1785,7 +1819,7 @@ pub(crate) async fn unwrap_via_pool_initial_account(
             message,
         ))) => {
             if let Some(err) = maybe_persist_single_account_binding_terminal_error(
-                state,
+                state.as_ref(),
                 trace_context,
                 binding_constraint,
                 owner_auto_guard_active,
@@ -2657,6 +2691,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
                 codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
+                reservation_guard: Some(reservation_guard),
             });
         }
         let http_failure_classification =
@@ -2978,6 +3013,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         requested_service_tier: attempted_requested_service_tier,
         request_body_for_capture: attempted_request_body_for_capture,
         codex_imagegen_rewrite: codex_imagegen_rewrite.clone(),
+        reservation_guard: Some(reservation_guard),
     })
 }
 
@@ -4029,7 +4065,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 Some(sticky_key.clone()),
                                             );
                                             if let Err(err) = persist_pool_routing_no_candidate_invocation(
-                                                state.as_ref(),
+                                                state.clone(),
                                                 &trace_context,
                                                 Some(sticky_key.as_str()),
                                                 &audit,
@@ -4274,7 +4310,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         Some(sticky_key.clone()),
                                     );
                                     if let Err(err) = persist_pool_routing_no_candidate_invocation(
-                                        state.as_ref(),
+                                        state.clone(),
                                         &trace_context,
                                         Some(sticky_key.as_str()),
                                         &audit,
@@ -4370,8 +4406,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
 	                    )
                     .await;
                             let (initial_account, updated_no_available_wait_deadline) =
-                                unwrap_via_pool_initial_account(
-                                    state.as_ref(),
+                                unwrap_via_pool_initial_account_with_request_body(
+                                    state.clone(),
                                     Some(&build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -4383,6 +4419,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
                                     body_sticky_key.as_deref(),
+                                    Some(request_body_snapshot.clone()),
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -4409,8 +4446,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 )
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
-                                unwrap_via_pool_initial_account(
-                                    state.as_ref(),
+                                unwrap_via_pool_initial_account_with_request_body(
+                                    state.clone(),
                                     Some(&build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -4422,6 +4459,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
                                     body_sticky_key.as_deref(),
+                                    Some(request_body_snapshot.clone()),
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -4445,8 +4483,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 )
                                 .await;
                             let (initial_account, updated_no_available_wait_deadline) =
-                                unwrap_via_pool_initial_account(
-                                    state.as_ref(),
+                                unwrap_via_pool_initial_account_with_request_body(
+                                    state.clone(),
                                     Some(&build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -4458,6 +4496,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
                                     body_sticky_key.as_deref(),
+                                    Some(request_body_snapshot.clone()),
                                 )
                                 .await?;
                             no_available_wait_deadline = updated_no_available_wait_deadline;
@@ -4486,7 +4525,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .is_some_and(|value| {
                                 value.to_ascii_lowercase().starts_with("application/json")
                             });
-                        let replayable_body = spawn_pool_replayable_request_body(
+                        let mut replayable_body = spawn_pool_replayable_request_body(
                             body,
                             body_limit,
                             runtime_timeouts.request_read_timeout,
@@ -4575,9 +4614,37 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 )
                                 .await
                             };
+                            let no_candidate_request_body_snapshot = if matches!(
+                                &resolution,
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::NoCandidate(_)
+                                ))
+                            ) {
+                                // Nothing can consume the live body after a local NoCandidate.
+                                // Dropping this receiver lets the replay producer finish buffering
+                                // the request so the terminal invocation keeps its raw input.
+                                drop(std::mem::replace(&mut replayable_body.body, Body::empty()));
+                                Some(
+                                    wait_for_replay_body_snapshot(
+                                        state.as_ref(),
+                                        original_uri,
+                                        &method,
+                                        &replay_status_rx,
+                                        &replay_cancel,
+                                        runtime_timeouts.request_read_timeout,
+                                        live_responses_total_timeout_started_at,
+                                    )
+                                    .await
+                                    .map_err(
+                                        |(status, message)| plain_proxy_error(status, message),
+                                    )?,
+                                )
+                            } else {
+                                None
+                            };
                             let (initial_account, no_available_wait_deadline) =
-                                unwrap_via_pool_initial_account(
-                                    state.as_ref(),
+                                unwrap_via_pool_initial_account_with_request_body(
+                                    state.clone(),
                                     Some(&build_via_pool_attempt_trace_context(
                                         proxy_request_id,
                                         original_uri.path(),
@@ -4589,6 +4656,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     prompt_cache_binding_constraint.as_ref(),
                                     owner_auto_guard_active,
                                     live_body_sticky_key.as_deref(),
+                                    no_candidate_request_body_snapshot,
                                 )
                                 .await?;
                             let mut pool_attempt_trace_context =
@@ -5255,8 +5323,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 )
                 .await;
                         let (initial_account, no_available_wait_deadline) =
-                            unwrap_via_pool_initial_account(
-                                state.as_ref(),
+                            unwrap_via_pool_initial_account_with_request_body(
+                                state.clone(),
                                 Some(&build_via_pool_attempt_trace_context(
                                     proxy_request_id,
                                     original_uri.path(),
@@ -5270,6 +5338,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 body_prompt_cache_key
                                     .as_deref()
                                     .or(header_prompt_cache_key.as_deref()),
+                                Some(request_body_snapshot.clone()),
                             )
                             .await?;
                         let request_body_model = request_analysis.requested_model;

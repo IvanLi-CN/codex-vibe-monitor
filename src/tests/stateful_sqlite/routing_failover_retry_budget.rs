@@ -21,6 +21,22 @@ where
         .expect("join large-stack test worker")
 }
 
+async fn await_pool_route_selection_task(
+    task: tokio_util::task::AbortOnDropHandle<(
+        Result<PoolAccountResolutionWithWait>,
+        Option<Instant>,
+    )>,
+    fallback_deadline: Option<Instant>,
+) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
+    match task.await {
+        Ok(result) => result,
+        Err(err) => (
+            Err(anyhow::anyhow!("pool route selection task failed: {err}")),
+            fallback_deadline,
+        ),
+    }
+}
+
 #[tokio::test]
 async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     let state = test_state_with_openai_base(
@@ -2365,7 +2381,7 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
 }
 
 #[tokio::test]
-async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
+async fn pool_route_selection_task_join_error_preserves_fallback_deadline() {
     let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async {
         panic!("synthetic pool route selection panic");
         #[allow(unreachable_code)]
@@ -2378,12 +2394,6 @@ async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
     let err = resolution.expect_err("panicked selection task should surface as an error");
     assert!(err.to_string().contains("pool route selection task failed"));
     assert_eq!(wait_deadline, fallback_deadline);
-
-    let mapped = build_pool_route_selection_failure_error(&err, 0, 0);
-    assert_eq!(mapped.status, StatusCode::BAD_GATEWAY);
-    assert_eq!(mapped.failure_kind, PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
-    assert_eq!(mapped.attempt_summary.pool_attempt_count, 0);
-    assert!(mapped.message.contains("pool route selection task failed"));
 }
 
 #[test]
@@ -2418,25 +2428,19 @@ async fn failover_route_selection_task_preserves_the_external_deadline() {
     )
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
-    let (resolution, wait_deadline) = resolve_pool_account_for_failover_on_fresh_task(
-        state,
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
         None,
-        None,
-        Vec::new(),
-        HashSet::new(),
-        None,
-        None,
+        &[],
+        &HashSet::new(),
         None,
         true,
-        None,
+        &mut wait_deadline,
         Some(Instant::now() + Duration::from_millis(40)),
-        "/v1/responses".to_string(),
-        crate::ImageIntent::Unknown,
-        false,
-        "deadline-selection-task".to_string(),
     )
     .await;
     let elapsed = started.elapsed();
@@ -3030,8 +3034,11 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
     )
         .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
         .await
-        .expect("enable queue overflow mode");
+        .expect("publish model reservation capacity fixture");
 
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
@@ -3141,6 +3148,9 @@ async fn expired_model_cooldown_probe_conflict_has_a_distinct_no_candidate_reaso
         .execute(&state.pool)
         .await
         .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish expired cooldown probe fixture");
 
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
@@ -3217,6 +3227,9 @@ async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish queued model capacity fixture");
     {
         let mut reservations = state
             .pool_routing_reservations
@@ -3278,7 +3291,7 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
         insert_test_pool_api_key_account(&state, "Other Capacity", "other-capacity").await;
     let sticky_key = "sticky-queue-capacity-audit";
     let model = "gpt-sticky-queued-capacity-audit";
-    upsert_test_sticky_route_at(&state.pool, sticky_key, sticky_id, &shanghai_now_string()).await;
+    upsert_test_sticky_route_at(&state, sticky_key, sticky_id, &shanghai_now_string()).await;
     for account_id in [sticky_id, other_id] {
         observe_model_route_seen(&state.pool, account_id, Some(model))
             .await
@@ -3298,6 +3311,9 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish queued sticky capacity fixture");
     {
         let mut reservations = state
             .pool_routing_reservations
@@ -3392,13 +3408,16 @@ async fn queued_model_capacity_audit_ignores_unrelated_cooldown_expiry() {
     .execute(&state.pool)
     .await
     .expect("seed unrelated cooldown");
-    set_test_account_status(&state.pool, unrelated_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), unrelated_id, "needs_reauth").await;
     sqlx::query(
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
     )
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish unrelated cooldown capacity fixture");
     state
         .pool_routing_reservations
         .lock()

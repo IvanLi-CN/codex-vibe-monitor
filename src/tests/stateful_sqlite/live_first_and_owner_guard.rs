@@ -2759,6 +2759,9 @@ async fn websocket_owner_guard_no_candidate_persists_invocation_audit_without_at
     .execute(&state.pool)
     .await
     .expect("limit websocket owner model route to one reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish websocket owner capacity fixture");
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
         None,
@@ -2947,8 +2950,11 @@ fn http_prebuffered_no_candidate_persists_invocation_audit_without_attempt() {
         .bind(account_id)
         .bind(model)
         .execute(&state.pool)
-        .await
-        .expect("limit HTTP model route to one reservation");
+    .await
+    .expect("limit HTTP model route to one reservation");
+        refresh_pool_routing_snapshot(state.as_ref())
+            .await
+            .expect("refresh routing snapshot after HTTP capacity setup");
         let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
             &state,
             None,
@@ -5279,7 +5285,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         Some("https://websocket-capacity-holder.example.com/backend-api/codex"),
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), owner_account_id, "needs_reauth").await;
     let sticky_only_key = "sticky-only-websocket-key";
     let model = "gpt-5-realtime";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, sticky_only_key, owner_account_id)
@@ -5310,6 +5316,9 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
     .execute(&state.pool)
     .await
     .expect("limit capacity-holder model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after websocket retry setup");
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
         None,
@@ -9486,6 +9495,7 @@ async fn pool_no_candidate_wait_bulkhead_rejects_the_thirty_third_waiter() {
     .await
     .expect("all thirty-two waiters should enter the bulkhead");
 
+    let started = Instant::now();
     let mut wait_deadline = None;
     let result = resolve_pool_account_for_request_with_wait(
         state.as_ref(),
@@ -9499,6 +9509,10 @@ async fn pool_no_candidate_wait_bulkhead_rejects_the_thirty_third_waiter() {
     )
     .await
     .expect("resolve saturated pool wait");
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "the thirty-third waiter must fail immediately"
+    );
     assert!(matches!(
         result,
         PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(audit))
@@ -9555,6 +9569,62 @@ async fn pool_no_candidate_bulkhead_does_not_limit_healthy_parallel_resolutions(
         POOL_NO_CANDIDATE_WAITER_LIMIT,
         "healthy resolutions must not acquire NoCandidate waiter capacity"
     );
+}
+
+#[tokio::test]
+async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        get_model_routing_live(
+            State(state.clone()),
+            Query(ModelRoutingLiveQuery {
+                window: Some("1h".to_string()),
+                model: None,
+                state: None,
+                limit: Some(100),
+            }),
+        ),
+    )
+    .await
+    .expect("model-routing-live must not wait for NoCandidate routes")
+    .expect("model-routing-live should remain available");
+    assert!(response.0.records.is_empty());
+
+    for waiter in waiters {
+        waiter.abort();
+    }
 }
 
 #[tokio::test]

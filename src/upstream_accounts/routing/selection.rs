@@ -43,33 +43,6 @@ fn no_candidate_audit(
     }
 }
 
-async fn no_candidate_audit_for_request(
-    pool: &Pool<Sqlite>,
-    requested_model: Option<&str>,
-    terminal_reason_code: &str,
-    candidate_count: usize,
-    eligible_candidate_count: usize,
-    reservation_conflict_count: usize,
-    exclusions: &[PoolRoutingSelectionAuditExcludedCandidate],
-) -> Result<PoolRoutingNoCandidateAudit> {
-    let mut audit = no_candidate_audit(
-        terminal_reason_code,
-        candidate_count,
-        eligible_candidate_count,
-        reservation_conflict_count,
-        exclusions,
-    );
-    let cooldown_candidate_ids = exclusions
-        .iter()
-        .filter(|candidate| candidate.reason_code == "modelTemporarilyExcluded")
-        .map(|candidate| candidate.account_id)
-        .collect::<Vec<_>>();
-    audit.next_eligible_at =
-        earliest_model_route_cooldown_expiry(pool, requested_model, &cooldown_candidate_ids)
-            .await?;
-    Ok(audit)
-}
-
 fn no_candidate_audit_from_snapshot(
     snapshot: &PoolRoutingSnapshot,
     requested_model: Option<&str>,
@@ -86,7 +59,15 @@ fn no_candidate_audit_from_snapshot(
         reservation_conflict_count,
         exclusions,
     );
-    audit.next_eligible_at = snapshot.earliest_model_route_cooldown_expiry(requested_model);
+    let cooldown_candidate_ids = exclusions
+        .iter()
+        .filter(|candidate| candidate.reason_code == "modelTemporarilyExcluded")
+        .map(|candidate| candidate.account_id)
+        .collect::<Vec<_>>();
+    audit.next_eligible_at = snapshot.earliest_model_route_cooldown_expiry_for_accounts(
+        requested_model,
+        &cooldown_candidate_ids,
+    );
     audit
 }
 
@@ -1351,18 +1332,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                     account,
                                                 ));
                                             }
-                                            let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                            let reason_code = if routing_snapshot
+                                                .model_route_requires_expired_cooldown_probe(
                                                     account.account_id,
                                                     requested_model,
-                                                )
-                                                .await?
-                                                {
-                                                    "expiredCooldownProbe"
-                                                } else {
-                                                    "stickyRouteReservationConflict"
-                                                };
+                                                ) {
+                                                "expiredCooldownProbe"
+                                            } else {
+                                                "stickyRouteReservationConflict"
+                                            };
                                             sticky_queue_reservation_conflict =
                                                 Some((account.account_id, reason_code.to_string()));
                                         }
@@ -1390,18 +1368,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         if cache_hit_protection.overflow_mode
                                             == CacheHitOverflowMode::Queue
                                         {
-                                            let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                            let reason_code = if routing_snapshot
+                                                .model_route_requires_expired_cooldown_probe(
                                                     account.account_id,
                                                     requested_model,
-                                                )
-                                                .await?
-                                                {
-                                                    "expiredCooldownProbe"
-                                                } else {
-                                                    "stickyRouteReservationConflict"
-                                                };
+                                                ) {
+                                                "expiredCooldownProbe"
+                                            } else {
+                                                "stickyRouteReservationConflict"
+                                            };
                                             sticky_queue_reservation_conflict =
                                                 Some((account.account_id, reason_code.to_string()));
                                         }
@@ -1543,7 +1518,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     let mut candidates = routing_snapshot.candidates(&tried);
-    let candidate_count = candidates.len();
+    let candidate_count =
+        candidates.len() + usize::from(sticky_queue_reservation_conflict.is_some());
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
         routing_snapshot.transport_decode_sticky_escape_states(
             &candidates
@@ -1941,8 +1917,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 continue;
             };
             let concurrency_limit =
-                model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
-                    .await?;
+                routing_snapshot.model_route_concurrency_limit(account.account_id, requested_model);
             if !pool_routing_model_reservation_is_at_capacity(
                 state,
                 reservation_key.expect("sticky queue conflict requires a reservation key"),
@@ -1955,12 +1930,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             reservation_conflict_count += 1;
             let reason_code = if account.account_id == *sticky_account_id {
                 terminal_reason_code.as_str()
-            } else if model_route_requires_expired_cooldown_probe(
-                &state.pool,
-                account.account_id,
-                requested_model,
-            )
-            .await?
+            } else if routing_snapshot
+                .model_route_requires_expired_cooldown_probe(account.account_id, requested_model)
             {
                 "expiredCooldownProbe"
             } else {
@@ -1978,16 +1949,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
         }
         return Ok(PoolAccountResolution::NoCandidate(
-            no_candidate_audit_for_request(
-                &state.pool,
+            no_candidate_audit_from_snapshot(
+                routing_snapshot.as_ref(),
                 requested_model,
                 terminal_reason_code,
                 candidate_count,
                 eligible_candidate_count,
                 reservation_conflict_count,
                 &selection_audit_exclusions,
-            )
-            .await?,
+            ),
         ));
     }
     let mut resolved_candidates = resolved_candidates.into_iter();
@@ -2004,13 +1974,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     concurrency_limit,
                 ) {
                     reservation_conflict_count += 1;
-                    let reason_code = if model_route_requires_expired_cooldown_probe(
-                        &state.pool,
-                        account.account_id,
-                        requested_model,
-                    )
-                    .await?
-                    {
+                    let reason_code = if routing_snapshot
+                        .model_route_requires_expired_cooldown_probe(
+                            account.account_id,
+                            requested_model,
+                        ) {
                         "expiredCooldownProbe"
                     } else if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
                         "stickyRouteReservationConflict"
@@ -2034,12 +2002,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             let Some(remaining_account) = remaining.resolved_account else {
                                 continue;
                             };
-                            let remaining_limit = model_route_concurrency_limit(
-                                &state.pool,
+                            let remaining_limit = routing_snapshot.model_route_concurrency_limit(
                                 remaining_account.account_id,
                                 requested_model,
-                            )
-                            .await?;
+                            );
                             if !pool_routing_model_reservation_is_at_capacity(
                                 state,
                                 reservation_key,
@@ -2050,13 +2016,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 continue;
                             }
                             reservation_conflict_count += 1;
-                            let remaining_reason = if model_route_requires_expired_cooldown_probe(
-                                &state.pool,
-                                remaining_account.account_id,
-                                requested_model,
-                            )
-                            .await?
-                            {
+                            let remaining_reason = if routing_snapshot
+                                .model_route_requires_expired_cooldown_probe(
+                                    remaining_account.account_id,
+                                    requested_model,
+                                ) {
                                 "expiredCooldownProbe"
                             } else if remaining_account.routing_source
                                 == PoolRoutingSelectionSource::StickyReuse
