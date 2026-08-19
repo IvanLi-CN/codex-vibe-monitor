@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.64.5",
+  "base_stable_version": "2.64.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-19T10:56:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.64.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4625efc1649aa8b4c9616f5e6a6811e54f499485",
+  "pr_number": 814,
+  "pr_title": "fix: restore model routes and explain pool failures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.64.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.64.5",
+  "target_sha": "4b934127a4f09f7322bf495ff97c13ffcf037e5b",
+  "type_label": "type:patch"
+}
