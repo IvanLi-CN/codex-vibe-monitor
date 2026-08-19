@@ -19,6 +19,7 @@ const SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(15
 const SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
 static SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
+static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
@@ -541,6 +542,9 @@ fn system_task_run_retention_schedule_next(now_epoch_ms: u64, delay: Duration) {
 }
 
 fn system_task_run_retention_pass_is_due(now_epoch_ms: u64) -> bool {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK
+        .lock()
+        .expect("system task retention schedule lock");
     let next = SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.load(Ordering::Acquire);
     if next > now_epoch_ms {
         return false;
@@ -561,6 +565,9 @@ fn system_task_run_retention_pass_is_due(now_epoch_ms: u64) -> bool {
 
 #[cfg(test)]
 pub(crate) fn reset_system_task_run_retention_schedule() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK
+        .lock()
+        .expect("system task retention schedule lock");
     SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.store(0, Ordering::Release);
 }
 
