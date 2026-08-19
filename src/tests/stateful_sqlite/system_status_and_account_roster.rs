@@ -532,6 +532,9 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         .execute(&state.pool)
         .await
         .expect("pin retention task timestamps");
+    hydrate_system_status_snapshot(state.as_ref())
+        .await
+        .expect("hydrate system status snapshot");
 
     let tied_handle = begin_system_task_run(
         &state.pool,
