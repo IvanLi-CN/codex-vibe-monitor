@@ -1118,7 +1118,11 @@ async fn historical_rollup_startup_window_bounds_a_twenty_thousand_batch_fixture
     let pending_hint = count_historical_rollup_startup_pending_hint(&state.pool)
         .await
         .expect("load bounded historical rollup startup pending hint");
-    assert_eq!(pending_hint, 0);
+    assert_eq!(pending_hint.pending_archive_batches, 0);
+    assert_eq!(pending_hint.candidate_count, 32);
+    assert_eq!(pending_hint.inspected_path_count, 32);
+    assert!(pending_hint.candidate_count <= 32);
+    assert!(pending_hint.inspected_path_count <= 32);
 
     let first =
         materialize_historical_rollups_startup_window(&state.pool, 0, Duration::from_secs(6))

@@ -940,6 +940,13 @@ pub(crate) struct HistoricalRollupStartupWindowResult {
     pub(crate) wrapped: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct HistoricalRollupStartupPendingHint {
+    pub(crate) pending_archive_batches: usize,
+    pub(crate) candidate_count: usize,
+    pub(crate) inspected_path_count: usize,
+}
+
 async fn load_historical_rollup_startup_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
@@ -984,12 +991,19 @@ async fn load_historical_rollup_startup_candidates(
 
 pub(crate) async fn count_historical_rollup_startup_pending_hint(
     pool: &Pool<Sqlite>,
-) -> Result<usize> {
+) -> Result<HistoricalRollupStartupPendingHint> {
     let candidates = load_historical_rollup_startup_candidates(pool, 0).await?;
-    Ok(candidates
+    let inspected_path_count = candidates.len();
+    let pending_archive_batches = candidates
         .iter()
         .filter(|candidate| Path::new(&candidate.file_path).exists())
-        .count())
+        .count();
+
+    Ok(HistoricalRollupStartupPendingHint {
+        pending_archive_batches,
+        candidate_count: candidates.len(),
+        inspected_path_count,
+    })
 }
 
 pub(crate) async fn materialize_historical_rollups_startup_window(

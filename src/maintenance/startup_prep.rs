@@ -72,8 +72,7 @@ pub(crate) async fn run_startup_persistent_prep_inner(
         .await?;
         ensure_invocation_summary_rollups_ready_best_effort(pool).await?;
     }
-    let pending_historical_rollup_archive_batches =
-        count_historical_rollup_startup_pending_hint(pool).await?;
+    let historical_rollup_pending_hint = count_historical_rollup_startup_pending_hint(pool).await?;
 
     Ok(StartupPersistentPrepSummary {
         stale_archive_temp_files_removed: janitor_summary.stale_temp_files_removed,
@@ -86,7 +85,8 @@ pub(crate) async fn run_startup_persistent_prep_inner(
             .pending_batches
             .saturating_sub(manifest_refresh.refreshed_batches)
             .max(manifest_refresh.candidate_remaining_hint),
-        pending_historical_rollup_archive_batches,
+        pending_historical_rollup_archive_batches: historical_rollup_pending_hint
+            .pending_archive_batches,
     })
 }
 
