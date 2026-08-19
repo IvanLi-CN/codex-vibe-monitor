@@ -1936,6 +1936,9 @@ async fn pool_openai_v1_responses_overload_prefers_same_route_before_alternate_r
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after same-route overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2072,6 +2075,9 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after alternate-route overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2203,6 +2209,9 @@ async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_bo
     )
     .await
     .expect("seed compact sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after compact overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2524,6 +2533,9 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after oauth scope sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),

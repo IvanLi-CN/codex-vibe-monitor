@@ -103,6 +103,9 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     )
     .await
     .expect("seed oauth sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after oauth sticky setup");
 
     let request_body = serde_json::to_vec(&json!({
         "messages": [{
@@ -1532,6 +1535,9 @@ fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
         )
         .await
         .expect("seed sticky route");
+        refresh_pool_routing_snapshot(state.as_ref())
+            .await
+            .expect("refresh routing snapshot after body sticky setup");
         let request_body =
             br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-body-001"}"#.to_vec();
 
