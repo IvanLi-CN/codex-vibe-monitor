@@ -254,6 +254,7 @@ pub(crate) struct PreparedUpstreamWebSocket {
     upstream: UpstreamWsStream,
     transport_flush_task: Option<UpstreamSocketFlushTask>,
     pending_attempt_record: Option<PendingPoolAttemptRecord>,
+    model_mapping: Option<ResolvedModelMapping>,
     deferred_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>,
     reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
@@ -1224,6 +1225,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         upstream,
         transport_flush_task,
         pending_attempt_record,
+        model_mapping,
         deferred_cleanup_guard,
         reservation_guard,
         account,
@@ -1263,6 +1265,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         upstream,
         transport_flush_task: _transport_flush_task,
         pending_attempt_record,
+        model_mapping,
         mut deferred_cleanup_guard,
         mut reservation_guard,
         account,
@@ -1361,6 +1364,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                 state.as_ref(),
                 usage_tracker.account.account_id,
                 message,
+                model_mapping.as_ref(),
             )
             .await
             {
@@ -1487,6 +1491,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                             state.as_ref(),
                             usage_tracker.account.account_id,
                             message,
+                            model_mapping.as_ref(),
                         )
                         .await
                         {
@@ -2768,6 +2773,7 @@ async fn rewrite_ws_downstream_message_model(
     state: &AppState,
     account_id: i64,
     message: AxumWsMessage,
+    active_mapping: Option<&ResolvedModelMapping>,
 ) -> Result<(AxumWsMessage, Option<ResolvedModelMapping>)> {
     let AxumWsMessage::Text(text) = message else {
         return Ok((message, None));
@@ -2782,6 +2788,11 @@ async fn rewrite_ws_downstream_message_model(
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(requested_model) = model.as_str().map(str::to_string) else {
+        if active_mapping.is_some() {
+            return Err(anyhow!(
+                "websocket model mapping requires a top-level string model field"
+            ));
+        }
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(mapping) =
