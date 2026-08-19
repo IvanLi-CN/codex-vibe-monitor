@@ -3155,7 +3155,7 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
     )
     .await;
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let historical_range = "30d".to_string();
     let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
@@ -3402,7 +3402,7 @@ async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live
         .expect("insert overlapping archived range live row");
     }
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let historical_range = "30d".to_string();
     let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
@@ -20198,7 +20198,7 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     assert_eq!(all_summary.total_tokens, 30);
     assert_f64_close(all_summary.total_cost, 0.30);
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
+    let historical_range = "30d".to_string();
     let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {

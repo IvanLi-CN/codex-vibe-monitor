@@ -7003,10 +7003,35 @@ const SUMMARY_PROJECTION_MIN_EXACT_HORIZON: ChronoDuration = ChronoDuration::hou
 // keeps boundary hydration finite while covering every legal rolling window that can outlive
 // the 48-hour exact tail; HTTP still reads only the resulting in-memory projection.
 const SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS: u64 = 30;
+// The public Summary UI exposes rolling windows through 1mo. Keep arbitrary parser inputs
+// bounded at the HTTP contract so the projection never has to retain an unbounded set of
+// partial-hour boundaries; longer requests fail before hub/SQLite access.
+const SUMMARY_PROJECTION_MAX_DURATION: ChronoDuration = ChronoDuration::days(30);
 
 fn summary_projection_exact_horizon(invocation_max_days: u64) -> ChronoDuration {
     let supported_days = invocation_max_days.saturating_add(SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS);
     ChronoDuration::days(supported_days.max(2) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
+}
+
+fn validate_summary_projection_window(
+    query: &SummaryQuery,
+    default_limit: i64,
+) -> Result<(), ApiError> {
+    if let SummaryWindow::Duration(duration) =
+        parse_summary_window(query, default_limit).map_err(ApiError::bad_request)?
+    {
+        if duration <= ChronoDuration::zero() {
+            return Err(ApiError::bad_request(anyhow!(
+                "summary duration must be greater than zero"
+            )));
+        }
+        if duration > SUMMARY_PROJECTION_MAX_DURATION {
+            return Err(ApiError::bad_request(anyhow!(
+                "summary duration exceeds the supported 30d window"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
@@ -7157,6 +7182,7 @@ impl SummaryProjection {
         params: &SummaryQuery,
         default_limit: i64,
     ) -> Result<StatsResponse, ApiError> {
+        validate_summary_projection_window(params, default_limit)?;
         let last_good_age_ms = self
             .refreshed_at
             .map(|refreshed_at| refreshed_at.elapsed().as_millis() as u64);
@@ -7609,6 +7635,27 @@ fn summary_projection_archive_column(column: &str, available: bool, fallback: &s
     }
 }
 
+fn summary_projection_archive_exact_ranges(
+    archive_has_materialized_rollups: bool,
+    exact_range: ExactUtcRange,
+    protected_boundary_buckets: &HashSet<i64>,
+) -> Vec<ExactUtcRange> {
+    if !archive_has_materialized_rollups {
+        return vec![exact_range];
+    }
+
+    protected_boundary_buckets
+        .iter()
+        .filter_map(|bucket| {
+            let start = Utc.timestamp_opt(*bucket, 0).single()?;
+            let end = start + ChronoDuration::hours(1);
+            let start = start.max(exact_range.start);
+            let end = end.min(exact_range.end);
+            (start < end).then_some(ExactUtcRange { start, end })
+        })
+        .collect()
+}
+
 async fn merge_summary_projection_archive_records(
     pool: &Pool<Sqlite>,
     persisted_live_ids: &HashSet<String>,
@@ -7667,9 +7714,7 @@ async fn merge_summary_projection_archive_records(
          COALESCE({}, 0) AS cache_input_tokens, COALESCE({}, 0) AS reasoning_tokens, \
          {} AS reasoning_effort, COALESCE({}, 0) AS total_tokens, {}, {}, {}, {}, {}, {}, \
          COALESCE({}, '') AS status, {}, {}, {}, {} AS upstream_account_id \
-         FROM codex_invocations \
-         WHERE occurred_at >= ?1 AND occurred_at < ?2 \
-         LIMIT ?3",
+         FROM codex_invocations",
         if has("source") { "source" } else { "NULL" },
         summary_projection_archive_column("model", has("model"), "NULL"),
         response_model,
@@ -7711,16 +7756,38 @@ async fn merge_summary_projection_archive_records(
         summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
         upstream_account_id,
     );
-    let archive_read_limit = if archive_has_materialized_rollups {
-        i64::MAX
+    let exact_ranges = summary_projection_archive_exact_ranges(
+        archive_has_materialized_rollups,
+        exact_range,
+        protected_boundary_buckets,
+    );
+    let mut bind_index = 1usize;
+    let mut bounded_query = query;
+    bounded_query.push_str(" WHERE ");
+    if exact_ranges.is_empty() {
+        bounded_query.push_str("0 = 1");
     } else {
-        (SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64
-    };
-    let mut rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query)
-        .bind(db_occurred_at_lower_bound(exact_range.start))
-        .bind(db_occurred_at_upper_bound(exact_range.end))
-        .bind(archive_read_limit)
-        .fetch(pool);
+        for (index, _) in exact_ranges.iter().enumerate() {
+            if index > 0 {
+                bounded_query.push_str(" OR ");
+            }
+            bounded_query.push_str(&format!(
+                "(occurred_at >= ?{} AND occurred_at < ?{})",
+                bind_index,
+                bind_index + 1
+            ));
+            bind_index += 2;
+        }
+    }
+    bounded_query.push_str(&format!(" LIMIT ?{bind_index}"));
+    let archive_read_limit = (SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64;
+    let mut archive_query = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&bounded_query);
+    for range in &exact_ranges {
+        archive_query = archive_query
+            .bind(db_occurred_at_lower_bound(range.start))
+            .bind(db_occurred_at_upper_bound(range.end));
+    }
+    let mut rows = archive_query.bind(archive_read_limit).fetch(pool);
     let mut rows_seen = 0usize;
     while let Some(row) = rows.try_next().await? {
         rows_seen = rows_seen.saturating_add(1);
@@ -7736,10 +7803,9 @@ async fn merge_summary_projection_archive_records(
         {
             continue;
         }
-        let global_rollup_covered =
-            archive_has_materialized_rollups && hourly_rollup_totals.contains_key(&(bucket, None));
-        let account_rollup_covered = archive_has_materialized_rollups
-            && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
+        let global_rollup_covered = hourly_rollup_totals.contains_key(&(bucket, None));
+        let account_rollup_covered =
+            hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
         let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
         let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
         let bucket_is_full_rollup = bucket >= full_rollup_start
@@ -8041,13 +8107,22 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         .into_iter()
         .filter_map(|row| {
             let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
+            let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+            let global_rollup_covered =
+                row.id <= rollup_live_cursor && hourly_rollup_totals.contains_key(&(bucket, None));
+            let account_rollup_covered = row.id <= rollup_live_cursor
+                && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
+            let usage_global_rollup_covered =
+                row.id <= rollup_live_cursor && hourly_rollup_usage.contains_key(&(bucket, None));
+            let usage_account_rollup_covered = row.id <= rollup_live_cursor
+                && hourly_rollup_usage.contains_key(&(bucket, row.upstream_account_id));
             Some((
                 row.invoke_id.clone(),
                 SummaryProjectionRecord {
-                    global_rollup_covered: row.id <= rollup_live_cursor,
-                    account_rollup_covered: row.id <= rollup_live_cursor,
-                    usage_global_rollup_covered: row.id <= rollup_live_cursor,
-                    usage_account_rollup_covered: row.id <= rollup_live_cursor,
+                    global_rollup_covered,
+                    account_rollup_covered,
+                    usage_global_rollup_covered,
+                    usage_account_rollup_covered,
                     is_persisted_live_record: true,
                     row,
                     occurred_at,
@@ -8195,7 +8270,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     let mut all_time_by_account = HashMap::new();
     let mut closed_window_requests = Vec::new();
     let mut in_progress_by_account = HashMap::new();
-    for upstream_account_id in std::iter::once(None).chain(account_ids.into_iter().map(Some)) {
+    for upstream_account_id in std::iter::once(None).chain(account_ids.iter().copied().map(Some)) {
         let params = SummaryQuery {
             window: Some("all".to_string()),
             limit: None,
@@ -20887,6 +20962,7 @@ pub(crate) async fn fetch_summary(
 ) -> Result<Json<StatsResponse>, ApiError> {
     // Parse before touching the hub so invalid requests retain their former 400 contract without
     // creating cache state or touching SQLite/filesystem state.
+    validate_summary_projection_window(&params, state.config.list_limit_max as i64)?;
     let _key = SummarySnapshotKey::try_from_query(&params, state.config.list_limit_max as i64)
         .map_err(ApiError::bad_request)?;
     let projection = state
@@ -23316,6 +23392,151 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_handler_rejects_unsupported_duration_before_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        state.pool.close().await;
+
+        for window in ["60d", "-1d"] {
+            let result = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(ApiError::BadRequest(_))),
+                "unsupported duration {window} must fail before the memory-only handler path"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_projection_uses_scope_coverage_for_persisted_live_rows() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, input_tokens, output_tokens, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES (1, 'summary-live-scope-coverage', datetime('now', '-2 hours', '-10 minutes'), 'proxy', 'success', 3, 14, 17, 1.25, '{\"upstreamAccountId\":42,\"responseModel\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert persisted live row");
+        let occurred_at: String = sqlx::query_scalar(
+            "SELECT occurred_at FROM codex_invocations WHERE invoke_id = 'summary-live-scope-coverage'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load live row timestamp");
+        let bucket = align_bucket_epoch(
+            parse_to_utc_datetime(&occurred_at)
+                .expect("parse live row timestamp")
+                .timestamp(),
+            3_600,
+            0,
+        );
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert global live rollup");
+        sqlx::query(
+            "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) VALUES ('codex_invocations_summary_rollup_v2_live_cursor', 1, datetime('now')) ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = datetime('now')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("advance global live rollup cursor");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate scope-aware projection");
+        let Json(global_before) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve global projection");
+        assert_eq!(global_before.total_count, 1);
+        assert_eq!(global_before.total_tokens, 17);
+
+        let Json(account_before) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve account exact fallback");
+        assert_eq!(account_before.total_count, 1);
+        assert_eq!(account_before.total_tokens, 17);
+        let account_usage = account_before
+            .usage_breakdown
+            .as_ref()
+            .expect("account exact usage");
+        assert_eq!(account_usage.models[0].model, "gpt-5");
+        assert_eq!(account_usage.models[0].output_tokens, 14);
+
+        sqlx::query(
+            "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert account totals rollup");
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly (bucket_start_epoch, source, upstream_account_key, upstream_account_id, normalized_model, normalized_reasoning_effort, request_count, cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) VALUES (?1, 'proxy', '42', 42, 'gpt-5', 'high', 1, 3, 0, 14, 1.25, 1)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert account usage rollup");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("rehydrate with account coverage");
+        state.pool.close().await;
+
+        let Json(account_after) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve account rollup projection without sqlite");
+        assert_eq!(account_after.total_count, 1);
+        assert_eq!(account_after.total_tokens, 17);
+        let account_usage = account_after
+            .usage_breakdown
+            .as_ref()
+            .expect("account rollup usage");
+        assert_eq!(account_usage.models.len(), 1);
+        assert_eq!(account_usage.models[0].model, "gpt-5");
+        assert_eq!(account_usage.models[0].output_tokens, 14);
+    }
+
+    #[tokio::test]
     async fn summary_handler_rejects_expired_projection_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -23644,6 +23865,29 @@ mod request_compression_query_tests {
         .expect_err("unmaterialized archive overflow must fail closed");
         assert!(error.to_string().contains("exact-record budget"));
         assert!(records.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
+
+        let mut materialized_records = HashMap::new();
+        let mut materialized_budget = 0;
+        merge_summary_projection_archive_records(
+            &pool,
+            &HashSet::new(),
+            &HashMap::from([(
+                (align_bucket_epoch(now.timestamp(), 3_600, 0), None),
+                StatsTotals::default(),
+            )]),
+            true,
+            ExactUtcRange {
+                start: now - ChronoDuration::hours(2),
+                end: now + ChronoDuration::minutes(1),
+            },
+            &HashSet::new(),
+            None,
+            &mut materialized_records,
+            &mut materialized_budget,
+        )
+        .await
+        .expect("materialized archive outside protected boundaries must stay bounded");
+        assert!(materialized_records.is_empty());
     }
 
     #[tokio::test]

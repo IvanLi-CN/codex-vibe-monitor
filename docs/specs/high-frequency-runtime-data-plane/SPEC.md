@@ -20,7 +20,7 @@
 
 ### Summary Projection
 
-`GET /api/stats/summary` 的真值是 `SummaryProjection`，不是按 URL 参数保存的一组 SQL 结果。readiness 前，projection 从 invocation、hourly rollup、archive、账号 usage、recent invocation、maintenance 与 runtime overlay 的持久化基线完成 hydration；readiness 后 HTTP 只解析和规范化参数，并从 projection 精确派生原有 `StatsResponse`。任何合法 `window`、`timeZone`、`upstreamAccountId` 与 `limit` 组合不得借用另一组合的结果，也不得在 HTTP 内查询 SQLite、检查路径或扫描文件。
+`GET /api/stats/summary` 的真值是 `SummaryProjection`，不是按 URL 参数保存的一组 SQL 结果。readiness 前，projection 从 invocation、hourly rollup、archive、账号 usage、recent invocation、maintenance 与 runtime overlay 的持久化基线完成 hydration；readiness 后 HTTP 只解析和规范化参数，并从 projection 精确派生原有 `StatsResponse`。公开 rolling duration 合同上限为 30 天（`60d`、`12mo` 等超限输入在访问 projection/SQLite 前返回既有 400）；该上限避免任意 duration 造成无界 boundary 保留。任何合法 `window`、`timeZone`、`upstreamAccountId` 与 `limit` 组合不得借用另一组合的结果，也不得在 HTTP 内查询 SQLite、检查路径或扫描文件。
 
 projection 按账号（含全局合并）、UTC 时间桶和 recent invocation 顺序保留以下可组合输入：成功/失败/非成功计数与成本、token 和 usage/model/reasoning 细目、延迟样本与直方图、archive/rollup coverage、活动 runtime phase/等待计数、terminal overlay，以及 maintenance 的 last-good 快照。calendar 和 previous-day 选择在请求内由 canonical timezone 将内存 UTC bucket 切为精确区间；rolling window、all-time 和 current-limit 分别从 bucket、累计聚合和 bounded recent index 派生。48 条限制仅约束可选的已序列化 response LRU，不能限制 projection 对合法选择的精确性。
 

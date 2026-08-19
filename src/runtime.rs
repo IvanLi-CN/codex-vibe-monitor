@@ -239,6 +239,9 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    // Listen for shutdown before the readiness-gated hydration loop so an unavailable
+    // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
+    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
     hydrate_startup_memory_snapshots(state.as_ref()).await?;
     warm_dashboard_runtime_projection(state.as_ref()).await;
     spawn_dashboard_runtime_projection_reconcile(state.clone());
@@ -248,8 +251,6 @@ pub(crate) async fn run() -> Result<()> {
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
-
-    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
     run_runtime_until_shutdown(
         state,
