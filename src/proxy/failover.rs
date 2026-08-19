@@ -2662,6 +2662,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
+                                release_pool_routing_reservation_without_availability(
+                                    state.as_ref(),
+                                    &reservation_key,
+                                );
                             }
                             store_pool_failover_error(
                                 &mut last_error,
@@ -2911,6 +2915,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
+                                release_pool_routing_reservation_without_availability(
+                                    state.as_ref(),
+                                    &reservation_key,
+                                );
                             }
                             store_pool_failover_error(
                                 &mut last_error,
@@ -3913,6 +3921,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         error = %route_err,
                         "failed to record pool live-attempt failure"
                     );
+                    release_pool_routing_reservation_without_availability(
+                        state.as_ref(),
+                        &reservation_key,
+                    );
                 }
                 if let Some(observation) = compact_support_observation.as_ref()
                     && let Err(observation_err) = record_compact_support_observation(
@@ -4179,6 +4191,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
+                            release_pool_routing_reservation_without_availability(
+                                state.as_ref(),
+                                &reservation_key,
+                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
@@ -4380,6 +4396,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
+                            release_pool_routing_reservation_without_availability(
+                                state.as_ref(),
+                                &reservation_key,
+                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
@@ -4478,6 +4498,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
+                            release_pool_routing_reservation_without_availability(
+                                state.as_ref(),
+                                &reservation_key,
+                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
