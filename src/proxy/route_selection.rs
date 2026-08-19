@@ -1039,6 +1039,7 @@ fn analyze_replay_snapshot_route_value(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
+    let normalize_model = |value: Option<String>| value.map(|value| value.trim().to_string());
     let sticky_key = (!value.invalid_sticky_projection)
         .then(|| {
             [
@@ -1063,7 +1064,7 @@ fn analyze_replay_snapshot_route_value(
     ]
     .into_iter()
     .find_map(normalize);
-    let requested_model = normalize(value.model);
+    let requested_model = normalize_model(value.model);
     let image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
             ImageIntent::DirectImage
@@ -1135,6 +1136,22 @@ fn analyze_replay_snapshot_route_value(
         file_read_count: 0,
         json_parse_count: 0,
         parse_outcome: "empty",
+    }
+}
+
+#[cfg(test)]
+mod replay_snapshot_route_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_empty_model_survives_route_analysis() {
+        let semantics = serde_json::from_str::<SelectiveRequestSemantics>(r#"{"model":""}"#)
+            .expect("parse request semantics");
+        let analysis = analyze_replay_snapshot_route_value(
+            Some(semantics),
+            Some(ProxyCaptureTarget::Responses),
+        );
+        assert_eq!(analysis.requested_model, Some(String::new()));
     }
 }
 
@@ -1857,6 +1874,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     responses_total_timeout_started_at: Option<Instant>,
     sticky_key: Option<&str>,
     account: PoolResolvedAccount,
+    model_mapping: Option<ResolvedModelMapping>,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     first_request_body_poll_at_rx: &watch::Receiver<Option<Instant>>,
@@ -1872,6 +1890,12 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             account.codex_imagegen_rewrite_mode == crate::CodexImagegenRewriteMode::KeepOriginal
         })
         .map(codex_imagegen_keep_original_audit);
+    let mapped_upstream_model = model_mapping
+        .as_ref()
+        .map(|mapping| mapping.target_model.as_str());
+    let model_mapping_pattern = model_mapping
+        .as_ref()
+        .map(|mapping| mapping.source_model.as_str());
     let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(
         &state.pool,
         &state.config,
@@ -2051,6 +2075,22 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             } else {
                 None
             };
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Some(mapped_upstream_model) = mapped_upstream_model
+                && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                    &state.pool,
+                    pending_attempt_record,
+                    Some(mapped_upstream_model),
+                    model_mapping_pattern,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to persist live-first model mapping audit"
+                );
+            }
             annotate_live_first_codex_imagegen_rewrite(
                 state.as_ref(),
                 pending_attempt_record.as_ref(),
@@ -2318,6 +2358,22 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             } else {
                 None
             };
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Some(mapped_upstream_model) = mapped_upstream_model
+                && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
+                    &state.pool,
+                    pending_attempt_record,
+                    Some(mapped_upstream_model),
+                    model_mapping_pattern,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to persist live-first model mapping audit"
+                );
+            }
             annotate_live_first_codex_imagegen_rewrite(
                 state.as_ref(),
                 pending_attempt_record.as_ref(),
@@ -2461,8 +2517,10 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         let route_error_message = upstream_error_code
             .as_deref()
             .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
-        let requested_model_for_failure =
-            trace_context.and_then(|trace| trace.request_model.as_deref());
+        // A mapped live request is rejected by the upstream for its target model, while
+        // routing health and audit remain attached to the original request model.
+        let requested_model_for_failure = mapped_upstream_model
+            .or_else(|| trace_context.and_then(|trace| trace.request_model.as_deref()));
         let explicit_model_failure = requested_model_for_failure.map_or_else(
             || is_explicit_model_failure(status, Some(&route_error_message)),
             |model| {
@@ -4477,12 +4535,20 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 );
                             pool_attempt_trace_context.request_model = live_requested_model.clone();
 
-                            if pool_account_supports_live_request_body(
-                                &initial_account,
-                                original_uri,
-                                &method,
-                                &headers,
-                            ) {
+                            let live_model_mapping = load_model_mapping_for_account(
+                                state.as_ref(),
+                                initial_account.account_id,
+                                live_requested_model.as_deref(),
+                            )
+                            .await;
+                            if matches!(live_model_mapping, Ok(None))
+                                && pool_account_supports_live_request_body(
+                                    &initial_account,
+                                    original_uri,
+                                    &method,
+                                    &headers,
+                                )
+                            {
                                 let upstream = match send_pool_request_live_first_attempt(
                                     state.clone(),
                                     proxy_request_id,
@@ -4498,6 +4564,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     live_responses_total_timeout_started_at,
                                     live_body_sticky_key.as_deref(),
                                     initial_account.clone(),
+                                    None,
                                     Some(&pool_attempt_trace_context),
                                     &replay_status_rx,
                                     &replayable_body.first_live_chunk_sent_at_rx,

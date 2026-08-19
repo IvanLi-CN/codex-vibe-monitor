@@ -7,6 +7,7 @@ mod crud_group_notes;
 mod external_api_integration;
 mod imports_jobs_sse;
 mod maintenance_dispatch;
+mod model_mappings;
 #[expect(
     clippy::too_many_arguments,
     reason = "OAuth callback persistence adapters mirror session metadata fields."
@@ -22,6 +23,7 @@ pub(crate) use crud_group_notes::*;
 pub(crate) use external_api_integration::*;
 pub(crate) use imports_jobs_sse::*;
 pub(crate) use maintenance_dispatch::*;
+pub(crate) use model_mappings::*;
 pub(crate) use oauth_sessions_callbacks::*;
 pub(crate) use routing::*;
 pub(crate) use sync::*;

@@ -52,7 +52,7 @@ pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
     policy_image_first_byte_timeout_secs,
     policy_responses_stream_timeout_secs, policy_compact_stream_timeout_secs,
     bound_proxy_keys_json,
-    upstream_base_url, external_client_id, external_source_account_id,
+    upstream_base_url, model_mappings_json, external_client_id, external_source_account_id,
     created_at, updated_at
 "#;
 
@@ -355,6 +355,7 @@ pub(crate) async fn sync_upstream_account_by_id(
         _ => bail!("unsupported account kind: {}", row.kind),
     };
     sync_result?;
+    refresh_pool_model_routing_runtime_cache(state).await?;
 
     let refreshed_row = load_upstream_account_row(&state.pool, id)
         .await?
@@ -3353,6 +3354,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             .iter()
             .map(build_action_event_from_row)
             .collect(),
+        model_mappings: decode_model_mappings_json(row.model_mappings_json.as_deref()),
         model_routing_states: load_model_routing_states(pool, row.id).await?,
     }))
 }

@@ -5,6 +5,15 @@ pub(crate) struct PoolRoutingRuntimeCache {
     pub(crate) api_key: Option<String>,
     pub(crate) request_compression: PoolRoutingRequestCompressionSettingsResolved,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResolved,
+    pub(crate) model_routing: PoolModelRoutingRuntimeCache,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PoolModelRoutingRuntimeCache {
+    pub(crate) generation: u64,
+    pub(crate) mappings_by_account: HashMap<i64, Vec<CompiledModelMapping>>,
+    pub(crate) available_models: Vec<String>,
+    pub(crate) warmed_model_account_ids: HashMap<String, Vec<i64>>,
 }
 
 #[derive(Debug, Default)]
@@ -2109,6 +2118,7 @@ pub(crate) struct AppState {
         Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
+    pub(crate) pool_model_routing_cache_write_lock: Arc<Mutex<()>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,
     #[cfg(test)]

@@ -1556,7 +1556,7 @@ pub(crate) fn pool_routing_model_reservation_count(
     account_id: i64,
     model: Option<&str>,
 ) -> i64 {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return 0;
     };
     let reservations = state
@@ -1612,7 +1612,7 @@ pub(crate) fn pool_routing_reservation_matches_model(
     account_id: i64,
     model: Option<&str>,
 ) -> bool {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return false;
     };
     let reservations = state
@@ -1694,15 +1694,11 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    let model = model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            reservations
-                .get(reservation_key)
-                .and_then(|reservation| reservation.model.clone())
-        });
+    let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
+        reservations
+            .get(reservation_key)
+            .and_then(|reservation| reservation.model.clone())
+    });
     if account.routing_source == PoolRoutingSelectionSource::StickyReuse
         && proxy_key.is_none()
         && model.is_none()

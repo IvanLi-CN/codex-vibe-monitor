@@ -5175,13 +5175,16 @@ mod tests {
             let producer_writer = writer.clone();
             tokio::spawn(async move {
                 while producer_active.load(std::sync::atomic::Ordering::Acquire) {
-                    for _ in 0..1024 {
+                    for index in 0..1024 {
                         let _ = producer_writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
                             BatchedAccountSelectedTouch {
                                 account_id: 999_992,
                                 selected_at: "2026-08-10T12:00:01Z".to_string(),
                             },
                         ));
+                        if index % 32 == 31 {
+                            tokio::task::yield_now().await;
+                        }
                     }
                     tokio::task::yield_now().await;
                 }

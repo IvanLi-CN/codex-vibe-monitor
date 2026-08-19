@@ -35,6 +35,14 @@ pub(crate) fn best_effort_extract_json_string_for_patterns(
     bytes: &[u8],
     patterns: &[&[u8]],
 ) -> Option<String> {
+    best_effort_extract_json_string_for_patterns_with_empty(bytes, patterns, false)
+}
+
+fn best_effort_extract_json_string_for_patterns_with_empty(
+    bytes: &[u8],
+    patterns: &[&[u8]],
+    preserve_empty: bool,
+) -> Option<String> {
     fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
         while index < bytes.len() && bytes[index].is_ascii_whitespace() {
             index += 1;
@@ -174,7 +182,7 @@ pub(crate) fn best_effort_extract_json_string_for_patterns(
         cursor = if matches_pattern {
             if let Some((value, next_value_index)) = parse_json_string(bytes, cursor) {
                 let normalized = value.trim();
-                if !normalized.is_empty() {
+                if preserve_empty || !normalized.is_empty() {
                     return Some(normalized.to_string());
                 }
                 next_value_index
@@ -188,7 +196,7 @@ pub(crate) fn best_effort_extract_json_string_for_patterns(
 }
 
 pub(crate) fn best_effort_extract_model_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
-    best_effort_extract_json_string_for_patterns(bytes, &[br#""model""#])
+    best_effort_extract_json_string_for_patterns_with_empty(bytes, &[br#""model""#], true)
 }
 
 pub(crate) fn best_effort_extract_sticky_key_from_request_body_prefix(
@@ -257,6 +265,15 @@ mod request_prefix_tests {
         assert_eq!(
             best_effort_extract_model_from_request_body_prefix(payload).as_deref(),
             Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn prefix_model_extractor_preserves_an_explicit_empty_model() {
+        let payload = br#"{"model":"","input":"hello"}"#;
+        assert_eq!(
+            best_effort_extract_model_from_request_body_prefix(payload),
+            Some(String::new())
         );
     }
 

@@ -156,6 +156,8 @@ pub(crate) struct UpstreamAccountRow {
     pub(crate) bound_proxy_keys_json: Option<String>,
     pub(crate) upstream_base_url: Option<String>,
     #[sqlx(default)]
+    pub(crate) model_mappings_json: Option<String>,
+    #[sqlx(default)]
     pub(crate) external_client_id: Option<String>,
     #[sqlx(default)]
     pub(crate) external_source_account_id: Option<String>,

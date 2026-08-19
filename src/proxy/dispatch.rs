@@ -946,22 +946,47 @@ async fn prepare_capture_request_body(
                     .and_then(|settings| settings.request_compression_level_preset.as_deref())
                     .map(RequestCompressionLevelPreset::from_str)
                     .unwrap_or_default();
-                if !live_pipeline
-                    .as_mut()
-                    .expect("live pipeline is present before configuration")
-                    .configure(LiveResponsesBodyTransformConfig {
-                        target_encoding,
-                        compression_level,
-                        enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
-                        oauth,
-                        fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
-                        image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
-                        codex_imagegen_rewrite_mode: initial_account.codex_imagegen_rewrite_mode,
-                        codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
-                    })
+                let model_mapping = match load_model_mapping_for_account(
+                    state.as_ref(),
+                    initial_account.account_id,
+                    live_body_key_probe.model.as_deref(),
+                )
+                .await
+                {
+                    Ok(mapping) => mapping,
+                    Err(err) => {
+                        warn!(
+                            proxy_request_id,
+                            account_id = initial_account.account_id,
+                            error = %err,
+                            "failed to resolve live-first model mapping; replaying buffered request"
+                        );
+                        live_first_attempt_failed = true;
+                        drop(live_pipeline.take());
+                        None
+                    }
+                };
+                if live_pipeline.is_some()
+                    && !live_pipeline
+                        .as_mut()
+                        .expect("live pipeline is present before configuration")
+                        .configure(LiveResponsesBodyTransformConfig {
+                            target_encoding,
+                            compression_level,
+                            enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
+                            oauth,
+                            fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
+                            image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
+                            codex_imagegen_rewrite_mode: initial_account
+                                .codex_imagegen_rewrite_mode,
+                            codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
+                            model_mapping_target: model_mapping
+                                .as_ref()
+                                .map(|mapping| mapping.target_model.clone()),
+                        })
                 {
                     live_first_attempt_failed = true;
-                } else {
+                } else if live_pipeline.is_some() {
                     let mut live_headers = headers.clone();
                     live_headers.remove(header::CONTENT_LENGTH);
                     match target_encoding.header_value() {
@@ -997,6 +1022,7 @@ async fn prepare_capture_request_body(
                         response_timeout.map(|_| req_read_started),
                         None,
                         initial_account,
+                        model_mapping,
                         Some(&trace_context),
                         &replay_status_rx,
                         &first_upstream_body_poll_at_rx,
