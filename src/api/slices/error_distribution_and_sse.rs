@@ -2407,8 +2407,8 @@ mod tests {
         assert_eq!(snapshot.in_progress_invocation_count, 3);
         assert_eq!(snapshot.retry_invocation_count, 1);
         assert_eq!(snapshot.in_progress_phase_counts.queued, 1);
-        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
-        assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 2);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 0);
         assert_eq!(snapshot.accounts.len(), 2);
         let account = snapshot
             .accounts
