@@ -1659,6 +1659,7 @@ pub(crate) async fn run_data_retention_maintenance(
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
+    let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let defer_generation = retention_defer_generation();
     let result = if let Some(shutdown) = shutdown {
         RETENTION_SHUTDOWN
@@ -1675,10 +1676,24 @@ pub(crate) async fn run_data_retention_maintenance(
     } else {
         run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
     };
-    result.map(|mut summary| {
-        summary.deferred = retention_defer_generation() != defer_generation;
-        summary
-    })
+    // This janitor must run even when an earlier archive stage fails. Otherwise every
+    // failed pass adds a task-run record while the retention policy that bounds those
+    // records is unreachable until the unrelated failure clears.
+    let task_run_prune = prune_system_task_runs(pool, dry_run).await;
+    match result {
+        Ok(mut summary) => {
+            summary.system_task_run_rows_pruned +=
+                task_run_prune.context("failed to prune expired system task runs")?;
+            summary.deferred = retention_defer_generation() != defer_generation;
+            Ok(summary)
+        }
+        Err(error) => {
+            if let Err(prune_error) = task_run_prune {
+                warn!(error = %prune_error, "failed to prune system task runs after retention failure");
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn run_data_retention_maintenance_inner(
@@ -1888,10 +1903,6 @@ async fn run_data_retention_maintenance_inner(
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
     }
-
-    summary.system_task_run_rows_pruned += prune_system_task_runs(pool, dry_run)
-        .await
-        .context("failed to prune expired system task runs")?;
 
     if !dry_run && summary.touched_anything() {
         run_best_effort_retention_pragma(

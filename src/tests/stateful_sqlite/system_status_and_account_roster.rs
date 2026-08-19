@@ -496,8 +496,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22T08:45:00Z")
-        .bind("2026-06-22T08:45:01Z")
+        .bind("2026-06-22T08:45:00.000Z")
+        .bind("2026-06-22T08:45:01.000Z")
         .bind(startup_handle.id)
         .execute(&state.pool)
         .await
@@ -520,12 +520,36 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22T09:15:00Z")
-        .bind("2026-06-22T09:15:02Z")
+        .bind("2026-06-22T09:15:00.000Z")
+        .bind("2026-06-22T09:15:02.000Z")
         .bind(retention_handle.id)
         .execute(&state.pool)
         .await
         .expect("pin retention task timestamps");
+
+    let tied_handle = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::StartupBackfill,
+        "manual",
+        Some("same timestamp cursor tie".to_string()),
+    )
+    .await
+    .expect("insert tied cursor task");
+    finish_system_task_run(
+        &state.pool,
+        &tied_handle,
+        SystemTaskStatus::Success,
+        Some("tied cursor task completed".to_string()),
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
+        .bind("2026-06-22T09:15:00.000Z")
+        .bind("2026-06-22T09:15:03.000Z")
+        .bind(tied_handle.id)
+        .execute(&state.pool)
+        .await
+        .expect("pin tied cursor task timestamps");
 
     let filtered = list_system_task_runs(
         State(state.clone()),
@@ -574,12 +598,13 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     .expect("list all system tasks")
     .0;
 
-    assert_eq!(all.total, 2);
+    assert_eq!(all.total, 3);
     assert_eq!(all.page, 1);
     assert_eq!(all.page_size, 10);
-    assert_eq!(all.items.len(), 2);
-    assert_eq!(all.items[0].task_kind, "retention_archive");
-    assert_eq!(all.items[1].task_kind, "startup_backfill");
+    assert_eq!(all.items.len(), 3);
+    assert_eq!(all.items[0].id, tied_handle.id);
+    assert_eq!(all.items[1].id, retention_handle.id);
+    assert_eq!(all.items[2].id, startup_handle.id);
 
     let paged = list_system_task_runs(
         State(state.clone()),
@@ -598,11 +623,11 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     .expect("list paged system tasks")
     .0;
 
-    assert_eq!(paged.total, 2);
+    assert_eq!(paged.total, 3);
     assert_eq!(paged.page, 2);
     assert_eq!(paged.page_size, 1);
     assert_eq!(paged.items.len(), 1);
-    assert_eq!(paged.items[0].task_kind, "startup_backfill");
+    assert_eq!(paged.items[0].id, retention_handle.id);
 
     let ranged = list_system_task_runs(
         State(state.clone()),
@@ -621,9 +646,10 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     .expect("list ranged system tasks")
     .0;
 
-    assert_eq!(ranged.total, 1);
-    assert_eq!(ranged.items.len(), 1);
-    assert_eq!(ranged.items[0].task_kind, "retention_archive");
+    assert_eq!(ranged.total, 2);
+    assert_eq!(ranged.items.len(), 2);
+    assert_eq!(ranged.items[0].id, tied_handle.id);
+    assert_eq!(ranged.items[1].id, retention_handle.id);
 
     let first_cursor_page = list_system_task_runs(
         State(state.clone()),
@@ -661,12 +687,27 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     .await
     .expect("list second cursor page")
     .0;
+    let third_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: second_cursor_page.next_cursor.clone(),
+        }),
+    )
+    .await
+    .expect("list third cursor page")
+    .0;
     assert_eq!(first_cursor_page.total, paged.total);
-    assert_eq!(second_cursor_page.items[0].id, paged.items[0].id);
-    assert_ne!(
-        first_cursor_page.items[0].id,
-        second_cursor_page.items[0].id
-    );
+    assert_eq!(first_cursor_page.items[0].id, tied_handle.id);
+    assert_eq!(second_cursor_page.items[0].id, retention_handle.id);
+    assert_eq!(third_cursor_page.items[0].id, startup_handle.id);
+    assert!(third_cursor_page.next_cursor.is_none());
 
     let app = build_app_router(state.clone());
     let response = app
@@ -851,6 +892,27 @@ async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
     assert_eq!(
         offset_finished_at.as_deref(),
         Some("2026-06-22T09:15:00.000Z")
+    );
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('invalid_legacy_task_timestamp', 'fixture', 'success', '2026-02-30 08:45:00', '2026-02-30 17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed invalid legacy task timestamps");
+    ensure_schema(&pool)
+        .await
+        .expect("preserve invalid task timestamps");
+    let (invalid_started_at, invalid_finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'invalid_legacy_task_timestamp'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved invalid timestamps");
+    assert_eq!(invalid_started_at, "2026-02-30 08:45:00");
+    assert_eq!(
+        invalid_finished_at.as_deref(),
+        Some("2026-02-30 17:15:00+08:00")
     );
 }
 

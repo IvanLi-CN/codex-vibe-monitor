@@ -4115,29 +4115,43 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         SET
             started_at = CASE
                 -- Pre-ISO task rows used the application's Shanghai-local timestamp convention.
-                WHEN started_at GLOB '????-??-?? ??:??:??*'
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    AND started_at GLOB '????-??-?? ??:??:??*'
                     AND (started_at GLOB '????-??-?? ??:??:??*Z'
                         OR started_at GLOB '????-??-?? ??:??:??*[-+]??:??')
                     THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
-                WHEN started_at GLOB '????-??-?? ??:??:??*'
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    AND started_at GLOB '????-??-?? ??:??:??*'
                     THEN COALESCE(
                         strftime('%Y-%m-%dT%H:%M:%fZ', started_at, '-8 hours'),
                         started_at
                     )
-                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+                ELSE started_at
             END,
             finished_at = CASE
                 WHEN finished_at IS NULL THEN NULL
-                WHEN finished_at GLOB '????-??-?? ??:??:??*'
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    AND finished_at GLOB '????-??-?? ??:??:??*'
                     AND (finished_at GLOB '????-??-?? ??:??:??*Z'
                         OR finished_at GLOB '????-??-?? ??:??:??*[-+]??:??')
                     THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
-                WHEN finished_at GLOB '????-??-?? ??:??:??*'
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    AND finished_at GLOB '????-??-?? ??:??:??*'
                     THEN COALESCE(
                         strftime('%Y-%m-%dT%H:%M:%fZ', finished_at, '-8 hours'),
                         finished_at
                     )
-                ELSE COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
+                ELSE finished_at
             END
         WHERE
             started_at NOT GLOB '????-??-??T??:??:??.???Z'
