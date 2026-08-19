@@ -102,12 +102,8 @@ pub(crate) fn websocket_effective_prompt_cache_key(prompt_cache_key: Option<&str
 
 pub(crate) fn extract_requested_model_from_websocket_uri(original_uri: &Uri) -> Option<String> {
     let raw_query = original_uri.query()?;
-    url::form_urlencoded::parse(raw_query.as_bytes()).find_map(|(key, value)| {
-        (key == "model")
-            .then(|| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    })
+    url::form_urlencoded::parse(raw_query.as_bytes())
+        .find_map(|(key, value)| (key == "model").then(|| value.trim()).map(str::to_string))
 }
 
 pub(crate) async fn proxy_openai_v1_ws_common(
@@ -2460,6 +2456,16 @@ pub(crate) fn extract_nonempty_json_string(value: &Value, pointers: &[&str]) -> 
     })
 }
 
+fn extract_json_string(value: &Value, pointers: &[&str]) -> Option<String> {
+    pointers.iter().find_map(|pointer| {
+        value
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .map(str::to_string)
+    })
+}
+
 fn ws_response_id_from_text(text: &str) -> Option<String> {
     let value = serde_json::from_str::<Value>(text).ok()?;
     extract_nonempty_json_string(&value, &["/response/id", "/response_id", "/id"])
@@ -2631,7 +2637,7 @@ pub(crate) fn inspect_ws_request_payload(bytes: &[u8]) -> Option<WsRequestPayloa
     let value = serde_json::from_slice::<Value>(bytes).ok()?;
     Some(WsRequestPayloadInspection {
         event_type: extract_nonempty_json_string(&value, &["/type"]),
-        requested_model: extract_nonempty_json_string(
+        requested_model: extract_json_string(
             &value,
             &["/model", "/response/model", "/session/model"],
         ),
@@ -4038,12 +4044,15 @@ mod websocket_tests {
     }
 
     #[test]
-    fn websocket_requested_model_extraction_ignores_blank_values() {
+    fn websocket_requested_model_extraction_preserves_blank_values() {
         let uri = "/v1/realtime?model=%20%20"
             .parse::<Uri>()
             .expect("valid uri");
 
-        assert_eq!(extract_requested_model_from_websocket_uri(&uri), None);
+        assert_eq!(
+            extract_requested_model_from_websocket_uri(&uri).as_deref(),
+            Some("")
+        );
     }
 
     #[test]
@@ -4364,6 +4373,13 @@ mod websocket_tests {
         );
         assert_eq!(inspection.prompt_cache_key.as_deref(), Some("pck-ws"));
         assert!(!inspection.contains_encrypted_content);
+    }
+
+    #[test]
+    fn websocket_request_payload_preserves_an_empty_model() {
+        let inspection = inspect_ws_request_payload(br#"{"type":"response.create","model":""}"#)
+            .expect("payload inspection");
+        assert_eq!(inspection.requested_model.as_deref(), Some(""));
     }
 
     #[test]

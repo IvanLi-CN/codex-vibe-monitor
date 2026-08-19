@@ -377,7 +377,7 @@ pub(crate) async fn model_route_penalty(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<ModelRoutePenalty> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(ModelRoutePenalty::Normal);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -416,7 +416,7 @@ pub(crate) async fn model_route_concurrency_limit(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<Option<i64>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(None);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -718,7 +718,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(ModelRouteCacheObservationOutcome::default());
     }
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(ModelRouteCacheObservationOutcome::default());
     };
     let Some(input_tokens) = input_tokens else {
@@ -993,7 +993,7 @@ pub(crate) async fn load_model_route_penalties(
     account_ids: &[i64],
     model: Option<&str>,
 ) -> Result<HashMap<i64, ModelRoutePenalty>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(HashMap::new());
     };
     if account_ids.is_empty() {
@@ -1060,13 +1060,11 @@ async fn load_attempt_route_context(
     context.request_model = context
         .request_model
         .take()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .map(|value| value.trim().to_string());
     context.upstream_request_model = context
         .upstream_request_model
         .take()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .map(|value| value.trim().to_string());
     Ok(Some(context))
 }
 
@@ -1278,7 +1276,7 @@ pub(crate) async fn observe_model_route_seen(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<()> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(());
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {

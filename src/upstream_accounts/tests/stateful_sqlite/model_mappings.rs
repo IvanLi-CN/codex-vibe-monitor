@@ -10,6 +10,30 @@ fn mapping(source_model: &str, target_model: &str, enabled: bool) -> ModelMappin
 }
 
 #[tokio::test]
+async fn empty_requested_model_uses_an_empty_model_health_key() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Empty model health key").await;
+
+    observe_model_route_seen(&state.pool, account_id, Some(""))
+        .await
+        .expect("record empty model route");
+    let row: (String,) = sqlx::query_as(
+        "SELECT model FROM pool_upstream_account_model_routes WHERE account_id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load empty model route");
+    assert_eq!(row.0, "");
+    assert_eq!(
+        model_route_penalty(&state.pool, account_id, Some(""))
+            .await
+            .expect("load empty model route penalty"),
+        ModelRoutePenalty::Normal
+    );
+}
+
+#[tokio::test]
 async fn post_create_sync_warms_empty_model_mapping_cache_entry() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     seed_pool_routing_api_key(&state, "pool-model-cache-key").await;
