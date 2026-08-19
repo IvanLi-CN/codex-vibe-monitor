@@ -6120,6 +6120,10 @@ async fn apply_long_term_projection_incremental_with_runtime(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The incremental projection boundary keeps rollup inputs and write admission explicit."
+)]
 async fn apply_long_term_projection_incremental_with_runtime_and_control(
     pool: &Pool<Sqlite>,
     runtime: &Arc<Mutex<LongTermProjectionRuntime>>,
