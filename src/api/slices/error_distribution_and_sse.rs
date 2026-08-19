@@ -2453,6 +2453,40 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_network_cache_removes_stale_retry_ttft_sample() {
+        let observed_at = Utc::now();
+        let cache = DashboardNetworkSpeedCache::new(observed_at);
+        let first_attempt = responding_live_record("retry-network", Some(42), 1);
+        cache.observe_dashboard_activity_runtime_snapshot(&first_attempt, observed_at);
+
+        assert_eq!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .map(|account| account.first_token_sample_count),
+            Some(1)
+        );
+
+        let mut retry = first_attempt.clone();
+        retry.pool_attempt_count = Some(2);
+        cache.observe_dashboard_activity_runtime_snapshot(&retry, observed_at);
+        assert!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .is_none_or(|account| account.first_token_sample_count == 0)
+        );
+
+        cache.finalize_dashboard_activity_invocation(&retry, observed_at);
+        assert!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .is_none_or(|account| account.first_token_sample_count == 0)
+        );
+    }
+
+    #[test]
     fn dashboard_activity_live_revision_reservation_is_monotonic() {
         let first = reserve_dashboard_activity_live_revision();
         let second = reserve_dashboard_activity_live_revision();

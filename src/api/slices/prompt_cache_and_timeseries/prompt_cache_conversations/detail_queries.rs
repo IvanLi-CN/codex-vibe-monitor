@@ -91,6 +91,12 @@ where
     }
 
     const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let final_first_token_timing_sql =
+        final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_live_phase_sql = invocation_live_phase_sql_with_timing_sql(
+        "codex_invocations",
+        final_first_token_timing_sql.as_str(),
+    );
     let mut query = QueryBuilder::<Sqlite>::new("SELECT * FROM (");
 
     for (index, key) in selected_keys.iter().enumerate() {
@@ -103,7 +109,7 @@ where
             .push(" AS prompt_cache_key, id, invoke_id, occurred_at, ")
             .push(invocation_display_status_sql())
             .push(" AS status, ")
-            .push(invocation_live_phase_sql("codex_invocations"))
+            .push(final_live_phase_sql.as_str())
             .push(" AS live_phase, ")
             .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
             .push(" AS failure_class, ")
@@ -166,7 +172,7 @@ where
                  t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
                  ",
             )
-            .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+            .push(final_first_token_timing_sql.as_str())
             .push(" AS first_token_ms, ")
             .push(final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms").as_str())
             .push(" AS t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")

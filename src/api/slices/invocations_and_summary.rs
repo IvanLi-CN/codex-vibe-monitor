@@ -315,10 +315,11 @@ fn final_pool_attempt_timing_evidence_sql(
     }
 }
 
-pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
+fn invocation_live_phase_sql_with_first_token_predicate(
+    invocation_ref: &str,
+    first_token_measured_sql: &str,
+) -> String {
     let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
-    let first_token_measured_sql =
-        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
     let upstream_account_id_sql = format!(
         "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
     );
@@ -341,6 +342,21 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
         requesting = INVOCATION_LIVE_PHASE_REQUESTING,
         responding = INVOCATION_LIVE_PHASE_RESPONDING,
     )
+}
+
+pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
+    let first_token_measured_sql =
+        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
+    invocation_live_phase_sql_with_first_token_predicate(invocation_ref, &first_token_measured_sql)
+}
+
+pub(crate) fn invocation_live_phase_sql_with_timing_sql(
+    invocation_ref: &str,
+    first_token_timing_sql: &str,
+) -> String {
+    let first_token_measured_sql =
+        sqlite_nonnegative_timing_sql(&format!("({first_token_timing_sql})"));
+    invocation_live_phase_sql_with_first_token_predicate(invocation_ref, &first_token_measured_sql)
 }
 
 fn has_positive_timing(values: &[Option<f64>]) -> bool {
@@ -547,9 +563,25 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN inv.first_token_ms END END"));
     }
+
+    #[test]
+    fn persisted_live_phase_sql_uses_final_attempt_ttft() {
+        let timing_sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
+        let sql = invocation_live_phase_sql_with_timing_sql("inv", &timing_sql);
+
+        assert!(sql.contains("final_attempt.stream_latency_ms > 0"));
+        assert!(sql.contains("final_attempt.first_byte_latency_ms"));
+        assert!(sql.contains("THEN inv.first_token_ms END END"));
+    }
 }
 
 pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
+    let final_first_token_timing_sql =
+        final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_live_phase_sql = invocation_live_phase_sql_with_timing_sql(
+        "codex_invocations",
+        final_first_token_timing_sql.as_str(),
+    );
     let mut query = QueryBuilder::new(
         "SELECT id, invoke_id, occurred_at, source, \
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
@@ -575,7 +607,7 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          total_tokens, cost, status, \
          ",
         )
-        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(final_live_phase_sql.as_str())
         .push(
             " AS live_phase, error_message, \
          ",
@@ -707,7 +739,7 @@ pub(crate) fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
          ",
         )
-        .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+        .push(final_first_token_timing_sql.as_str())
         .push(
             " AS first_token_ms, \
          ",
@@ -7282,6 +7314,9 @@ pub(crate) async fn load_in_progress_summary_snapshot(
             }
         }
     };
+    let final_first_token_timing_sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
+    let final_live_phase_sql =
+        invocation_live_phase_sql_with_timing_sql("inv", final_first_token_timing_sql.as_str());
     let live_ttfb_nonnegative_sql = sqlite_nonnegative_timing_sql("live.upstream_ttfb_ms");
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT \
@@ -7323,7 +7358,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
         .push(" AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms, ");
-    db_key_query.push(invocation_live_phase_sql("inv")).push(
+    db_key_query.push(final_live_phase_sql.as_str()).push(
         " AS live_phase \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \
@@ -10851,6 +10886,12 @@ fn build_upstream_account_activity_preview_select(
         "COALESCE({}, occurred_at)",
         prompt_cache_conversation_created_at_sql(INVOCATION_PROMPT_CACHE_KEY_SQL, source_scope)
     );
+    let final_first_token_timing_sql =
+        final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_live_phase_sql = invocation_live_phase_sql_with_timing_sql(
+        "codex_invocations",
+        final_first_token_timing_sql.as_str(),
+    );
     query.push("SELECT id, invoke_id, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -10859,7 +10900,7 @@ fn build_upstream_account_activity_preview_select(
         .push(" AS conversation_created_at, ")
         .push(invocation_display_status_sql())
         .push(" AS status, ")
-        .push(invocation_live_phase_sql("codex_invocations"))
+        .push(final_live_phase_sql.as_str())
         .push(" AS live_phase, ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
@@ -10912,7 +10953,7 @@ fn build_upstream_account_activity_preview_select(
         )
         .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
         .push(" AS billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, ")
-        .push(final_pool_invocation_timing_sql("codex_invocations", "first_token_ms").as_str())
+        .push(final_first_token_timing_sql.as_str())
         .push(" AS first_token_ms, ")
         .push(final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms").as_str())
         .push(" AS t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ")
@@ -12118,6 +12159,9 @@ pub(crate) async fn query_dashboard_runtime_projection_baseline(
         resolved_upstream_account_id_sql.as_str(),
         source_scope,
     );
+    let final_first_token_timing_sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
+    let final_live_phase_sql =
+        invocation_live_phase_sql_with_timing_sql("inv", final_first_token_timing_sql.as_str());
     let mut db_key_query = QueryBuilder::<Sqlite>::new(
         "SELECT inv.invoke_id AS invoke_id, inv.occurred_at AS occurred_at, ",
     );
@@ -12126,7 +12170,7 @@ pub(crate) async fn query_dashboard_runtime_projection_baseline(
         .push(" AS upstream_account_id, ")
         .push(retry_sql.as_str())
         .push(" AS retry_count, live.upstream_ttfb_ms AS upstream_ttfb_ms, ");
-    db_key_query.push(invocation_live_phase_sql("inv")).push(
+    db_key_query.push(final_live_phase_sql.as_str()).push(
         " AS live_phase \
          FROM invocation_in_progress_live live \
          JOIN codex_invocations inv ON inv.id = live.invocation_id \

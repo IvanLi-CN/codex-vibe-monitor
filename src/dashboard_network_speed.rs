@@ -658,17 +658,50 @@ impl DashboardNetworkSpeedCache {
             }
             _ => {}
         }
-        if tracked.live_first_token_ms.is_none()
-            && let Some(first_token_ms) = live_first_token_ms
-        {
-            tracked.live_first_token_epoch_second = Some(observed_epoch_second);
-            tracked.live_first_token_ms = Some(first_token_ms);
-            add_first_token_sample_for_scope_locked(
-                &mut inner,
-                tracked.upstream_account_id,
-                observed_epoch_second,
-                first_token_ms,
-            );
+        match (
+            tracked.live_first_token_epoch_second,
+            tracked.live_first_token_ms,
+            live_first_token_ms,
+        ) {
+            (Some(epoch_second), Some(previous_ms), None) => {
+                remove_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    previous_ms,
+                );
+                tracked.live_first_token_epoch_second = None;
+                tracked.live_first_token_ms = None;
+            }
+            (Some(epoch_second), Some(previous_ms), Some(next_ms))
+                if (previous_ms - next_ms).abs() >= 0.5 =>
+            {
+                remove_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    previous_ms,
+                );
+                tracked.live_first_token_epoch_second = Some(epoch_second);
+                tracked.live_first_token_ms = Some(next_ms);
+                add_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    next_ms,
+                );
+            }
+            (None, _, Some(first_token_ms)) => {
+                tracked.live_first_token_epoch_second = Some(observed_epoch_second);
+                tracked.live_first_token_ms = Some(first_token_ms);
+                add_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    observed_epoch_second,
+                    first_token_ms,
+                );
+            }
+            _ => {}
         }
         inner.tracked_invocations.insert(key, tracked);
     }
@@ -777,9 +810,18 @@ impl DashboardNetworkSpeedCache {
                 },
             );
         }
-        if tracked.live_first_token_ms.is_none()
-            && let Some(first_token_ms) = terminal_first_token_ms
-        {
+        if let (Some(epoch_second), Some(previous_ms)) = (
+            tracked.live_first_token_epoch_second,
+            tracked.live_first_token_ms,
+        ) {
+            remove_first_token_sample_for_scope_locked(
+                &mut inner,
+                upstream_account_id,
+                epoch_second,
+                previous_ms,
+            );
+        }
+        if let Some(first_token_ms) = terminal_first_token_ms {
             add_first_token_sample_for_scope_locked(
                 &mut inner,
                 upstream_account_id,
