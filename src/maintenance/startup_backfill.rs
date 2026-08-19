@@ -470,6 +470,10 @@ pub(crate) fn startup_backfill_next_delay(
     }
 }
 
+fn historical_rollup_should_retry_soon(hit_budget: bool, candidate_count: usize) -> bool {
+    hit_budget && candidate_count > 0
+}
+
 pub(crate) fn startup_backfill_next_run_after(
     run: &StartupBackfillRunState,
     zero_update_streak: u32,
@@ -1878,7 +1882,10 @@ pub(crate) async fn run_startup_backfill_task(
                         && (window.candidate_count >= 32
                             || summary.scanned_archive_batches
                                 >= STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT as usize),
-                    retry_soon: window.hit_budget && window.next_cursor_id != cursor_id,
+                    retry_soon: historical_rollup_should_retry_soon(
+                        window.hit_budget,
+                        window.candidate_count,
+                    ),
                     force_idle: window.candidate_count == 0,
                     source_unavailable: false,
                     samples: Vec::new(),
@@ -2108,6 +2115,14 @@ mod startup_backfill_tests {
             Duration::from_secs(15)
         );
         assert!(!startup_backfill_run_is_actionable(&run));
+    }
+
+    #[test]
+    fn historical_rollup_budget_retry_stays_short_after_cursor_wrap() {
+        assert!(historical_rollup_should_retry_soon(true, 1));
+        assert!(historical_rollup_should_retry_soon(true, 32));
+        assert!(!historical_rollup_should_retry_soon(true, 0));
+        assert!(!historical_rollup_should_retry_soon(false, 1));
     }
 
     #[test]
