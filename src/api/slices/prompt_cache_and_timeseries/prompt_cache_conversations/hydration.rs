@@ -642,6 +642,7 @@ fn overlay_runtime_preview_progress(
         preview.live_phase.as_deref(),
         runtime_record_first_token_ms(record),
         runtime_record_live_phase(record),
+        runtime_record_is_retry(record),
     );
     preview.first_token_ms = first_token_ms;
     preview.live_phase = live_phase;
@@ -652,6 +653,7 @@ fn merged_runtime_preview_progress(
     persisted_live_phase: Option<&str>,
     runtime_first_token_ms: Option<f64>,
     runtime_live_phase: Option<&str>,
+    suppress_persisted_progress: bool,
 ) -> (Option<f64>, Option<String>) {
     let measured_persisted_first_token_ms =
         persisted_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
@@ -660,10 +662,17 @@ fn merged_runtime_preview_progress(
     let runtime_is_responding = measured_runtime_first_token_ms.is_some()
         && runtime_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING);
 
-    let first_token_ms = measured_runtime_first_token_ms.or(measured_persisted_first_token_ms);
+    let first_token_ms = measured_runtime_first_token_ms.or_else(|| {
+        (!suppress_persisted_progress)
+            .then_some(measured_persisted_first_token_ms)
+            .flatten()
+    });
     let live_phase = runtime_is_responding
         .then_some(INVOCATION_LIVE_PHASE_RESPONDING.to_string())
         .or_else(|| {
+            if suppress_persisted_progress {
+                return runtime_live_phase.map(str::to_string);
+            }
             if persisted_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING)
                 && first_token_ms.is_none()
             {
@@ -946,6 +955,7 @@ mod runtime_preview_progress_tests {
             Some(INVOCATION_LIVE_PHASE_REQUESTING),
             Some(720.0),
             Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            false,
         );
 
         assert_eq!(first_token_ms, Some(720.0));
@@ -962,6 +972,7 @@ mod runtime_preview_progress_tests {
             Some(INVOCATION_LIVE_PHASE_RESPONDING),
             None,
             Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            false,
         );
 
         assert_eq!(first_token_ms, Some(720.0));
@@ -978,6 +989,7 @@ mod runtime_preview_progress_tests {
             Some(INVOCATION_LIVE_PHASE_REQUESTING),
             Some(0.0),
             Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            false,
         );
 
         assert_eq!(first_token_ms, Some(0.0));
@@ -995,10 +1007,28 @@ mod runtime_preview_progress_tests {
                 Some(INVOCATION_LIVE_PHASE_RESPONDING),
                 None,
                 Some(INVOCATION_LIVE_PHASE_REQUESTING),
+                false,
             );
 
             assert_eq!(first_token_ms, None);
             assert_eq!(live_phase, None);
         }
+    }
+
+    #[test]
+    fn retry_runtime_progress_does_not_restore_persisted_attempt_timing() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            true,
+        );
+
+        assert_eq!(first_token_ms, None);
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_REQUESTING)
+        );
     }
 }

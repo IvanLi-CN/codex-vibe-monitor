@@ -463,14 +463,16 @@ pub(crate) fn effective_runtime_invocation_live_phase(
     if normalized_runtime_text(record.status.as_deref()) == "pending" {
         return Some(INVOCATION_LIVE_PHASE_QUEUED);
     }
-    let inferred_phase =
-        if runtime_record_is_retry(record) && has_measured_first_token(record.first_token_ms) {
-            let mut phase_record = record.clone();
-            phase_record.first_token_ms = None;
-            runtime_invocation_live_phase(&phase_record)?
-        } else {
-            runtime_invocation_live_phase(record)?
-        };
+    let inferred_phase = if runtime_record_is_retry(record)
+        && record.id > 0
+        && has_measured_first_token(record.first_token_ms)
+    {
+        let mut phase_record = record.clone();
+        phase_record.first_token_ms = None;
+        runtime_invocation_live_phase(&phase_record)?
+    } else {
+        runtime_invocation_live_phase(record)?
+    };
     if inferred_phase == INVOCATION_LIVE_PHASE_RESPONDING {
         return Some(inferred_phase);
     }
@@ -1744,11 +1746,26 @@ pub(crate) fn runtime_record_first_token_ms_with_retry(
     record: &ApiInvocation,
     is_retry: bool,
 ) -> Option<f64> {
-    let terminal_retry_has_trustworthy_timing = runtime_record_is_success_for_summary(record)
-        || finite_positive_timing(record.t_upstream_stream_ms).is_some();
-    (!is_retry || (!runtime_record_is_in_flight(record) && terminal_retry_has_trustworthy_timing))
-        .then_some(finite_nonnegative_timing(record.first_token_ms))
-        .flatten()
+    let first_token_ms = finite_nonnegative_timing(record.first_token_ms);
+    if !is_retry {
+        return first_token_ms;
+    }
+
+    // Runtime capture records use a synthetic row id and are rebuilt for the selected attempt.
+    // Persisted rows need the attempt-table predicate instead of invocation-level timing.
+    if record.id > 0 {
+        return None;
+    }
+    if runtime_record_is_in_flight(record) {
+        return (runtime_invocation_live_phase(record) == Some(INVOCATION_LIVE_PHASE_RESPONDING))
+            .then_some(first_token_ms)
+            .flatten();
+    }
+
+    (runtime_record_is_success_for_summary(record)
+        || finite_positive_timing(record.t_upstream_stream_ms).is_some())
+    .then_some(first_token_ms)
+    .flatten()
 }
 
 pub(crate) fn runtime_record_live_phase(record: &ApiInvocation) -> Option<&'static str> {
@@ -21122,6 +21139,7 @@ mod invocation_cost_audit_tests {
     #[test]
     fn terminal_retry_projection_keeps_final_first_token_measurement() {
         let mut record = sample_invocation(None);
+        record.id = 0;
         record.status = Some("success".to_string());
         record.first_token_ms = Some(720.0);
         record.pool_attempt_count = Some(2);
@@ -21151,6 +21169,7 @@ mod invocation_cost_audit_tests {
     #[test]
     fn streamed_failed_terminal_retry_keeps_final_first_token_measurement() {
         let mut record = sample_invocation(None);
+        record.id = 0;
         record.status = Some("failed".to_string());
         record.first_token_ms = Some(720.0);
         record.t_upstream_stream_ms = Some(240.0);
@@ -21166,10 +21185,26 @@ mod invocation_cost_audit_tests {
     #[test]
     fn http_200_error_retry_hides_unowned_first_token_measurement() {
         let mut record = sample_invocation(None);
+        record.id = 0;
         record.status = Some("http_200".to_string());
         record.error_message = Some("upstream parse failed".to_string());
         record.first_token_ms = Some(720.0);
         record.t_upstream_stream_ms = None;
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), None);
+        assert_eq!(
+            dashboard_activity_terminal_delta(&record).first_token_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn persisted_retry_stream_timing_cannot_authorize_runtime_ttft() {
+        let mut record = sample_invocation(None);
+        record.status = Some("failed".to_string());
+        record.first_token_ms = Some(720.0);
+        record.t_upstream_stream_ms = Some(240.0);
         record.pool_attempt_count = Some(2);
 
         assert_eq!(runtime_record_first_token_ms(&record), None);
@@ -21256,6 +21291,21 @@ mod invocation_cost_audit_tests {
 
         assert_eq!(runtime_record_first_token_ms(&record), None);
         assert_ne!(
+            runtime_record_live_phase(&record),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn current_runtime_retry_can_report_measured_ttft() {
+        let mut record = sample_invocation(None);
+        record.id = 0;
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), Some(720.0));
+        assert_eq!(
             runtime_record_live_phase(&record),
             Some(INVOCATION_LIVE_PHASE_RESPONDING)
         );
