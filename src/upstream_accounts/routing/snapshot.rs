@@ -331,8 +331,9 @@ impl PoolRoutingSnapshotStore {
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = None;
-        refresh_state.pending = false;
-        refresh_state.wake_waiters = false;
+        // Stay fail-closed and retain a queued recovery wake until a later
+        // reconciler pass installs a current snapshot.
+        refresh_state.pending = true;
         refresh_state.generation = refresh_state.generation.wrapping_add(1);
     }
 

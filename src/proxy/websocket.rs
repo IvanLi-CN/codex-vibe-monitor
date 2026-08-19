@@ -351,7 +351,9 @@ impl PoolRoutingReservationGuard {
 
 impl Drop for PoolRoutingReservationGuard {
     fn drop(&mut self) {
-        self.release();
+        // Cancellation can happen while a failure fence is still persisting.
+        // Only explicit completed paths may publish availability.
+        self.release_without_availability();
     }
 }
 
