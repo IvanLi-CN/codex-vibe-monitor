@@ -1260,8 +1260,8 @@ export const NoCandidateAudit: Story = {
                 reservationConflictCount: 2,
                 nextEligibleAt: "2026-08-19T02:04:05Z",
                 excludedReasonCounts: {
-                  modelConcurrencyLimit: 2,
-                  policyExcluded: 1,
+                  modelConcurrencyLimit: 11,
+                  policyExcluded: 5,
                 },
                 candidates: [
                   {
@@ -1299,6 +1299,13 @@ export const NoCandidateAudit: Story = {
     await expect(
       canvas.getByTestId("pool-routing-no-candidate-next-eligible-at"),
     ).not.toBeEmptyDOMElement();
+    await expect(canvas.getByTestId("pool-routing-no-candidate-reason-counts")).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-reason-count-modelConcurrencyLimit"),
+    ).toHaveTextContent("11");
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-reason-count-policyExcluded"),
+    ).toHaveTextContent("5");
     await expect(
       canvas.getByText("upstream-account-with-an-extra-long-operator-label"),
     ).toBeVisible();

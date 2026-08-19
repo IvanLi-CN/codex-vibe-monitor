@@ -3084,6 +3084,11 @@ export function InvocationWorkflowDetailPanel({
       : null,
   ].filter((value): value is string => Boolean(value));
   const noCandidateAudit = hero.poolRoutingNoCandidateAudit;
+  const noCandidateReasonCounts = noCandidateAudit
+    ? Object.entries(noCandidateAudit.excludedReasonCounts)
+        .filter(([, count]) => Number.isFinite(count) && count > 0)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    : [];
   const snapshotMetrics = [
     {
       label: isZh ? "最终结果" : "Final Result",
@@ -3312,6 +3317,36 @@ export function InvocationWorkflowDetailPanel({
                       </div>
                     ))}
                   </dl>
+
+                  {noCandidateReasonCounts.length > 0 ? (
+                    <div
+                      className="mt-3 border-t border-warning/25 pt-3"
+                      data-testid="pool-routing-no-candidate-reason-counts"
+                    >
+                      <div className="text-xs font-medium text-base-content/58">
+                        {isZh ? "排除原因汇总" : "Exclusion summary"}
+                      </div>
+                      <ul className="mt-2 grid min-w-0 gap-x-4 gap-y-2 sm:grid-cols-2">
+                        {noCandidateReasonCounts.map(([reasonCode, count]) => (
+                          <li
+                            key={reasonCode}
+                            className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5"
+                            data-testid={`pool-routing-no-candidate-reason-count-${reasonCode}`}
+                          >
+                            <span className="break-words text-xs text-base-content/76">
+                              {formatNoCandidateReason(reasonCode, isZh)}
+                            </span>
+                            <span className="font-mono text-xs font-semibold tabular-nums text-base-content/84">
+                              {count.toLocaleString(localeTag)}
+                            </span>
+                            <code className="col-span-2 max-w-full break-all font-mono text-xs leading-4 text-base-content/58">
+                              {reasonCode}
+                            </code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
 
                   {noCandidateAudit.candidates.length > 0 ? (
                     <div className="mt-3 border-t border-warning/25 pt-3">
