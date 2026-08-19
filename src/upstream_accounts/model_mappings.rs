@@ -331,6 +331,23 @@ pub(crate) async fn account_accepts_requested_model_or_cached_mapping(
     )
 }
 
+pub(crate) async fn account_accepts_requested_model_or_mapping_with_available_models_bypass(
+    state: &AppState,
+    account_id: i64,
+    requested_model: Option<&str>,
+    rule: &EffectiveRoutingRule,
+) -> Result<bool> {
+    if requested_model_is_system_denied(requested_model, rule) {
+        return Ok(false);
+    }
+    Ok(
+        match load_model_mapping_for_account(state, account_id, requested_model).await? {
+            Some(mapping) => mapped_target_model_is_allowed(&mapping.target_model, rule),
+            None => true,
+        },
+    )
+}
+
 pub(crate) async fn install_pool_model_routing_runtime_cache(
     state: &AppState,
     fallback_runtime_cache: PoolRoutingRuntimeCache,

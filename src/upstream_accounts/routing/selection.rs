@@ -1152,7 +1152,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         if bypass_requested_model_filter
                             && !conversation_available_models_override =>
                     {
-                        !requested_model_is_system_denied(requested_model, rule)
+                        account_accepts_requested_model_or_mapping_with_available_models_bypass(
+                            state,
+                            row.id,
+                            requested_model,
+                            rule,
+                        )
+                        .await?
                     }
                     // Conversation-scoped model policy is an explicit caller constraint.
                     // A local account mapping can bypass its ordinary availability policy,
@@ -1677,7 +1683,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         }
         let model_accepted =
             if bypass_requested_model_filter && !conversation_available_models_override {
-                !requested_model_is_system_denied(requested_model, effective_rule)
+                account_accepts_requested_model_or_mapping_with_available_models_bypass(
+                    state,
+                    row.id,
+                    requested_model,
+                    effective_rule,
+                )
+                .await?
             } else if conversation_available_models_override {
                 account_accepts_requested_model(requested_model, effective_rule)
             } else {

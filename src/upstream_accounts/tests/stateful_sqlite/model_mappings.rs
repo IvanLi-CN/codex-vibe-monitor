@@ -302,6 +302,21 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
         .expect("check disallowed mapping"),
         "tag model allowlist must reject the mapped target before candidate selection"
     );
+    let binding = PromptCacheConversationBindingConstraint::Group("test-direct-group".to_string());
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        state.as_ref(),
+        None,
+        Some("client-fast"),
+        &[],
+        &std::collections::HashSet::new(),
+        Some(&binding),
+    )
+    .await
+    .expect("bound disallowed mapping resolution result");
+    assert!(
+        !matches!(resolution, PoolAccountResolution::Resolved(_)),
+        "prompt-cache binding must not bypass a mapped target tag allowlist, got {resolution:?}"
+    );
 
     sqlx::query(
         r#"
@@ -333,6 +348,20 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     assert!(
         !matches!(resolution, PoolAccountResolution::Resolved(_)),
         "system deny for the mapped target must block routing, got {resolution:?}"
+    );
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        state.as_ref(),
+        None,
+        Some("client-fast"),
+        &[],
+        &std::collections::HashSet::new(),
+        Some(&binding),
+    )
+    .await
+    .expect("bound denied mapping resolution result");
+    assert!(
+        !matches!(resolution, PoolAccountResolution::Resolved(_)),
+        "prompt-cache binding must not bypass a mapped target system deny, got {resolution:?}"
     );
 }
 
