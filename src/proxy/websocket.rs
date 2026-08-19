@@ -2854,32 +2854,35 @@ fn websocket_mapping_requested_model(
     payload: &Value,
     mapping_active: bool,
 ) -> Result<Option<String>> {
-    let Some(model) = payload.as_object().and_then(|object| object.get("model")) else {
-        return Ok(None);
-    };
-    let Some(requested_model) = model.as_str() else {
-        if mapping_active {
-            return Err(anyhow!(
-                "websocket model mapping requires a top-level string model field"
-            ));
-        }
-        return Ok(None);
-    };
-    Ok(Some(requested_model.to_string()))
+    for pointer in ["/model", "/response/model", "/session/model"] {
+        let Some(model) = payload.pointer(pointer) else {
+            continue;
+        };
+        let Some(requested_model) = model.as_str() else {
+            if mapping_active {
+                return Err(anyhow!(
+                    "websocket model mapping requires a string model field"
+                ));
+            }
+            return Ok(None);
+        };
+        return Ok(Some(requested_model.to_string()));
+    }
+    Ok(None)
 }
 
 fn rewrite_websocket_json_payload_model(payload: &mut Value, target_model: &str) -> Result<()> {
-    let object = payload
-        .as_object_mut()
-        .context("websocket model mapping requires a top-level JSON object")?;
-    let model = object
-        .get_mut("model")
-        .context("websocket model mapping requires a top-level model field")?;
-    if !model.is_string() {
-        bail!("websocket model mapping requires a top-level string model field");
+    for pointer in ["/model", "/response/model", "/session/model"] {
+        let Some(model) = payload.pointer_mut(pointer) else {
+            continue;
+        };
+        if !model.is_string() {
+            bail!("websocket model mapping requires a string model field");
+        }
+        *model = Value::String(target_model.to_string());
+        return Ok(());
     }
-    *model = Value::String(target_model.to_string());
-    Ok(())
+    bail!("websocket model mapping requires a model field")
 }
 
 pub(crate) fn ws_usage_event_is_completed_success(event: &WsUsageEvent) -> bool {
@@ -3973,6 +3976,18 @@ mod websocket_tests {
         rewrite_websocket_json_payload_model(&mut payload, "upstream-model")
             .expect("rewrite mapped JSON frame");
         assert_eq!(payload["model"], "upstream-model");
+
+        let mut nested_payload = serde_json::json!({
+            "type": "response.create",
+            "session": {"model": "client-fast"},
+        });
+        assert_eq!(
+            websocket_mapping_requested_model(&nested_payload, true).expect("inspect nested model"),
+            Some("client-fast".to_string())
+        );
+        rewrite_websocket_json_payload_model(&mut nested_payload, "upstream-model")
+            .expect("rewrite nested mapped JSON frame");
+        assert_eq!(nested_payload["session"]["model"], "upstream-model");
 
         let mut unsafe_payload = serde_json::json!({"model": 7});
         assert!(

@@ -716,7 +716,7 @@ pub(crate) async fn update_pool_upstream_request_attempt_model(
     let Some(attempt_id) = attempt_id else {
         return Ok(());
     };
-    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    let model = model.map(str::trim);
     sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
