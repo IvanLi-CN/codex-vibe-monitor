@@ -407,20 +407,18 @@ fn parse_system_task_run_cursor(
         return Err(ApiError::bad_request(anyhow!("invalid cursor id")));
     }
     let started_at = DateTime::parse_from_rfc3339(&cursor.started_at)
-        .context("invalid cursor startedAt")
-        .map_err(ApiError::bad_request)?
-        .with_timezone(&Utc);
+        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))
+        .unwrap_or(cursor.started_at);
     Ok(Some(SystemTaskRunCursor {
-        started_at: format_utc_iso_millis(started_at),
+        started_at,
         id: cursor.id,
     }))
 }
 
 fn encode_system_task_run_cursor(row: &SystemTaskRunRow) -> Result<String, ApiError> {
     let started_at = DateTime::parse_from_rfc3339(&row.started_at)
-        .context("system task run has a non-ISO started_at")
-        .map_err(ApiError::Internal)
-        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))?;
+        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))
+        .unwrap_or_else(|_| row.started_at.clone());
     let payload = serde_json::to_vec(&SystemTaskRunCursor {
         started_at,
         id: row.id,

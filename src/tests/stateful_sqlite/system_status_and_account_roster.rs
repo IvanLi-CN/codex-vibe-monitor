@@ -780,6 +780,56 @@ async fn system_task_runs_filter_and_routes_serve_json() {
 }
 
 #[tokio::test]
+async fn system_task_runs_cursor_preserves_invalid_legacy_timestamp() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    for (task_kind, started_at) in [
+        ("invalid_legacy_timestamp", "2026-02-30 08:45:00"),
+        ("older_canonical_timestamp", "2025-01-01T00:00:00.000Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES (?1, 'fixture', 'success', ?2)",
+        )
+        .bind(task_kind)
+        .bind(started_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed cursor timestamp fixture");
+    }
+
+    let first_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            page_size: Some(1),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("list invalid timestamp cursor page")
+    .0;
+    assert_eq!(first_page.items[0].task_kind, "invalid_legacy_timestamp");
+    let cursor = first_page
+        .next_cursor
+        .expect("invalid legacy timestamp still yields a cursor");
+
+    let second_page = list_system_task_runs(
+        State(state),
+        Query(SystemTaskRunsQuery {
+            page_size: Some(1),
+            cursor: Some(cursor),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("continue after invalid timestamp cursor")
+    .0;
+    assert_eq!(second_page.items[0].task_kind, "older_canonical_timestamp");
+    assert!(second_page.next_cursor.is_none());
+}
+
+#[tokio::test]
 async fn system_task_runs_schema_indexes_support_time_queries() {
     let pool = test_current_schema_pool().await;
     ensure_schema(&pool)

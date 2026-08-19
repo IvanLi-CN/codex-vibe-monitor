@@ -1545,7 +1545,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 return false;
             }
             let touched_anything = summary.touched_anything();
-            if touched_anything {
+            if touched_anything && !summary.dry_run {
                 let task_run = begin_system_task_run(
                     &state.pool,
                     SystemTaskKind::RetentionArchive,
@@ -1613,23 +1613,25 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
-            let task_run = begin_system_task_run(
-                &state.pool,
-                SystemTaskKind::RetentionArchive,
-                trigger,
-                Some("retention maintenance failed".to_string()),
-            )
-            .await
-            .ok();
-            if let Some(handle) = task_run.as_ref() {
-                finish_system_task_run_batched(
-                    state.as_ref(),
-                    handle,
-                    SystemTaskStatus::Failed,
+            if !state.config.retention_dry_run {
+                let task_run = begin_system_task_run(
+                    &state.pool,
+                    SystemTaskKind::RetentionArchive,
+                    trigger,
                     Some("retention maintenance failed".to_string()),
-                    Some(err.to_string()),
                 )
-                .await;
+                .await
+                .ok();
+                if let Some(handle) = task_run.as_ref() {
+                    finish_system_task_run_batched(
+                        state.as_ref(),
+                        handle,
+                        SystemTaskStatus::Failed,
+                        Some("retention maintenance failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
             }
             warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
             return !pressure_error;
@@ -1659,13 +1661,12 @@ pub(crate) async fn run_data_retention_maintenance(
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
 ) -> Result<RetentionRunSummary> {
-    let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let defer_generation = retention_defer_generation();
     let result = if let Some(shutdown) = shutdown {
         RETENTION_SHUTDOWN
             .scope(
                 shutdown.clone(),
-                run_data_retention_maintenance_inner(
+                run_data_retention_maintenance_with_task_run_prune(
                     pool,
                     config,
                     dry_run_override,
@@ -1674,17 +1675,36 @@ pub(crate) async fn run_data_retention_maintenance(
             )
             .await
     } else {
-        run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
+        run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
+            .await
     };
+    result.map(|mut summary| {
+        summary.deferred = retention_defer_generation() != defer_generation;
+        summary
+    })
+}
+
+async fn run_data_retention_maintenance_with_task_run_prune(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+) -> Result<RetentionRunSummary> {
+    let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
+    let result =
+        run_data_retention_maintenance_inner(pool, config, dry_run_override, shutdown).await;
     // This janitor must run even when an earlier archive stage fails. Otherwise every
     // failed pass adds a task-run record while the retention policy that bounds those
     // records is unreachable until the unrelated failure clears.
-    let task_run_prune = prune_system_task_runs(pool, dry_run).await;
+    let task_run_prune = if should_stop_data_retention_maintenance(shutdown) {
+        Ok(0)
+    } else {
+        prune_system_task_runs(pool, dry_run).await
+    };
     match result {
         Ok(mut summary) => {
             summary.system_task_run_rows_pruned +=
                 task_run_prune.context("failed to prune expired system task runs")?;
-            summary.deferred = retention_defer_generation() != defer_generation;
             Ok(summary)
         }
         Err(error) => {
