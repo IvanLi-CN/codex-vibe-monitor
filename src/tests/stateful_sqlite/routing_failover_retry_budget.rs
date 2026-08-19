@@ -2569,6 +2569,9 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
     task.await
         .expect("failure persistence task should join")
         .expect("failure persistence should succeed");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after failure fence commit");
     assert!(
         !state
             .pool_routing_reservations
@@ -2853,6 +2856,9 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
         true,
     )
     .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after orphan failure");
 
     let failure_at: Option<String> = sqlx::query_scalar(
         "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",

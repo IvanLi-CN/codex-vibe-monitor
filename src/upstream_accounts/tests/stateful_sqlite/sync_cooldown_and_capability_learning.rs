@@ -1715,6 +1715,9 @@ async fn model_route_reservation_preserves_an_explicit_empty_model() {
         Some("https://empty-model-reservation.example.com/backend-api/codex"),
     )
     .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot before empty-model reservation");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve account for empty model reservation");
@@ -4994,6 +4997,9 @@ async fn updating_api_key_reactivates_manually_recoverable_account() {
         )
         .await
         .expect("update api key account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after manual recovery");
     tokio::time::timeout(Duration::from_secs(1), availability.changed())
         .await
         .expect("manual recovery should publish routing availability")
@@ -5036,6 +5042,9 @@ async fn successful_account_sync_publishes_routing_availability_on_recovery() {
     sync_upstream_account_by_id(state.as_ref(), account_id, SyncCause::Manual)
         .await
         .expect("sync should recover the account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after sync recovery");
     tokio::time::timeout(Duration::from_secs(1), availability.changed())
         .await
         .expect("sync recovery should publish routing availability")
@@ -5110,6 +5119,9 @@ async fn imported_oauth_probe_publishes_routing_availability_on_recovery() {
     apply_imported_oauth_probe_result(state.as_ref(), account_id, &probe)
         .await
         .expect("apply imported OAuth recovery probe");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after OAuth import recovery");
     tokio::time::timeout(Duration::from_secs(1), availability.changed())
         .await
         .expect("OAuth import recovery should publish routing availability")

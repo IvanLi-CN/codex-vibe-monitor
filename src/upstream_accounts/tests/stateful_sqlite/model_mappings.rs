@@ -409,7 +409,7 @@ async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
             .expect("request should enter the no-candidate wait");
         runtime_handle.block_on(async move {
             let Json(_) = update_upstream_account_model_mappings(
-                State(update_state),
+                State(update_state.clone()),
                 HeaderMap::new(),
                 AxumPath(account_id),
                 Json(UpdateModelMappingsRequest {
@@ -418,6 +418,9 @@ async fn model_mapping_save_wakes_a_waiting_no_candidate_request() {
             )
             .await
             .expect("save mapping should wake the waiting request");
+            refresh_pool_routing_snapshot(update_state.as_ref())
+                .await
+                .expect("reconcile routing snapshot after mapping save");
         });
     });
 
@@ -488,6 +491,9 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .expect("refresh routing cache");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after constrained mapping setup");
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
         .await
         .expect("load constrained effective rule");
@@ -527,6 +533,9 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .expect("refresh disallowed mapping cache");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after disallowed mapping setup");
     let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
         .await
         .expect("load disallowed effective rule");

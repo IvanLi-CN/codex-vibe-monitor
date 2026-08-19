@@ -1936,7 +1936,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         let model_mapping = load_model_mapping_for_account(
             state.as_ref(),
             account.account_id,
-            requested_model.as_deref().or_else(|| {
+            requested_model.or_else(|| {
                 trace_context
                     .as_ref()
                     .and_then(|trace| trace.request_model.as_deref())
@@ -1965,7 +1965,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         let upstream_request_model = model_mapping
             .as_ref()
             .map(|mapping| mapping.target_model.as_str())
-            .or(requested_model.as_deref())
+            .or(requested_model)
             .or_else(|| {
                 trace_context
                     .as_ref()
@@ -2099,7 +2099,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         state.as_ref(),
                         trace_context.as_ref(),
                         &account,
-                        requested_model.as_deref(),
+                        requested_model,
                         model_mapping_pattern,
                         (attempt_count + 1) as i64,
                         distinct_account_count as i64,
@@ -2150,7 +2150,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sticky_key,
                                 &message,
                                 trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                requested_model.as_deref(),
+                                requested_model,
                             )
                             .await
                         {
@@ -2181,7 +2181,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
-                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                        release_pool_routing_reservation_without_availability(
+                            state.as_ref(),
+                            &reservation_key,
+                        );
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }
@@ -3407,7 +3410,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 // Keep route health keyed by the original request model elsewhere, but classify
                 // an upstream "model not found" response against the mapped target here.
                 let requested_model_for_failure = upstream_request_model.or_else(|| {
-                    requested_model.as_deref().or_else(|| {
+                    requested_model.or_else(|| {
                         trace_context
                             .as_ref()
                             .and_then(|trace| trace.request_model.as_deref())
