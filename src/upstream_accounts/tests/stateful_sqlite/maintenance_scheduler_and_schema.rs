@@ -6696,46 +6696,22 @@ async fn sticky_key_recent_preview_uses_compatible_composite_index_without_sql_s
     assert!(index_sql.contains("occurred_at DESC"));
     assert!(index_sql.contains("id DESC"));
 
-    let plan = sqlx::query(
-        r#"
-        EXPLAIN QUERY PLAN
-        WITH ranked AS (
-            SELECT
-                id,
-                occurred_at,
-                CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
-                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
-                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
-                )) END AS sticky_key,
-                ROW_NUMBER() OVER (
-                    PARTITION BY CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
-                        CAST(json_extract(payload, '$.stickyKey') AS TEXT),
-                        CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
-                    )) END
-                    ORDER BY occurred_at DESC, id DESC
-                ) AS row_number
-            FROM codex_invocations
-            WHERE CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END = ?1
-              AND CASE WHEN json_valid(payload) THEN TRIM(COALESCE(
-                    CAST(json_extract(payload, '$.stickyKey') AS TEXT),
-                    CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)
-                  )) END IN (?2, ?3)
-        )
-        SELECT sticky_key, id
-        FROM ranked
-        WHERE row_number <= 5
-        "#,
-    )
-    .bind(account_id)
-    .bind("sticky-primary")
-    .bind("sticky-fallback")
-    .fetch_all(&state.pool)
-    .await
-    .expect("load sticky preview explain plan")
-    .into_iter()
-    .map(|row| row.get::<String, _>("detail"))
-    .collect::<Vec<_>>()
-    .join(" | ");
+    let explain_keys = vec!["sticky-primary".to_string(), "sticky-fallback".to_string()];
+    let explain_query =
+        build_account_sticky_key_recent_invocations_query(account_id, &explain_keys, 5, None);
+    let explain_sql = explain_query.sql().to_string();
+    let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {explain_sql}"))
+        .bind(account_id)
+        .bind("sticky-primary")
+        .bind("sticky-fallback")
+        .bind(5_i64)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load sticky preview explain plan")
+        .into_iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>()
+        .join(" | ");
     assert!(
         plan.contains("idx_codex_invocations_account_sticky_key_recent"),
         "unexpected sticky preview plan: {plan}"

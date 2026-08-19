@@ -327,6 +327,33 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
         return Ok(Vec::new());
     }
 
+    let mut query = build_account_sticky_key_recent_invocations_query(
+        account_id,
+        selected_keys,
+        limit_per_key,
+        range_start_bound,
+    );
+    let mut rows = query
+        .build_query_as::<AccountStickyKeyInvocationPreviewRow>()
+        .fetch_all(pool)
+        .await?;
+    // The composite expression index already supplies the window order. Keep the
+    // response's historical deterministic order without asking SQLite to sort it again.
+    rows.sort_by(|left, right| {
+        left.sticky_key
+            .cmp(&right.sticky_key)
+            .then_with(|| right.occurred_at.cmp(&left.occurred_at))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(rows)
+}
+
+pub(crate) fn build_account_sticky_key_recent_invocations_query<'args>(
+    account_id: i64,
+    selected_keys: &'args [String],
+    limit_per_key: i64,
+    range_start_bound: Option<&'args str>,
+) -> QueryBuilder<'args, Sqlite> {
     let mut query =
         QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
     query
@@ -426,19 +453,7 @@ pub(crate) async fn query_account_sticky_key_recent_invocations(
         .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, request_model, response_model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, downstream_status_code, downstream_error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, request_compression_algorithm, transport, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, first_token_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint, compaction_request_kind, compaction_response_kind, image_intent FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key);
 
-    let mut rows = query
-        .build_query_as::<AccountStickyKeyInvocationPreviewRow>()
-        .fetch_all(pool)
-        .await?;
-    // The composite expression index already supplies the window order. Keep the
-    // response's historical deterministic order without asking SQLite to sort it again.
-    rows.sort_by(|left, right| {
-        left.sticky_key
-            .cmp(&right.sticky_key)
-            .then_with(|| right.occurred_at.cmp(&left.occurred_at))
-            .then_with(|| right.id.cmp(&left.id))
-    });
-    Ok(rows)
+    query
 }
 
 pub(crate) async fn load_sticky_route(
