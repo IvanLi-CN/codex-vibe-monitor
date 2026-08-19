@@ -1512,9 +1512,15 @@ impl PoolRoutingReservationDropGuard {
         F: std::future::Future<Output = Result<T, E>>,
     {
         self.suppress_availability_on_drop();
-        let result = persist_failure.await;
-        self.restore_availability_on_drop();
-        result
+        match persist_failure.await {
+            Ok(value) => {
+                self.restore_availability_on_drop();
+                Ok(value)
+            }
+            // A failed write never establishes a routing fence. Keep the eventual
+            // guard release silent so a waiter cannot immediately reselect it.
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -1804,7 +1810,9 @@ pub(crate) async fn persist_pool_route_success_then_release<T, E>(
 ) -> Result<T, E> {
     match persist_success.await {
         Ok(value) => {
-            release_pool_routing_reservation(state, reservation_key);
+            // Success observers publish only when they actually restore a route.
+            // Releasing an occupied slot alone must not bypass a newer failure fence.
+            release_pool_routing_reservation_without_availability(state, reservation_key);
             Ok(value)
         }
         Err(err) => {

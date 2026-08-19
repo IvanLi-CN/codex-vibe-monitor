@@ -2782,17 +2782,23 @@ async fn same_second_newer_account_failure_fences_success_without_publish() {
 
     let availability = state.pool_routing_availability.subscribe();
     let initial_generation = *availability.borrow();
+    let reservation_key = "same-second-stale-success-reservation";
+    reserve_test_pool_routing_account(&state, reservation_key, account_id).await;
     let success_state = state.clone();
     let success_task = tokio::spawn(async move {
-        record_pool_route_success_with_affinity_generation_and_broadcast(
+        persist_pool_route_success_then_release(
             success_state.as_ref(),
-            account_id,
-            request_started_at,
-            None,
-            None,
-            Some("same-second-stale-success"),
-            None,
-            None,
+            reservation_key,
+            record_pool_route_success_with_affinity_generation_and_broadcast(
+                success_state.as_ref(),
+                account_id,
+                request_started_at,
+                None,
+                None,
+                Some("same-second-stale-success"),
+                None,
+                None,
+            ),
         )
         .await
     });
@@ -2825,6 +2831,14 @@ async fn same_second_newer_account_failure_fences_success_without_publish() {
         *availability.borrow(),
         initial_generation,
         "a stale success must neither recover the account nor wake pool waiters"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "the stale-success path must still release its occupied reservation"
     );
 }
 

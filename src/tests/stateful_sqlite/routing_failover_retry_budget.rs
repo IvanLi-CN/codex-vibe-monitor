@@ -2626,6 +2626,62 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
 }
 
 #[tokio::test]
+async fn guarded_failed_failure_persistence_releases_reservation_without_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Guarded Failed Failure Fence",
+        "guarded-failed-fence-key",
+    )
+    .await;
+    let reservation_key = "guarded-failed-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-guarded-failed-fence".to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        let result = reservation_guard
+            .fence_failure(async { Err::<(), _>("simulated guarded persistence failure") })
+            .await;
+        assert!(
+            result.is_err(),
+            "the persistence failure must remain visible"
+        );
+    }
+
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "failed persistence must still release the reservation instead of leaking capacity"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a failed failure fence must not wake waiters into an immediate retry"
+    );
+}
+
+#[tokio::test]
 async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
