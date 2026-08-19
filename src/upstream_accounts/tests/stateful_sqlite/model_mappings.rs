@@ -213,6 +213,14 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
         Some("https://mapped-routing.example.com/backend-api/codex"),
     )
     .await;
+    let mut tag_rule = test_tag_routing_rule();
+    tag_rule.available_models = vec!["upstream-special".to_string()];
+    let tag = insert_test_tag(&state.pool, "mapped-target-allowlist", &tag_rule)
+        .await
+        .expect("insert mapped target tag");
+    sync_account_tag_links(&state.pool, account_id, &[tag.summary.id])
+        .await
+        .expect("attach mapped target tag");
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -229,6 +237,13 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .expect("refresh routing cache");
+    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+        .await
+        .expect("load constrained effective rule");
+    assert_eq!(
+        effective_rule.tag_available_models.as_deref(),
+        Some(["upstream-special".to_string()].as_slice())
+    );
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         state.as_ref(),
@@ -245,6 +260,63 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     };
     assert_eq!(resolved.account_id, account_id);
 
+    sqlx::query("UPDATE pool_upstream_accounts SET model_mappings_json = ?1 WHERE id = ?2")
+        .bind(
+            serde_json::to_string(&vec![mapping(
+                "client-*",
+                "upstream-not-allowed-by-tag",
+                true,
+            )])
+            .expect("encode disallowed mapping"),
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed disallowed mapped target");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("refresh disallowed mapping cache");
+    let effective_rule = load_effective_routing_rule_for_account(&state.pool, account_id)
+        .await
+        .expect("load disallowed effective rule");
+    assert_eq!(
+        effective_rule.tag_available_models.as_deref(),
+        Some(["upstream-special".to_string()].as_slice())
+    );
+    assert_eq!(
+        load_model_mapping_for_account(state.as_ref(), account_id, Some("client-fast"))
+            .await
+            .expect("load disallowed mapping")
+            .expect("disallowed mapping should be cached")
+            .target_model,
+        "upstream-not-allowed-by-tag"
+    );
+    assert!(
+        !account_accepts_requested_model_or_cached_mapping(
+            state.as_ref(),
+            account_id,
+            Some("client-fast"),
+            &effective_rule,
+        )
+        .await
+        .expect("check disallowed mapping"),
+        "tag model allowlist must reject the mapped target before candidate selection"
+    );
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET model_mappings_json = '[{"sourceModel":"client-*","targetModel":"upstream-special","enabled":true}]'
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("restore allowed mapped target");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("refresh allowed mapping cache");
     ensure_account_has_unsupported_model_tag(&state.pool, account_id, "upstream-special")
         .await
         .expect("deny mapped target");

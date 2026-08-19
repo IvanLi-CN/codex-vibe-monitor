@@ -2779,43 +2779,23 @@ async fn rewrite_ws_downstream_message_model(
     message: AxumWsMessage,
     active_mapping: Option<&ResolvedModelMapping>,
 ) -> Result<(AxumWsMessage, Option<ResolvedModelMapping>)> {
+    if let Some(error) = websocket_mapping_unsafe_frame_error(&message, active_mapping.is_some()) {
+        return Err(anyhow!(error));
+    }
     let text = match message {
         AxumWsMessage::Text(text) => text,
-        AxumWsMessage::Binary(_) if active_mapping.is_some() => {
-            return Err(anyhow!(
-                "websocket model mapping cannot safely rewrite a binary frame"
-            ));
-        }
         AxumWsMessage::Binary(_) | AxumWsMessage::Ping(_) | AxumWsMessage::Pong(_) => {
             return Ok((message, None));
         }
         AxumWsMessage::Close(_) => return Ok((message, None)),
     };
-    let Ok(mut payload) = serde_json::from_str::<Value>(text.as_str()) else {
-        if active_mapping.is_some() {
-            return Err(anyhow!(
-                "websocket model mapping cannot safely parse a JSON frame"
-            ));
-        }
+    let Some(mut payload) = parse_websocket_mapping_payload(&text, active_mapping.is_some())?
+    else {
         return Ok((AxumWsMessage::Text(text), None));
     };
-    let Some(object) = payload.as_object() else {
-        if active_mapping.is_some() {
-            return Err(anyhow!(
-                "websocket model mapping requires a top-level JSON object"
-            ));
-        }
-        return Ok((AxumWsMessage::Text(text), None));
-    };
-    let Some(model) = object.get("model") else {
-        return Ok((AxumWsMessage::Text(text), None));
-    };
-    let Some(requested_model) = model.as_str().map(str::to_string) else {
-        if active_mapping.is_some() {
-            return Err(anyhow!(
-                "websocket model mapping requires a top-level string model field"
-            ));
-        }
+    let Some(requested_model) =
+        websocket_mapping_requested_model(&payload, active_mapping.is_some())?
+    else {
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(mapping) =
@@ -2827,6 +2807,59 @@ async fn rewrite_ws_downstream_message_model(
     let rewritten = serde_json::to_string(&payload)
         .context("failed to serialize mapped websocket JSON frame")?;
     Ok((AxumWsMessage::Text(rewritten), Some(mapping)))
+}
+
+fn websocket_mapping_unsafe_frame_error(
+    message: &AxumWsMessage,
+    mapping_active: bool,
+) -> Option<&'static str> {
+    if !mapping_active {
+        return None;
+    }
+    match message {
+        AxumWsMessage::Binary(_) => {
+            Some("websocket model mapping cannot safely rewrite a binary frame")
+        }
+        _ => None,
+    }
+}
+
+fn parse_websocket_mapping_payload(text: &str, mapping_active: bool) -> Result<Option<Value>> {
+    let Ok(payload) = serde_json::from_str::<Value>(text) else {
+        if mapping_active {
+            return Err(anyhow!(
+                "websocket model mapping cannot safely parse a JSON frame"
+            ));
+        }
+        return Ok(None);
+    };
+    if !payload.is_object() {
+        if mapping_active {
+            return Err(anyhow!(
+                "websocket model mapping requires a top-level JSON object"
+            ));
+        }
+        return Ok(None);
+    }
+    Ok(Some(payload))
+}
+
+fn websocket_mapping_requested_model(
+    payload: &Value,
+    mapping_active: bool,
+) -> Result<Option<String>> {
+    let Some(model) = payload.as_object().and_then(|object| object.get("model")) else {
+        return Ok(None);
+    };
+    let Some(requested_model) = model.as_str() else {
+        if mapping_active {
+            return Err(anyhow!(
+                "websocket model mapping requires a top-level string model field"
+            ));
+        }
+        return Ok(None);
+    };
+    Ok(Some(requested_model.to_string()))
 }
 
 fn rewrite_websocket_json_payload_model(payload: &mut Value, target_model: &str) -> Result<()> {
@@ -3938,6 +3971,47 @@ mod websocket_tests {
         let mut unsafe_payload = serde_json::json!({"model": 7});
         assert!(
             rewrite_websocket_json_payload_model(&mut unsafe_payload, "upstream-model").is_err()
+        );
+    }
+
+    #[test]
+    fn websocket_active_model_mapping_fails_closed_for_unsafe_frames() {
+        let active_mapping = true;
+        assert!(
+            websocket_mapping_unsafe_frame_error(
+                &AxumWsMessage::Binary(vec![1, 2, 3]),
+                active_mapping,
+            )
+            .is_some()
+        );
+        assert!(parse_websocket_mapping_payload("not-json", active_mapping).is_err());
+        assert!(parse_websocket_mapping_payload("[1, 2, 3]", active_mapping).is_err());
+        assert!(
+            websocket_mapping_requested_model(&serde_json::json!({"model": 7}), active_mapping,)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn websocket_without_model_mapping_preserves_unsafe_payloads() {
+        assert!(
+            websocket_mapping_unsafe_frame_error(&AxumWsMessage::Binary(vec![1, 2, 3]), false,)
+                .is_none()
+        );
+        assert!(
+            parse_websocket_mapping_payload("not-json", false)
+                .expect("unmapped malformed frame should pass through")
+                .is_none()
+        );
+        assert!(
+            parse_websocket_mapping_payload("[1, 2, 3]", false)
+                .expect("unmapped non-object frame should pass through")
+                .is_none()
+        );
+        assert!(
+            websocket_mapping_requested_model(&serde_json::json!({"model": 7}), false,)
+                .expect("unmapped non-string model should pass through")
+                .is_none()
         );
     }
 

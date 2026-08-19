@@ -185,9 +185,22 @@ pub(crate) fn account_accepts_requested_model_or_mapping(
     }
 
     match resolve_model_mapping(mappings, requested_model) {
-        Some(mapping) => !requested_model_is_system_denied(Some(&mapping.target_model), rule),
+        Some(mapping) => mapped_target_model_is_allowed(&mapping.target_model, rule),
         None => account_accepts_requested_model(requested_model, rule),
     }
+}
+
+fn mapped_target_model_is_allowed(target_model: &str, rule: &EffectiveRoutingRule) -> bool {
+    if requested_model_is_system_denied(Some(target_model), rule) {
+        return false;
+    }
+    rule.tag_available_models
+        .as_deref()
+        .is_none_or(|allowed_models| {
+            allowed_models
+                .iter()
+                .any(|candidate| requested_model_matches_constraint(target_model, candidate))
+        })
 }
 
 pub(crate) async fn build_pool_model_routing_runtime_cache(
@@ -269,7 +282,7 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
                             resolve_compiled_model_mapping(mappings, Some(model))
                         }) {
                             Some(mapping) => {
-                                !requested_model_is_system_denied(Some(&mapping.target_model), rule)
+                                mapped_target_model_is_allowed(&mapping.target_model, rule)
                             }
                             None => account_accepts_requested_model(Some(model), rule),
                         }
@@ -312,7 +325,7 @@ pub(crate) async fn account_accepts_requested_model_or_cached_mapping(
     }
     Ok(
         match load_model_mapping_for_account(state, account_id, requested_model).await? {
-            Some(mapping) => !requested_model_is_system_denied(Some(&mapping.target_model), rule),
+            Some(mapping) => mapped_target_model_is_allowed(&mapping.target_model, rule),
             None => account_accepts_requested_model(requested_model, rule),
         },
     )
