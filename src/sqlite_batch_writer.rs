@@ -1989,6 +1989,130 @@ pub(crate) async fn run_sqlite_batch_writer(
         );
         tokio::select! {
             biased;
+            // Once due, P2 must win over continuously ready control or queue work.
+            _ = wait_for_p2_deadline(p2_schedule.due_at),
+                if p2_deadline_wait_armed(&pending, &p2_schedule, &queued_p1_count, &p1_retry) =>
+            {
+                let priority_guard = p1_priority_gate
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                drain_terminal_journal_deferred_writes(
+                    &terminal_journal,
+                    &mut pending,
+                    &accounting,
+                    SQLITE_BATCH_MAX_ROWS,
+                    &queued_p1_count,
+                );
+                drain_queued_writes_before_p2_dispatch(
+                    &mut write_receiver,
+                    &mut pending,
+                    &accounting,
+                    &mut p2_schedule,
+                    &queued_p1_count,
+                );
+                if queued_p1_count.load(Ordering::SeqCst) != 0 {
+                    drop(priority_guard);
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
+                    continue;
+                }
+                let now = Instant::now();
+                let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
+                let flush_batch = if submitted_p1 {
+                    pending.take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
+                } else {
+                    pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
+                };
+                drop(priority_guard);
+                if flush_batch.terminal_invocations.is_empty()
+                    && flush_batch.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
+                {
+                    warn!(
+                        flush_priority = "P2",
+                        batch_rows = flush_batch.logical_rows(),
+                        batch_bytes = flush_batch.estimated_memory_bytes(),
+                        max_batch_bytes = SQLITE_BATCH_MAX_BYTES,
+                        "isolating oversized single P2 write"
+                    );
+                }
+                if let Some(retained) =
+                    flush_pending_batch_accounted(
+                        &accounting,
+                        &pool,
+                        pricing_catalog.as_ref(),
+                        flush_batch,
+                        FlushReason::Interval,
+                        prompt_cache_conversation_cache.as_ref(),
+                        &terminal_runtime_store,
+                        &dashboard_activity_snapshot_cache,
+                        &terminal_projection_hub,
+                        &dashboard_reconcile_gate,
+                        &terminal_journal,
+                    )
+                    .await
+                {
+                    if retained.failed && !retained.batch.terminal_invocations.is_empty() {
+                        transaction_sequence = transaction_sequence.saturating_add(1);
+                        let delay = p1_retry.failed(transaction_sequence);
+                        warn!(
+                            write_class = "p1_terminal",
+                            retry_generation = p1_retry.generation as u64,
+                            next_retry_delay_ms = delay.as_millis() as u64,
+                            "scheduled retained P1 batch with exponential backoff"
+                        );
+                    } else if submitted_p1 {
+                        p1_retry.succeeded();
+                    }
+                    match retained.p2_defer {
+                        Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
+                            p2_schedule.defer_pressure(
+                                Duration::from_millis(remaining_ms),
+                                P2WakeReason::PressureCooldownElapsed,
+                            );
+                        }
+                        Some(P2DeferReason::BackgroundBusy {
+                            observed_generation,
+                        }) => {
+                            p2_eligibility_generation = observed_generation;
+                            p2_schedule.defer_until_background_eligible();
+                        }
+                        None if retained.failed
+                            && retained.p2_retryable_failure
+                            && retained.batch.has_p2()
+                            && retained.batch.terminal_invocations.is_empty() => {
+                            transaction_sequence = transaction_sequence.saturating_add(1);
+                            let delay = p2_schedule.failed(transaction_sequence);
+                            if retained.p2_lock_failure {
+                                accounting.p2_lock_retried();
+                            }
+                            warn!(
+                                write_class = "p2_derived",
+                                retry_generation = p2_schedule.generation as u64,
+                                next_retry_delay_ms = delay.as_millis() as u64,
+                                "scheduled retained P2 batch with exponential backoff"
+                            );
+                        }
+                        None if retained.batch.has_p2() => {
+                            p2_schedule.arm_if_idle(Instant::now());
+                        }
+                        None => p2_schedule.succeeded(),
+                    }
+                    if retained.batch.terminal_invocations.is_empty() {
+                        pending.merge_p2(retained.batch);
+                    } else {
+                        let mut retained_batch = retained.batch;
+                        retained_batch.merge_all(pending.take());
+                        pending = retained_batch;
+                    }
+                    accounting.update_p2_schedule(&p2_schedule);
+                } else {
+                    if submitted_p1 {
+                        p1_retry.succeeded();
+                    }
+                    p2_schedule.succeeded();
+                    accounting.update_p2_schedule(&p2_schedule);
+                }
+            }
             _ = crate::db_pressure::global_db_pressure_gate()
                 .wait_for_eligibility_change(p2_eligibility_generation),
                 if pending.has_p2()
@@ -2323,129 +2447,6 @@ pub(crate) async fn run_sqlite_batch_writer(
                     }
                 } else {
                     control_closed = true;
-                }
-            }
-            _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if p2_deadline_wait_armed(&pending, &p2_schedule, &queued_p1_count, &p1_retry) =>
-            {
-                let priority_guard = p1_priority_gate
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                drain_terminal_journal_deferred_writes(
-                    &terminal_journal,
-                    &mut pending,
-                    &accounting,
-                    SQLITE_BATCH_MAX_ROWS,
-                    &queued_p1_count,
-                );
-                drain_queued_writes_before_p2_dispatch(
-                    &mut write_receiver,
-                    &mut pending,
-                    &accounting,
-                    &mut p2_schedule,
-                    &queued_p1_count,
-                );
-                if queued_p1_count.load(Ordering::SeqCst) != 0 {
-                    drop(priority_guard);
-                    p2_schedule.arm_if_idle(Instant::now());
-                    accounting.update_p2_schedule(&p2_schedule);
-                    continue;
-                }
-                let now = Instant::now();
-                let submitted_p1 = !pending.terminal_invocations.is_empty() && p1_retry.ready(now);
-                let flush_batch = if submitted_p1 {
-                    pending.take_p1_terminal_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
-                } else {
-                    pending.take_p2_chunk(SQLITE_BATCH_MAX_ROWS, SQLITE_BATCH_MAX_BYTES)
-                };
-                drop(priority_guard);
-                if flush_batch.terminal_invocations.is_empty()
-                    && flush_batch.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
-                {
-                    warn!(
-                        flush_priority = "P2",
-                        batch_rows = flush_batch.logical_rows(),
-                        batch_bytes = flush_batch.estimated_memory_bytes(),
-                        max_batch_bytes = SQLITE_BATCH_MAX_BYTES,
-                        "isolating oversized single P2 write"
-                    );
-                }
-                if let Some(retained) =
-                    flush_pending_batch_accounted(
-                        &accounting,
-                        &pool,
-                        pricing_catalog.as_ref(),
-                        flush_batch,
-                        FlushReason::Interval,
-                        prompt_cache_conversation_cache.as_ref(),
-                        &terminal_runtime_store,
-                        &dashboard_activity_snapshot_cache,
-                        &terminal_projection_hub,
-                        &dashboard_reconcile_gate,
-                        &terminal_journal,
-                    )
-                    .await
-                {
-                    if retained.failed && !retained.batch.terminal_invocations.is_empty() {
-                        transaction_sequence = transaction_sequence.saturating_add(1);
-                        let delay = p1_retry.failed(transaction_sequence);
-                        warn!(
-                            write_class = "p1_terminal",
-                            retry_generation = p1_retry.generation as u64,
-                            next_retry_delay_ms = delay.as_millis() as u64,
-                            "scheduled retained P1 batch with exponential backoff"
-                        );
-                    } else if submitted_p1 {
-                        p1_retry.succeeded();
-                    }
-                    match retained.p2_defer {
-                        Some(P2DeferReason::PressureCooldown(remaining_ms)) => {
-                            p2_schedule.defer_pressure(
-                                Duration::from_millis(remaining_ms),
-                                P2WakeReason::PressureCooldownElapsed,
-                            );
-                        }
-                        Some(P2DeferReason::BackgroundBusy {
-                            observed_generation,
-                        }) => {
-                            p2_eligibility_generation = observed_generation;
-                            p2_schedule.defer_until_background_eligible();
-                        }
-                        None if retained.failed
-                            && retained.p2_retryable_failure
-                            && retained.batch.has_p2()
-                            && retained.batch.terminal_invocations.is_empty() => {
-                            transaction_sequence = transaction_sequence.saturating_add(1);
-                            let delay = p2_schedule.failed(transaction_sequence);
-                            if retained.p2_lock_failure {
-                                accounting.p2_lock_retried();
-                            }
-                            warn!(
-                                write_class = "p2_derived",
-                                retry_generation = p2_schedule.generation as u64,
-                                next_retry_delay_ms = delay.as_millis() as u64,
-                                "scheduled retained P2 batch with exponential backoff"
-                            );
-                        }
-                        None if retained.batch.has_p2() => {
-                            p2_schedule.arm_if_idle(Instant::now());
-                        }
-                        None => p2_schedule.succeeded(),
-                    }
-                    if retained.batch.terminal_invocations.is_empty() {
-                        pending.merge_p2(retained.batch);
-                    } else {
-                        let mut retained_batch = retained.batch;
-                        retained_batch.merge_all(pending.take());
-                        pending = retained_batch;
-                    }
-                    accounting.update_p2_schedule(&p2_schedule);
-                } else {
-                    if submitted_p1 {
-                        p1_retry.succeeded();
-                    }
-                    p2_schedule.succeeded();
-                    accounting.update_p2_schedule(&p2_schedule);
                 }
             }
             _ = deferred_ticker.tick() => {
@@ -5191,7 +5192,7 @@ mod tests {
             })
         };
 
-        let resumed = tokio::time::timeout(Duration::from_secs(30), async {
+        let resumed = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if writer.accounting_snapshot().p2_flush_attempt_count > 0 {
                     break;
