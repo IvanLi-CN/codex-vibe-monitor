@@ -60,9 +60,7 @@ pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloa
     let request_model = value
         .get("requestModel")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+        .map(|value| value.trim().to_string());
     TerminalPayloadMetadata {
         prompt_cache_key,
         upstream_account_id,
@@ -531,6 +529,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 group_name_snapshot,
                 proxy_binding_key_snapshot,
                 request_model,
+                upstream_request_model,
+                model_mapping_pattern,
                 upstream_account_id,
                 upstream_route_key,
                 attempt_index,
@@ -561,7 +561,7 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
                 compact_support_reason
             )
             VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42
             )
             "#,
         )
@@ -577,6 +577,8 @@ pub(crate) async fn insert_pool_upstream_request_attempt_with_scope(
         .bind(group_name_snapshot)
         .bind(proxy_binding_key_snapshot)
         .bind(trace.request_model.as_deref())
+        .bind(trace.request_model.as_deref())
+        .bind(Option::<&str>::None)
         .bind(upstream_account_id)
         .bind(upstream_route_key)
         .bind(attempt_index)
@@ -712,12 +714,55 @@ pub(crate) async fn update_pool_upstream_request_attempt_model(
     let Some(attempt_id) = attempt_id else {
         return Ok(());
     };
-    let model = model.map(str::trim).filter(|value| !value.is_empty());
-    sqlx::query("UPDATE pool_upstream_request_attempts SET request_model = ?1 WHERE id = ?2")
-        .bind(model)
-        .bind(attempt_id)
-        .execute(pool)
-        .await?;
+    let model = model.map(str::trim);
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET request_model = ?1,
+            upstream_request_model = CASE
+                WHEN model_mapping_pattern IS NULL THEN ?1
+                ELSE upstream_request_model
+            END
+        WHERE id = ?2
+        "#,
+    )
+    .bind(model)
+    .bind(attempt_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn annotate_pool_upstream_request_attempt_model_mapping(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+    upstream_request_model: Option<&str>,
+    model_mapping_pattern: Option<&str>,
+) -> Result<()> {
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(());
+    };
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET upstream_request_model = ?2,
+            model_mapping_pattern = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(
+        upstream_request_model
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    )
+    .bind(
+        model_mapping_pattern
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1821,8 +1866,7 @@ pub(crate) async fn observe_proxy_cache_hit_if_success(
         .request_model
         .as_deref()
         .or(record.model.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .map(str::trim);
     let Some(model) = model else {
         return Ok(ModelRouteCacheObservationOutcome::default());
     };

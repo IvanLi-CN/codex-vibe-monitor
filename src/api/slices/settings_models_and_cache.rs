@@ -129,6 +129,10 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) request_model: Option<String>,
     #[sqlx(default)]
+    pub(crate) upstream_request_model: Option<String>,
+    #[sqlx(default)]
+    pub(crate) model_mapping_pattern: Option<String>,
+    #[sqlx(default)]
     pub(crate) response_model: Option<String>,
     #[sqlx(default)]
     pub(crate) compaction_request_kind: Option<String>,

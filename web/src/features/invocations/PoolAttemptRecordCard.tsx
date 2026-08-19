@@ -52,6 +52,17 @@ function formatPoolAttemptAccountLabel(attempt: ApiPoolUpstreamRequestAttempt) {
   return FALLBACK_CELL;
 }
 
+function resolveOriginalModel(attempt: ApiPoolUpstreamRequestAttempt) {
+  return formatOptionalText(attempt.requestModel ?? attempt.model);
+}
+
+function resolveUpstreamRequestModel(attempt: ApiPoolUpstreamRequestAttempt, t: Translator) {
+  const upstreamRequestModel = attempt.upstreamRequestModel?.trim();
+  if (upstreamRequestModel) return upstreamRequestModel;
+  if (attempt.modelMappingPattern?.trim()) return t("table.poolAttempts.modelNotSent");
+  return resolveOriginalModel(attempt);
+}
+
 function poolAttemptStatusMeta(status: string | null | undefined): {
   variant: "success" | "warning" | "error" | "secondary";
   key: TranslationKey;
@@ -202,6 +213,8 @@ export function PoolAttemptRecordCard({
   const accountLabel = formatPoolAttemptAccountLabel(attempt);
   const httpStatusValue = formatOptionalStatusCode(attempt.httpStatus);
   const downstreamHttpStatusValue = formatOptionalStatusCode(attempt.downstreamHttpStatus);
+  const originalModel = resolveOriginalModel(attempt);
+  const upstreamRequestModel = resolveUpstreamRequestModel(attempt, t);
 
   return (
     <div
@@ -307,6 +320,26 @@ export function PoolAttemptRecordCard({
           </span>
           <span className="break-all font-mono">{formatOptionalText(attempt.failureKind)}</span>
         </div>
+        <div className="flex items-start gap-2">
+          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+            {t("table.poolAttempts.originalModel")}
+          </span>
+          <span className="break-all font-mono">{originalModel}</span>
+        </div>
+        <div className="flex items-start gap-2">
+          <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+            {t("table.poolAttempts.upstreamRequestModel")}
+          </span>
+          <span className="break-all font-mono">{upstreamRequestModel}</span>
+        </div>
+        {attempt.modelMappingPattern?.trim() ? (
+          <div className="flex items-start gap-2">
+            <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
+              {t("table.poolAttempts.modelMappingPattern")}
+            </span>
+            <span className="break-all font-mono">{attempt.modelMappingPattern.trim()}</span>
+          </div>
+        ) : null}
         <div className="flex items-start gap-2">
           <span className="min-w-28 text-xs uppercase tracking-wide text-base-content/60">
             {t("table.poolAttempts.connectLatency")}

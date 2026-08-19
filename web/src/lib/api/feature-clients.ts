@@ -22,6 +22,7 @@ export type {
   LongTermStatsOverviewResponse,
   LongTermStatsRange,
   LongTermStatsSeriesResponse,
+  ModelMapping,
   ModelRoutingHistoryResponse,
   ModelRoutingLiveAccount,
   ModelRoutingLiveModelGroup,
@@ -127,6 +128,7 @@ export {
   updateTag,
   updateUpstreamAccount,
   updateUpstreamAccountGroup,
+  updateUpstreamAccountModelMappings,
   validateForwardProxyCandidate,
   validateImportedOauthAccounts,
 } from "./core";

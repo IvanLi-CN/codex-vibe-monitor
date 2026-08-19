@@ -785,6 +785,8 @@ async fn load_upstream_account_attempt_page(
             attempts.requester_ip,
             {model_sql} AS model,
             {request_model_sql} AS request_model,
+            attempts.upstream_request_model,
+            attempts.model_mapping_pattern,
             {response_model_sql} AS response_model,
             {compaction_request_kind_sql} AS compaction_request_kind,
             {compaction_response_kind_sql} AS compaction_response_kind,
@@ -1648,6 +1650,9 @@ pub(crate) async fn update_tag(
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
         .map_err(map_tag_write_error)?;
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
     Ok(Json(detail))
 }
 
@@ -2025,6 +2030,9 @@ pub(crate) async fn update_upstream_account_group(
         }
     }
     tx.commit().await.map_err(internal_error_tuple)?;
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
 
     let saved = load_group_metadata(&state.pool, Some(&group_name))
         .await

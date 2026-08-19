@@ -21,10 +21,7 @@ pub(crate) fn account_accepts_requested_model(
     requested_model: Option<&str>,
     rule: &EffectiveRoutingRule,
 ) -> bool {
-    let Some(requested_model) = requested_model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
+    let Some(requested_model) = requested_model.map(str::trim) else {
         return true;
     };
     if !model_policy_accepts_requested_model(
@@ -131,6 +128,15 @@ mod tests {
             false,
             &Vec::new(),
         ));
+    }
+
+    #[test]
+    fn explicit_empty_model_is_distinct_from_an_absent_model() {
+        let mut rule = build_effective_routing_rule(&[]);
+        rule.available_models = models(&["gpt-5.4"]);
+        rule.available_models_defined = true;
+        assert!(!account_accepts_requested_model(Some(""), &rule));
+        assert!(account_accepts_requested_model(None, &rule));
     }
 
     #[test]

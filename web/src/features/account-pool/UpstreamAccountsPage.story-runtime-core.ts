@@ -6,6 +6,7 @@ import type {
   EffectiveRoutingRule,
   ForwardProxyBindingNode,
   LoginSessionStatusResponse,
+  ModelMapping,
   OauthMailboxStatus,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
@@ -1794,7 +1795,11 @@ export function currentStoryId() {
   return params.get("id");
 }
 
-export function createStore(): StoryStore {
+export function createStore({
+  modelMappings,
+}: {
+  modelMappings?: ModelMapping[];
+} = {}): StoryStore {
   const storyId = currentStoryId();
   const duplicateStory =
     storyId?.endsWith("--duplicate-oauth-warning") === true ||
@@ -1827,7 +1832,6 @@ export function createStore(): StoryStore {
   const dynamicRosterStory = isDynamicRosterStoryId(storyId);
   const reauthDetailOutsideRosterStory =
     storyId?.endsWith("--reauth-detail-outside-roster") === true;
-
   const baseOauthStoryOverrides: Partial<UpstreamAccountDetail> = {
     tags: pickStoryTags("vip", "stickyPool", "priority"),
     effectiveRoutingRule: detailRichRoutingRule,
@@ -1843,6 +1847,7 @@ export function createStore(): StoryStore {
 
   const oauth = createOauthAccount(101, {
     ...baseOauthStoryOverrides,
+    ...(modelMappings ? { modelMappings } : {}),
     boundProxyKeys: ["__direct__", "fpn_5a7b0c1d2e3f4a10"],
     ...(duplicateStory
       ? {

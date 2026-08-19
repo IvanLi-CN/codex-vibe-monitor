@@ -136,6 +136,7 @@ impl ModelRoutingLiveRouteRow {
 #[derive(Debug, Clone, FromRow)]
 struct AttemptRouteContext {
     request_model: Option<String>,
+    upstream_request_model: Option<String>,
     started_at: Option<String>,
 }
 
@@ -376,7 +377,7 @@ pub(crate) async fn model_route_penalty(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<ModelRoutePenalty> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(ModelRoutePenalty::Normal);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -415,7 +416,7 @@ pub(crate) async fn model_route_concurrency_limit(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<Option<i64>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(None);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -454,7 +455,7 @@ pub(crate) async fn model_route_requires_expired_cooldown_probe(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<bool> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(false);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -481,7 +482,7 @@ pub(crate) async fn earliest_model_route_cooldown_expiry(
     model: Option<&str>,
     account_ids: &[i64],
 ) -> Result<Option<String>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(None);
     };
     if account_ids.is_empty() {
@@ -717,7 +718,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
         return Ok(ModelRouteCacheObservationOutcome::default());
     }
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(ModelRouteCacheObservationOutcome::default());
     };
     let Some(input_tokens) = input_tokens else {
@@ -992,7 +993,7 @@ pub(crate) async fn load_model_route_penalties(
     account_ids: &[i64],
     model: Option<&str>,
 ) -> Result<HashMap<i64, ModelRoutePenalty>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(HashMap::new());
     };
     if account_ids.is_empty() {
@@ -1048,7 +1049,7 @@ async fn load_attempt_route_context(
     attempt_id: i64,
 ) -> Result<Option<AttemptRouteContext>> {
     let Some(mut context) = sqlx::query_as::<_, AttemptRouteContext>(
-        "SELECT request_model, started_at FROM pool_upstream_request_attempts WHERE id = ?1",
+        "SELECT request_model, upstream_request_model, started_at FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(pool)
@@ -1059,8 +1060,11 @@ async fn load_attempt_route_context(
     context.request_model = context
         .request_model
         .take()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+        .map(|value| value.trim().to_string());
+    context.upstream_request_model = context
+        .upstream_request_model
+        .take()
+        .map(|value| value.trim().to_string());
     Ok(Some(context))
 }
 
@@ -1272,7 +1276,7 @@ pub(crate) async fn observe_model_route_seen(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<()> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(());
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -1560,9 +1564,6 @@ pub(crate) async fn record_temporary_model_route_failure_for_model(
         return Ok(false);
     }
     let model = model.trim();
-    if model.is_empty() {
-        return Ok(false);
-    }
     record_model_route_failure_inner(
         pool,
         account_id,
@@ -1587,7 +1588,10 @@ pub(crate) async fn attempt_has_explicit_model_failure(
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
         return Ok(false);
     };
-    let Some(model) = attempt_context.request_model else {
+    let Some(model) = attempt_context
+        .upstream_request_model
+        .or(attempt_context.request_model)
+    else {
         return Ok(false);
     };
     Ok(is_explicit_model_failure_for_model(
@@ -1642,22 +1646,23 @@ async fn record_model_route_failure_from_attempt_inner(
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
         return Ok(false);
     };
-    let Some(model) = attempt_context.request_model else {
+    let AttemptRouteContext {
+        request_model: Some(model),
+        upstream_request_model,
+        started_at,
+    } = attempt_context
+    else {
         return Ok(false);
     };
+    let failure_evidence_model = upstream_request_model.as_deref().unwrap_or(model.as_str());
     if require_explicit_model_failure
-        && !is_explicit_model_failure_for_model(status, error_message, Some(&model))
+        && !is_explicit_model_failure_for_model(status, error_message, Some(failure_evidence_model))
     {
         return Ok(false);
     }
     let attempt_started_at = request_started_at
         .and_then(parse_to_utc_datetime)
-        .or_else(|| {
-            attempt_context
-                .started_at
-                .as_deref()
-                .and_then(parse_to_utc_datetime)
-        });
+        .or_else(|| started_at.as_deref().and_then(parse_to_utc_datetime));
     record_model_route_failure_inner(
         pool,
         account_id,
@@ -1667,7 +1672,7 @@ async fn record_model_route_failure_from_attempt_inner(
         error_message,
         failure_kind,
         attempt_started_at,
-        require_explicit_model_failure,
+        false,
         reason_code,
     )
     .await
@@ -1868,9 +1873,6 @@ pub(crate) async fn reset_model_route(
         return Ok(None);
     }
     let model = model.trim();
-    if model.is_empty() {
-        return Ok(None);
-    }
     let Some(row) = sqlx::query_as::<_, ModelRouteRow>(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )

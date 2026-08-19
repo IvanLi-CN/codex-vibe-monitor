@@ -4198,6 +4198,7 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     codex_imagegen_protocol: Option<CodexImagegenProtocol>,
     projected_request_info: Option<&RequestCaptureInfo>,
     projected_hosted_image_intent: Option<ImageIntent>,
+    model_mapping: Option<&ResolvedModelMapping>,
 ) -> Result<PreparedPoolRequestBody, PoolRequestBodyPreparationError> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let default_image_intent = match capture_target {
@@ -4223,11 +4224,18 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         )
     }) && codex_imagegen_protocol.is_none()
         && image_tool_rewrite_mode != crate::ImageToolRewriteMode::KeepOriginal;
-    let rewrite_required = fast_mode_rewrite_required
+    let model_mapping_required = model_mapping.is_some();
+    let rewrite_required = model_mapping_required
+        || fast_mode_rewrite_required
         || image_tool_rewrite_required
         || codex_imagegen_rewrite_required;
 
     let Some(snapshot) = body.cloned() else {
+        if model_mapping_required {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping requires a JSON request body with a top-level model field",
+            ));
+        }
         return Ok(PreparedPoolRequestBody {
             snapshot: PoolReplayBodySnapshot::Empty,
             request_body_for_capture: Some(Bytes::new()),
@@ -4348,6 +4356,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     let decoded_original_bytes =
         decode_request_payload_bytes(&original_bytes, downstream_encoding)?;
     let Some(target) = capture_target else {
+        if model_mapping_required {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping is not supported for this request endpoint",
+            ));
+        }
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture: Some(original_bytes),
@@ -4360,6 +4373,11 @@ pub(crate) async fn prepare_pool_request_body_for_account(
     };
     let mut value = match serde_json::from_slice::<Value>(&decoded_original_bytes) {
         Ok(value) => value,
+        Err(_) if model_mapping_required => {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping requires a valid JSON request body",
+            ));
+        }
         Err(_) => {
             return Ok(PreparedPoolRequestBody {
                 snapshot,
@@ -4373,11 +4391,31 @@ pub(crate) async fn prepare_pool_request_body_for_account(
         }
     };
 
-    let rewritten = if target.allows_fast_mode_rewrite() {
-        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
+    let model_mapping_rewritten = if let Some(mapping) = model_mapping {
+        let Some(object) = value.as_object_mut() else {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping requires a JSON object with a top-level model field",
+            ));
+        };
+        if object.get("model").and_then(Value::as_str).is_none() {
+            return Err(PoolRequestBodyPreparationError::bad_request(
+                "model mapping requires a top-level string model field",
+            ));
+        }
+        object.insert(
+            "model".to_string(),
+            Value::String(mapping.target_model.clone()),
+        );
+        true
     } else {
         false
     };
+    let rewritten = model_mapping_rewritten
+        || (if target.allows_fast_mode_rewrite() {
+            rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
+        } else {
+            false
+        });
     let original_image_intent = infer_image_intent_from_request_body(target, &value);
     let (codex_image_rewritten, codex_imagegen_rewrite) = if let Some(protocol) =
         codex_imagegen_protocol
@@ -6092,6 +6130,7 @@ mod tests {
             Some(CodexImagegenProtocol::Full),
             None,
             None,
+            None,
         )
         .await
         .expect("prepare keep-original Codex snapshot");
@@ -6152,6 +6191,7 @@ mod tests {
             Some(CodexImagegenProtocol::Full),
             None,
             None,
+            None,
         )
         .await
         .expect("rewrite gzip snapshot");
@@ -6197,6 +6237,7 @@ mod tests {
             crate::ImageToolRewriteMode::KeepOriginal,
             crate::CodexImagegenRewriteMode::ForceAdd,
             Some(CodexImagegenProtocol::Full),
+            None,
             None,
             None,
         )
@@ -6454,6 +6495,7 @@ mod tests {
             None,
             Some(&projection.request_info),
             Some(projection.hosted_image_intent),
+            None,
         )
         .await
         .expect("prepare projected Codex image request");
@@ -6836,5 +6878,61 @@ mod tests {
                 .expect("read snapshot")
                 .starts_with(br#"{"model":"gpt-5.6"}"#)
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_pool_request_body_rewrites_mapped_model_and_rejects_unsafe_payloads() {
+        let uri: Uri = "/v1/responses".parse().expect("responses uri");
+        let mapping = ResolvedModelMapping {
+            source_model: "client-*".to_string(),
+            target_model: "upstream-model".to_string(),
+        };
+        let prepared = prepare_pool_request_body_for_account(
+            90_101,
+            Some(&PoolReplayBodySnapshot::Memory(Bytes::from_static(
+                br#"{"model":"client-fast","input":"hello"}"#,
+            ))),
+            &uri,
+            &Method::POST,
+            None,
+            TagFastModeRewriteMode::KeepOriginal,
+            crate::ImageToolRewriteMode::KeepOriginal,
+            crate::CodexImagegenRewriteMode::KeepOriginal,
+            None,
+            None,
+            None,
+            Some(&mapping),
+        )
+        .await
+        .expect("mapped request should prepare");
+        let payload: Value = serde_json::from_slice(
+            &prepared
+                .snapshot
+                .to_bytes()
+                .await
+                .expect("read mapped payload"),
+        )
+        .expect("decode mapped payload");
+        assert_eq!(payload["model"], "upstream-model");
+
+        let err = prepare_pool_request_body_for_account(
+            90_102,
+            Some(&PoolReplayBodySnapshot::Memory(Bytes::from_static(
+                br#"{"model":7,"input":"hello"}"#,
+            ))),
+            &uri,
+            &Method::POST,
+            None,
+            TagFastModeRewriteMode::KeepOriginal,
+            crate::ImageToolRewriteMode::KeepOriginal,
+            crate::CodexImagegenRewriteMode::KeepOriginal,
+            None,
+            None,
+            None,
+            Some(&mapping),
+        )
+        .await
+        .expect_err("mapped non-string model must not be forwarded");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 }

@@ -1538,6 +1538,113 @@ pub(crate) async fn update_upstream_account(
     Ok(Json(detail))
 }
 
+pub(crate) async fn update_upstream_account_model_mappings(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+    Json(payload): Json<UpdateModelMappingsRequest>,
+) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let detail = state
+        .upstream_accounts
+        .account_ops
+        .run_update_model_mappings(state.clone(), id, payload)
+        .await?;
+    Ok(Json(detail))
+}
+
+pub(crate) async fn update_upstream_account_model_mappings_inner(
+    state: &AppState,
+    id: i64,
+    payload: UpdateModelMappingsRequest,
+) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    let mappings = normalize_model_mappings(payload.model_mappings)?;
+    let mappings_json = encode_model_mappings_json(&mappings).map_err(internal_error_tuple)?;
+    // Initialize lazily before taking the replacement lock. The initializer itself
+    // builds a full cache and takes that same lock when no cache exists yet.
+    load_pool_routing_runtime_cache(state)
+        .await
+        .map_err(internal_error_tuple)?;
+    let _model_cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
+    let runtime_cache = state
+        .pool_routing_runtime_cache
+        .lock()
+        .await
+        .as_ref()
+        .cloned()
+        .expect("pool routing runtime cache should be initialized before mapping save");
+    let model_routing = build_pool_model_routing_runtime_cache_with_mapping_override(
+        &state.pool,
+        Some((id, &mappings)),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    let now_iso = format_utc_iso(Utc::now());
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pool_upstream_accounts WHERE id = ?1 AND COALESCE(deleted_at, '') = ''",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    if exists == 0 {
+        return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
+    }
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET model_mappings_json = ?2,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .bind(mappings_json)
+    .bind(now_iso)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    sqlx::query("DELETE FROM pool_upstream_account_model_routes WHERE account_id = ?1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_tags
+        WHERE account_id = ?1
+          AND tag_id IN (
+              SELECT id FROM pool_tags WHERE system_key LIKE 'unsupported_model:%'
+          )
+        "#,
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+
+    install_pool_model_routing_runtime_cache(state, runtime_cache, model_routing).await;
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    publish_pool_routing_availability(state);
+    load_upstream_account_detail_with_actual_usage(state, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))
+}
+
 pub(crate) async fn update_upstream_account_inner(
     state: &AppState,
     id: i64,
@@ -2296,6 +2403,9 @@ pub(crate) async fn update_upstream_account_inner(
     record_account_update_action(&state.pool, id, "account settings were updated")
         .await
         .map_err(internal_error_tuple)?;
+    refresh_pool_routing_runtime_cache(state)
+        .await
+        .map_err(internal_error_tuple)?;
     let refreshed_row = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?
@@ -2528,6 +2638,7 @@ pub(crate) async fn delete_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
+    refresh_pool_routing_runtime_cache_best_effort(state, "OAuth account deleted").await;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -39,6 +39,11 @@ const COMMON_VIEWPORTS = {
     styles: { width: "1440px", height: "900px" },
     type: "desktop",
   },
+  desktop1440x1024: {
+    name: "Desktop 1440 x 1024",
+    styles: { width: "1440px", height: "1024px" },
+    type: "desktop",
+  },
   desktop1660: {
     name: "Desktop 1660",
     styles: { width: "1660px", height: "960px" },

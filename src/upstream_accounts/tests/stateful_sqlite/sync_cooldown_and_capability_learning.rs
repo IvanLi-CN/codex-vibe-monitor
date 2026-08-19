@@ -1237,6 +1237,40 @@ async fn model_route_reservation_keeps_resolved_model_when_retry_context_lacks_o
     release_pool_routing_reservation(&state, "cache-retry-reservation");
 }
 
+#[tokio::test]
+async fn model_route_reservation_preserves_an_explicit_empty_model() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Empty Model Reservation",
+        "empty-model-reservation-key",
+        None,
+        Some("https://empty-model-reservation.example.com/backend-api/codex"),
+    )
+    .await;
+    let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+        .await
+        .expect("resolve account for empty model reservation");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected a pool account for empty model reservation");
+    };
+    assert_eq!(account.account_id, account_id);
+
+    reserve_pool_routing_account_for_model(&state, "empty-model-reservation", &account, Some(""));
+    assert_eq!(
+        pool_routing_model_reservation_count(&state, account_id, Some("")),
+        1
+    );
+    assert!(pool_routing_reservation_matches_model(
+        &state,
+        "empty-model-reservation",
+        account_id,
+        Some(""),
+    ));
+
+    release_pool_routing_reservation(&state, "empty-model-reservation");
+}
+
 #[test]
 fn websocket_terminal_reservation_key_reuses_the_active_pool_route_key() {
     assert_eq!(
