@@ -2676,6 +2676,77 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
 }
 
 #[tokio::test]
+async fn endpoint_capability_persistence_error_releases_without_publishing_availability() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Endpoint Capability Failure Fence",
+        "endpoint-capability-failure-fence-key",
+    )
+    .await;
+    let failure_at = format_utc_iso(Utc::now() - chrono::Duration::seconds(1));
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = 'needs_reauth', last_error = 'temporary route failure', last_error_at = ?2, last_route_failure_at = ?2, last_route_failure_kind = 'temporary_http_5xx', cooldown_until = ?2, consecutive_route_failures = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(&failure_at)
+    .execute(&state.pool)
+    .await
+    .expect("mark account unavailable before endpoint recovery");
+    sqlx::query(
+        "CREATE TRIGGER fail_endpoint_capability_observation BEFORE UPDATE OF response_endpoint_capability ON pool_upstream_accounts BEGIN SELECT RAISE(ABORT, 'endpoint capability observation failure'); END",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("install capability persistence failure trigger");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let reservation_key = "endpoint-capability-persistence-failure";
+    reserve_test_pool_routing_account(&state, reservation_key, account_id).await;
+
+    let result = persist_pool_route_success_then_release(
+        state.as_ref(),
+        reservation_key,
+        record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+            state.as_ref(),
+            account_id,
+            Utc::now(),
+            None,
+            None,
+            Some("endpoint-capability-persistence-failure"),
+            "/v1/responses",
+            crate::ImageIntent::Unknown,
+            None,
+            None,
+            None,
+        ),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "the injected capability observation failure must reach the terminal persistence path"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "the failed endpoint observer must still release its reservation"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a failed endpoint observer must not wake waiters before all success writes complete"
+    );
+}
+
+#[tokio::test]
 async fn disabled_or_deleted_account_recovery_does_not_publish_availability() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

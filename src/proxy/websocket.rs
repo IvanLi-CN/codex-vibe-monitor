@@ -686,10 +686,11 @@ pub(crate) async fn prepare_upstream_websocket(
                 });
             }
         };
+        let reservation_guard =
+            PoolRoutingReservationGuard::new(state.clone(), reservation_key.clone());
         match account_supports_upstream_websocket(state.as_ref(), &account).await {
             Ok(true) => {}
             Ok(false) => {
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                 excluded_account_ids.push(account.account_id);
                 last_failure = Some(WsAttemptFailure {
                     status: StatusCode::SERVICE_UNAVAILABLE,
@@ -703,7 +704,6 @@ pub(crate) async fn prepare_upstream_websocket(
                 continue;
             }
             Err(err) => {
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                 return Err(WsPrepareError {
                     status: StatusCode::BAD_GATEWAY,
                     message: format!("failed to inspect websocket support tag: {err}"),
@@ -713,7 +713,6 @@ pub(crate) async fn prepare_upstream_websocket(
 
         match prepare_single_upstream_websocket_attempt(
             state.clone(),
-            proxy_request_id,
             original_uri,
             headers,
             &load_effective_request_path_timeouts_for_account(
@@ -730,6 +729,7 @@ pub(crate) async fn prepare_upstream_websocket(
             .2,
             trace,
             prompt_cache_key,
+            reservation_guard,
             account,
             ws_retry_account_ids.len() + 1,
             required_subprotocol,
@@ -793,25 +793,16 @@ pub(crate) async fn account_supports_upstream_websocket(
 
 pub(crate) async fn prepare_single_upstream_websocket_attempt(
     state: Arc<AppState>,
-    proxy_request_id: u64,
     original_uri: &Uri,
     headers: &HeaderMap,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
+    mut reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
     attempt_index: usize,
     required_subprotocol: Option<&str>,
 ) -> Result<PreparedUpstreamWebSocket, WsAttemptFailure> {
-    let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    reserve_pool_routing_account_for_model(
-        state.as_ref(),
-        &reservation_key,
-        &account,
-        trace.request_model.as_deref(),
-    );
-    let mut reservation_guard = PoolRoutingReservationGuard::new(state.clone(), reservation_key);
-
     let (forward_proxy_scope, selected_proxy, _client) =
         match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
             Ok(selection) => selection,
@@ -3512,6 +3503,62 @@ mod websocket_tests {
             *availability.borrow(),
             initial_generation,
             "websocket cancellation before a failure fence commits must not wake waiters"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_websocket_selection_handoff_releases_reservation_and_wakes_waiters() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        )
+        .await;
+        let reservation_key = "websocket-selection-handoff-cancelled";
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                reservation_key.to_string(),
+                PoolRoutingReservation {
+                    account_id: 42,
+                    model: Some("gpt-ws-selection-handoff".to_string()),
+                    proxy_key: None,
+                    created_at: Instant::now(),
+                },
+            );
+        let availability = state.pool_routing_availability.subscribe();
+        let initial_generation = *availability.borrow();
+        let (handoff_started_tx, handoff_started_rx) = tokio::sync::oneshot::channel();
+        let task_state = state.clone();
+        let task = tokio::spawn(async move {
+            // The production path creates this guard immediately after selection,
+            // before awaiting the websocket-capability query.
+            let _reservation_guard =
+                PoolRoutingReservationGuard::new(task_state, reservation_key.to_string());
+            let _ = handoff_started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        handoff_started_rx
+            .await
+            .expect("selection handoff guard should be active before cancellation");
+        task.abort();
+        let join_error = task
+            .await
+            .expect_err("cancelling the selection handoff should cancel its task");
+        assert!(join_error.is_cancelled());
+        assert!(
+            !state
+                .pool_routing_reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned")
+                .contains_key(reservation_key),
+            "cancelling before websocket capability resolution must release the reservation"
+        );
+        assert_ne!(
+            *availability.borrow(),
+            initial_generation,
+            "cancelling a healthy websocket selection handoff must wake waiters"
         );
     }
 

@@ -519,6 +519,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
+    record_pool_route_success_capability_observations(
+        &state.pool,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    )
+    .await?;
     if outcome.sticky_mutation.writes_conversation_operation()
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
@@ -540,14 +548,6 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     if outcome.availability_increased && reservation_release_wakes_waiters {
         publish_pool_routing_availability(state);
     }
-    record_pool_route_success_capability_observations(
-        &state.pool,
-        account_id,
-        endpoint,
-        image_intent,
-        codex_imagegen_rewrite,
-    )
-    .await?;
     Ok(reservation_release_wakes_waiters)
 }
 
