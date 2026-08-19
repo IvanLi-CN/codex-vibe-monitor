@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.64.3",
+  "base_stable_version": "2.64.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-19T05:26:05Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.64.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a9b4a24fd00d0c42a9c9e8b5cdfa827e4a897a4a",
+  "pr_number": 818,
+  "pr_title": "fix(sqlite): prevent scheduled P2 flush starvation",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.64.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.64.3",
+  "target_sha": "3dddceb865b989ae8b3c3cc8755de101a4c46bf4",
+  "type_label": "type:patch"
+}
