@@ -1039,6 +1039,7 @@ fn analyze_replay_snapshot_route_value(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
+    let normalize_model = |value: Option<String>| value.map(|value| value.trim().to_string());
     let sticky_key = (!value.invalid_sticky_projection)
         .then(|| {
             [
@@ -1063,7 +1064,7 @@ fn analyze_replay_snapshot_route_value(
     ]
     .into_iter()
     .find_map(normalize);
-    let requested_model = normalize(value.model);
+    let requested_model = normalize_model(value.model);
     let image_intent = match capture_target {
         Some(ProxyCaptureTarget::ImageGenerations | ProxyCaptureTarget::ImageEdits) => {
             ImageIntent::DirectImage
@@ -1135,6 +1136,22 @@ fn analyze_replay_snapshot_route_value(
         file_read_count: 0,
         json_parse_count: 0,
         parse_outcome: "empty",
+    }
+}
+
+#[cfg(test)]
+mod replay_snapshot_route_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_empty_model_survives_route_analysis() {
+        let semantics = serde_json::from_str::<SelectiveRequestSemantics>(r#"{"model":""}"#)
+            .expect("parse request semantics");
+        let analysis = analyze_replay_snapshot_route_value(
+            Some(semantics),
+            Some(ProxyCaptureTarget::Responses),
+        );
+        assert_eq!(analysis.requested_model, Some(String::new()));
     }
 }
 

@@ -456,9 +456,6 @@ pub(crate) const STICKY_AFFINITY_TOKEN_FACTOR: i64 = 1_000_000_000;
 
 pub(crate) fn normalize_sticky_model_key(model: Option<&str>) -> Option<String> {
     let model = model?.trim();
-    if model.is_empty() {
-        return None;
-    }
     let alias = crate::proxy::dated_model_alias_base(model).unwrap_or(model);
     Some(alias.to_ascii_lowercase())
 }

@@ -60,9 +60,7 @@ pub(crate) fn terminal_payload_metadata(payload: Option<&str>) -> TerminalPayloa
     let request_model = value
         .get("requestModel")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+        .map(|value| value.trim().to_string());
     TerminalPayloadMetadata {
         prompt_cache_key,
         upstream_account_id,
@@ -1868,8 +1866,7 @@ pub(crate) async fn observe_proxy_cache_hit_if_success(
         .request_model
         .as_deref()
         .or(record.model.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .map(str::trim);
     let Some(model) = model else {
         return Ok(ModelRouteCacheObservationOutcome::default());
     };
