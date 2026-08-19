@@ -321,6 +321,8 @@ where
 {
     let final_first_token_timing_sql =
         crate::final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_stream_timing_sql =
+        crate::final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms");
     let final_live_phase_sql = crate::invocation_live_phase_sql_with_timing_sql(
         "codex_invocations",
         final_first_token_timing_sql.as_str(),
@@ -350,7 +352,11 @@ where
             ",
         );
     query.push(final_first_token_timing_sql.as_str()).push(
-        " AS first_token_ms, t_upstream_stream_ms, \
+        " AS first_token_ms, \
+            ",
+    );
+    query.push(final_stream_timing_sql.as_str()).push(
+        " AS t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \
          FROM codex_invocations \
          WHERE occurred_at >= ",
@@ -465,6 +471,8 @@ where
 {
     let final_first_token_timing_sql =
         crate::final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_stream_timing_sql =
+        crate::final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms");
     let final_live_phase_sql = crate::invocation_live_phase_sql_with_timing_sql(
         "codex_invocations",
         final_first_token_timing_sql.as_str(),
@@ -496,7 +504,11 @@ where
             ",
         );
     query.push(final_first_token_timing_sql.as_str()).push(
-        " AS first_token_ms, t_upstream_stream_ms, \
+        " AS first_token_ms, \
+            ",
+    );
+    query.push(final_stream_timing_sql.as_str()).push(
+        " AS t_upstream_stream_ms, \
             t_resp_parse_ms, t_persist_ms \
          FROM codex_invocations \
          WHERE occurred_at >= ",
@@ -1376,7 +1388,7 @@ mod in_flight_query_tests {
         .await
         .expect("create pool attempts");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, source, first_token_ms) VALUES (1, 'retried', '2026-08-03 08:00:10', 'running', '{\"upstreamAccountId\":7}', 'proxy', 720.0)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, source, first_token_ms, t_upstream_stream_ms) VALUES (1, 'retried', '2026-08-03 08:00:10', 'running', '{\"upstreamAccountId\":7}', 'proxy', 720.0, 400.0)",
         )
         .execute(&pool)
         .await
@@ -1403,6 +1415,7 @@ mod in_flight_query_tests {
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].first_token_ms, None);
+        assert_eq!(records[0].t_upstream_stream_ms, None);
         assert_eq!(
             records[0].live_phase.as_deref(),
             Some(INVOCATION_LIVE_PHASE_REQUESTING)

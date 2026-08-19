@@ -1204,7 +1204,7 @@ async fn query_pool_attempt_records_from_live_keeps_pending_streaming_ttft() {
         .expect("query retry pool attempt records");
     assert_eq!(retry_rows.len(), 2);
     assert_eq!(retry_rows[0].first_token_ms, None);
-    assert_eq!(retry_rows[1].first_token_ms, None);
+    assert_eq!(retry_rows[1].first_token_ms, Some(720.0));
 }
 
 #[test]
