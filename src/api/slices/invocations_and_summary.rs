@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime_mutation_bus::RuntimeMutation;
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
     RESPONSE_TIER_PRICE_VERSION_SUFFIX, estimate_proxy_cost_breakdown, has_billable_usage,
@@ -6990,7 +6991,7 @@ pub(crate) async fn load_in_progress_conversation_count(
 pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
 pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
 const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = SUMMARY_SNAPSHOT_REFRESH_INTERVAL;
+const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
 // Reconcile before the 15-second serving budget expires; a timed-out build is discarded
 // atomically and cannot expose a partial projection to the request path.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
@@ -7458,12 +7459,16 @@ async fn load_summary_projection_rollup_usage(
             performance_usage_duration_sample_count: row.performance_usage_duration_sample_count,
             performance_usage_duration_sum_ms: row.performance_usage_duration_sum_ms,
         };
-        for key in [
-            (bucket_start_epoch, None),
-            (bucket_start_epoch, upstream_account_id),
-        ] {
+        // The rollup table stores account-scoped rows, including a NULL account row for
+        // account-less invocations.  The global projection must include every row exactly once;
+        // a NULL row is already the global key and must not be inserted twice.
+        accumulators
+            .entry((bucket_start_epoch, None))
+            .or_default()
+            .add_aggregate_row(&aggregate);
+        if let Some(account_id) = upstream_account_id {
             accumulators
-                .entry(key)
+                .entry((bucket_start_epoch, Some(account_id)))
                 .or_default()
                 .add_aggregate_row(&aggregate);
         }
@@ -7487,6 +7492,7 @@ async fn merge_summary_projection_archive_records(
     persisted_live_ids: &HashSet<String>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
     archive_has_materialized_rollups: bool,
+    exact_range: ExactUtcRange,
     records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
     exact_record_budget: &mut usize,
 ) -> Result<()> {
@@ -7537,7 +7543,9 @@ async fn merge_summary_projection_archive_records(
          COALESCE({}, 0) AS cache_input_tokens, COALESCE({}, 0) AS reasoning_tokens, \
          {} AS reasoning_effort, COALESCE({}, 0) AS total_tokens, {}, {}, {}, {}, {}, {}, \
          COALESCE({}, '') AS status, {}, {}, {}, {} AS upstream_account_id \
-         FROM codex_invocations",
+         FROM codex_invocations \
+         WHERE occurred_at >= ?1 AND occurred_at < ?2 \
+         LIMIT ?3",
         if has("source") { "source" } else { "NULL" },
         summary_projection_archive_column("model", has("model"), "NULL"),
         response_model,
@@ -7579,8 +7587,19 @@ async fn merge_summary_projection_archive_records(
         summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
         upstream_account_id,
     );
-    let mut rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query).fetch(pool);
+    let archive_read_limit = if archive_has_materialized_rollups {
+        i64::MAX
+    } else {
+        (SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64
+    };
+    let mut rows = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&query)
+        .bind(db_occurred_at_lower_bound(exact_range.start))
+        .bind(db_occurred_at_upper_bound(exact_range.end))
+        .bind(archive_read_limit)
+        .fetch(pool);
+    let mut rows_seen = 0usize;
     while let Some(row) = rows.try_next().await? {
+        rows_seen = rows_seen.saturating_add(1);
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
@@ -7593,6 +7612,15 @@ async fn merge_summary_projection_archive_records(
         {
             continue;
         }
+        let global_rollup_covered = archive_has_materialized_rollups;
+        let account_rollup_covered = archive_has_materialized_rollups
+            && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
+        let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
+        let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
+        let bucket_is_full_rollup = bucket >= full_rollup_start && bucket < full_rollup_end;
+        if bucket_is_full_rollup && global_rollup_covered && account_rollup_covered {
+            continue;
+        }
         *exact_record_budget = exact_record_budget.saturating_add(1);
         if *exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
             return Err(anyhow!(
@@ -7601,9 +7629,8 @@ async fn merge_summary_projection_archive_records(
         }
         let record = SummaryProjectionRecord {
             occurred_at,
-            global_rollup_covered: archive_has_materialized_rollups,
-            account_rollup_covered: archive_has_materialized_rollups
-                && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id)),
+            global_rollup_covered,
+            account_rollup_covered,
             is_persisted_live_record: false,
             row: UpstreamAccountInvocationPreviewRow {
                 upstream_account_id: row.upstream_account_id,
@@ -7662,6 +7689,11 @@ async fn merge_summary_projection_archive_records(
             },
         };
         records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
+    }
+    if !archive_has_materialized_rollups && rows_seen > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection unmaterialized archive exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded"
+        ));
     }
     Ok(())
 }
@@ -7822,7 +7854,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         InvocationSourceScope::All,
         ExactUtcRange { start, end },
         None,
-        Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS),
+        Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
@@ -7832,6 +7864,11 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     )
     .await
     .map_err(|error| anyhow!("summary projection live-record hydration failed: {error:?}"))?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection live exact horizon exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+        ));
+    }
     // The activity preview intentionally maps a persisted running/pending row with terminal
     // metadata to the UI's display status `failed`. Summary aggregation has a stricter contract:
     // that row remains in-flight until its persisted terminal status changes. Restore the durable
@@ -7877,10 +7914,12 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
     let mut exact_record_budget = records_by_invoke_id.len();
-    for archive in crate::stats::load_completed_invocation_archive_paths(&state.pool).await? {
-        if archive.has_materialized_historical_rollups() {
-            continue;
-        }
+    for archive in crate::stats::load_completed_invocation_archive_paths_in_range(
+        &state.pool,
+        Some((start, end)),
+    )
+    .await?
+    {
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
@@ -7892,6 +7931,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
             &persisted_live_ids,
             &hourly_rollup_totals,
             archive.has_materialized_historical_rollups(),
+            ExactUtcRange { start, end },
             &mut records_by_invoke_id,
             &mut exact_record_budget,
         )
@@ -8048,15 +8088,39 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut receiver = state.broadcaster.subscribe();
+        let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
+        let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let should_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {
+                    state
+                        .subscription_hub
+                        .summary_projection()
+                        .await
+                        .is_none_or(|projection| {
+                            projection.refreshed_at.is_none_or(|refreshed_at| {
+                                refreshed_at.elapsed()
+                                    >= SUMMARY_SNAPSHOT_MAX_STALE
+                                        .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
+                            })
+                        })
+                },
                 payload = receiver.recv() => matches!(
                     payload,
                     Ok(BroadcastPayload::DashboardCurrentSlice { .. })
                         | Ok(BroadcastPayload::DashboardTerminalSlice { .. })
                         | Ok(BroadcastPayload::DashboardActivityLive { .. })
                         | Err(broadcast::error::RecvError::Lagged(_))
+                ),
+                mutation = mutation_receiver.recv() => matches!(
+                    mutation,
+                    Ok(event) if matches!(
+                        event.mutation,
+                        RuntimeMutation::Invocation(_)
+                            | RuntimeMutation::AttemptChanged { .. }
+                    )
                 ),
             };
             if !should_refresh {
@@ -8065,6 +8129,8 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             // Merge a burst before starting the expensive off-request baseline. The hub lock
             // turns arrivals during this wait/build into a single subsequent attempt.
             tokio::time::sleep(SUMMARY_SNAPSHOT_EVENT_DEBOUNCE).await;
+            while receiver.try_recv().is_ok() {}
+            while mutation_receiver.try_recv().is_ok() {}
             if let Err(error) = refresh_summary_snapshots(state.as_ref()).await {
                 warn!(
                     ?error,
@@ -23223,6 +23289,77 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_usage_rollups_sum_sources_once_per_scope() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let bucket = align_bucket_epoch(
+            (Utc::now() - ChronoDuration::hours(2)).timestamp(),
+            3_600,
+            0,
+        );
+        for (source, count, input_cost) in [("proxy", 2_i64, 0.5_f64), ("xy", 3_i64, 0.75_f64)] {
+            sqlx::query(
+                "INSERT INTO upstream_account_usage_breakdown_hourly \
+                 (bucket_start_epoch, source, upstream_account_key, upstream_account_id, \
+                  normalized_model, normalized_reasoning_effort, request_count, \
+                  cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) \
+                 VALUES (?1, ?2, '42', 42, 'gpt-5', 'high', ?3, 10, 20, 30, ?4, 1)",
+            )
+            .bind(bucket)
+            .bind(source)
+            .bind(count)
+            .bind(input_cost)
+            .execute(&state.pool)
+            .await
+            .expect("insert source-partitioned usage rollup");
+        }
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly \
+             (bucket_start_epoch, source, upstream_account_key, upstream_account_id, \
+              normalized_model, normalized_reasoning_effort, request_count, \
+              cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) \
+             VALUES (?1, 'proxy', 'none', NULL, 'gpt-5', 'high', 1, 4, 5, 6, 0.25, 1)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert account-less usage rollup");
+
+        let usage = load_summary_projection_rollup_usage(&state.pool)
+            .await
+            .expect("load source-partitioned usage rollups");
+        let global = usage.get(&(bucket, None)).expect("global usage rollup");
+        let account = usage
+            .get(&(bucket, Some(42)))
+            .expect("account usage rollup");
+        assert_eq!(global.cache_write_tokens, 24);
+        assert_eq!(global.cache_read_tokens, 45);
+        assert_eq!(global.output_tokens, 66);
+        assert_eq!(global.models.len(), 1);
+        assert_eq!(global.models[0].model, "gpt-5");
+        assert_eq!(global.models[0].reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            global.models[0]
+                .costs
+                .as_ref()
+                .expect("global rollup costs")
+                .input,
+            1.5
+        );
+        assert_eq!(account.cache_write_tokens, 20);
+        assert_eq!(
+            account.models[0]
+                .costs
+                .as_ref()
+                .expect("rollup costs")
+                .input,
+            1.25
+        );
+    }
+
+    #[tokio::test]
     async fn summary_projection_hydrates_when_historical_live_rows_exceed_exact_budget() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -23240,6 +23377,79 @@ mod request_compression_query_tests {
             .await
             .expect("hourly-backed projection should not retain epoch-zero history");
         assert!(state.subscription_hub.summary_projection().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_fails_closed_when_live_horizon_exceeds_exact_budget() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001) \
+             INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             SELECT 'horizon-summary-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{}', '', 'full' FROM rows",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert large in-horizon fixture");
+
+        let error = hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect_err("in-horizon overflow must not truncate silently");
+        assert!(error.to_string().contains("exact horizon exceeded"));
+        assert!(state.subscription_hub.summary_projection().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_fails_closed_when_unmaterialized_archive_exceeds_budget() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory archive pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+             id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL,\
+             source TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER,\
+             cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL,\
+             cost_input REAL, cost_cache_write REAL, cost_cache_read REAL, cost_output REAL,\
+             cost_reasoning REAL, status TEXT, error_message TEXT, failure_kind TEXT,\
+             failure_class TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive fixture table");
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001) \
+             INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload, \
+             input_tokens, output_tokens, total_tokens, cost, status) \
+             SELECT value, 'archive-summary-' || value, datetime('now', '+8 hours', '-1 minute'), 'proxy', \
+             'gpt-5', '{}', 1, 1, 2, 0.1, 'success' FROM rows",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert unmaterialized archive fixture");
+
+        let now = Utc::now();
+        let mut records = HashMap::new();
+        let mut budget = 0;
+        let error = merge_summary_projection_archive_records(
+            &pool,
+            &HashSet::new(),
+            &HashMap::new(),
+            false,
+            ExactUtcRange {
+                start: now - ChronoDuration::hours(2),
+                end: now + ChronoDuration::minutes(1),
+            },
+            &mut records,
+            &mut budget,
+        )
+        .await
+        .expect_err("unmaterialized archive overflow must fail closed");
+        assert!(error.to_string().contains("exact-record budget"));
+        assert!(records.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
     }
 
     #[tokio::test]

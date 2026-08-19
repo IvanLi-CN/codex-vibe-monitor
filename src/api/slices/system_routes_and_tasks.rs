@@ -1478,4 +1478,31 @@ mod runtime_pressure_health_tests {
 
         assert!(load_system_status_cached(state.as_ref()).await.is_err());
     }
+
+    #[tokio::test]
+    async fn failed_status_refresh_keeps_fresh_last_good_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_system_status_snapshot(state.as_ref())
+            .await
+            .expect("hydrate status snapshot");
+        let expected = load_system_status_cached(state.as_ref())
+            .await
+            .expect("load hydrated status snapshot");
+        state.pool.close().await;
+
+        assert!(
+            refresh_system_status_snapshot(state.as_ref())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            load_system_status_cached(state.as_ref())
+                .await
+                .expect("serve last-good status snapshot"),
+            expected
+        );
+    }
 }

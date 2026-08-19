@@ -1,5 +1,46 @@
 use super::*;
 
+async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
+    let mut summary_ready = false;
+    let mut system_status_ready = false;
+    loop {
+        if !summary_ready {
+            match hydrate_summary_snapshots(state).await {
+                Ok(()) => {
+                    summary_ready = true;
+                    info!("summary projection startup hydration completed");
+                }
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "summary projection startup hydration failed; retrying"
+                    );
+                }
+            }
+        }
+        if !system_status_ready {
+            match hydrate_system_status_snapshot(state).await {
+                Ok(()) => {
+                    system_status_ready = true;
+                    info!("system status startup hydration completed");
+                }
+                Err(error) => {
+                    warn!(?error, "system status startup hydration failed; retrying");
+                }
+            }
+        }
+        if summary_ready && system_status_ready {
+            return Ok(());
+        }
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                return Err(anyhow::anyhow!("startup memory hydration cancelled"));
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+}
+
 pub(crate) async fn run() -> Result<()> {
     dotenv().ok();
     dotenvy::from_filename(".env.local").ok();
@@ -198,12 +239,7 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
-    hydrate_summary_snapshots(state.as_ref())
-        .await
-        .context("summary projection startup hydration failed")?;
-    hydrate_system_status_snapshot(state.as_ref())
-        .await
-        .context("system status startup hydration failed")?;
+    hydrate_startup_memory_snapshots(state.as_ref()).await?;
     warm_dashboard_runtime_projection(state.as_ref()).await;
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
