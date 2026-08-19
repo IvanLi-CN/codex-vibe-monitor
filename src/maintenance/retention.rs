@@ -564,7 +564,7 @@ pub(crate) fn reset_system_task_run_retention_schedule() {
     SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.store(0, Ordering::Release);
 }
 
-fn system_task_run_retention_handle_pressure(error: &anyhow::Error) -> bool {
+pub(crate) fn system_task_run_retention_handle_pressure(error: &anyhow::Error) -> bool {
     if !crate::db_pressure::is_db_pressure_error(error) {
         return false;
     }
@@ -573,6 +573,7 @@ fn system_task_run_retention_handle_pressure(error: &anyhow::Error) -> bool {
         now_epoch_ms,
         SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF,
     );
+    retention_record_defer("system_task_run_retention", "sqlite_pressure");
     crate::db_pressure::global_db_pressure_gate().record_error("system_task_run_retention", error);
     retention_record_error("system_task_run_retention", error);
     warn!(error = %error, "system task run retention deferred after SQLite pressure");

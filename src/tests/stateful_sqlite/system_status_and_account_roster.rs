@@ -10,6 +10,9 @@ pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
 pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
 
+static SYSTEM_TASK_RUN_RETENTION_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,
     service_tier: Option<&str>,
@@ -981,10 +984,33 @@ async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
         invalid_finished_at.as_deref(),
         Some("2026-02-30 17:15:00+08:00")
     );
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('invalid_legacy_task_timestamp_suffix', 'fixture', 'success', '2026-06-22 08:45:00foo', '2026-06-22 17:15:00+08:00foo')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed invalid legacy task timestamp suffixes");
+    ensure_schema(&pool)
+        .await
+        .expect("preserve invalid task timestamp suffixes");
+    let (invalid_suffix_started_at, invalid_suffix_finished_at): (String, Option<String>) =
+        sqlx::query_as(
+            "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'invalid_legacy_task_timestamp_suffix'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load preserved invalid timestamp suffixes");
+    assert_eq!(invalid_suffix_started_at, "2026-06-22 08:45:00foo");
+    assert_eq!(
+        invalid_suffix_finished_at.as_deref(),
+        Some("2026-06-22 17:15:00+08:00foo")
+    );
 }
 
 #[tokio::test]
 async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_TEST_LOCK.lock().await;
     reset_system_task_run_retention_schedule();
     let pool = test_current_schema_pool().await;
     ensure_schema(&pool)
@@ -1059,6 +1085,19 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
             .expect("count remaining retention candidates"),
         800,
         "dry run counts each eligible row once and respects the per-pass cap"
+    );
+    reset_system_task_run_retention_schedule();
+}
+
+#[tokio::test]
+async fn system_task_run_retention_pressure_marks_the_maintenance_pass_deferred() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_TEST_LOCK.lock().await;
+    let generation_before = retention_defer_generation();
+    let pressure_error = anyhow::anyhow!("pool timed out while waiting for an open connection");
+    assert!(system_task_run_retention_handle_pressure(&pressure_error));
+    assert!(
+        retention_defer_generation() > generation_before,
+        "pressure must wake the five-minute maintenance retry path"
     );
     reset_system_task_run_retention_schedule();
 }
