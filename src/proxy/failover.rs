@@ -1827,14 +1827,18 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
         if responses_total_timeout_started_at.is_none() && no_available_wait_deadline.is_some() {
             responses_total_timeout_started_at = pre_attempt_total_timeout_started_at;
         }
-        reserve_pool_routing_account_for_model(
+        let requested_model = trace_context
+            .as_ref()
+            .and_then(|trace| trace.request_model.as_deref());
+        if !reserve_pool_routing_account_for_model(
             state.as_ref(),
             &reservation_key,
             &account,
-            trace_context
-                .as_ref()
-                .and_then(|trace| trace.request_model.as_deref()),
-        );
+            requested_model,
+        ) {
+            excluded_ids.push(account.account_id);
+            continue;
+        }
         timeout_route_failover_pending = false;
 
         let (_, _, runtime_timeouts) = load_effective_request_path_timeouts_for_account(

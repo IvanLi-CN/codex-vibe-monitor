@@ -203,6 +203,11 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         sticky_affinity_generation,
     )
     .await?;
+    let snapshot_changed = outcome.availability_increased
+        || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
+    if snapshot_changed {
+        state.pool_routing_snapshot.request_refresh();
+    }
     if outcome.sticky_mutation.writes_conversation_operation() {
         if let Some(sticky_key) = sticky_key {
             invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
@@ -225,13 +230,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     }
     let reservation_release_wakes_waiters =
         pool_route_success_allows_reservation_release_publish(state, account_id).await;
-    if outcome.availability_increased {
-        refresh_routing_snapshot_after_state_change(state, "route_recovered").await;
-    }
-    if outcome.availability_increased && reservation_release_wakes_waiters {
-        publish_pool_routing_availability(state);
-    }
-    Ok(reservation_release_wakes_waiters)
+    Ok(reservation_release_wakes_waiters && !snapshot_changed)
 }
 
 pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
@@ -543,6 +542,11 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         codex_imagegen_rewrite,
     )
     .await?;
+    let snapshot_changed = outcome.availability_increased
+        || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
+    if snapshot_changed {
+        state.pool_routing_snapshot.request_refresh();
+    }
     if outcome.sticky_mutation.writes_conversation_operation() {
         if let Some(sticky_key) = sticky_key {
             invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
@@ -565,13 +569,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     }
     let reservation_release_wakes_waiters =
         pool_route_success_allows_reservation_release_publish(state, account_id).await;
-    if outcome.availability_increased {
-        refresh_routing_snapshot_after_state_change(state, "route_recovered").await;
-    }
-    if outcome.availability_increased && reservation_release_wakes_waiters {
-        publish_pool_routing_availability(state);
-    }
-    Ok(reservation_release_wakes_waiters)
+    Ok(reservation_release_wakes_waiters && !snapshot_changed)
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
@@ -1413,7 +1411,6 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_availability.publish();
     Ok(())
 }
 
@@ -1438,7 +1435,6 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_and_broadcas
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_availability.publish();
     Ok(())
 }
 
@@ -1482,7 +1478,6 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_and
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_availability.publish();
     Ok(())
 }
 
@@ -1626,7 +1621,6 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_availability.publish();
     Ok(())
 }
 
@@ -1651,7 +1645,6 @@ pub(crate) async fn record_pool_route_transport_failure_for_model_and_broadcast(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_availability.publish();
     Ok(())
 }
 

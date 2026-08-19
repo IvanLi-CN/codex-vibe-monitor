@@ -4064,20 +4064,24 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 original_uri.path(),
                                                 Some(sticky_key.clone()),
                                             );
-                                            if let Err(err) = persist_pool_routing_no_candidate_invocation(
-                                                state.clone(),
-                                                &trace_context,
-                                                Some(sticky_key.as_str()),
-                                                &audit,
-                                            )
-                                            .await
-                                            {
-                                                warn!(
-                                                    invoke_id = trace_context.invoke_id,
-                                                    error = %err,
-                                                    "failed to persist capacity-saturated pool routing diagnostic"
-                                                );
-                                            }
+                                            let audit_state = state.clone();
+                                            let audit_sticky_key = sticky_key.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(err) = persist_pool_routing_no_candidate_invocation(
+                                                    audit_state,
+                                                    &trace_context,
+                                                    Some(audit_sticky_key.as_str()),
+                                                    &audit,
+                                                )
+                                                .await
+                                                {
+                                                    warn!(
+                                                        invoke_id = trace_context.invoke_id,
+                                                        error = %err,
+                                                        "failed to persist capacity-saturated pool routing diagnostic"
+                                                    );
+                                                }
+                                            });
                                             return Err(plain_proxy_error(
                                                 StatusCode::SERVICE_UNAVAILABLE,
                                                 POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
@@ -4309,20 +4313,25 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         original_uri.path(),
                                         Some(sticky_key.clone()),
                                     );
-                                    if let Err(err) = persist_pool_routing_no_candidate_invocation(
-                                        state.clone(),
-                                        &trace_context,
-                                        Some(sticky_key.as_str()),
-                                        &audit,
-                                    )
-                                    .await
-                                    {
-                                        warn!(
-                                            invoke_id = trace_context.invoke_id,
-                                            error = %err,
-                                            "failed to persist capacity-saturated pool routing diagnostic"
-                                        );
-                                    }
+                                    let audit_state = state.clone();
+                                    let audit_sticky_key = sticky_key.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(err) =
+                                            persist_pool_routing_no_candidate_invocation(
+                                                audit_state,
+                                                &trace_context,
+                                                Some(audit_sticky_key.as_str()),
+                                                &audit,
+                                            )
+                                            .await
+                                        {
+                                            warn!(
+                                                invoke_id = trace_context.invoke_id,
+                                                error = %err,
+                                                "failed to persist capacity-saturated pool routing diagnostic"
+                                            );
+                                        }
+                                    });
                                     return Err(plain_proxy_error(
                                         StatusCode::SERVICE_UNAVAILABLE,
                                         POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),

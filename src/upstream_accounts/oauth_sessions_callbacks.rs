@@ -176,7 +176,7 @@ pub(crate) async fn update_pool_routing_settings(
             state
                 .subscription_hub
                 .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-            publish_pool_routing_availability(state.as_ref());
+            state.pool_routing_snapshot.request_refresh();
         }
         if api_key.is_some() {
             refresh_pool_routing_runtime_cache(state.as_ref())
@@ -1644,7 +1644,7 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    publish_pool_routing_availability(state);
+    state.pool_routing_snapshot.request_refresh();
     load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?
@@ -2419,7 +2419,7 @@ pub(crate) async fn update_upstream_account_inner(
     if !was_fresh_routable
         && is_account_selectable_for_fresh_assignment(&refreshed_row, false, Utc::now())
     {
-        publish_pool_routing_availability(state);
+        state.pool_routing_snapshot.request_refresh();
     }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)

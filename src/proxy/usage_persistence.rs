@@ -4174,7 +4174,7 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                     None => false,
                 };
                 if account_allows_publish {
-                    publish_pool_routing_availability(state);
+                    state.pool_routing_snapshot.request_refresh();
                 } else {
                     debug!(
                         invoke_id = %record.invoke_id,

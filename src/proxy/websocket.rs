@@ -776,12 +776,21 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     required_subprotocol: Option<&str>,
 ) -> Result<PreparedUpstreamWebSocket, WsAttemptFailure> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    reserve_pool_routing_account_for_model(
+    if !reserve_pool_routing_account_for_model(
         state.as_ref(),
         &reservation_key,
         &account,
         trace.request_model.as_deref(),
-    );
+    ) {
+        return Err(WsAttemptFailure {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "selected upstream account has reached model concurrency capacity".to_string(),
+            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+            retryable: true,
+            account_id: Some(account.account_id),
+            upstream_route_key: Some(account.upstream_route_key()),
+        });
+    }
     let mut reservation_guard = PoolRoutingReservationGuard::new(state.clone(), reservation_key);
 
     let (forward_proxy_scope, selected_proxy, _client) =

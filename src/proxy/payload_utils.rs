@@ -1670,9 +1670,18 @@ pub(crate) fn reserve_pool_routing_account_for_model(
     reservation_key: &str,
     account: &PoolResolvedAccount,
     model: Option<&str>,
-) {
-    let _ =
-        try_reserve_pool_routing_account_for_model(state, reservation_key, account, model, None);
+) -> bool {
+    let model_concurrency_limit = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.model_route_concurrency_limit(account.account_id, model));
+    try_reserve_pool_routing_account_for_model(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+    )
 }
 
 /// Atomically checks a model-route cap and records the request reservation.
@@ -1790,7 +1799,8 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
-            release_pool_routing_reservation(state, reservation_key);
+            state.pool_routing_snapshot.request_refresh();
+            release_pool_routing_reservation_without_availability(state, reservation_key);
             Ok(value)
         }
         Err(err) => {

@@ -3060,7 +3060,11 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     let account_id =
         insert_test_pool_api_key_account(&state, "Availability Gate", "availability-gate-key")
             .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial healthy routing snapshot");
     let availability = state.pool_routing_availability.subscribe();
+    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
 
     record_pool_route_success_with_affinity_generation_and_broadcast(
@@ -3117,6 +3121,23 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record websocket-style account recovery");
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after websocket-style recovery");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("recovery must replace the routing snapshot before it wakes waiters");
+    assert_eq!(recovered_account.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(recovered_account.last_route_failure_at.is_none());
     let websocket_recovery_generation = *availability.borrow();
     assert_ne!(websocket_recovery_generation, initial_generation);
 
@@ -3144,6 +3165,23 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record HTTP-style account recovery");
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "endpoint recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after HTTP-style recovery");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("endpoint recovery must replace the routing snapshot before it wakes waiters");
+    assert_eq!(recovered_account.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(recovered_account.last_route_failure_at.is_none());
     assert_ne!(*availability.borrow(), websocket_recovery_generation);
 }
 
