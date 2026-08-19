@@ -500,14 +500,15 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    record_pool_route_success_capability_observations(
+    let _ = record_pool_route_success_capability_observations(
         pool,
         account_id,
         endpoint,
         image_intent,
         codex_imagegen_rewrite,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
@@ -534,7 +535,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    record_pool_route_success_capability_observations(
+    let capability_changed = record_pool_route_success_capability_observations(
         &state.pool,
         account_id,
         endpoint,
@@ -542,7 +543,8 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         codex_imagegen_rewrite,
     )
     .await?;
-    let snapshot_changed = outcome.availability_increased
+    let snapshot_changed = capability_changed
+        || outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
     if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
@@ -601,6 +603,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         None,
     )
     .await
+    .map(|_| ())
 }
 
 async fn record_pool_route_success_capability_observations(
@@ -609,11 +612,12 @@ async fn record_pool_route_success_capability_observations(
     endpoint: &str,
     image_intent: ImageIntent,
     codex_imagegen_rewrite: Option<&Value>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut capability_changed = false;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
@@ -623,7 +627,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.chat_completions_endpoint {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
@@ -633,7 +637,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.image_endpoint {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
@@ -643,7 +647,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.response_image_tool {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
@@ -653,7 +657,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.standalone_search {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
@@ -663,7 +667,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::CodexImagegen,
@@ -672,7 +676,7 @@ async fn record_pool_route_success_capability_observations(
         )
         .await?;
     }
-    Ok(())
+    Ok(capability_changed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,9 +726,9 @@ pub(crate) async fn record_capability_observation(
     axis: UpstreamCapabilityAxis,
     capability: CapabilitySupport,
     reason: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if matches!(capability, CapabilitySupport::Unknown) {
-        return Ok(());
+        return Ok(false);
     }
     let now_iso = format_utc_iso(Utc::now());
     let api_key_only_filter = if matches!(axis, UpstreamCapabilityAxis::StandaloneSearch) {
@@ -740,20 +744,21 @@ pub(crate) async fn record_capability_observation(
             {reason_column} = ?4,
             updated_at = ?3
         WHERE id = ?1{api_key_only_filter}
+          AND ({observed_column} IS NULL OR {observed_column} != ?2)
         "#,
         observed_column = axis.observed_column(),
         observed_at_column = axis.observed_at_column(),
         reason_column = axis.reason_column(),
         api_key_only_filter = api_key_only_filter,
     );
-    sqlx::query(&statement)
+    let result = sqlx::query(&statement)
         .bind(account_id)
         .bind(capability.as_str())
         .bind(&now_iso)
         .bind(reason)
         .execute(pool)
         .await?;
-    Ok(())
+    Ok(result.rows_affected() != 0)
 }
 
 pub(crate) async fn record_pool_route_http_failure(

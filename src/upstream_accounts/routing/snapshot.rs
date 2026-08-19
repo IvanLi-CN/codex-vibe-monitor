@@ -238,6 +238,7 @@ impl PoolRoutingModelRouteSnapshot {
 pub(crate) struct PoolRoutingSnapshotStore {
     snapshot: std::sync::RwLock<Option<Arc<PoolRoutingSnapshot>>>,
     refresh_tx: tokio::sync::watch::Sender<u64>,
+    refresh_pending: std::sync::atomic::AtomicBool,
 }
 
 impl Default for PoolRoutingSnapshotStore {
@@ -252,6 +253,7 @@ impl PoolRoutingSnapshotStore {
         Self {
             snapshot: std::sync::RwLock::new(None),
             refresh_tx,
+            refresh_pending: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -263,6 +265,8 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn request_refresh(&self) {
+        self.refresh_pending
+            .store(true, std::sync::atomic::Ordering::Release);
         self.refresh_tx.send_modify(|generation| {
             *generation = generation.wrapping_add(1);
         });
@@ -277,6 +281,8 @@ impl PoolRoutingSnapshotStore {
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
+        self.refresh_pending
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub(crate) fn invalidate(&self) {
@@ -284,6 +290,13 @@ impl PoolRoutingSnapshotStore {
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = None;
+        self.refresh_pending
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn refresh_pending(&self) -> bool {
+        self.refresh_pending
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

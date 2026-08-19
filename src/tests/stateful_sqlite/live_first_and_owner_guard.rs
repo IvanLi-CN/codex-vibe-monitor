@@ -3094,6 +3094,16 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record healthy HTTP-style success");
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "a newly observed endpoint capability must request a snapshot refresh"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after endpoint capability observation");
     assert_eq!(
         *availability.borrow(),
         initial_generation,
@@ -9751,12 +9761,23 @@ async fn header_sticky_capacity_saturation_returns_before_the_body_finishes() {
         elapsed < Duration::from_millis(400),
         "the saturated request must not wait for the trailing body chunk, elapsed={elapsed:?}"
     );
-    let payload: String =
-        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
-            .bind(format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"))
-            .fetch_one(&state.pool)
-            .await
-            .expect("load capacity-saturated invocation payload");
+    let invoke_id = format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}");
+    let payload: String = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(payload) =
+                sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                    .bind(&invoke_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .expect("query capacity-saturated invocation payload")
+            {
+                break payload;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("capacity-saturated audit must persist without delaying the 503");
     let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
     assert_eq!(
         payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
