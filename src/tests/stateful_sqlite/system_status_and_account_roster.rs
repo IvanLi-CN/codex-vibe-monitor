@@ -847,6 +847,34 @@ async fn system_task_runs_cursor_preserves_invalid_legacy_timestamp() {
 }
 
 #[tokio::test]
+async fn system_task_runs_time_ranges_exclude_canonical_shaped_invalid_dates() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('invalid_canonical_timestamp', 'fixture', 'success', '2026-02-30T08:45:00.000Z')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed canonical-shaped invalid timestamp");
+
+    let ranged_page = list_system_task_runs(
+        State(state),
+        Query(SystemTaskRunsQuery {
+            started_at_from: Some("2026-02-01T00:00:00Z".to_string()),
+            started_at_to: Some("2026-03-01T00:00:00Z".to_string()),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("exclude canonical-shaped invalid timestamp from time range")
+    .0;
+    assert_eq!(ranged_page.total, 0);
+    assert!(ranged_page.items.is_empty());
+}
+
+#[tokio::test]
 async fn system_task_runs_schema_indexes_support_time_queries() {
     let pool = test_current_schema_pool().await;
     ensure_schema(&pool)
@@ -872,7 +900,7 @@ async fn system_task_runs_schema_indexes_support_time_queries() {
             'fixture',
             CASE WHEN hundreds.value % 3 = 0 THEN 'success' ELSE 'failed' END,
             printf(
-                '2026-06-%02dT%02d:%02d:%02dZ',
+                '2026-06-%02dT%02d:%02d:%02d.000Z',
                 1 + ((hundreds.value * 400 + blocks.value) / 86400),
                 ((hundreds.value * 400 + blocks.value) / 3600) % 24,
                 ((hundreds.value * 400 + blocks.value) / 60) % 60,
@@ -1044,7 +1072,7 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
                 SELECT value + 1 FROM blocks WHERE value < 5
             )
         INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at)
-        SELECT 'retention_archive', 'fixture', 'success', '2020-01-01T00:00:00Z'
+        SELECT 'retention_archive', 'fixture', 'success', '2020-01-01T00:00:00.000Z'
         FROM hundreds CROSS JOIN blocks
         "#,
     )
@@ -1052,11 +1080,17 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
     .await
     .expect("seed expired terminal task runs");
     sqlx::query(
-        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'running', '2019-01-01T00:00:00Z')",
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'running', '2019-01-01T00:00:00.000Z')",
     )
     .execute(&pool)
     .await
     .expect("seed running task run");
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'success', '2026-02-30T08:45:00.000Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed canonical-shaped invalid retention timestamp");
 
     let pruned = prune_system_task_runs(&pool, false)
         .await
@@ -1068,7 +1102,7 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
     .fetch_one(&pool)
     .await
     .expect("count remaining terminal task runs");
-    assert_eq!(terminal_remaining, 1_000);
+    assert_eq!(terminal_remaining, 1_001);
     let oldest_retained_id: i64 = sqlx::query_scalar(
         "SELECT MIN(id) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success'",
     )
@@ -1079,6 +1113,13 @@ async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
         oldest_retained_id, 5_001,
         "the pass deletes the oldest records before newer equal-timestamp ties"
     );
+    let invalid_timestamp_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success' AND started_at = '2026-02-30T08:45:00.000Z'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count preserved invalid retention timestamp");
+    assert_eq!(invalid_timestamp_remaining, 1);
     let running_remaining: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM system_task_runs WHERE status = 'running'")
             .fetch_one(&pool)

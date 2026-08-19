@@ -618,6 +618,7 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
                     ) AS retention_rank
                 FROM system_task_runs
                 WHERE status IN ('success', 'skipped', 'failed')
+                  AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
             )
             SELECT COUNT(*)
             FROM ranked
@@ -659,6 +660,7 @@ pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -
                     ) AS retention_rank
                 FROM system_task_runs
                 WHERE status IN ('success', 'skipped', 'failed')
+                  AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
             )
             SELECT id
             FROM ranked
