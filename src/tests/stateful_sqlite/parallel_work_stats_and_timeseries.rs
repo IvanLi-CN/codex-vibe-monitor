@@ -17386,6 +17386,42 @@ async fn account_activity_v2_priority_repair_skips_archive_overlapping_live_hour
 }
 
 #[tokio::test]
+async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, payload, raw_response
+        )
+        VALUES ('v2-interrupted-selection', ?1, ?2, 'success', 1, ?3, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert selection interruption fixture");
+
+    let started_at = std::time::Instant::now();
+    let outcome = crate::select_active_account_activity_v2_priority_buckets_with_deadline(
+        &state.pool,
+        current_hour_epoch,
+        started_at,
+        std::time::Instant::now(),
+    )
+    .await
+    .expect("handle interrupted selection round");
+    assert!(outcome.is_none());
+}
+
+#[tokio::test]
 async fn account_activity_v2_priority_repair_preserves_unknown_archive_coverage() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -17586,9 +17622,11 @@ async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage
         .map(|(_, _, _, detail)| detail.as_str())
         .collect::<Vec<_>>();
     assert!(
-        explain_details
-            .iter()
-            .any(|detail| { detail.contains("idx_archive_batches_invocation_coverage_epoch") }),
+        explain_details.iter().any(|detail| {
+            detail.contains(
+                "SEARCH archive_batches USING INDEX idx_archive_batches_invocation_coverage_epoch",
+            ) && detail.contains("coverage_end_epoch")
+        }),
         "unexpected archive epoch coverage plan: {explain_details:?}"
     );
 

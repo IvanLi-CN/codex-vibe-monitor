@@ -3248,6 +3248,21 @@ async fn select_active_account_activity_v2_priority_buckets(
     current_bucket: i64,
     started_at: Instant,
 ) -> Result<Option<Vec<i64>>> {
+    select_active_account_activity_v2_priority_buckets_with_deadline(
+        pool,
+        current_bucket,
+        started_at,
+        started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
+    )
+    .await
+}
+
+pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_deadline(
+    pool: &Pool<Sqlite>,
+    current_bucket: i64,
+    started_at: Instant,
+    selection_deadline: Instant,
+) -> Result<Option<Vec<i64>>> {
     let Some(remaining_budget) =
         ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
     else {
@@ -3257,13 +3272,29 @@ async fn select_active_account_activity_v2_priority_buckets(
         Ok(connection) => connection?,
         Err(_) => return Ok(None),
     };
-    let selection_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
-    connection
-        .lock_handle()
-        .await?
-        .set_progress_handler(1_000, move || Instant::now() < selection_deadline);
+    let Some(remaining_budget) =
+        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+    else {
+        connection.close_on_drop();
+        return Ok(None);
+    };
+    let mut handle = {
+        let handle_result = timeout(remaining_budget, connection.lock_handle()).await;
+        match handle_result {
+            Ok(handle) => handle?,
+            Err(_) => return Ok(None),
+        }
+    };
+    handle.set_progress_handler(1_000, move || Instant::now() < selection_deadline);
+    drop(handle);
+    let Some(remaining_budget) =
+        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+    else {
+        connection.close_on_drop();
+        return Ok(None);
+    };
 
-    let selection = async {
+    let selection = timeout(remaining_budget, async {
         let oldest_live_occurred_at = sqlx::query_scalar::<_, Option<String>>(
             "SELECT MIN(occurred_at) FROM codex_invocations",
         )
@@ -3348,20 +3379,21 @@ async fn select_active_account_activity_v2_priority_buckets(
             bucket_start_epoch -= 3_600;
         }
         Ok(missing_buckets)
-    }
+    })
     .await;
 
-    connection.lock_handle().await?.remove_progress_handler();
-    if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
-        warn!(
-            priority_elapsed_budget_ms =
-                ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
-            "active account activity v2 coverage selection exhausted its SQLite budget"
-        );
-        return Ok(None);
-    }
     match selection {
-        Err(error) if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET => {
+        Err(_) => {
+            connection.close_on_drop();
+            warn!(
+                priority_elapsed_budget_ms =
+                    ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                "active account activity v2 coverage selection exhausted its budget"
+            );
+            Ok(None)
+        }
+        Ok(Err(error)) if Instant::now() >= selection_deadline => {
+            connection.close_on_drop();
             warn!(
                 priority_elapsed_budget_ms =
                     ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
@@ -3370,7 +3402,23 @@ async fn select_active_account_activity_v2_priority_buckets(
             );
             Ok(None)
         }
-        result => result.map(Some),
+        Ok(Err(error)) => {
+            connection.lock_handle().await?.remove_progress_handler();
+            Err(error)
+        }
+        Ok(Ok(_selection)) if Instant::now() >= selection_deadline => {
+            connection.close_on_drop();
+            warn!(
+                priority_elapsed_budget_ms =
+                    ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                "active account activity v2 coverage selection exhausted its budget"
+            );
+            Ok(None)
+        }
+        Ok(Ok(selection)) => {
+            connection.lock_handle().await?.remove_progress_handler();
+            Ok(Some(selection))
+        }
     }
 }
 
@@ -3392,7 +3440,18 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     };
     match timeout(remaining_budget, async {
         let mut generation_tx = pool.begin().await?;
+        let generation_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
+        generation_tx
+            .as_mut()
+            .lock_handle()
+            .await?
+            .set_progress_handler(1_000, move || Instant::now() < generation_deadline);
         ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
+        generation_tx
+            .as_mut()
+            .lock_handle()
+            .await?
+            .remove_progress_handler();
         generation_tx.commit().await?;
         Ok::<(), anyhow::Error>(())
     })
@@ -3432,6 +3491,11 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
         };
         match timeout(remaining_budget, async {
             let mut tx = pool.begin().await?;
+            let repair_deadline = started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET;
+            tx.as_mut()
+                .lock_handle()
+                .await?
+                .set_progress_handler(1_000, move || Instant::now() < repair_deadline);
             ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
             sqlx::query(
                 r#"
@@ -3499,15 +3563,29 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
                 HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
             )
             .await?;
+            tx.as_mut()
+                .lock_handle()
+                .await?
+                .remove_progress_handler();
             tx.commit().await?;
             Ok::<(), anyhow::Error>(())
         })
         .await
         {
-            Ok(result) => {
-                result?;
+            Ok(Ok(())) => {
                 repaired_bucket_count += 1;
             }
+            Ok(Err(error)) if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET => {
+                warn!(
+                    priority_elapsed_budget_ms =
+                        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.as_millis() as u64,
+                    bucket_start_epoch,
+                    error = %error,
+                    "active account activity v2 coverage repair interrupted at its budget"
+                );
+                break;
+            }
+            Ok(Err(error)) => return Err(error),
             Err(_) => {
                 warn!(
                     priority_elapsed_budget_ms =
