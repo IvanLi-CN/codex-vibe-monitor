@@ -286,11 +286,20 @@ fn final_pool_attempt_timing_evidence_sql(
     } else {
         String::new()
     };
+    let live_first_token_sql = if column == "first_token_ms" {
+        let first_token_sql =
+            sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
+        format!(
+            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('running', 'responding'))"
+        )
+    } else {
+        String::new()
+    };
     let stream_evidence_sql = format!(
         "({stream_measured_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final'))"
     );
     if column == "first_token_ms" {
-        format!("{stream_evidence_sql}{zero_first_token_sql}")
+        format!("{stream_evidence_sql}{zero_first_token_sql}{live_first_token_sql}")
     } else {
         stream_evidence_sql
     }
@@ -384,12 +393,25 @@ fn final_attempt_allows_zero_first_token(
         && finite_nonnegative_timing(attempt.first_byte_latency_ms) == Some(0.0)
 }
 
+fn final_attempt_has_live_first_token_evidence(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+) -> bool {
+    normalized_runtime_text(record.status.as_deref()) == "running"
+        && has_measured_first_token(record.first_token_ms)
+        && matches!(
+            normalized_runtime_text(Some(&attempt.status)).as_str(),
+            "running" | "responding"
+        )
+}
+
 fn final_attempt_has_first_token_evidence(
     record: &ApiInvocation,
     attempt: &InvocationWorkflowAttemptRow,
 ) -> bool {
     final_attempt_has_stream_evidence(attempt)
         || final_attempt_allows_zero_first_token(record, attempt)
+        || final_attempt_has_live_first_token_evidence(record, attempt)
 }
 
 pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
@@ -467,6 +489,8 @@ mod invocation_live_phase_tests {
         assert!(sql.contains(
             "attempts.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final')"
         ));
+        assert!(sql.contains("inv.status, ''))) = 'running' AND inv.first_token_ms IS NOT NULL"));
+        assert!(sql.contains("attempts.status, ''))) IN ('running', 'responding')"));
         assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN CASE WHEN inv.first_token_ms IS NOT NULL"));
@@ -20824,6 +20848,22 @@ mod invocation_cost_audit_tests {
 
         let summary = build_attempt_response_summary(&record, &final_attempt, None, None, true);
         assert!(summary["latencyMs"]["stream"].is_null());
+    }
+
+    #[test]
+    fn running_final_attempt_keeps_measured_ttft_without_stream_duration() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        let mut final_attempt = sample_attempt_row(1, "running");
+        final_attempt.phase = Some(INVOCATION_LIVE_PHASE_RESPONDING.to_string());
+        final_attempt.first_byte_latency_ms = Some(180.0);
+        final_attempt.stream_latency_ms = None;
+
+        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+
+        assert_eq!(mapped.first_token_ms, Some(720.0));
+        assert_eq!(mapped.stream_latency_ms, None);
     }
 
     #[test]
