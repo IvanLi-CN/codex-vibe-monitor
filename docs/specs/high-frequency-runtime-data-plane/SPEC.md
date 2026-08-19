@@ -24,7 +24,7 @@
 
 projection 按账号（含全局合并）、UTC 时间桶和 recent invocation 顺序保留以下可组合输入：成功/失败/非成功计数与成本、token 和 usage/model/reasoning 细目、延迟样本与直方图、archive/rollup coverage、活动 runtime phase/等待计数、terminal overlay，以及 maintenance 的 last-good 快照。calendar 和 previous-day 选择在请求内由 canonical timezone 将内存 UTC bucket 切为精确区间；rolling window、all-time 和 current-limit 分别从 bucket、累计聚合和 bounded recent index 派生。48 条限制仅约束可选的已序列化 response LRU，不能限制 projection 对合法选择的精确性。
 
-持久写入完成和 typed runtime mutation 都发出合并触发信号；后台维护器以单飞锁、250ms debounce、10 秒最小重建间隔和 10 秒 deadline 重读持久化基线。live exact tail 保留 48 小时，历史归档只保留已支持 rolling/calendar 窗口所需的边界小时，完整小时由有界 rollup 与 account coverage 派生。每个成功 projection revision 记录单调时钟；HTTP 只返回精确 revision 年龄不超过 15 秒的 response。刷新失败时，同一选择的 last-good 只在该 15 秒边界内可用；超过边界，端点采用既有 unavailable 契约，绝不返回过期、空值或跨选择数据。
+持久写入完成和 typed runtime mutation 都发出合并触发信号；后台维护器以单飞锁、250ms debounce、10 秒最小重建间隔和 10 秒 deadline 重读持久化基线。live exact tail 保留 48 小时，历史归档只保留已支持 rolling/calendar 窗口所需的边界小时，完整小时由有界 rollup 与 account coverage 派生。每个成功 projection revision 记录单调时钟；HTTP 只返回精确 revision 年龄不超过 15 秒的 response。`all` 聚合拥有独立的成功刷新时钟，普通窗口刷新不能延长它的年龄。刷新失败时，同一选择的 last-good 只在该 15 秒边界内可用；超过边界，端点采用既有 unavailable 契约，绝不返回过期、空值或跨选择数据。
 
 ## Architecture
 

@@ -7171,6 +7171,12 @@ pub(crate) struct SummaryProjection {
     // archive/rollup coverage rules into a canonical aggregate per account once, instead of
     // attempting to recreate those rules from raw archive rows on every request.
     all_time_by_account: HashMap<Option<i64>, StatsResponse>,
+    // Regular rolling refreshes may reuse all-time responses when no all-time owner is active;
+    // keep their freshness independent from the projection-wide timestamp.
+    all_time_refreshed_at: Option<Instant>,
+    // Archive files are immutable once completed. Reuse their bounded account-key discovery on
+    // later refreshes so maintenance never repeatedly scans a large low-cardinality archive.
+    archive_account_ids_by_file: HashMap<String, HashSet<i64>>,
     // Closed calendar windows are immutable at a projection revision. This retains account
     // aggregates after source archive detail has been retired, without ever crossing keys.
     closed_window_by_key: HashMap<SummarySnapshotKey, StatsResponse>,
@@ -7219,10 +7225,18 @@ impl SummaryProjection {
         if let Some(response) = self.closed_window_by_key.get(&key) {
             return Ok(response.clone());
         }
-        if matches!(window, SummaryWindow::All)
-            && let Some(response) = self.all_time_by_account.get(&upstream_account_id)
-        {
-            return Ok(response.clone());
+        if matches!(window, SummaryWindow::All) {
+            if self
+                .all_time_refreshed_at
+                .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+            {
+                return Err(ApiError::unavailable(anyhow!(
+                    "summary all-time last-good snapshot exceeded the freshness budget"
+                )));
+            }
+            if let Some(response) = self.all_time_by_account.get(&upstream_account_id) {
+                return Ok(response.clone());
+            }
         }
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
@@ -8074,15 +8088,25 @@ async fn refresh_summary_snapshots_with_mode(
         debug!("summary projection refresh already in flight; coalescing trigger");
         return Ok(());
     };
-    let previous_all_time = if !include_all_time {
-        state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .map(|projection| projection.all_time_by_account.clone())
-    } else {
-        None
-    };
+    let previous_all_time = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .map(|projection| {
+            (
+                if include_all_time {
+                    HashMap::new()
+                } else {
+                    projection.all_time_by_account.clone()
+                },
+                if include_all_time {
+                    None
+                } else {
+                    projection.all_time_refreshed_at
+                },
+                projection.archive_account_ids_by_file.clone(),
+            )
+        });
     let projection = tokio::time::timeout(
         SUMMARY_PROJECTION_BUILD_DEADLINE,
         build_summary_projection(state, include_all_time, previous_all_time),
@@ -8124,13 +8148,21 @@ async fn load_summary_projection_archive_account_ids(
     let rows = sqlx::query_scalar::<_, Option<i64>>(
         "SELECT DISTINCT CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) \
          FROM codex_invocations \
-         WHERE occurred_at >= ?1 AND occurred_at < ?2",
+         WHERE occurred_at >= ?1 AND occurred_at < ?2 \
+           AND json_valid(payload) \
+         LIMIT ?3",
     )
     .bind(lower)
     .bind(upper)
+    .bind((SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection archive account discovery failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection archive account discovery exceeded bounded account budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+        ));
+    }
     Ok(rows
         .into_iter()
         .flatten()
@@ -8143,9 +8175,16 @@ async fn load_summary_projection_archive_account_ids(
 async fn build_summary_projection(
     state: &AppState,
     include_all_time: bool,
-    previous_all_time: Option<HashMap<Option<i64>, StatsResponse>>,
+    previous_all_time: Option<(
+        HashMap<Option<i64>, StatsResponse>,
+        Option<Instant>,
+        HashMap<String, HashSet<i64>>,
+    )>,
 ) -> Result<SummaryProjection> {
     let end = Utc::now() + ChronoDuration::seconds(1);
+    let (mut all_time_by_account, previous_all_time_refreshed_at, mut archive_account_ids_by_file) =
+        previous_all_time.unwrap_or_default();
+    let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
     // are limited to the moving exact tail; older live rows are represented by their durable
     // hourly rollups. Archive boundary rows use the wider finite range below so supported 7d/
@@ -8281,17 +8320,23 @@ async fn build_summary_projection(
             .map_err(|error| {
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
-    // Discover accounts from archive rows before planning full-hour coverage. An account can
-    // outlive the pool roster and its account rollup can lag the global marker; omitting it here
-    // would incorrectly treat a global-covered bucket as exact for that account.
-    for archive in &archives {
+    // Discover accounts from archive rows before planning full-hour coverage. Keep each opened
+    // archive pool for the subsequent merge so a refresh does not inflate and scan every gzip
+    // archive twice. An account can outlive the pool roster and its account rollup can lag the
+    // global marker; omitting it here would incorrectly treat a global-covered bucket as exact
+    // for that account.
+    let mut opened_archives = Vec::with_capacity(archives.len());
+    for archive in archives {
         let Some((archive_pool, temp_cleanup)) =
-            crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
+            crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
+                .await?
         else {
             continue;
         };
-        known_account_ids.extend(
-            load_summary_projection_archive_account_ids(
+        if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
+            known_account_ids.extend(account_ids.iter().copied());
+        } else {
+            let account_ids = load_summary_projection_archive_account_ids(
                 &archive_pool,
                 ExactUtcRange {
                     start: archive_start,
@@ -8304,18 +8349,13 @@ async fn build_summary_projection(
                     "summary projection archive account discovery failed for {}: {error:?}",
                     archive.file_path()
                 )
-            })?,
-        );
-        archive_pool.close().await;
-        drop(temp_cleanup);
+            })?;
+            known_account_ids.extend(account_ids.iter().copied());
+            archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
+        }
+        opened_archives.push((archive, archive_pool, temp_cleanup));
     }
-    for archive in archives {
-        let Some((archive_pool, temp_cleanup)) =
-            crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
-                .await?
-        else {
-            continue;
-        };
+    for (archive, archive_pool, temp_cleanup) in opened_archives {
         merge_summary_projection_archive_records(
             &archive_pool,
             &persisted_live_ids,
@@ -8431,9 +8471,34 @@ async fn build_summary_projection(
         .await
         .context("summary projection historical account hydration failed")?,
     );
-    let mut all_time_by_account = previous_all_time.unwrap_or_default();
     let mut closed_window_requests = Vec::new();
     let mut in_progress_by_account = HashMap::new();
+    let mut active_in_progress_accounts = HashSet::new();
+    for record in &records {
+        if matches!(
+            normalized_runtime_text(Some(record.row.status.as_str())).as_str(),
+            "running" | "pending"
+        ) && let Some(account_id) = record.row.upstream_account_id
+        {
+            active_in_progress_accounts.insert(account_id);
+        }
+    }
+    for runtime_record in state.proxy_runtime_invocations.snapshot() {
+        if runtime_in_flight_record_matches_filters(
+            &runtime_record,
+            &InvocationRecordsFilters::default(),
+            InvocationSourceScope::All,
+        ) && let Some(account_id) = runtime_record.upstream_account_id
+        {
+            active_in_progress_accounts.insert(account_id);
+        }
+    }
+    let global_in_progress =
+        load_in_progress_summary_snapshot(state, InvocationSourceScope::All, None)
+            .await
+            .map_err(|error| {
+                anyhow!("summary projection in-progress hydration failed: {error:?}")
+            })?;
     for upstream_account_id in std::iter::once(None).chain(account_ids.iter().copied().map(Some)) {
         if include_all_time || !all_time_by_account.contains_key(&upstream_account_id) {
             let params = SummaryQuery {
@@ -8464,13 +8529,21 @@ async fn build_summary_projection(
             .expect("summary projection closed-window key must be valid");
             closed_window_requests.push((closed_key, closed_params));
         }
-        let in_progress = load_in_progress_summary_snapshot(
-            state,
-            InvocationSourceScope::All,
-            upstream_account_id,
-        )
-        .await
-        .map_err(|error| anyhow!("summary projection in-progress hydration failed: {error:?}"))?;
+        let in_progress = match upstream_account_id {
+            None => global_in_progress,
+            Some(account_id) if active_in_progress_accounts.contains(&account_id) => {
+                load_in_progress_summary_snapshot(
+                    state,
+                    InvocationSourceScope::All,
+                    Some(account_id),
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection in-progress hydration failed: {error:?}")
+                })?
+            }
+            Some(_) => InProgressSummarySnapshot::default(),
+        };
         in_progress_by_account.insert(upstream_account_id, in_progress);
     }
     let revision = state
@@ -8487,6 +8560,8 @@ async fn build_summary_projection(
         hourly_rollup_usage,
         rollup_live_cursor,
         all_time_by_account,
+        all_time_refreshed_at: all_time_was_fully_rebuilt.then(Instant::now),
+        archive_account_ids_by_file,
         closed_window_by_key: HashMap::new(),
         in_progress_by_account,
         maintenance: Some(maintenance),
@@ -23499,11 +23574,12 @@ mod request_compression_query_tests {
             .await
             .expect("create archive preview table");
         sqlx::query(
-            "INSERT INTO codex_invocations (occurred_at, payload) VALUES (?1, ?2), (?1, ?3)",
+            "INSERT INTO codex_invocations (occurred_at, payload) VALUES (?1, ?2), (?1, ?3), (?1, ?4)",
         )
         .bind("2026-07-28 00:26:54")
         .bind(r#"{"upstreamAccountId":77}"#)
         .bind(r#"{"upstreamAccountId":0}"#)
+        .bind("not-json")
         .execute(&pool)
         .await
         .expect("insert archive-only account rows");
@@ -23852,6 +23928,38 @@ mod request_compression_query_tests {
             .await
             .expect("hydrated projection");
         Arc::make_mut(&mut projection).refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state
+            .subscription_hub
+            .store_summary_projection(Arc::unwrap_or_clone(projection))
+            .await;
+        state.pool.close().await;
+
+        let response = fetch_summary(State(state), Query(query)).await;
+        assert!(matches!(response, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_handler_rejects_expired_all_time_snapshot_after_rolling_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        let query = SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        };
+        let mut projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        let projection_ref = Arc::make_mut(&mut projection);
+        projection_ref.refreshed_at = Some(Instant::now());
+        projection_ref.all_time_refreshed_at =
             Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
         state
             .subscription_hub
