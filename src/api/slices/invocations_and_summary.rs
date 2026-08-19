@@ -460,7 +460,14 @@ pub(crate) fn effective_runtime_invocation_live_phase(
     if normalized_runtime_text(record.status.as_deref()) == "pending" {
         return Some(INVOCATION_LIVE_PHASE_QUEUED);
     }
-    let inferred_phase = runtime_invocation_live_phase(record)?;
+    let inferred_phase =
+        if runtime_record_is_retry(record) && has_measured_first_token(record.first_token_ms) {
+            let mut phase_record = record.clone();
+            phase_record.first_token_ms = None;
+            runtime_invocation_live_phase(&phase_record)?
+        } else {
+            runtime_invocation_live_phase(record)?
+        };
     if inferred_phase == INVOCATION_LIVE_PHASE_RESPONDING {
         return Some(inferred_phase);
     }
@@ -1708,6 +1715,36 @@ pub(crate) fn runtime_model_rerouted(record: &ApiInvocation) -> bool {
 
 pub(crate) fn runtime_record_is_retry(record: &ApiInvocation) -> bool {
     record.pool_attempt_count.unwrap_or(1) > 1
+}
+
+pub(crate) fn runtime_record_first_token_ms(record: &ApiInvocation) -> Option<f64> {
+    runtime_record_first_token_ms_with_retry(record, runtime_record_is_retry(record))
+}
+
+pub(crate) fn runtime_record_first_token_ms_with_retry(
+    record: &ApiInvocation,
+    is_retry: bool,
+) -> Option<f64> {
+    (!is_retry)
+        .then_some(finite_nonnegative_timing(record.first_token_ms))
+        .flatten()
+}
+
+pub(crate) fn runtime_record_live_phase(record: &ApiInvocation) -> Option<&'static str> {
+    runtime_record_live_phase_with_retry(record, runtime_record_is_retry(record))
+}
+
+pub(crate) fn runtime_record_live_phase_with_retry(
+    record: &ApiInvocation,
+    is_retry: bool,
+) -> Option<&'static str> {
+    if is_retry && !runtime_record_is_retry(record) {
+        let mut phase_record = record.clone();
+        phase_record.pool_attempt_count = Some(2);
+        effective_runtime_invocation_live_phase(&phase_record)
+    } else {
+        effective_runtime_invocation_live_phase(record)
+    }
 }
 
 pub(crate) fn runtime_record_is_in_flight(record: &ApiInvocation) -> bool {
@@ -7348,7 +7385,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
                 source_scope,
             )
         {
-            let runtime_phase = effective_runtime_invocation_live_phase(runtime_record);
+            let runtime_phase = runtime_record_live_phase(runtime_record);
             if runtime_phase != row.live_phase.as_deref() {
                 phase_counts.decrement_phase_name(row.live_phase.as_deref());
                 phase_counts.increment_phase_name(runtime_phase);
@@ -7411,7 +7448,7 @@ pub(crate) async fn load_in_progress_summary_snapshot(
         .fold(
             InvocationPhaseCountsResponse::default(),
             |mut counts, record| {
-                counts.increment_phase_name(effective_runtime_invocation_live_phase(record));
+                counts.increment_phase_name(runtime_record_live_phase(record));
                 counts
             },
         );
@@ -11383,14 +11420,8 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
     // The runtime snapshot stores TTFT once per invocation, while pool retries can replace the
     // final attempt. Until attempt-owned TTFT exists, suppress that invocation-level measurement
     // for retries so account previews cannot attribute an earlier attempt to the current one.
-    let suppress_live_first_token = runtime_record_is_retry(&record);
-    let live_phase = if suppress_live_first_token {
-        let mut phase_record = record.clone();
-        phase_record.first_token_ms = None;
-        effective_runtime_invocation_live_phase(&phase_record).map(str::to_string)
-    } else {
-        effective_runtime_invocation_live_phase(&record).map(str::to_string)
-    };
+    let live_phase = runtime_record_live_phase(&record).map(str::to_string);
+    let first_token_ms = runtime_record_first_token_ms(&record);
     Some(UpstreamAccountInvocationPreviewRow {
         upstream_account_id: record.upstream_account_id,
         id: record.id,
@@ -11436,9 +11467,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: (!suppress_live_first_token)
-            .then_some(finite_nonnegative_timing(record.first_token_ms))
-            .flatten(),
+        first_token_ms,
         t_upstream_stream_ms: finite_positive_timing(record.t_upstream_stream_ms),
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,
@@ -12176,7 +12205,7 @@ async fn query_upstream_account_in_progress_counts_with_baseline(
             continue;
         }
         let key = (record.invoke_id.clone(), record.occurred_at.clone());
-        let runtime_phase = effective_runtime_invocation_live_phase(&record);
+        let runtime_phase = runtime_record_live_phase(&record);
         if let Some((db_upstream_account_id, db_is_retry, db_phase, db_wait_ms)) =
             db_runtime_keys.get(&key)
         {
@@ -13152,9 +13181,11 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
             .map_or(0, String::len)
         + record.service_tier.as_ref().map_or(0, String::len)
         + record.billing_service_tier.as_ref().map_or(0, String::len);
+    let mut timeseries = TimeseriesTerminalDelta::from(record);
+    timeseries.first_token_ms = runtime_record_first_token_ms(record);
     DashboardActivityTerminalDelta {
         terminal_sequence: 0,
-        timeseries: TimeseriesTerminalDelta::from(record),
+        timeseries,
         invoke_id: record.invoke_id.clone(),
         occurred_at: record.occurred_at.clone(),
         source: record.source.clone(),
@@ -13196,7 +13227,7 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: record.first_token_ms,
+        first_token_ms: runtime_record_first_token_ms(record),
         t_upstream_stream_ms: record.t_upstream_stream_ms,
         recent_invocation: invocation_preview_from_runtime_record(record),
         persisted_row_id: (record.id > 0).then_some(record.id),
@@ -20947,6 +20978,36 @@ mod invocation_cost_audit_tests {
         assert_eq!(row.first_token_ms, None);
         assert_ne!(
             row.live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn retry_runtime_projection_does_not_infer_responding_from_invocation_ttft() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(runtime_record_first_token_ms(&record), None);
+        assert_ne!(
+            runtime_record_live_phase(&record),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn retry_runtime_projection_can_use_baseline_retry_state() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+
+        assert_eq!(
+            runtime_record_first_token_ms_with_retry(&record, true),
+            None
+        );
+        assert_ne!(
+            runtime_record_live_phase_with_retry(&record, true),
             Some(INVOCATION_LIVE_PHASE_RESPONDING)
         );
     }

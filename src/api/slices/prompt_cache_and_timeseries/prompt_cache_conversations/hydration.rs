@@ -640,8 +640,8 @@ fn overlay_runtime_preview_progress(
     let (first_token_ms, live_phase) = merged_runtime_preview_progress(
         preview.first_token_ms,
         preview.live_phase.as_deref(),
-        record.first_token_ms,
-        effective_runtime_invocation_live_phase(record),
+        runtime_record_first_token_ms(record),
+        runtime_record_live_phase(record),
     );
     preview.first_token_ms = first_token_ms;
     preview.live_phase = live_phase;
@@ -697,7 +697,7 @@ pub(crate) fn invocation_preview_from_runtime_record(
             .status
             .clone()
             .unwrap_or_else(|| "unknown".to_string()),
-        live_phase: effective_runtime_invocation_live_phase(record).map(str::to_string),
+        live_phase: runtime_record_live_phase(record).map(str::to_string),
         failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
         route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
         model: normalize_trimmed_optional_string(record.model.clone()),
@@ -751,7 +751,7 @@ pub(crate) fn invocation_preview_from_runtime_record(
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: record.first_token_ms,
+        first_token_ms: runtime_record_first_token_ms(record),
         t_upstream_stream_ms: record.t_upstream_stream_ms,
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,

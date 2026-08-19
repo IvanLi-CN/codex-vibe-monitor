@@ -573,9 +573,7 @@ impl DashboardNetworkSpeedCache {
             record.t_upstream_connect_ms,
             record.t_upstream_ttfb_ms,
         );
-        let live_first_token_ms = record
-            .first_token_ms
-            .filter(|value| value.is_finite() && *value >= 0.0);
+        let live_first_token_ms = runtime_record_first_token_ms(record);
         let observed_epoch_second = observed_at.timestamp();
         let mut inner = self
             .inner
@@ -704,9 +702,7 @@ impl DashboardNetworkSpeedCache {
         let terminal_total_ms = record
             .t_total_ms
             .filter(|value| value.is_finite() && *value >= 0.0);
-        let terminal_first_token_ms = record
-            .first_token_ms
-            .filter(|value| value.is_finite() && *value >= 0.0);
+        let terminal_first_token_ms = runtime_record_first_token_ms(record);
         let terminal_qualified_tokens = if is_success && record.cost.is_some() {
             record.total_tokens.unwrap_or_default().max(0)
         } else {

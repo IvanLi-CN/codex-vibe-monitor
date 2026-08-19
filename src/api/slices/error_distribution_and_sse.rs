@@ -4236,8 +4236,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 "running" | "pending"
             )
             .then(|| {
-                let live_phase =
-                    effective_runtime_invocation_live_phase(&record).map(str::to_string);
+                let live_phase = runtime_record_live_phase(&record).map(str::to_string);
                 DashboardProjectionInvocation {
                     upstream_account_id: record.upstream_account_id,
                     upstream_account_name: record.upstream_account_name,
@@ -4311,7 +4310,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
         .or_else(|| baseline_record.and_then(|record| record.upstream_account_name.clone()));
         let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
             || baseline_record.is_some_and(|record| record.is_retry);
-        let live_phase = effective_runtime_invocation_live_phase(&record).map(str::to_string);
+        let live_phase =
+            runtime_record_live_phase_with_retry(&record, is_retry).map(str::to_string);
         projection_records.insert(
             key,
             DashboardProjectionInvocation {
