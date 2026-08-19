@@ -22993,8 +22993,8 @@ mod request_compression_query_tests {
         .await
         .expect("insert materialized hourly rollup");
         sqlx::query(
-            "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \\
-             VALUES (?1, 'proxy', 42, 3, 2, 1, 91, 4.5, 1.5)",
+            r#"INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost)
+               VALUES (?1, 'proxy', 42, 3, 2, 1, 91, 4.5, 1.5)"#,
         )
         .bind(bucket)
         .execute(&state.pool)
