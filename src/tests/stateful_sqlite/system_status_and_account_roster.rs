@@ -10,6 +10,9 @@ pub(crate) const STATEFUL_SCHEMA_TEMPLATE_PATH_ENV: &str =
 pub(crate) const ARCHIVE_SCHEMA_TEMPLATE_PATH_ENV: &str =
     "CODEX_VIBE_MONITOR_ARCHIVE_SCHEMA_TEMPLATE_PATH";
 
+static SYSTEM_TASK_RUN_RETENTION_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 pub(crate) fn write_backfill_response_payload_with_service_tier(
     path: &Path,
     service_tier: Option<&str>,
@@ -496,8 +499,8 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22 08:45:00")
-        .bind("2026-06-22 08:45:01")
+        .bind("2026-06-22T08:45:00.000Z")
+        .bind("2026-06-22T08:45:01.000Z")
         .bind(startup_handle.id)
         .execute(&state.pool)
         .await
@@ -520,12 +523,36 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     )
     .await;
     sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
-        .bind("2026-06-22 09:15:00")
-        .bind("2026-06-22 09:15:02")
+        .bind("2026-06-22T09:15:00.000Z")
+        .bind("2026-06-22T09:15:02.000Z")
         .bind(retention_handle.id)
         .execute(&state.pool)
         .await
         .expect("pin retention task timestamps");
+
+    let tied_handle = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::StartupBackfill,
+        "manual",
+        Some("same timestamp cursor tie".to_string()),
+    )
+    .await
+    .expect("insert tied cursor task");
+    finish_system_task_run(
+        &state.pool,
+        &tied_handle,
+        SystemTaskStatus::Success,
+        Some("tied cursor task completed".to_string()),
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE system_task_runs SET started_at = ?1, finished_at = ?2 WHERE id = ?3")
+        .bind("2026-06-22T09:15:00.000Z")
+        .bind("2026-06-22T09:15:03.000Z")
+        .bind(tied_handle.id)
+        .execute(&state.pool)
+        .await
+        .expect("pin tied cursor task timestamps");
 
     let filtered = list_system_task_runs(
         State(state.clone()),
@@ -537,6 +564,7 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
@@ -566,18 +594,20 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
     .expect("list all system tasks")
     .0;
 
-    assert_eq!(all.total, 2);
+    assert_eq!(all.total, 3);
     assert_eq!(all.page, 1);
     assert_eq!(all.page_size, 10);
-    assert_eq!(all.items.len(), 2);
-    assert_eq!(all.items[0].task_kind, "retention_archive");
-    assert_eq!(all.items[1].task_kind, "startup_backfill");
+    assert_eq!(all.items.len(), 3);
+    assert_eq!(all.items[0].id, tied_handle.id);
+    assert_eq!(all.items[1].id, retention_handle.id);
+    assert_eq!(all.items[2].id, startup_handle.id);
 
     let paged = list_system_task_runs(
         State(state.clone()),
@@ -589,17 +619,18 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: None,
             page: Some(2),
             page_size: Some(1),
+            cursor: None,
         }),
     )
     .await
     .expect("list paged system tasks")
     .0;
 
-    assert_eq!(paged.total, 2);
+    assert_eq!(paged.total, 3);
     assert_eq!(paged.page, 2);
     assert_eq!(paged.page_size, 1);
     assert_eq!(paged.items.len(), 1);
-    assert_eq!(paged.items[0].task_kind, "startup_backfill");
+    assert_eq!(paged.items[0].id, retention_handle.id);
 
     let ranged = list_system_task_runs(
         State(state.clone()),
@@ -611,15 +642,75 @@ async fn system_task_runs_filter_and_routes_serve_json() {
             limit: Some(10),
             page: None,
             page_size: None,
+            cursor: None,
         }),
     )
     .await
     .expect("list ranged system tasks")
     .0;
 
-    assert_eq!(ranged.total, 1);
-    assert_eq!(ranged.items.len(), 1);
-    assert_eq!(ranged.items[0].task_kind, "retention_archive");
+    assert_eq!(ranged.total, 2);
+    assert_eq!(ranged.items.len(), 2);
+    assert_eq!(ranged.items[0].id, tied_handle.id);
+    assert_eq!(ranged.items[1].id, retention_handle.id);
+
+    let first_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: None,
+        }),
+    )
+    .await
+    .expect("list first cursor page")
+    .0;
+    let cursor = first_cursor_page
+        .next_cursor
+        .clone()
+        .expect("first cursor page should expose a continuation");
+    let second_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: Some(cursor),
+        }),
+    )
+    .await
+    .expect("list second cursor page")
+    .0;
+    let third_cursor_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            task_kind: None,
+            status: None,
+            started_at_from: None,
+            started_at_to: None,
+            limit: None,
+            page: None,
+            page_size: Some(1),
+            cursor: second_cursor_page.next_cursor.clone(),
+        }),
+    )
+    .await
+    .expect("list third cursor page")
+    .0;
+    assert_eq!(first_cursor_page.total, paged.total);
+    assert_eq!(first_cursor_page.items[0].id, tied_handle.id);
+    assert_eq!(second_cursor_page.items[0].id, retention_handle.id);
+    assert_eq!(third_cursor_page.items[0].id, startup_handle.id);
+    assert!(third_cursor_page.next_cursor.is_none());
 
     let app = build_app_router(state.clone());
     let response = app
@@ -644,6 +735,18 @@ async fn system_task_runs_filter_and_routes_serve_json() {
         payload["items"][0]["taskKind"].as_str(),
         Some("retention_archive")
     );
+
+    let cursor_with_page_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/tasks?cursor=eyJzdGFydGVkQXQiOiIyMDI2LTA2LTIyVDA5OjE1OjAwWiIsImlkIjoyfQ&page=2")
+                .body(Body::empty())
+                .expect("build invalid cursor and page request"),
+        )
+        .await
+        .expect("serve invalid cursor and page request");
+    assert_eq!(cursor_with_page_response.status(), StatusCode::BAD_REQUEST);
 
     let invalid_range_response = app
         .clone()
@@ -677,6 +780,381 @@ async fn system_task_runs_filter_and_routes_serve_json() {
     assert!(payload.get("completedArchiveBatchesCount").is_some());
     assert!(payload.get("databaseBytes").is_some());
     assert!(payload.get("refreshedAt").is_some());
+}
+
+#[tokio::test]
+async fn system_task_runs_cursor_preserves_invalid_legacy_timestamp() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    for (task_kind, started_at) in [
+        ("invalid_legacy_timestamp", "2026-02-30 08:45:00"),
+        ("older_canonical_timestamp", "2025-01-01T00:00:00.000Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES (?1, 'fixture', 'success', ?2)",
+        )
+        .bind(task_kind)
+        .bind(started_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed cursor timestamp fixture");
+    }
+
+    let first_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            page_size: Some(1),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("list invalid timestamp cursor page")
+    .0;
+    assert_eq!(first_page.items[0].task_kind, "invalid_legacy_timestamp");
+    let cursor = first_page
+        .next_cursor
+        .expect("invalid legacy timestamp still yields a cursor");
+
+    let second_page = list_system_task_runs(
+        State(state.clone()),
+        Query(SystemTaskRunsQuery {
+            page_size: Some(1),
+            cursor: Some(cursor),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("continue after invalid timestamp cursor")
+    .0;
+    assert_eq!(second_page.items[0].task_kind, "older_canonical_timestamp");
+    assert!(second_page.next_cursor.is_none());
+
+    let ranged_page = list_system_task_runs(
+        State(state),
+        Query(SystemTaskRunsQuery {
+            started_at_from: Some("2026-02-01T00:00:00Z".to_string()),
+            started_at_to: Some("2026-03-01T00:00:00Z".to_string()),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("exclude invalid legacy timestamp from time range")
+    .0;
+    assert_eq!(ranged_page.total, 0);
+    assert!(ranged_page.items.is_empty());
+}
+
+#[tokio::test]
+async fn system_task_runs_time_ranges_exclude_canonical_shaped_invalid_dates() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('invalid_canonical_timestamp', 'fixture', 'success', '2026-02-30T08:45:00.000Z')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed canonical-shaped invalid timestamp");
+
+    let ranged_page = list_system_task_runs(
+        State(state),
+        Query(SystemTaskRunsQuery {
+            started_at_from: Some("2026-02-01T00:00:00Z".to_string()),
+            started_at_to: Some("2026-03-01T00:00:00Z".to_string()),
+            ..SystemTaskRunsQuery::default()
+        }),
+    )
+    .await
+    .expect("exclude canonical-shaped invalid timestamp from time range")
+    .0;
+    assert_eq!(ranged_page.total, 0);
+    assert!(ranged_page.items.is_empty());
+}
+
+#[tokio::test]
+async fn system_task_runs_schema_indexes_support_time_queries() {
+    let pool = test_current_schema_pool().await;
+    ensure_schema(&pool)
+        .await
+        .expect("apply current system task run schema");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 999
+            ),
+            blocks(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM blocks WHERE value < 399
+            )
+        INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at)
+        SELECT
+            CASE WHEN (hundreds.value + blocks.value) % 2 = 0
+                THEN 'retention_archive' ELSE 'startup_backfill' END,
+            'fixture',
+            CASE WHEN hundreds.value % 3 = 0 THEN 'success' ELSE 'failed' END,
+            printf(
+                '2026-06-%02dT%02d:%02d:%02d.000Z',
+                1 + ((hundreds.value * 400 + blocks.value) / 86400),
+                ((hundreds.value * 400 + blocks.value) / 3600) % 24,
+                ((hundreds.value * 400 + blocks.value) / 60) % 60,
+                (hundreds.value * 400 + blocks.value) % 60
+            )
+        FROM hundreds CROSS JOIN blocks
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed 400k system task runs");
+
+    let default_plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id FROM system_task_runs ORDER BY started_at DESC, id DESC LIMIT 100",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain default system task query")
+    .into_iter()
+    .map(|row| row.get("detail"))
+    .collect();
+    assert!(
+        default_plan
+            .iter()
+            .any(|detail| detail.contains("idx_system_task_runs_started_at_id")),
+        "default time query must use its ordering index: {default_plan:?}"
+    );
+
+    let filtered_plan: Vec<String> = sqlx::query(
+        "EXPLAIN QUERY PLAN SELECT id FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success' AND started_at >= '2026-06-02T00:00:00Z' ORDER BY started_at DESC, id DESC LIMIT 100",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain combined system task query")
+    .into_iter()
+    .map(|row| row.get("detail"))
+    .collect();
+    assert!(
+        filtered_plan
+            .iter()
+            .any(|detail| detail.contains("idx_system_task_runs_task_status_time")),
+        "combined filter and sort query must use its index: {filtered_plan:?}"
+    );
+}
+
+#[tokio::test]
+async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
+    let pool = test_current_schema_pool().await;
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill', 'fixture', 'success', '2026-06-22 08:45:00.125', '2026-06-22T17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy system task timestamp");
+
+    ensure_schema(&pool)
+        .await
+        .expect("normalize legacy system task timestamps");
+    let (started_at, finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized task timestamps");
+    assert_eq!(started_at, "2026-06-22T00:45:00.125Z");
+    assert_eq!(finished_at.as_deref(), Some("2026-06-22T09:15:00.000Z"));
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill_with_offset', 'fixture', 'success', '2026-06-22 08:45:00.125+08:00', '2026-06-22 17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed space timestamps with explicit offsets");
+    ensure_schema(&pool)
+        .await
+        .expect("normalize offset timestamps");
+    let (offset_started_at, offset_finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'startup_backfill_with_offset'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized offset timestamps");
+    assert_eq!(offset_started_at, "2026-06-22T00:45:00.125Z");
+    assert_eq!(
+        offset_finished_at.as_deref(),
+        Some("2026-06-22T09:15:00.000Z")
+    );
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('legacy_rfc3339_without_millis', 'fixture', 'success', '2026-06-22T08:45:00Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy RFC3339 timestamp without milliseconds");
+    ensure_schema(&pool)
+        .await
+        .expect("normalize legacy RFC3339 timestamp without milliseconds");
+    let legacy_rfc3339_started_at: String = sqlx::query_scalar(
+        "SELECT started_at FROM system_task_runs WHERE task_kind = 'legacy_rfc3339_without_millis'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized legacy RFC3339 timestamp");
+    assert_eq!(legacy_rfc3339_started_at, "2026-06-22T08:45:00.000Z");
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('invalid_legacy_task_timestamp', 'fixture', 'success', '2026-02-30 08:45:00', '2026-02-30 17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed invalid legacy task timestamps");
+    ensure_schema(&pool)
+        .await
+        .expect("preserve invalid task timestamps");
+    let (invalid_started_at, invalid_finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'invalid_legacy_task_timestamp'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved invalid timestamps");
+    assert_eq!(invalid_started_at, "2026-02-30 08:45:00");
+    assert_eq!(
+        invalid_finished_at.as_deref(),
+        Some("2026-02-30 17:15:00+08:00")
+    );
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('invalid_legacy_task_timestamp_suffix', 'fixture', 'success', '2026-06-22 08:45:00foo', '2026-06-22 17:15:00+08:00foo')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed invalid legacy task timestamp suffixes");
+    ensure_schema(&pool)
+        .await
+        .expect("preserve invalid task timestamp suffixes");
+    let (invalid_suffix_started_at, invalid_suffix_finished_at): (String, Option<String>) =
+        sqlx::query_as(
+            "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'invalid_legacy_task_timestamp_suffix'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load preserved invalid timestamp suffixes");
+    assert_eq!(invalid_suffix_started_at, "2026-06-22 08:45:00foo");
+    assert_eq!(
+        invalid_suffix_finished_at.as_deref(),
+        Some("2026-06-22 17:15:00+08:00foo")
+    );
+}
+
+#[tokio::test]
+async fn system_task_run_retention_preserves_recent_rows_and_bounds_deletes() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_TEST_LOCK.lock().await;
+    reset_system_task_run_retention_schedule();
+    let pool = test_current_schema_pool().await;
+    ensure_schema(&pool)
+        .await
+        .expect("apply current system task run schema");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 999
+            ),
+            blocks(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM blocks WHERE value < 5
+            )
+        INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at)
+        SELECT 'retention_archive', 'fixture', 'success', '2020-01-01T00:00:00.000Z'
+        FROM hundreds CROSS JOIN blocks
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed expired terminal task runs");
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'running', '2019-01-01T00:00:00.000Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed running task run");
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at) VALUES ('retention_archive', 'fixture', 'success', '2026-02-30T08:45:00.000Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed canonical-shaped invalid retention timestamp");
+
+    let pruned = prune_system_task_runs(&pool, false)
+        .await
+        .expect("prune expired task runs");
+    assert_eq!(pruned, 5_000, "one retention pass has a hard delete cap");
+    let terminal_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining terminal task runs");
+    assert_eq!(terminal_remaining, 1_001);
+    let oldest_retained_id: i64 = sqlx::query_scalar(
+        "SELECT MIN(id) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("find oldest retained terminal task run");
+    assert_eq!(
+        oldest_retained_id, 5_001,
+        "the pass deletes the oldest records before newer equal-timestamp ties"
+    );
+    let invalid_timestamp_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'retention_archive' AND status = 'success' AND started_at = '2026-02-30T08:45:00.000Z'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count preserved invalid retention timestamp");
+    assert_eq!(invalid_timestamp_remaining, 1);
+    let running_remaining: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM system_task_runs WHERE status = 'running'")
+            .fetch_one(&pool)
+            .await
+            .expect("count running task runs");
+    assert_eq!(running_remaining, 1, "running task runs are never pruned");
+    assert_eq!(
+        prune_system_task_runs(&pool, false)
+            .await
+            .expect("immediate retention pass should be throttled"),
+        0,
+        "retention passes are spaced by at least 15 seconds"
+    );
+    reset_system_task_run_retention_schedule();
+    assert_eq!(
+        prune_system_task_runs(&pool, true)
+            .await
+            .expect("count remaining retention candidates"),
+        800,
+        "dry run counts each eligible row once and respects the per-pass cap"
+    );
+    reset_system_task_run_retention_schedule();
+}
+
+#[tokio::test]
+async fn system_task_run_retention_pressure_marks_the_maintenance_pass_deferred() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_TEST_LOCK.lock().await;
+    let generation_before = retention_defer_generation();
+    let pressure_error = anyhow::anyhow!("pool timed out while waiting for an open connection");
+    assert!(system_task_run_retention_handle_pressure(&pressure_error));
+    assert!(
+        retention_defer_generation() > generation_before,
+        "pressure must wake the five-minute maintenance retry path"
+    );
+    reset_system_task_run_retention_schedule();
 }
 
 pub(crate) fn write_backfill_response_payload_with_terminal_service_tier(

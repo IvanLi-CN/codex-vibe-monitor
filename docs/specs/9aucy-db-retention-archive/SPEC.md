@@ -31,6 +31,7 @@
 - retention 主库写入仲裁、可恢复微批与压力期公平调度，确保归档不会长期占用 SQLite 单写者。
 - 调用明细 30/90 天分层、月度 `sqlite.gz` 归档、manifest 校验、主库 purge、raw file 删除与 orphan sweep。
 - `forward_proxy_attempts` 与 `codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
+- `system_task_runs` 的有界在线历史：运行中的行永不删除；每个 `(task_kind, status)` 的最新 200 行始终保留；`success`/`skipped` 保留 30 天且每类最多 5000 行，`failed` 保留 180 天且每类最多 10000 行。
 - `summary?window=all` / 总量统计的初始 `invocation_rollup_daily` 承接方案，以及后续迁移到 hourly rollups 前的兼容边界。
 - `README.md`、`docs/deployment.md`、`docs/specs/README.md` 与前端 `InvocationTable` 的契约更新。
 
@@ -129,6 +130,7 @@
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。
 - 常驻任务只执行 `PRAGMA wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；`VACUUM` 不放进周期任务，由 101 首次 backlog cleanup 完成后的维护窗口人工执行一次。
+- `system_task_runs` 只由 retention 主流程清理，不新增或改变 startup backfill 调度。每个删除事务最多 500 行、每个 pass 最多 5000 行，pass 间隔至少 15 秒；SQLite busy/locked 时该清理链退避 5 分钟。禁止对该表执行全量 `DELETE` 或 `VACUUM`。
 
 ## 验收标准（Acceptance Criteria）
 

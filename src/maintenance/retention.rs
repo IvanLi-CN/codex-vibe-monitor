@@ -1,11 +1,25 @@
 use super::*;
 
+use sqlx::FromRow;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 const RETENTION_FAIRNESS_INTERVAL: Duration = Duration::from_secs(15);
 const RETENTION_WRITE_TARGET: Duration = Duration::from_millis(200);
 const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
+const SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT: i64 = 200;
+const SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS: usize = 500;
+const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
+const SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL: Duration = Duration::from_secs(15);
+const SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
+
+static SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS: AtomicU64 = AtomicU64::new(0);
+static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
@@ -478,6 +492,7 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) raw_files_removed: usize,
     pub(crate) orphan_raw_files_removed: usize,
     pub(crate) model_route_rows_pruned: usize,
+    pub(crate) system_task_run_rows_pruned: usize,
 }
 
 impl RetentionRunSummary {
@@ -493,7 +508,266 @@ impl RetentionRunSummary {
             || self.raw_files_removed > 0
             || self.orphan_raw_files_removed > 0
             || self.model_route_rows_pruned > 0
+            || self.system_task_run_rows_pruned > 0
     }
+}
+
+#[derive(Debug, FromRow)]
+struct SystemTaskRunRetentionCandidate {
+    id: i64,
+}
+
+fn system_task_run_retention_now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
+
+fn system_task_run_retention_schedule_next(now_epoch_ms: u64, delay: Duration) {
+    let next = now_epoch_ms.saturating_add(delay.as_millis().min(u64::MAX as u128) as u64);
+    let mut current = SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.load(Ordering::Acquire);
+    while next > current {
+        match SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.compare_exchange(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn system_task_run_retention_pass_is_due(now_epoch_ms: u64) -> bool {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK
+        .lock()
+        .expect("system task retention schedule lock");
+    let next = SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.load(Ordering::Acquire);
+    if next > now_epoch_ms {
+        return false;
+    }
+    SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS
+        .compare_exchange(
+            next,
+            now_epoch_ms.saturating_add(
+                SYSTEM_TASK_RUN_RETENTION_PASS_INTERVAL
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            ),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_system_task_run_retention_schedule() {
+    let _schedule_guard = SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK
+        .lock()
+        .expect("system task retention schedule lock");
+    SYSTEM_TASK_RUN_RETENTION_NEXT_PASS_EPOCH_MS.store(0, Ordering::Release);
+}
+
+pub(crate) fn system_task_run_retention_handle_pressure(error: &anyhow::Error) -> bool {
+    if !crate::db_pressure::is_db_pressure_error(error) {
+        return false;
+    }
+    let now_epoch_ms = system_task_run_retention_now_epoch_ms();
+    system_task_run_retention_schedule_next(
+        now_epoch_ms,
+        SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF,
+    );
+    retention_record_defer("system_task_run_retention", "sqlite_pressure");
+    crate::db_pressure::global_db_pressure_gate().record_error("system_task_run_retention", error);
+    retention_record_error("system_task_run_retention", error);
+    warn!(error = %error, "system task run retention deferred after SQLite pressure");
+    true
+}
+
+fn system_task_run_retention_admission_requires_pressure_backoff(
+    reason: Option<crate::db_pressure::DbPressureDenyReason>,
+) -> bool {
+    matches!(
+        reason,
+        Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. })
+    )
+}
+
+pub(crate) async fn prune_system_task_runs(pool: &Pool<Sqlite>, dry_run: bool) -> Result<usize> {
+    let now_epoch_ms = system_task_run_retention_now_epoch_ms();
+    if !system_task_run_retention_pass_is_due(now_epoch_ms) {
+        return Ok(0);
+    }
+
+    let success_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(30));
+    let failed_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::days(180));
+    if dry_run {
+        let candidates: i64 = sqlx::query_scalar(
+            r#"
+            WITH ranked AS (
+                SELECT
+                    task_kind,
+                    status,
+                    started_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY task_kind, status
+                        ORDER BY started_at DESC, id DESC
+                    ) AS retention_rank
+                FROM system_task_runs
+                WHERE status IN ('success', 'skipped', 'failed')
+                  AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
+            )
+            SELECT COUNT(*)
+            FROM ranked
+            WHERE retention_rank > ?1
+              AND (
+                  (status IN ('success', 'skipped')
+                    AND (started_at < ?2 OR retention_rank > 5000))
+                  OR (status = 'failed'
+                    AND (started_at < ?3 OR retention_rank > 10000))
+              )
+            "#,
+        )
+        .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
+        .bind(&success_cutoff)
+        .bind(&failed_cutoff)
+        .fetch_one(pool)
+        .await
+        .map_err(anyhow::Error::from)
+        .or_else(|error| {
+            if system_task_run_retention_handle_pressure(&error) {
+                Ok(0)
+            } else {
+                Err(error.context("failed to count system task retention candidates"))
+            }
+        })?;
+        return Ok((candidates.max(0) as usize).min(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS));
+    }
+    let candidates = match sqlx::query_as::<_, SystemTaskRunRetentionCandidate>(
+        r#"
+            WITH ranked AS (
+                SELECT
+                    id,
+                    task_kind,
+                    status,
+                    started_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY task_kind, status
+                        ORDER BY started_at DESC, id DESC
+                    ) AS retention_rank
+                FROM system_task_runs
+                WHERE status IN ('success', 'skipped', 'failed')
+                  AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at
+            )
+            SELECT id
+            FROM ranked
+            WHERE retention_rank > ?1
+              AND (
+                  (status IN ('success', 'skipped')
+                    AND (started_at < ?2 OR retention_rank > 5000))
+                  OR (status = 'failed'
+                    AND (started_at < ?3 OR retention_rank > 10000))
+              )
+            ORDER BY started_at ASC, id ASC
+            LIMIT ?4
+            "#,
+    )
+    .bind(SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT)
+    .bind(&success_cutoff)
+    .bind(&failed_cutoff)
+    .bind(SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS as i64)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            let error = anyhow::Error::from(error);
+            if system_task_run_retention_handle_pressure(&error) {
+                return Ok(0);
+            }
+            return Err(error).context("failed to select system task retention candidates");
+        }
+    };
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+
+    let mut pruned = 0usize;
+    for candidates in candidates.chunks(SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS) {
+        let Some(admission) = acquire_retention_write_admission("system_task_run_retention").await
+        else {
+            // Admission can be denied before a SQL call observes the pressure error. A
+            // cooldown is distinct from shutdown or a normally busy background slot.
+            if system_task_run_retention_admission_requires_pressure_backoff(
+                crate::db_pressure::global_db_pressure_gate().background_deny_reason(),
+            ) {
+                system_task_run_retention_schedule_next(
+                    system_task_run_retention_now_epoch_ms(),
+                    SYSTEM_TASK_RUN_RETENTION_PRESSURE_BACKOFF,
+                );
+            }
+            break;
+        };
+        let execute_started = Instant::now();
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let mut delete = QueryBuilder::<Sqlite>::new("DELETE FROM system_task_runs WHERE id IN (");
+        let mut separated = delete.separated(", ");
+        for id in &ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let mut transaction = match pool.begin().await {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                if system_task_run_retention_handle_pressure(&error) {
+                    return Ok(pruned);
+                }
+                return Err(error).context("failed to begin system task retention batch");
+            }
+        };
+        let deleted = match delete.build().execute(&mut *transaction).await {
+            Ok(result) => result.rows_affected() as usize,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                if system_task_run_retention_handle_pressure(&error) {
+                    return Ok(pruned);
+                }
+                return Err(error).context("failed to delete system task retention batch");
+            }
+        };
+        if let Err(error) = transaction.commit().await {
+            let error = anyhow::Error::from(error);
+            if system_task_run_retention_handle_pressure(&error) {
+                return Ok(pruned);
+            }
+            return Err(error).context("failed to commit system task retention batch");
+        }
+        retention_record_commit!(
+            "system_task_run_retention",
+            admission.admission_mode(),
+            deleted,
+            deleted.saturating_mul(128),
+            Duration::ZERO,
+            admission.lock_wait(),
+            execute_started.elapsed(),
+            Duration::ZERO,
+            admission.p1_waiter_count(),
+            usize::from(candidates.len() == SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS),
+        );
+        pruned += deleted;
+        if deleted < candidates.len() {
+            break;
+        }
+    }
+
+    Ok(pruned)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1281,7 +1555,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                 return false;
             }
             let touched_anything = summary.touched_anything();
-            if touched_anything {
+            if touched_anything && !summary.dry_run {
                 let task_run = begin_system_task_run(
                     &state.pool,
                     SystemTaskKind::RetentionArchive,
@@ -1349,23 +1623,25 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             let pressure_error = crate::db_pressure::global_db_pressure_gate()
                 .record_error("data_retention_maintenance", &err);
             retention_record_error("data_retention_maintenance", &err);
-            let task_run = begin_system_task_run(
-                &state.pool,
-                SystemTaskKind::RetentionArchive,
-                trigger,
-                Some("retention maintenance failed".to_string()),
-            )
-            .await
-            .ok();
-            if let Some(handle) = task_run.as_ref() {
-                finish_system_task_run_batched(
-                    state.as_ref(),
-                    handle,
-                    SystemTaskStatus::Failed,
+            if !state.config.retention_dry_run {
+                let task_run = begin_system_task_run(
+                    &state.pool,
+                    SystemTaskKind::RetentionArchive,
+                    trigger,
                     Some("retention maintenance failed".to_string()),
-                    Some(err.to_string()),
                 )
-                .await;
+                .await
+                .ok();
+                if let Some(handle) = task_run.as_ref() {
+                    finish_system_task_run_batched(
+                        state.as_ref(),
+                        handle,
+                        SystemTaskStatus::Failed,
+                        Some("retention maintenance failed".to_string()),
+                        Some(err.to_string()),
+                    )
+                    .await;
+                }
             }
             warn!(trigger, error = %err, retry_soon = pressure_error, "failed to run retention maintenance");
             return !pressure_error;
@@ -1400,7 +1676,7 @@ pub(crate) async fn run_data_retention_maintenance(
         RETENTION_SHUTDOWN
             .scope(
                 shutdown.clone(),
-                run_data_retention_maintenance_inner(
+                run_data_retention_maintenance_with_task_run_prune(
                     pool,
                     config,
                     dry_run_override,
@@ -1409,12 +1685,45 @@ pub(crate) async fn run_data_retention_maintenance(
             )
             .await
     } else {
-        run_data_retention_maintenance_inner(pool, config, dry_run_override, None).await
+        run_data_retention_maintenance_with_task_run_prune(pool, config, dry_run_override, None)
+            .await
     };
     result.map(|mut summary| {
         summary.deferred = retention_defer_generation() != defer_generation;
         summary
     })
+}
+
+async fn run_data_retention_maintenance_with_task_run_prune(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run_override: Option<bool>,
+    shutdown: Option<&CancellationToken>,
+) -> Result<RetentionRunSummary> {
+    let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
+    let result =
+        run_data_retention_maintenance_inner(pool, config, dry_run_override, shutdown).await;
+    // This janitor must run even when an earlier archive stage fails. Otherwise every
+    // failed pass adds a task-run record while the retention policy that bounds those
+    // records is unreachable until the unrelated failure clears.
+    let task_run_prune = if should_stop_data_retention_maintenance(shutdown) {
+        Ok(0)
+    } else {
+        prune_system_task_runs(pool, dry_run).await
+    };
+    match result {
+        Ok(mut summary) => {
+            summary.system_task_run_rows_pruned +=
+                task_run_prune.context("failed to prune expired system task runs")?;
+            Ok(summary)
+        }
+        Err(error) => {
+            if let Err(prune_error) = task_run_prune {
+                warn!(error = %prune_error, "failed to prune system task runs after retention failure");
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn run_data_retention_maintenance_inner(
@@ -3436,6 +3745,21 @@ mod retention_write_budget_tests {
         let selected =
             take_retention_micro_batch(vec![2 * RETENTION_WRITE_MAX_BYTES, 128], |value| *value);
         assert_eq!(selected, vec![2 * RETENTION_WRITE_MAX_BYTES]);
+    }
+
+    #[test]
+    fn system_task_run_retention_only_backs_off_for_pressure_cooldown() {
+        assert!(
+            system_task_run_retention_admission_requires_pressure_backoff(Some(
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 1 }
+            ))
+        );
+        assert!(
+            !system_task_run_retention_admission_requires_pressure_backoff(Some(
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            ))
+        );
+        assert!(!system_task_run_retention_admission_requires_pressure_backoff(None));
     }
 }
 
