@@ -90,8 +90,8 @@ pub(crate) fn compile_model_mappings(mappings: &[ModelMapping]) -> Vec<CompiledM
                 source_model: mapping.source_model.clone(),
                 target_model: mapping.target_model.clone(),
                 literal_len: source_pattern_ascii_lowercase
-                    .bytes()
-                    .filter(|value| *value != b'*')
+                    .chars()
+                    .filter(|value| *value != '*')
                     .count(),
                 exact: !source_pattern_ascii_lowercase.contains('*'),
                 source_pattern_ascii_lowercase,
@@ -246,17 +246,26 @@ pub(crate) async fn build_pool_model_routing_runtime_cache(
 
     let mut warmed_model_account_ids = HashMap::new();
     for model in available_models.iter().take(MAX_WARMED_ROUTING_MODELS) {
-        let account_ids = rows
-            .iter()
-            .filter(|row| is_routing_eligible_account(row))
-            .filter(|row| {
-                effective_rules.get(&row.id).is_some_and(|rule| {
-                    !requested_model_is_system_denied(Some(model), rule)
-                        && account_accepts_requested_model(Some(model), rule)
+        let account_ids =
+            rows.iter()
+                .filter(|row| is_routing_eligible_account(row))
+                .filter(|row| {
+                    effective_rules.get(&row.id).is_some_and(|rule| {
+                        if requested_model_is_system_denied(Some(model), rule) {
+                            return false;
+                        }
+                        match mappings_by_account.get(&row.id).and_then(|mappings| {
+                            resolve_compiled_model_mapping(mappings, Some(model))
+                        }) {
+                            Some(mapping) => {
+                                !requested_model_is_system_denied(Some(&mapping.target_model), rule)
+                            }
+                            None => account_accepts_requested_model(Some(model), rule),
+                        }
+                    })
                 })
-            })
-            .map(|row| row.id)
-            .collect::<Vec<_>>();
+                .map(|row| row.id)
+                .collect::<Vec<_>>();
         warmed_model_account_ids.insert(model.to_ascii_lowercase(), account_ids);
     }
 
@@ -415,6 +424,17 @@ mod tests {
                 .expect("enabled mapping")
                 .target_model,
             "first"
+        );
+
+        let unicode_length = vec![
+            mapping("*é*", "unicode", true),
+            mapping("*aa*", "ascii", true),
+        ];
+        assert_eq!(
+            resolve_model_mapping(&unicode_length, Some("éaa"))
+                .expect("unicode mapping")
+                .target_model,
+            "ascii"
         );
     }
 
