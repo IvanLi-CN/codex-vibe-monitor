@@ -1335,7 +1335,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         route_binding_failure_penalty_for_account(
                                             state,
                                             &account,
-                                            &route_binding_failure_penalties,
+                                            route_binding_failure_penalties,
                                         )
                                         .await;
                                     sticky_fallback_handoff_enabled =
@@ -1869,7 +1869,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         route_binding_failure_penalty_for_account(
                             state,
                             account,
-                            &route_binding_failure_penalties,
+                            route_binding_failure_penalties,
                         )
                         .await;
                 }
