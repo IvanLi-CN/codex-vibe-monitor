@@ -12749,6 +12749,126 @@ async fn usage_breakdown_includes_archived_start_boundary_partial_hour_for_7d_ra
 }
 
 #[tokio::test]
+async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_views() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+    let archived_at = archived_start_partial_hour_at();
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-materialized-boundary-over-48h",
+        &[SeedInvocationArchiveBatchRow {
+            id: 901,
+            invoke_id: "summary-materialized-boundary-over-48h",
+            occurred_at: archived_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20,
+            cost: 0.20,
+            ttfb_ms: Some(150.0),
+            payload: Some(
+                r#"{"responseModel":"gpt-5","reasoningEffort":"high","upstreamAccountId":42}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path LIKE '%summary-materialized-boundary-over-48h%'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark boundary archive materialized");
+    let bucket = invocation_bucket_start_epoch(&archived_at).expect("boundary bucket");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, terminal_count, \
+          terminal_tokens, terminal_cost, terminal_proof_complete, total_tokens, total_cost) \
+         VALUES (?1, ?2, 1, 1, 0, 1, 20, 0.20, 1, 20, 0.20)",
+    )
+    .bind(bucket)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("seed materialized boundary rollup");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    let Json(seven_day) = fetch_summary_from_memory_snapshot(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("hydrate materialized boundary projection");
+    assert_eq!(seven_day.total_count, 1);
+    assert_eq!(seven_day.total_tokens, 20);
+    assert_f64_close(seven_day.total_cost, 0.20);
+    let seven_day_model = seven_day
+        .usage_breakdown
+        .as_ref()
+        .expect("7d usage breakdown")
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("7d boundary model");
+    assert_f64_close(
+        seven_day_model
+            .costs
+            .as_ref()
+            .expect("7d boundary model costs")
+            .unknown,
+        0.20,
+    );
+    state.pool.close().await;
+    for window in ["7d", "previous7d"] {
+        for upstream_account_id in [None, Some(42_i64)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("serve boundary summary without sqlite");
+            assert_eq!(response.total_count, 1, "{window} boundary count");
+            assert_eq!(response.total_tokens, 20, "{window} boundary tokens");
+            assert_f64_close(response.total_cost, 0.20);
+            assert_f64_close(
+                response
+                    .usage_breakdown
+                    .expect("boundary usage breakdown")
+                    .costs
+                    .expect("boundary usage costs")
+                    .unknown,
+                0.20,
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_archive_replay() {
     let mut config = test_config();
     config.openai_upstream_base_url =

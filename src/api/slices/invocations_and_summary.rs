@@ -6992,11 +6992,58 @@ pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
 pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
 const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
+const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // Reconcile before the 15-second serving budget expires; a timed-out build is discarded
 // atomically and cannot expose a partial projection to the request path.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
-const SUMMARY_PROJECTION_EXACT_HORIZON: ChronoDuration = ChronoDuration::hours(48);
+const SUMMARY_PROJECTION_MIN_EXACT_HORIZON: ChronoDuration = ChronoDuration::hours(48);
+// Summary duration/calendar ranges are backed by the configured live retention plus the
+// archive grace used by the existing range readers.  Deriving this once from configuration
+// keeps boundary hydration finite while covering every legal rolling window that can outlive
+// the 48-hour exact tail; HTTP still reads only the resulting in-memory projection.
+const SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS: u64 = 30;
+
+fn summary_projection_exact_horizon(invocation_max_days: u64) -> ChronoDuration {
+    let supported_days = invocation_max_days.saturating_add(SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS);
+    ChronoDuration::days(supported_days.max(2) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
+}
+
+fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
+    let mut buckets = HashSet::new();
+    let mut add_bucket = |timestamp: DateTime<Utc>| {
+        buckets.insert(align_bucket_epoch(timestamp.timestamp(), 3_600, 0));
+    };
+    // These are the finite rolling windows exposed by the stats UI and the dashboard
+    // bootstrap snapshots.  Keep their start/end partial hours exact even when the enclosing
+    // projection range is much wider and the middle is served from hourly rollups.
+    for duration in [
+        ChronoDuration::minutes(30),
+        ChronoDuration::hours(1),
+        ChronoDuration::hours(6),
+        ChronoDuration::hours(12),
+        ChronoDuration::days(1),
+        ChronoDuration::days(7),
+        ChronoDuration::days(30),
+    ] {
+        add_bucket(end - duration);
+    }
+    add_bucket(end);
+
+    // Calendar boundaries depend on the request timezone.  A local midnight can be at most
+    // fifteen hours from UTC (including half-hour/quarter-hour zones), so offset variants around
+    // the UTC boundary cover every valid IANA timezone without retaining every archive bucket.
+    for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
+        if let Ok(range) = resolve_range_window(spec, chrono_tz::UTC) {
+            for boundary in [range.start, range.end] {
+                for offset_minutes in (-15 * 60..=15 * 60).step_by(30) {
+                    add_bucket(boundary + ChronoDuration::minutes(offset_minutes));
+                }
+            }
+        }
+    }
+    buckets
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct SummarySnapshotKey {
@@ -7064,6 +7111,8 @@ pub(crate) struct SummaryProjectionRecord {
     // suppresses an account-only fallback record.
     global_rollup_covered: bool,
     account_rollup_covered: bool,
+    usage_global_rollup_covered: bool,
+    usage_account_rollup_covered: bool,
     is_persisted_live_record: bool,
 }
 
@@ -7177,7 +7226,8 @@ impl SummaryProjection {
             })
         };
         let mut selected = candidate_indexes
-            .into_iter()
+            .iter()
+            .copied()
             .map(|index| &self.records[index])
             .filter(|record| {
                 upstream_account_id
@@ -7201,9 +7251,41 @@ impl SummaryProjection {
                 }
             })
             .collect::<Vec<_>>();
+        let mut usage_selected = candidate_indexes
+            .iter()
+            .copied()
+            .map(|index| &self.records[index])
+            .filter(|record| {
+                upstream_account_id
+                    .is_none_or(|account_id| record.row.upstream_account_id == Some(account_id))
+            })
+            .filter(|record| {
+                range.is_none_or(|(start, end)| {
+                    record.occurred_at >= start && record.occurred_at < end
+                })
+            })
+            .filter(|record| {
+                if !is_full_rollup_bucket(record) {
+                    return true;
+                }
+                if record.is_persisted_live_record && record.row.id > self.rollup_live_cursor {
+                    return true;
+                }
+                let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+                let usage_rollup_covered = match upstream_account_id {
+                    None => record.usage_global_rollup_covered,
+                    Some(_) => record.usage_account_rollup_covered,
+                } && self
+                    .hourly_rollup_usage
+                    .contains_key(&(bucket, upstream_account_id));
+                !usage_rollup_covered
+            })
+            .collect::<Vec<_>>();
 
         if let SummaryWindow::Current(limit) = window {
-            selected.truncate(limit.max(0) as usize);
+            let limit = limit.max(0) as usize;
+            selected.truncate(limit);
+            usage_selected.truncate(limit);
         }
 
         let mut totals = StatsTotals::default();
@@ -7236,7 +7318,9 @@ impl SummaryProjection {
                 totals.non_success_cost += row.cost.unwrap_or_default();
                 non_success_tokens += row.total_tokens.max(0);
             }
-            usage_breakdown.add_row(row);
+        }
+        for record in &usage_selected {
+            usage_breakdown.add_row(&record.row);
         }
 
         if let Some((start, end)) = full_rollup_range {
@@ -7253,7 +7337,9 @@ impl SummaryProjection {
                     .get(&(*bucket, *account))
                     .copied()
                     .unwrap_or_default();
-                if let Some(usage) = self.hourly_rollup_usage.get(&(*bucket, *account)) {
+            }
+            for ((bucket, account), usage) in &self.hourly_rollup_usage {
+                if *bucket >= start && *bucket < end && *account == upstream_account_id {
                     usage_breakdown.merge_response(usage);
                 }
             }
@@ -7338,16 +7424,35 @@ async fn load_summary_projection_rollup_totals(
     HashMap<(i64, Option<i64>), StatsTotals>,
     HashMap<(i64, Option<i64>), i64>,
 )> {
+    load_summary_projection_rollup_totals_in_range(pool, None).await
+}
+
+async fn load_summary_projection_rollup_totals_in_range(
+    pool: &Pool<Sqlite>,
+    range: Option<(i64, i64)>,
+) -> Result<(
+    HashMap<(i64, Option<i64>), StatsTotals>,
+    HashMap<(i64, Option<i64>), i64>,
+)> {
     let mut totals = HashMap::<(i64, Option<i64>), StatsTotals>::new();
     let mut non_success_tokens = HashMap::<(i64, Option<i64>), i64>::new();
-    let overall_rows = sqlx::query_as::<_, SummaryProjectionRollupRow>(
+    let mut overall_query = QueryBuilder::<Sqlite>::new(
         "SELECT bucket_start_epoch, total_count, success_count, failure_count, total_tokens, \
          total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost, 0 AS non_success_tokens \
          FROM invocation_rollup_hourly",
-    )
-    .fetch_all(pool)
-    .await
-    .context("summary projection overall rollup hydration failed")?;
+    );
+    if let Some((start, end)) = range {
+        overall_query
+            .push(" WHERE bucket_start_epoch >= ")
+            .push_bind(start)
+            .push(" AND bucket_start_epoch < ")
+            .push_bind(end);
+    }
+    let overall_rows = overall_query
+        .build_query_as::<SummaryProjectionRollupRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection overall rollup hydration failed")?;
     for row in overall_rows {
         let bucket_totals = StatsTotals {
             total_count: row.total_count,
@@ -7373,15 +7478,24 @@ async fn load_summary_projection_rollup_totals(
         non_success_cost: f64,
         non_success_tokens: i64,
     }
-    let account_rows = sqlx::query_as::<_, AccountRollupRow>(
+    let mut account_query = QueryBuilder::<Sqlite>::new(
         "SELECT upstream_account_id, bucket_start_epoch, total_count, success_count, \
          failure_count, total_tokens, total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost, \
          COALESCE(activity_v2_non_success_tokens, 0) AS non_success_tokens \
          FROM upstream_account_stats_hourly WHERE upstream_account_id <> 0",
-    )
-    .fetch_all(pool)
-    .await
-    .context("summary projection account rollup hydration failed")?;
+    );
+    if let Some((start, end)) = range {
+        account_query
+            .push(" AND bucket_start_epoch >= ")
+            .push_bind(start)
+            .push(" AND bucket_start_epoch < ")
+            .push_bind(end);
+    }
+    let account_rows = account_query
+        .build_query_as::<AccountRollupRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection account rollup hydration failed")?;
     for row in account_rows {
         if row.upstream_account_id > 0 {
             let bucket_totals = StatsTotals {
@@ -7414,11 +7528,19 @@ async fn load_summary_projection_rollup_totals(
 async fn load_summary_projection_rollup_usage(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<(i64, Option<i64>), UsageBreakdownResponse>> {
+    load_summary_projection_rollup_usage_in_range(pool, None).await
+}
+
+async fn load_summary_projection_rollup_usage_in_range(
+    pool: &Pool<Sqlite>,
+    range: Option<(i64, i64)>,
+) -> Result<HashMap<(i64, Option<i64>), UsageBreakdownResponse>> {
     let mut tx = pool.begin().await?;
+    let (start_epoch, end_epoch) = range.unwrap_or((i64::MIN, i64::MAX));
     let rows = query_upstream_account_usage_breakdown_hourly_rollup_range_tx(
         tx.as_mut(),
-        i64::MIN,
-        i64::MAX,
+        start_epoch,
+        end_epoch,
         InvocationSourceScope::All,
         None,
     )
@@ -7493,6 +7615,8 @@ async fn merge_summary_projection_archive_records(
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
     archive_has_materialized_rollups: bool,
     exact_range: ExactUtcRange,
+    protected_boundary_buckets: &HashSet<i64>,
+    usage_rollup_cursor: Option<i64>,
     records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
     exact_record_budget: &mut usize,
 ) -> Result<()> {
@@ -7612,12 +7736,17 @@ async fn merge_summary_projection_archive_records(
         {
             continue;
         }
-        let global_rollup_covered = archive_has_materialized_rollups;
+        let global_rollup_covered =
+            archive_has_materialized_rollups && hourly_rollup_totals.contains_key(&(bucket, None));
         let account_rollup_covered = archive_has_materialized_rollups
             && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
         let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
         let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
-        let bucket_is_full_rollup = bucket >= full_rollup_start && bucket < full_rollup_end;
+        let bucket_is_full_rollup = bucket >= full_rollup_start
+            && bucket < full_rollup_end
+            && !protected_boundary_buckets.contains(&bucket);
+        let usage_rollup_covered = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor)
+            || (archive_has_materialized_rollups && bucket_is_full_rollup);
         if bucket_is_full_rollup && global_rollup_covered && account_rollup_covered {
             continue;
         }
@@ -7631,6 +7760,8 @@ async fn merge_summary_projection_archive_records(
             occurred_at,
             global_rollup_covered,
             account_rollup_covered,
+            usage_global_rollup_covered: usage_rollup_covered,
+            usage_account_rollup_covered: usage_rollup_covered,
             is_persisted_live_record: false,
             row: UpstreamAccountInvocationPreviewRow {
                 upstream_account_id: row.upstream_account_id,
@@ -7841,18 +7972,30 @@ async fn load_summary_projection_rollup_live_cursor(pool: &Pool<Sqlite>) -> Resu
 /// is swapped atomically in the subscription hub only after the complete baseline is available.
 async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection> {
     let end = Utc::now() + ChronoDuration::seconds(1);
-    // Materialized hourly rollups are the canonical historical baseline. Raw preview records are
-    // only retained for the moving exact horizon and the unrolled persistence tail, which keeps
-    // a large retention database from turning startup into an epoch-zero allocation.
-    let start = end - SUMMARY_PROJECTION_EXACT_HORIZON;
+    // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
+    // are limited to the moving exact tail; older live rows are represented by their durable
+    // hourly rollups. Archive boundary rows use the wider finite range below so supported 7d/
+    // calendar views retain exact partial-hour detail without turning a high-retention database
+    // into an epoch-zero allocation.
+    let archive_start = end - summary_projection_exact_horizon(state.config.invocation_max_days);
+    let live_start = end - SUMMARY_PROJECTION_MIN_EXACT_HORIZON;
+    let protected_boundary_buckets = summary_projection_boundary_buckets(end);
+    let rollup_range = (
+        align_bucket_epoch(archive_start.timestamp(), 3_600, 0),
+        align_bucket_epoch(end.timestamp(), 3_600, 0) + 3_600,
+    );
     let (hourly_rollup_totals, hourly_rollup_non_success_tokens) =
-        load_summary_projection_rollup_totals(&state.pool).await?;
-    let hourly_rollup_usage = load_summary_projection_rollup_usage(&state.pool).await?;
+        load_summary_projection_rollup_totals_in_range(&state.pool, Some(rollup_range)).await?;
+    let hourly_rollup_usage =
+        load_summary_projection_rollup_usage_in_range(&state.pool, Some(rollup_range)).await?;
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
         &state.pool,
         InvocationSourceScope::All,
-        ExactUtcRange { start, end },
+        ExactUtcRange {
+            start: live_start,
+            end,
+        },
         None,
         Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
         false,
@@ -7874,9 +8017,10 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     // that row remains in-flight until its persisted terminal status changes. Restore the durable
     // source status before this becomes canonical projection input.
     let persisted_statuses = sqlx::query_as::<_, (i64, Option<String>)>(
-        "SELECT id, status FROM codex_invocations WHERE occurred_at >= ?1",
+        "SELECT id, status FROM codex_invocations WHERE occurred_at >= ?1 AND occurred_at < ?2",
     )
-    .bind(db_occurred_at_lower_bound(start))
+    .bind(db_occurred_at_lower_bound(live_start))
+    .bind(db_occurred_at_upper_bound(end))
     .fetch_all(&state.pool)
     .await
     .context("summary projection status hydration failed")?
@@ -7902,6 +8046,8 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
                 SummaryProjectionRecord {
                     global_rollup_covered: row.id <= rollup_live_cursor,
                     account_rollup_covered: row.id <= rollup_live_cursor,
+                    usage_global_rollup_covered: row.id <= rollup_live_cursor,
+                    usage_account_rollup_covered: row.id <= rollup_live_cursor,
                     is_persisted_live_record: true,
                     row,
                     occurred_at,
@@ -7914,12 +8060,22 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
     let mut exact_record_budget = records_by_invoke_id.len();
-    for archive in crate::stats::load_completed_invocation_archive_paths_in_range(
+    let archives = crate::stats::load_completed_invocation_archive_paths_in_range(
         &state.pool,
-        Some((start, end)),
+        Some((archive_start, end)),
     )
-    .await?
-    {
+    .await?;
+    let archive_paths = archives
+        .iter()
+        .map(|archive| archive.file_path().to_string())
+        .collect::<Vec<_>>();
+    let usage_rollup_progress =
+        load_usage_breakdown_archive_progress_by_file_path(&state.pool, &archive_paths)
+            .await
+            .map_err(|error| {
+                anyhow!("summary projection usage progress hydration failed: {error:?}")
+            })?;
+    for archive in archives {
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
@@ -7931,7 +8087,12 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
             &persisted_live_ids,
             &hourly_rollup_totals,
             archive.has_materialized_historical_rollups(),
-            ExactUtcRange { start, end },
+            ExactUtcRange {
+                start: archive_start,
+                end,
+            },
+            &protected_boundary_buckets,
+            usage_rollup_progress.get(archive.file_path()).copied(),
             &mut records_by_invoke_id,
             &mut exact_record_budget,
         )
@@ -7958,6 +8119,13 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
+        if !records_by_invoke_id.contains_key(&row.invoke_id)
+            && records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+        {
+            return Err(anyhow!(
+                "summary projection runtime overlay exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+            ));
+        }
         records_by_invoke_id.insert(
             row.invoke_id.clone(),
             SummaryProjectionRecord {
@@ -7965,6 +8133,8 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
                 occurred_at,
                 global_rollup_covered: false,
                 account_rollup_covered: false,
+                usage_global_rollup_covered: false,
+                usage_account_rollup_covered: false,
                 is_persisted_live_record: false,
             },
         );
@@ -8023,7 +8193,7 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         .context("summary projection historical account hydration failed")?,
     );
     let mut all_time_by_account = HashMap::new();
-    let mut closed_window_by_key = HashMap::new();
+    let mut closed_window_requests = Vec::new();
     let mut in_progress_by_account = HashMap::new();
     for upstream_account_id in std::iter::once(None).chain(account_ids.into_iter().map(Some)) {
         let params = SummaryQuery {
@@ -8039,22 +8209,20 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
                     anyhow!("summary projection all-time hydration failed: {error:?}")
                 })?;
         all_time_by_account.insert(upstream_account_id, response);
-        let closed_params = SummaryQuery {
-            window: Some("yesterday".to_string()),
-            limit: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id,
-        };
-        let closed_key =
-            SummarySnapshotKey::try_from_query(&closed_params, state.config.list_limit_max as i64)
-                .expect("summary projection closed-window key must be valid");
-        let closed_response =
-            load_summary_response_from_query(state, &closed_params, SummaryBuildRoute::Background)
-                .await
-                .map_err(|error| {
-                    anyhow!("summary projection closed-window hydration failed: {error:?}")
-                })?;
-        closed_window_by_key.insert(closed_key, closed_response);
+        for closed_window in ["yesterday", "previous7d"] {
+            let closed_params = SummaryQuery {
+                window: Some(closed_window.to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id,
+            };
+            let closed_key = SummarySnapshotKey::try_from_query(
+                &closed_params,
+                state.config.list_limit_max as i64,
+            )
+            .expect("summary projection closed-window key must be valid");
+            closed_window_requests.push((closed_key, closed_params));
+        }
         let in_progress = load_in_progress_summary_snapshot(
             state,
             InvocationSourceScope::All,
@@ -8068,7 +8236,8 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         .subscription_hub
         .next_summary_projection_revision()
         .await;
-    Ok(SummaryProjection {
+    let refreshed_at = Some(Instant::now());
+    let mut projection = SummaryProjection {
         records,
         hourly_buckets,
         recent_indexes,
@@ -8077,12 +8246,24 @@ async fn build_summary_projection(state: &AppState) -> Result<SummaryProjection>
         hourly_rollup_usage,
         rollup_live_cursor,
         all_time_by_account,
-        closed_window_by_key,
+        closed_window_by_key: HashMap::new(),
         in_progress_by_account,
         maintenance: Some(maintenance),
-        refreshed_at: Some(Instant::now()),
+        refreshed_at,
         revision,
-    })
+    };
+    // Closed windows use the same canonical records and coverage model as rolling windows. This
+    // keeps account-lag boundary rows visible even when the archive's global materialization
+    // marker is ahead of its account rollup, and lets the HTTP path stay memory-only.
+    for (key, params) in closed_window_requests {
+        let response = projection
+            .response_for_query(&params, state.config.list_limit_max as i64)
+            .map_err(|error| {
+                anyhow!("summary projection closed-window hydration failed: {error:?}")
+            })?;
+        projection.closed_window_by_key.insert(key, response);
+    }
+    Ok(projection)
 }
 
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
@@ -8091,8 +8272,9 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
         let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_refresh_attempt = None;
         loop {
-            let should_refresh = tokio::select! {
+            let trigger_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {
                     state
@@ -8123,7 +8305,13 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                     )
                 ),
             };
-            if !should_refresh {
+            if !trigger_refresh {
+                continue;
+            }
+            let now = Instant::now();
+            if last_refresh_attempt.is_some_and(|attempt| {
+                now.duration_since(attempt) < SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
+            }) {
                 continue;
             }
             // Merge a burst before starting the expensive off-request baseline. The hub lock
@@ -8131,6 +8319,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             tokio::time::sleep(SUMMARY_SNAPSHOT_EVENT_DEBOUNCE).await;
             while receiver.try_recv().is_ok() {}
             while mutation_receiver.try_recv().is_ok() {}
+            last_refresh_attempt = Some(Instant::now());
             if let Err(error) = refresh_summary_snapshots(state.as_ref()).await {
                 warn!(
                     ?error,
@@ -23431,6 +23620,9 @@ mod request_compression_query_tests {
         .await
         .expect("insert unmaterialized archive fixture");
 
+        // Archive timestamps use the persisted naive Asia/Shanghai representation.  Match the
+        // production bound conversion explicitly so this fixture proves the LIMIT/overflow path
+        // instead of silently selecting an empty range.
         let now = Utc::now();
         let mut records = HashMap::new();
         let mut budget = 0;
@@ -23443,6 +23635,8 @@ mod request_compression_query_tests {
                 start: now - ChronoDuration::hours(2),
                 end: now + ChronoDuration::minutes(1),
             },
+            &HashSet::new(),
+            None,
             &mut records,
             &mut budget,
         )
