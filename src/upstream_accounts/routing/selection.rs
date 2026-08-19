@@ -617,10 +617,6 @@ pub(crate) async fn evaluate_live_pool_candidate(
                 routing_source,
             )
             .await?;
-            if resolved_account.is_none() {
-                *node_shunt_assignments =
-                    build_upstream_account_node_shunt_assignments(state).await?;
-            }
             return Ok(build_evaluation(
                 if resolved_account.is_some() {
                     eligibility
@@ -662,10 +658,6 @@ pub(crate) async fn evaluate_live_pool_candidate(
                 routing_source,
             )
             .await?;
-            if resolved_account.is_none() {
-                *node_shunt_assignments =
-                    build_upstream_account_node_shunt_assignments(state).await?;
-            }
             return Ok(build_evaluation(
                 if resolved_account.is_some() {
                     PoolRoutingCandidateEligibility::SoftDegraded

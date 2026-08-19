@@ -3697,6 +3697,7 @@ describe("PromptCacheConversationTable", () => {
       document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
     );
     await user.click(findSelectOption("强制添加")!);
+    await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
     );

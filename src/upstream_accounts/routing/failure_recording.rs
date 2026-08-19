@@ -1390,6 +1390,58 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
     .await
 }
 
+pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_transport_failure_for_attempt_with_kind(
+        &state.pool,
+        account_id,
+        sticky_key,
+        error_message,
+        failure_kind,
+        invoke_id,
+        attempt_id,
+    )
+    .await?;
+    state.pool_routing_snapshot.request_refresh();
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_availability.publish();
+    Ok(())
+}
+
+pub(crate) async fn record_pool_route_transport_failure_for_attempt_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_transport_failure_for_attempt(
+        &state.pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+    )
+    .await?;
+    state.pool_routing_snapshot.request_refresh();
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_availability.publish();
+    Ok(())
+}
+
 pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1407,6 +1459,31 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt(
         attempt_id,
     )
     .await
+}
+
+pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_and_broadcast(
+    state: &AppState,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
+    record_pool_route_retryable_overload_failure_for_attempt(
+        &state.pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+    )
+    .await?;
+    state.pool_routing_snapshot.request_refresh();
+    state
+        .subscription_hub
+        .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+    state.pool_routing_availability.publish();
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_http_failure_with_image_intent_for_attempt(

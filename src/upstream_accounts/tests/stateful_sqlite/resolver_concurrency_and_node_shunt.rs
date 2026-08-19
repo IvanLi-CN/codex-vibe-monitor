@@ -1410,7 +1410,7 @@ async fn provisioning_scope_rejects_existing_account_without_node_shunt_slot_whe
 }
 
 #[tokio::test]
-async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
+async fn node_shunt_refresh_failure_uses_snapshot_fallback_until_reconcile() {
     let (usage_base_url, oauth_issuer, token_requests, server) = spawn_token_failure_oauth_server(
         StatusCode::BAD_REQUEST,
         json!({
@@ -1497,10 +1497,15 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
         account.routing_source,
         PoolRoutingSelectionSource::FreshAssignment
     );
-    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &account.forward_proxy_scope else {
-        panic!("expected fallback account to receive a pinned node shunt proxy key");
-    };
-    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    assert!(
+        matches!(
+            account.forward_proxy_scope,
+            ForwardProxyRouteScope::BoundGroup { ref group_name, ref bound_proxy_keys }
+                if group_name == "node-shunt-refresh-failover"
+                    && bound_proxy_keys == &test_required_group_bound_proxy_keys()
+        ),
+        "the request must use the published binding rather than rebuild node-shunt assignments from SQLite"
+    );
 
     let failing_after = load_upstream_account_row(&state.pool, failing_account_id)
         .await
@@ -1508,9 +1513,14 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
         .expect("failing account exists after routing");
     assert_eq!(failing_after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
 
-    let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+    refresh_pool_routing_snapshot(&state)
         .await
-        .expect("build refreshed node shunt assignments");
+        .expect("reconcile routing snapshot after the routing mutation");
+    let assignments = state
+        .pool_routing_snapshot
+        .current()
+        .expect("routing snapshot after reconcile")
+        .node_shunt_assignments();
     assert!(
         !assignments
             .account_proxy_keys

@@ -6076,6 +6076,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     .expect("wait hook worker should join");
     set_test_account_status(&state.pool, delayed_id, "active").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
+    state.pool_routing_snapshot.request_refresh();
     state.pool_routing_availability.publish();
 
     let response = request_task
@@ -9554,6 +9555,109 @@ async fn pool_no_candidate_bulkhead_does_not_limit_healthy_parallel_resolutions(
         POOL_NO_CANDIDATE_WAITER_LIMIT,
         "healthy resolutions must not acquire NoCandidate waiter capacity"
     );
+}
+
+#[tokio::test]
+async fn header_sticky_capacity_saturation_returns_before_the_body_finishes() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let proxy_request_id = 7855;
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        proxy_request_id,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("bulkhead-header-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let err = response.expect_err("capacity saturation should fail immediately");
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        err.retry_after_secs,
+        Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+    );
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "the saturated request must not wait for the trailing body chunk, elapsed={elapsed:?}"
+    );
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}"))
+            .fetch_one(&state.pool)
+            .await
+            .expect("load capacity-saturated invocation payload");
+    let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
+    assert_eq!(
+        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+        "capacitySaturated"
+    );
+
+    for waiter in waiters {
+        waiter.abort();
+    }
 }
 
 #[test]

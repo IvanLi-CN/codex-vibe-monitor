@@ -1826,7 +1826,6 @@ pub(crate) async fn persist_pool_route_success_then_release<E>(
 }
 
 pub(crate) fn publish_pool_routing_availability(state: &AppState) {
-    state.pool_routing_snapshot.request_refresh();
     state.pool_routing_availability.publish();
 }
 

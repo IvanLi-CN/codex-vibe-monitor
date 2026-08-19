@@ -39,21 +39,13 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 #[cfg(not(test))]
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
-pub(crate) fn no_candidate_next_eligible_delay(
-    audit: &PoolRoutingNoCandidateAudit,
-) -> Option<Duration> {
-    const MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY: Duration = Duration::from_millis(25);
-
+fn no_candidate_next_eligible_delay(audit: &PoolRoutingNoCandidateAudit) -> Option<Duration> {
     audit
         .next_eligible_at
         .as_deref()
         .and_then(parse_to_utc_datetime)
-        .map(|eligible_at| {
-            (eligible_at - Utc::now())
-                .to_std()
-                .unwrap_or(Duration::ZERO)
-                .max(MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY)
-        })
+        .and_then(|eligible_at| (eligible_at - Utc::now()).to_std().ok())
+        .filter(|delay| !delay.is_zero())
 }
 
 pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
@@ -651,96 +643,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
             }
             _ => return Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
-    state: Arc<AppState>,
-    sticky_key: Option<String>,
-    requested_model: Option<String>,
-    excluded_ids: Vec<i64>,
-    excluded_upstream_route_keys: HashSet<String>,
-    required_upstream_route_key: Option<String>,
-    binding_constraint: Option<PromptCacheConversationBindingConstraint>,
-    conversation_override: Option<ConversationRoutingOverride>,
-    wait_for_no_available: bool,
-    wait_deadline: Option<Instant>,
-    total_timeout_deadline: Option<Instant>,
-    endpoint: String,
-    image_intent: crate::ImageIntent,
-    codex_imagegen_request: bool,
-    reservation_key: String,
-) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
-    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut wait_deadline = wait_deadline;
-        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-            state.as_ref(),
-            sticky_key.as_deref(),
-            requested_model.as_deref(),
-            &excluded_ids,
-            &excluded_upstream_route_keys,
-            required_upstream_route_key.as_deref(),
-            binding_constraint.as_ref(),
-            conversation_override.as_ref(),
-            wait_for_no_available,
-            &mut wait_deadline,
-            total_timeout_deadline,
-            endpoint.as_str(),
-            image_intent,
-            codex_imagegen_request,
-            Some(reservation_key.as_str()),
-        )
-        .await;
-        (resolution, wait_deadline)
-    }));
-
-    await_pool_route_selection_task(task, wait_deadline).await
-}
-
-pub(crate) async fn await_pool_route_selection_task(
-    task: tokio_util::task::AbortOnDropHandle<(
-        Result<PoolAccountResolutionWithWait>,
-        Option<Instant>,
-    )>,
-    fallback_wait_deadline: Option<Instant>,
-) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
-    match task.await {
-        Ok(result) => result,
-        Err(err) => (
-            Err(anyhow!("pool route selection task failed: {err}")),
-            fallback_wait_deadline,
-        ),
-    }
-}
-
-pub(crate) fn build_pool_route_selection_failure_error(
-    err: &anyhow::Error,
-    attempt_count: usize,
-    distinct_account_count: usize,
-) -> PoolUpstreamError {
-    PoolUpstreamError {
-        codex_imagegen_rewrite: None,
-        account: None,
-        status: StatusCode::BAD_GATEWAY,
-        message: format!("failed to resolve pool account: {err}"),
-        canonical_error_message: None,
-        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
-        blocked_binding: None,
-        connect_latency_ms: 0.0,
-        upstream_error_code: None,
-        upstream_error_message: None,
-        downstream_error_message: None,
-        upstream_request_id: None,
-        proxy_binding_key_snapshot: None,
-        oauth_responses_debug: None,
-        attempt_summary: pool_attempt_summary(
-            attempt_count,
-            distinct_account_count,
-            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
-        ),
-        requested_service_tier: None,
-        request_body_for_capture: None,
     }
 }
 
@@ -1408,27 +1310,25 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                 });
             let route_scoped_overload_selection = overload_required_upstream_route_key.clone();
-            let (resolution, updated_wait_deadline) =
-                resolve_pool_account_for_failover_on_fresh_task(
-                    state.clone(),
-                    sticky_key.map(str::to_owned),
-                    requested_model.clone(),
-                    excluded_ids.clone(),
-                    excluded_upstream_route_keys.clone(),
-                    route_scoped_overload_selection.clone(),
-                    binding_constraint.clone(),
-                    conversation_override.clone(),
-                    wait_for_no_available,
-                    no_available_wait_deadline,
-                    total_timeout_deadline,
-                    capability_endpoint.to_string(),
-                    image_intent,
-                    codex_imagegen_request,
-                    reservation_key.clone(),
-                )
-                .await;
-            no_available_wait_deadline = updated_wait_deadline;
-            match resolution {
+            match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+                state.as_ref(),
+                sticky_key,
+                requested_model.as_deref(),
+                &excluded_ids,
+                &excluded_upstream_route_keys,
+                route_scoped_overload_selection.as_deref(),
+                binding_constraint.as_ref(),
+                conversation_override.as_ref(),
+                wait_for_no_available,
+                &mut no_available_wait_deadline,
+                total_timeout_deadline,
+                capability_endpoint,
+                image_intent,
+                codex_imagegen_request,
+                Some(&reservation_key),
+            )
+            .await
+            {
                 Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
                     account,
                 ))) => account,
@@ -1579,7 +1479,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                     {
                         last_error.unwrap_or(PoolUpstreamError {
-                            codex_imagegen_rewrite: None,
+        codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -1664,7 +1564,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                     if uses_timeout_route_failover && timeout_route_failover_pending {
                         let mut err = last_error.unwrap_or(PoolUpstreamError {
-                            codex_imagegen_rewrite: None,
+        codex_imagegen_rewrite: None,
                             account: None,
                             status: StatusCode::BAD_GATEWAY,
                             message: "no alternate upstream route is available after timeout"
@@ -1750,11 +1650,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             err.attempt_summary = PoolAttemptSummary {
                                 pool_routing_no_candidate_audit: Some(no_candidate_audit.clone()),
                                 ..pool_attempt_summary(
-                                    attempt_count,
-                                    distinct_account_count,
-                                    Some(err.failure_kind.to_string()),
-                                )
-                            };
+                                attempt_count,
+                                distinct_account_count,
+                                Some(err.failure_kind.to_string()),
+                            )};
                             err
                         },
                     );
@@ -1849,7 +1748,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                     let terminal_failure_kind = PROXY_FAILURE_POOL_ROUTING_BLOCKED;
                     let mut err = PoolUpstreamError {
-                        codex_imagegen_rewrite: None,
+        codex_imagegen_rewrite: None,
                         account: None,
                         status: StatusCode::SERVICE_UNAVAILABLE,
                         message,
@@ -1893,11 +1792,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     return Err(err);
                 }
                 Err(err) => {
-                    return Err(build_pool_route_selection_failure_error(
-                        &err,
-                        attempt_count,
-                        distinct_account_count,
-                    ));
+                    return Err(PoolUpstreamError {
+        codex_imagegen_rewrite: None,
+                        account: None,
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!("failed to resolve pool account: {err}"),
+                        canonical_error_message: None,
+                        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+                        blocked_binding: None,
+                        connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        downstream_error_message: None,
+                        upstream_request_id: None,
+                        proxy_binding_key_snapshot: None,
+                        oauth_responses_debug: None,
+                        attempt_summary: pool_attempt_summary(
+                            attempt_count,
+                            distinct_account_count,
+                            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+                        ),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
+                    });
                 }
             }
         };
@@ -2216,18 +2133,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
-                        // The drop guard releases silently if cancellation interrupts this fence.
-                        let failure_recorded = reservation_guard
-                            .fence_failure(record_pool_route_transport_failure_for_model(
-                                &state.pool,
+                        if let Err(route_err) =
+                            record_pool_route_transport_failure_for_model_and_broadcast(
+                                state.as_ref(),
                                 account.account_id,
                                 sticky_key,
                                 &message,
                                 trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                                 requested_model.as_deref(),
-                            ))
-                            .await;
-                        if let Err(ref route_err) = failure_recorded {
+                            )
+                            .await
+                        {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
                         }
                         store_pool_failover_error(
@@ -2255,14 +2171,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
-                        if failure_recorded.is_ok() {
-                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                        } else {
-                            release_pool_routing_reservation_without_availability(
-                                state.as_ref(),
-                                &reservation_key,
-                            );
-                        }
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }
@@ -2725,21 +2634,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) = reservation_guard
-                                .fence_failure(
-                                    record_pool_route_transport_failure_for_attempt_with_kind(
-                                        &state.pool,
-                                        account.account_id,
-                                        sticky_key,
-                                        &message,
-                                        failure_kind,
-                                        trace_context
-                                            .as_ref()
-                                            .map(|trace| trace.invoke_id.as_str()),
-                                        pending_attempt_record
-                                            .as_ref()
-                                            .and_then(|pending| pending.attempt_id),
-                                    ),
+                            if let Err(route_err) =
+                                record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                                    state.as_ref(),
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    failure_kind,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
                                 )
                                 .await
                             {
@@ -2978,21 +2883,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) = reservation_guard
-                                .fence_failure(
-                                    record_pool_route_transport_failure_for_attempt_with_kind(
-                                        &state.pool,
-                                        account.account_id,
-                                        sticky_key,
-                                        &message,
-                                        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                        trace_context
-                                            .as_ref()
-                                            .map(|trace| trace.invoke_id.as_str()),
-                                        pending_attempt_record
-                                            .as_ref()
-                                            .and_then(|pending| pending.attempt_id),
-                                    ),
+                            if let Err(route_err) =
+                                record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                                    state.as_ref(),
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
                                 )
                                 .await
                             {
@@ -3739,6 +3640,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
+                    reservation_guard.disarm();
                     return Ok(PoolUpstreamResponse {
                         account: account.clone(),
                         response: ProxyUpstreamResponseBody::Axum(response),
@@ -3773,7 +3675,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         requested_service_tier: attempted_requested_service_tier,
                         request_body_for_capture: attempted_request_body_for_capture,
                         codex_imagegen_rewrite: attempted_codex_imagegen_rewrite.clone(),
-                        reservation_guard: Some(reservation_guard),
                     });
                 }
                 let http_failure_classification =
@@ -3959,20 +3860,19 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 let route_failure_result = if codex_imagegen_upstream_incompatible {
                     Ok(())
                 } else if oauth_transport_failure_kind.is_some() {
-                    reservation_guard
-                        .fence_failure(record_pool_route_transport_failure_for_attempt(
-                            &state.pool,
-                            account.account_id,
-                            sticky_key,
-                            normalized_failure.canonical_error_message.as_str(),
-                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                            pending_attempt_record
-                                .as_ref()
-                                .and_then(|pending| pending.attempt_id),
-                        ))
-                        .await
+                    record_pool_route_transport_failure_for_attempt_and_broadcast(
+                        state.as_ref(),
+                        account.account_id,
+                        sticky_key,
+                        normalized_failure.canonical_error_message.as_str(),
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id),
+                    )
+                    .await
                 } else {
-                    reservation_guard.fence_failure(record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
                         state.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -3988,7 +3888,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.or(sticky_event_prompt_cache_key),
-                    ))
+                    )
                     .await
                 };
                 if let Err(route_err) = route_failure_result {
@@ -4248,19 +4148,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             sleep(retry_delay).await;
                             continue;
                         }
-                        if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                ),
+                        if let Err(route_err) =
+                            record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
                             )
                             .await
                         {
@@ -4452,18 +4350,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             continue;
                         }
 
-                        if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_retryable_overload_failure_for_attempt(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                ),
+                        if let Err(route_err) =
+                            record_pool_route_retryable_overload_failure_for_attempt_and_broadcast(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
                             )
                             .await
                         {
@@ -4551,19 +4447,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to broadcast first-event gate failure snapshot"
                             );
                         }
-                        if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                ),
+                        if let Err(route_err) =
+                            record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
                             )
                             .await
                         {
@@ -4674,6 +4568,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 )
                 .await;
             }
+            reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
@@ -4704,7 +4599,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 requested_service_tier: attempted_requested_service_tier,
                 request_body_for_capture: attempted_request_body_for_capture,
                 codex_imagegen_rewrite: attempted_codex_imagegen_rewrite,
-                reservation_guard: Some(reservation_guard),
             });
         }
     }

@@ -3021,6 +3021,7 @@ async fn clear_prompt_cache_conversation_affinity(
     }
     drop(conn);
     broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+    state.pool_routing_snapshot.request_refresh();
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
@@ -3622,6 +3623,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
     }
 
     broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+    state.pool_routing_snapshot.request_refresh();
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
