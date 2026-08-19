@@ -3224,6 +3224,7 @@ async fn endpoint_capability_persistence_error_releases_without_publishing_avail
     .expect("install capability persistence failure trigger");
 
     let availability = state.pool_routing_availability.subscribe();
+    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
     let reservation_key = "endpoint-capability-persistence-failure";
     reserve_test_pool_routing_account(&state, reservation_key, account_id).await;
@@ -3560,6 +3561,7 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
     .expect("make route cache-owned");
 
     let availability = state.pool_routing_availability.subscribe();
+    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
     let metadata_free_record =
         test_proxy_capture_record("proxy-cache-observer-metadata-free", &shanghai_now_string());
@@ -3611,6 +3613,16 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
     websocket_record.usage.input_tokens = Some(3_840);
     websocket_record.usage.cache_input_tokens = Some(384);
     observe_successful_proxy_capture_model_route_cache(&state, &websocket_record).await;
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "cache recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after cache recovery");
     assert_ne!(
         *availability.borrow(),
         initial_generation,

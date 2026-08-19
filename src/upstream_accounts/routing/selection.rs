@@ -987,6 +987,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolution> {
+    if state.pool_routing_snapshot.refresh_pending() {
+        // A mutation is rebuilding the snapshot. Do not select from the old
+        // immutable view while its replacement is pending.
+        return Ok(PoolAccountResolution::NoCandidate(
+            PoolRoutingNoCandidateAudit::no_eligible(),
+        ));
+    }
     let Some(routing_snapshot) = state.pool_routing_snapshot.current() else {
         // A routing request must never turn a cold snapshot into an on-demand
         // SQLite read. The background reconciler owns recovery.

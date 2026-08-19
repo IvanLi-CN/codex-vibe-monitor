@@ -1766,8 +1766,10 @@ fn release_pool_routing_reservation_with_availability(
         .expect("pool routing reservations mutex poisoned");
     let released = reservations.remove(reservation_key).is_some();
     drop(reservations);
-    if released && publish_availability && !state.pool_routing_snapshot.refresh_pending() {
-        state.pool_routing_availability.publish();
+    if released && publish_availability {
+        state
+            .pool_routing_snapshot
+            .publish_availability_if_ready(|| state.pool_routing_availability.publish());
     }
 }
 

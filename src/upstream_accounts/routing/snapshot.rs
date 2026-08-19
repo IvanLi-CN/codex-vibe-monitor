@@ -238,7 +238,13 @@ impl PoolRoutingModelRouteSnapshot {
 pub(crate) struct PoolRoutingSnapshotStore {
     snapshot: std::sync::RwLock<Option<Arc<PoolRoutingSnapshot>>>,
     refresh_tx: tokio::sync::watch::Sender<u64>,
-    refresh_pending: std::sync::atomic::AtomicBool,
+    refresh_state: std::sync::Mutex<PoolRoutingSnapshotRefreshState>,
+}
+
+#[derive(Debug, Default)]
+struct PoolRoutingSnapshotRefreshState {
+    generation: u64,
+    pending: bool,
 }
 
 impl Default for PoolRoutingSnapshotStore {
@@ -253,7 +259,7 @@ impl PoolRoutingSnapshotStore {
         Self {
             snapshot: std::sync::RwLock::new(None),
             refresh_tx,
-            refresh_pending: std::sync::atomic::AtomicBool::new(false),
+            refresh_state: std::sync::Mutex::new(PoolRoutingSnapshotRefreshState::default()),
         }
     }
 
@@ -265,8 +271,13 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn request_refresh(&self) {
-        self.refresh_pending
-            .store(true, std::sync::atomic::Ordering::Release);
+        let mut refresh_state = self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned");
+        refresh_state.pending = true;
+        refresh_state.generation = refresh_state.generation.wrapping_add(1);
+        drop(refresh_state);
         self.refresh_tx.send_modify(|generation| {
             *generation = generation.wrapping_add(1);
         });
@@ -276,31 +287,69 @@ impl PoolRoutingSnapshotStore {
         self.refresh_tx.subscribe()
     }
 
-    pub(crate) fn replace(&self, snapshot: PoolRoutingSnapshot) {
+    pub(crate) fn complete_refresh(
+        &self,
+        refresh_generation: u64,
+        snapshot: PoolRoutingSnapshot,
+        publish_availability: impl FnOnce(),
+    ) -> bool {
+        let mut refresh_state = self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned");
+        if refresh_state.generation != refresh_generation {
+            return false;
+        }
         *self
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
-        self.refresh_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        refresh_state.pending = false;
+        publish_availability();
+        true
     }
 
     pub(crate) fn invalidate(&self) {
+        let mut refresh_state = self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned");
         *self
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = None;
-        self.refresh_pending
-            .store(false, std::sync::atomic::Ordering::Release);
+        refresh_state.pending = false;
+        refresh_state.generation = refresh_state.generation.wrapping_add(1);
     }
 
     pub(crate) fn refresh_pending(&self) -> bool {
-        self.refresh_pending
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned")
+            .pending
+    }
+
+    pub(crate) fn refresh_generation(&self) -> u64 {
+        self.refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned")
+            .generation
+    }
+
+    pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl FnOnce()) {
+        if !self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned")
+            .pending
+        {
+            publish_availability();
+        }
     }
 }
 
 pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()> {
+    let refresh_generation = state.pool_routing_snapshot.refresh_generation();
     let candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
     let account_ids = candidates
         .iter()
@@ -398,25 +447,28 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
     .into_iter()
     .map(|(sticky_key, model_key, generation)| ((sticky_key, model_key), generation))
     .collect();
-    state.pool_routing_snapshot.replace(PoolRoutingSnapshot {
-        candidate_order: candidates.iter().map(|candidate| candidate.id).collect(),
-        candidates: candidates
-            .into_iter()
-            .map(|candidate| (candidate.id, candidate))
-            .collect(),
-        accounts,
-        effective_rules,
-        node_shunt_assignments,
-        model_routes,
-        route_binding_failure_penalties,
-        transport_decode_sticky_escape_states,
-        group_metadata,
-        sticky_routes,
-        sticky_model_routes,
-        sticky_generations,
-        sticky_model_generations,
-        cache_hit_protection: resolve_cache_hit_protection_settings(&settings),
-    });
-    state.pool_routing_availability.publish();
+    state.pool_routing_snapshot.complete_refresh(
+        refresh_generation,
+        PoolRoutingSnapshot {
+            candidate_order: candidates.iter().map(|candidate| candidate.id).collect(),
+            candidates: candidates
+                .into_iter()
+                .map(|candidate| (candidate.id, candidate))
+                .collect(),
+            accounts,
+            effective_rules,
+            node_shunt_assignments,
+            model_routes,
+            route_binding_failure_penalties,
+            transport_decode_sticky_escape_states,
+            group_metadata,
+            sticky_routes,
+            sticky_model_routes,
+            sticky_generations,
+            sticky_model_generations,
+            cache_hit_protection: resolve_cache_hit_protection_settings(&settings),
+        },
+        || state.pool_routing_availability.publish(),
+    );
     Ok(())
 }

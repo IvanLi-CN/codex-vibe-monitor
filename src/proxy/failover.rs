@@ -3768,8 +3768,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to persist pool http failure attempt"
                     );
                 }
-                if codex_imagegen_upstream_incompatible
-                    && let Err(observation_err) = record_capability_observation(
+                if codex_imagegen_upstream_incompatible {
+                    match record_capability_observation(
                         &state.pool,
                         account.account_id,
                         UpstreamCapabilityAxis::CodexImagegen,
@@ -3777,12 +3777,15 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         Some(route_error_message.as_str()),
                     )
                     .await
-                {
-                    warn!(
-                        account_id = account.account_id,
-                        error = %observation_err,
-                        "failed to record Codex imagegen capability observation"
-                    );
+                    {
+                        Ok(true) => state.pool_routing_snapshot.request_refresh(),
+                        Ok(false) => {}
+                        Err(observation_err) => warn!(
+                            account_id = account.account_id,
+                            error = %observation_err,
+                            "failed to record Codex imagegen capability observation"
+                        ),
+                    }
                 }
                 if let Some(response_body) = error_body_bytes.as_ref()
                     && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
