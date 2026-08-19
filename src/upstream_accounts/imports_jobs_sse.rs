@@ -1618,6 +1618,11 @@ pub(crate) async fn import_validated_oauth_accounts(
                 .account_ops
                 .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
                 .await?;
+            publish_new_account_routing_availability_if_selectable(
+                state.as_ref(),
+                persisted_account_id,
+            )
+            .await;
             (persisted_account_id, warning)
         };
 

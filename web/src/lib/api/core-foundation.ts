@@ -551,6 +551,22 @@ export interface PoolRoutingSelectionAudit {
   excludedCandidates: PoolRoutingSelectionAuditExcludedCandidate[];
 }
 
+export interface PoolRoutingNoCandidateAuditCandidate {
+  accountId: number;
+  accountName: string;
+  reasonCode: string;
+}
+
+export interface PoolRoutingNoCandidateAudit {
+  terminalReasonCode: string;
+  candidateCount: number;
+  eligibleCandidateCount: number;
+  reservationConflictCount: number;
+  nextEligibleAt?: string | null;
+  excludedReasonCounts: Record<string, number>;
+  candidates: PoolRoutingNoCandidateAuditCandidate[];
+}
+
 export interface UpstreamAccountAttemptStickyKeyOption {
   value: string;
   latestCreatedAt: string;
@@ -829,6 +845,7 @@ export interface ApiInvocationWorkflowHero {
   totalTokens?: number | null;
   cost?: number | null;
   occurredAt?: string | null;
+  poolRoutingNoCandidateAudit?: PoolRoutingNoCandidateAudit | null;
 }
 
 export interface ApiInvocationWorkflowDetailResponse {

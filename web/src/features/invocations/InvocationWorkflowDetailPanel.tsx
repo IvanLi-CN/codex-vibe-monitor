@@ -118,6 +118,33 @@ function formatOptionalText(value: string | null | undefined) {
   return normalized ? normalized : FALLBACK_CELL;
 }
 
+function formatNoCandidateReason(code: string, isZh: boolean) {
+  const labels: Record<string, [string, string]> = {
+    modelConcurrencyLimit: ["模型并发容量已满", "Model concurrency capacity is full"],
+    expiredCooldownProbe: ["冷却后的探针容量已占用", "Expired cooldown probe capacity is occupied"],
+    stickyRouteReservationConflict: ["粘性路由预约冲突", "Sticky-route reservation conflict"],
+    policyExcluded: ["路由策略已排除", "Routing policy excluded the candidate"],
+    noEligibleCandidate: ["没有符合条件的候选账号", "No eligible account candidate"],
+    bindingConstraint: ["不符合当前会话绑定条件", "Excluded by the current binding constraint"],
+    requiredRouteMismatch: ["不符合要求的路由", "Does not match the required route"],
+    recentTransportFailure: ["最近发生过传输失败", "Recently had a transport failure"],
+    previousAttemptExcluded: ["已被本请求的先前尝试排除", "Excluded by an earlier attempt"],
+    stickyReuseUnavailable: ["无法继续复用粘性路由", "Sticky route cannot be reused"],
+    rateLimited: ["账号已被限流", "Account is rate limited"],
+    degraded: ["账号处于降级状态", "Account is degraded"],
+    notSelectableForFreshAssignment: ["不允许接收重新分配", "Not selectable for reassignment"],
+    unavailable: ["账号当前不可用", "Account is unavailable"],
+    modelNotAllowed: ["不允许当前请求模型", "Requested model is not allowed"],
+    capabilityUnsupported: ["不支持当前请求能力", "Requested capability is unsupported"],
+    concurrencyLimit: ["账号并发容量已满", "Account concurrency capacity is full"],
+    stickyPolicy: ["粘性策略已排除", "Excluded by sticky routing policy"],
+    forwardProxyUnavailable: ["转发代理不可用", "Forward proxy is unavailable"],
+    modelTemporarilyExcluded: ["模型路由暂时不可用", "Model route is temporarily unavailable"],
+    notAssignable: ["账号不可分配", "Account is not assignable"],
+  };
+  return labels[code]?.[isZh ? 0 : 1] ?? (isZh ? "未知路由原因" : "Unknown routing reason");
+}
+
 function formatReasoningEffortValue(value: unknown) {
   return formatReasoningEffort(typeof value === "string" ? value : null);
 }
@@ -1490,7 +1517,7 @@ function TimelineMetricButton({
       type="button"
       className={cn(
         "h-full min-w-0 bg-base-100/84 px-3 py-2.5 text-left transition-[background-color,color] duration-150 focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary",
-        active ? "bg-primary/8 text-primary" : "text-base-content hover:bg-base-100",
+        active ? "bg-primary/8" : "text-base-content hover:bg-base-100",
       )}
       onClick={onClick}
     >
@@ -1499,7 +1526,7 @@ function TimelineMetricButton({
           <div
             className={cn(
               "text-[10.5px] font-medium",
-              active ? "text-primary" : "text-base-content/50",
+              active ? "tone-ink-primary" : "text-base-content/70",
             )}
           >
             {label}
@@ -1521,7 +1548,7 @@ function TimelineMetricButton({
             className={cn(
               "overflow-hidden text-[12.5px] font-semibold leading-[1.3] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] [overflow-wrap:anywhere]",
               monospace && "font-mono text-[12px] leading-[1.35]",
-              active ? "text-primary" : "text-base-content/88",
+              active ? "tone-ink-primary" : "text-base-content/90",
             )}
           >
             {primary}
@@ -1529,7 +1556,7 @@ function TimelineMetricButton({
           {secondary && secondary !== FALLBACK_CELL ? (
             <div
               title={secondary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/64 text-ellipsis whitespace-nowrap"
+              className="overflow-hidden text-[10.5px] leading-4 text-base-content/70 text-ellipsis whitespace-nowrap"
             >
               {secondary}
             </div>
@@ -1560,7 +1587,7 @@ function TimelineMetricButton({
           ) : tertiary && tertiary !== FALLBACK_CELL ? (
             <div
               title={tertiary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/48 text-ellipsis whitespace-nowrap"
+              className="overflow-hidden text-[10.5px] leading-4 text-base-content/70 text-ellipsis whitespace-nowrap"
             >
               {tertiary}
             </div>
@@ -2594,7 +2621,7 @@ function TimelineSummary({
             <Chip tone={kindMeta.variant}>{kindMeta.label}</Chip>
             {entry.status ? <Chip tone={statusMeta.variant}>{statusMeta.label}</Chip> : null}
             {attemptId ? (
-              <span className="font-mono text-[11px] text-primary/90">{attemptId}</span>
+              <span className="tone-ink-primary font-mono text-[11px]">{attemptId}</span>
             ) : null}
           </div>
           <div className={cn("min-w-0", showTitle ? "mt-2" : "mt-1.5")}>
@@ -3056,6 +3083,12 @@ export function InvocationWorkflowDetailPanel({
       ? `${isZh ? "信息不完整" : "Partial detail"}${detail.partialReason ? `: ${detail.partialReason}` : ""}`
       : null,
   ].filter((value): value is string => Boolean(value));
+  const noCandidateAudit = hero.poolRoutingNoCandidateAudit;
+  const noCandidateReasonCounts = noCandidateAudit
+    ? Object.entries(noCandidateAudit.excludedReasonCounts)
+        .filter(([, count]) => Number.isFinite(count) && count > 0)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    : [];
   const snapshotMetrics = [
     {
       label: isZh ? "最终结果" : "Final Result",
@@ -3137,7 +3170,7 @@ export function InvocationWorkflowDetailPanel({
       >
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary/72">
+            <div className="tone-ink-primary text-[11px] font-semibold uppercase tracking-[0.22em]">
               {isZh ? "调用详情" : "Invocation Detail"}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -3182,7 +3215,7 @@ export function InvocationWorkflowDetailPanel({
               )}
             >
               <div className="min-w-0">
-                <div className="text-[11px] font-medium text-base-content/56">
+                <div className="text-xs font-medium text-base-content/56">
                   {isZh ? "调用 ID" : "Call ID"}
                 </div>
                 <div className="mt-1 break-all font-mono text-[1.08rem] font-semibold tracking-[-0.02em] text-base-content sm:text-[1.22rem]">
@@ -3223,6 +3256,127 @@ export function InvocationWorkflowDetailPanel({
               ))}
             </div>
 
+            {noCandidateAudit ? (
+              <Alert
+                variant="warning"
+                className={cn("mt-4", isCompact && "mt-3")}
+                data-testid="pool-routing-no-candidate-audit"
+              >
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div className="min-w-0 flex-1 text-sm leading-5">
+                  <div className="font-semibold">
+                    {isZh ? "未分配上游账号诊断" : "No upstream account diagnostic"}
+                  </div>
+                  <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span>
+                      {isZh ? "原因" : "Reason"}:{" "}
+                      {formatNoCandidateReason(noCandidateAudit.terminalReasonCode, isZh)}
+                    </span>
+                    <code className="max-w-full break-all rounded-md border border-warning/25 bg-warning/10 px-1.5 py-0.5 font-mono text-xs leading-4 text-base-content/72">
+                      {noCandidateAudit.terminalReasonCode}
+                    </code>
+                  </div>
+
+                  <dl
+                    className={cn(
+                      "mt-3 grid grid-cols-2 gap-x-4 gap-y-2",
+                      noCandidateAudit.nextEligibleAt ? "sm:grid-cols-4" : "sm:grid-cols-3",
+                    )}
+                  >
+                    {[
+                      {
+                        label: isZh ? "候选账号" : "Candidates",
+                        value: noCandidateAudit.candidateCount.toLocaleString(localeTag),
+                      },
+                      {
+                        label: isZh ? "可用账号" : "Eligible",
+                        value: noCandidateAudit.eligibleCandidateCount.toLocaleString(localeTag),
+                      },
+                      {
+                        label: isZh ? "容量冲突" : "Capacity conflicts",
+                        value: noCandidateAudit.reservationConflictCount.toLocaleString(localeTag),
+                      },
+                      ...(noCandidateAudit.nextEligibleAt
+                        ? [
+                            {
+                              label: isZh ? "下一可用时间" : "Next eligible at",
+                              value: formatTimestamp(noCandidateAudit.nextEligibleAt, localeTag),
+                              testId: "pool-routing-no-candidate-next-eligible-at",
+                            },
+                          ]
+                        : []),
+                    ].map((metric) => (
+                      <div key={metric.label} className="min-w-0">
+                        <dt className="text-xs font-medium text-base-content/58">{metric.label}</dt>
+                        <dd
+                          className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-base-content"
+                          data-testid={metric.testId}
+                        >
+                          {metric.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+
+                  {noCandidateReasonCounts.length > 0 ? (
+                    <div
+                      className="mt-3 border-t border-warning/25 pt-3"
+                      data-testid="pool-routing-no-candidate-reason-counts"
+                    >
+                      <div className="text-xs font-medium text-base-content/58">
+                        {isZh ? "排除原因汇总" : "Exclusion summary"}
+                      </div>
+                      <ul className="mt-2 grid min-w-0 gap-x-4 gap-y-2 sm:grid-cols-2">
+                        {noCandidateReasonCounts.map(([reasonCode, count]) => (
+                          <li
+                            key={reasonCode}
+                            className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5"
+                            data-testid={`pool-routing-no-candidate-reason-count-${reasonCode}`}
+                          >
+                            <span className="break-words text-xs text-base-content/76">
+                              {formatNoCandidateReason(reasonCode, isZh)}
+                            </span>
+                            <span className="font-mono text-xs font-semibold tabular-nums text-base-content/84">
+                              {count.toLocaleString(localeTag)}
+                            </span>
+                            <code className="col-span-2 max-w-full break-all font-mono text-xs leading-4 text-base-content/58">
+                              {reasonCode}
+                            </code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {noCandidateAudit.candidates.length > 0 ? (
+                    <div className="mt-3 border-t border-warning/25 pt-3">
+                      <div className="text-xs font-medium text-base-content/58">
+                        {isZh ? "候选明细" : "Candidate details"}
+                      </div>
+                      <ul className="mt-2 grid min-w-0 gap-2 sm:grid-cols-2">
+                        {noCandidateAudit.candidates.map((candidate) => (
+                          <li
+                            key={`${candidate.accountId}-${candidate.reasonCode}`}
+                            className="min-w-0"
+                          >
+                            <div className="break-words text-xs font-semibold text-base-content/84">
+                              {candidate.accountName}
+                            </div>
+                            <div className="mt-0.5 break-words text-xs text-base-content/70">
+                              {formatNoCandidateReason(candidate.reasonCode, isZh)}
+                            </div>
+                            <code className="mt-0.5 block max-w-full break-all font-mono text-xs leading-4 text-base-content/58">
+                              {candidate.reasonCode}
+                            </code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              </Alert>
+            ) : null}
+
             <div
               className={cn(
                 "mt-4 grid gap-4 border-t border-base-300/65 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,0.95fr)]",
@@ -3250,7 +3404,7 @@ export function InvocationWorkflowDetailPanel({
 
               {heroStatusNotes.length > 0 ? (
                 <div className="min-w-0">
-                  <div className="text-[11px] font-medium text-base-content/56">
+                  <div className="text-xs font-medium text-base-content/56">
                     {isZh ? "状态" : "Status"}
                   </div>
                   <div className="mt-1 space-y-1 text-sm text-base-content/72">
@@ -3276,7 +3430,7 @@ export function InvocationWorkflowDetailPanel({
                 {isZh ? "关键指标" : "Key metrics"}
               </div>
               {hero.failureClass ? (
-                <Chip size="compact" tone="error" className="px-2.5 py-1 font-mono text-[11px]">
+                <Chip size="compact" tone="error" className="px-2.5 py-1 font-mono text-xs">
                   {hero.failureClass}
                 </Chip>
               ) : null}

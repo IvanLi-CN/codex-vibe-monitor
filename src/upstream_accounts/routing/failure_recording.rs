@@ -15,6 +15,74 @@ pub(crate) enum UpstreamCapabilityAxis {
     StandaloneSearch,
 }
 
+struct PoolRouteSuccessOutcome {
+    sticky_mutation: RuntimeStickyMutation,
+    availability_increased: bool,
+}
+
+fn route_failure_precedes_request(
+    stored_failure_at: &str,
+    request_started_at_utc: DateTime<Utc>,
+) -> bool {
+    let Some(failure_at) = parse_to_utc_datetime(stored_failure_at) else {
+        return false;
+    };
+    // Legacy rows only have second precision. When both values fall in the
+    // same second, their ordering cannot be proven, so recovery must fail
+    // closed instead of clearing a potentially newer failure.
+    if !stored_failure_at.contains('.')
+        && failure_at.timestamp() == request_started_at_utc.timestamp()
+    {
+        return false;
+    }
+    failure_at < request_started_at_utc
+}
+
+pub(crate) async fn pool_account_allows_model_route_availability_publish(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<bool> {
+    let eligible = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pool_upstream_accounts
+            WHERE id = ?1
+              AND enabled != 0
+              AND deleted_at IS NULL
+              AND status = ?2
+              AND last_route_failure_at IS NULL
+              AND last_route_failure_kind IS NULL
+              AND cooldown_until IS NULL
+              AND consecutive_route_failures = 0
+              AND temporary_route_failure_streak_started_at IS NULL
+        )
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .fetch_one(pool)
+    .await?;
+    Ok(eligible != 0)
+}
+
+async fn pool_route_success_allows_reservation_release_publish(
+    state: &AppState,
+    account_id: i64,
+) -> bool {
+    match pool_account_allows_model_route_availability_publish(&state.pool, account_id).await {
+        Ok(eligible) => eligible,
+        Err(err) => {
+            warn!(
+                account_id,
+                error = %err,
+                "failed to verify account eligibility before publishing pool availability"
+            );
+            false
+        }
+    }
+}
+
 impl UpstreamCapabilityAxis {
     fn observed_column(self) -> &'static str {
         match self {
@@ -114,8 +182,8 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<()> {
-    let sticky_mutation = record_pool_route_success_inner(
+) -> Result<bool> {
+    let outcome = record_pool_route_success_inner(
         &state.pool,
         account_id,
         request_started_at_utc,
@@ -126,12 +194,13 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         sticky_affinity_generation,
     )
     .await?;
-    if sticky_mutation.writes_conversation_operation()
+    if outcome.sticky_mutation.writes_conversation_operation()
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
     }
-    if let Some(previous_upstream_account_id) = sticky_mutation.previous_upstream_account_id()
+    if let Some(previous_upstream_account_id) =
+        outcome.sticky_mutation.previous_upstream_account_id()
         && let Some(sticky_key) = sticky_key
     {
         broadcast_prompt_cache_conversation_sticky_route_changed(
@@ -141,7 +210,12 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
             account_id,
         );
     }
-    Ok(())
+    let reservation_release_wakes_waiters =
+        pool_route_success_allows_reservation_release_publish(state, account_id).await;
+    if outcome.availability_increased && reservation_release_wakes_waiters {
+        publish_pool_routing_availability(state);
+    }
+    Ok(reservation_release_wakes_waiters)
 }
 
 pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attempt(
@@ -177,13 +251,12 @@ async fn record_pool_route_success_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<RuntimeStickyMutation> {
+) -> Result<PoolRouteSuccessOutcome> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
     let now_iso = format_utc_iso(Utc::now());
     let sticky_now_iso = format_utc_iso_precise(Utc::now());
-    let request_started_at_iso = format_utc_iso(request_started_at_utc);
     let model_request_started_at_iso = format_naive_precise(
         request_started_at_utc
             .with_timezone(&Shanghai)
@@ -192,16 +265,69 @@ async fn record_pool_route_success_inner(
     // Model recovery is independently fenced by the attempt timestamp, so it
     // must still run when a newer account-level failure makes the account
     // update stale.
-    if let Some(attempt_id) = attempt_id {
+    let model_route_recovered = if let Some(attempt_id) = attempt_id {
         record_model_route_success_from_attempt(
             pool,
             account_id,
             attempt_id,
             Some(&model_request_started_at_iso),
         )
-        .await?;
+        .await?
+    } else {
+        false
+    };
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let account = sqlx::query(
+        r#"
+        SELECT status, last_error, last_error_at, last_route_failure_at,
+               last_route_failure_kind, cooldown_until, consecutive_route_failures,
+               temporary_route_failure_streak_started_at
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(account) = account else {
+        tx.commit().await?;
+        return Ok(PoolRouteSuccessOutcome {
+            sticky_mutation: RuntimeStickyMutation::Unchanged,
+            availability_increased: false,
+        });
+    };
+    let last_route_failure_at = account.try_get::<Option<String>, _>("last_route_failure_at")?;
+    if last_route_failure_at.as_deref().is_some_and(|failure_at| {
+        !route_failure_precedes_request(failure_at, request_started_at_utc)
+    }) {
+        tx.commit().await?;
+        return Ok(PoolRouteSuccessOutcome {
+            sticky_mutation: RuntimeStickyMutation::Unchanged,
+            // A newer or ambiguous account failure keeps the account out of
+            // routing even if model evidence independently recovered.
+            availability_increased: false,
+        });
     }
-    let update_result = sqlx::query(
+    let account_recovered = account.try_get::<String, _>("status")?
+        != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        || account
+            .try_get::<Option<String>, _>("last_error")?
+            .is_some()
+        || account
+            .try_get::<Option<String>, _>("last_error_at")?
+            .is_some()
+        || last_route_failure_at.is_some()
+        || account
+            .try_get::<Option<String>, _>("last_route_failure_kind")?
+            .is_some()
+        || account
+            .try_get::<Option<String>, _>("cooldown_until")?
+            .is_some()
+        || account.try_get::<i64, _>("consecutive_route_failures")? != 0
+        || account
+            .try_get::<Option<String>, _>("temporary_route_failure_streak_started_at")?
+            .is_some();
+    sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
         SET status = ?2,
@@ -215,21 +341,14 @@ async fn record_pool_route_success_inner(
             temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?1
-          AND (
-                last_route_failure_at IS NULL
-                OR last_route_failure_at <= ?4
-            )
         "#,
     )
     .bind(account_id)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .bind(&now_iso)
-    .bind(&request_started_at_iso)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
-    if update_result.rows_affected() == 0 {
-        return Ok(RuntimeStickyMutation::Unchanged);
-    }
+    tx.commit().await?;
     let mut sticky_mutation = RuntimeStickyMutation::Unchanged;
     if let Some(sticky_key) = sticky_key {
         sticky_mutation = upsert_runtime_prompt_cache_conversation_sticky_route(
@@ -272,7 +391,10 @@ async fn record_pool_route_success_inner(
         attempt_id,
     )
     .await?;
-    Ok(sticky_mutation)
+    Ok(PoolRouteSuccessOutcome {
+        sticky_mutation,
+        availability_increased: model_route_recovered || account_recovered,
+    })
 }
 
 pub(crate) async fn record_pool_route_success_with_image_intent(
@@ -385,8 +507,8 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     codex_imagegen_rewrite: Option<&Value>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
-) -> Result<()> {
-    let sticky_mutation = record_pool_route_success_inner(
+) -> Result<bool> {
+    let outcome = record_pool_route_success_inner(
         &state.pool,
         account_id,
         request_started_at_utc,
@@ -397,12 +519,21 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    if sticky_mutation.writes_conversation_operation()
+    record_pool_route_success_capability_observations(
+        &state.pool,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    )
+    .await?;
+    if outcome.sticky_mutation.writes_conversation_operation()
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
     }
-    if let Some(previous_upstream_account_id) = sticky_mutation.previous_upstream_account_id()
+    if let Some(previous_upstream_account_id) =
+        outcome.sticky_mutation.previous_upstream_account_id()
         && let Some(sticky_key) = sticky_key
     {
         broadcast_prompt_cache_conversation_sticky_route_changed(
@@ -412,14 +543,12 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
             account_id,
         );
     }
-    record_pool_route_success_capability_observations(
-        &state.pool,
-        account_id,
-        endpoint,
-        image_intent,
-        codex_imagegen_rewrite,
-    )
-    .await
+    let reservation_release_wakes_waiters =
+        pool_route_success_allows_reservation_release_publish(state, account_id).await;
+    if outcome.availability_increased && reservation_release_wakes_waiters {
+        publish_pool_routing_availability(state);
+    }
+    Ok(reservation_release_wakes_waiters)
 }
 
 pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for_attempt(
@@ -859,7 +988,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             )
             .await?;
         } else {
-            let now_iso = format_utc_iso(Utc::now());
+            let now_iso = format_utc_iso_millis(Utc::now());
             record_suppressed_pool_route_status_change(
                 pool,
                 account_id,
@@ -878,7 +1007,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     }
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
-            let now_iso = format_utc_iso(Utc::now());
+            let now_iso = format_utc_iso_millis(Utc::now());
             let mut sticky_route_cleared = false;
             if !account_status_change_reason_is_enabled(
                 pool,
@@ -1638,10 +1767,10 @@ pub(crate) async fn apply_pool_route_cooldown_failure(
     let exponent = (next_failures - 1).clamp(0, 5) as u32;
     let cooldown_secs =
         (base_secs * (1_i64 << exponent)).min(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS);
-    let now_iso = format_utc_iso(now);
-    let streak_started_at_iso = format_utc_iso(streak_started_at);
-    let cooldown_until =
-        should_start_cooldown.then(|| format_utc_iso(now + ChronoDuration::seconds(cooldown_secs)));
+    let now_iso = format_utc_iso_millis(now);
+    let streak_started_at_iso = format_utc_iso_millis(streak_started_at);
+    let cooldown_until = should_start_cooldown
+        .then(|| format_utc_iso_millis(now + ChronoDuration::seconds(cooldown_secs)));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts

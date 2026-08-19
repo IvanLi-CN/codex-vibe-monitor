@@ -1015,19 +1015,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
-    match observe_proxy_cache_hit_if_success(state, &record).await {
-        Ok(true) => state
-            .subscription_hub
-            .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged),
-        Ok(false) => {}
-        Err(err) => {
-            warn!(
-                invoke_id = %invoke_id,
-                error = %err,
-                "failed to observe model route cache hit"
-            );
-        }
-    }
+    super::usage_persistence::observe_successful_proxy_capture_model_route_cache(state, &record)
+        .await;
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
     let delta = &projection.dashboard;
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);

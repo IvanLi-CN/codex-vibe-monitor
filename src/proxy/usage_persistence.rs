@@ -130,6 +130,171 @@ pub(crate) fn set_proxy_capture_record_request_compression_algorithm(
     }
 }
 
+pub(crate) fn set_proxy_capture_record_pool_routing_no_candidate_audit(
+    record: &mut ProxyCaptureRecord,
+    audit: Option<&PoolRoutingNoCandidateAudit>,
+) {
+    let Some(audit) = audit else {
+        return;
+    };
+    let Some(payload) = record.payload.as_deref() else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    object.insert("poolRoutingNoCandidateAudit".to_string(), json!(audit));
+    if let Ok(payload) = serde_json::to_string(&value) {
+        record.payload = Some(payload);
+    }
+}
+
+pub(crate) async fn persist_pool_routing_no_candidate_invocation(
+    state: Arc<AppState>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    audit: &PoolRoutingNoCandidateAudit,
+) -> Result<()> {
+    persist_pool_routing_no_candidate_invocation_with_snapshot(
+        state,
+        trace,
+        prompt_cache_key,
+        audit,
+        None,
+        StatusCode::SERVICE_UNAVAILABLE,
+        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+        0,
+        0,
+        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+    )
+    .await
+}
+
+pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_snapshot(
+    state: Arc<AppState>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    audit: &PoolRoutingNoCandidateAudit,
+    request_body_snapshot: Option<PoolReplayBodySnapshot>,
+    status: StatusCode,
+    failure_kind: &str,
+    error_message: &str,
+    pool_attempt_count: usize,
+    pool_distinct_account_count: usize,
+    pool_attempt_terminal_reason: &str,
+) -> Result<()> {
+    let target = ProxyCaptureTarget::from_endpoint(&trace.endpoint);
+    let mut record = build_admitted_proxy_capture_runtime_snapshot(
+        &trace.invoke_id,
+        &trace.occurred_at,
+        target,
+        trace.requester_ip.as_deref(),
+        trace.sticky_key.as_deref(),
+        prompt_cache_key,
+    );
+    let request_body_logging_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .request_body_logging_enabled;
+    record.req_raw = match request_body_snapshot {
+        Some(snapshot) => {
+            spawn_raw_payload_snapshot_write(
+                state.clone(),
+                &trace.invoke_id,
+                "request",
+                snapshot,
+                request_body_logging_enabled,
+            )
+            .finish()
+            .await
+        }
+        None => RawPayloadMeta::default(),
+    };
+    record.model = trace.request_model.clone();
+    record.status = format!("http_{}", status.as_u16());
+    record.error_message = Some(format!("[{failure_kind}] {error_message}"));
+    record.failure_kind = Some(failure_kind.to_string());
+    let response_envelope = build_proxy_error_response_envelope(
+        &ProxyErrorResponse {
+            status,
+            message: error_message.to_string(),
+            cvm_id: None,
+            retry_after_secs: retry_after_secs_for_proxy_error(status, error_message),
+            code: Some(failure_kind.to_string()),
+            blocked_binding: None,
+        },
+        &trace.invoke_id,
+    );
+    record.raw_response = response_envelope.body_text;
+    record.response_body_preview_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .response_body_logging_enabled;
+    record.resp_raw = RawPayloadMeta {
+        size_bytes: record.raw_response.len() as i64,
+        ..RawPayloadMeta::default()
+    };
+    if let Some(payload) = record.payload.as_deref()
+        && let Ok(mut value) = serde_json::from_str::<Value>(payload)
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("statusCode".to_string(), json!(status.as_u16()));
+        object.insert(
+            "requestModel".to_string(),
+            json!(trace.request_model.as_deref()),
+        );
+        object.insert("failureKind".to_string(), json!(failure_kind));
+        object.insert("downstreamStatusCode".to_string(), json!(status.as_u16()));
+        object.insert("downstreamErrorMessage".to_string(), json!(error_message));
+        object.insert("poolAttemptCount".to_string(), json!(pool_attempt_count));
+        object.insert(
+            "poolDistinctAccountCount".to_string(),
+            json!(pool_distinct_account_count),
+        );
+        object.insert(
+            "poolAttemptTerminalReason".to_string(),
+            json!(pool_attempt_terminal_reason),
+        );
+        record.payload = serde_json::to_string(&value).ok();
+    }
+    set_proxy_capture_record_pool_routing_no_candidate_audit(&mut record, Some(audit));
+    persist_and_broadcast_proxy_capture_terminal_record(state.as_ref(), record).await
+}
+
+pub(crate) async fn persist_pool_routing_no_candidate_invocation_with_error(
+    state: Arc<AppState>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    prompt_cache_key: Option<&str>,
+    audit: &PoolRoutingNoCandidateAudit,
+    status: StatusCode,
+    failure_kind: &str,
+    error_message: &str,
+    pool_attempt_count: usize,
+    pool_distinct_account_count: usize,
+    pool_attempt_terminal_reason: &str,
+) -> Result<()> {
+    persist_pool_routing_no_candidate_invocation_with_snapshot(
+        state,
+        trace,
+        prompt_cache_key,
+        audit,
+        None,
+        status,
+        failure_kind,
+        error_message,
+        pool_attempt_count,
+        pool_distinct_account_count,
+        pool_attempt_terminal_reason,
+    )
+    .await
+}
+
 pub(crate) fn blocked_binding_json_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -1644,13 +1809,13 @@ pub(crate) fn pool_routing_reservation_key_for_invoke_id(invoke_id: &str) -> Opt
 pub(crate) async fn observe_proxy_cache_hit_if_success(
     state: &AppState,
     record: &ProxyCaptureRecord,
-) -> Result<bool> {
+) -> Result<ModelRouteCacheObservationOutcome> {
     if record.status != "success" {
-        return Ok(false);
+        return Ok(ModelRouteCacheObservationOutcome::default());
     }
     let metadata = terminal_payload_metadata(record.payload.as_deref());
     let Some(account_id) = metadata.upstream_account_id else {
-        return Ok(false);
+        return Ok(ModelRouteCacheObservationOutcome::default());
     };
     let model = metadata
         .request_model
@@ -1659,7 +1824,7 @@ pub(crate) async fn observe_proxy_cache_hit_if_success(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let Some(model) = model else {
-        return Ok(false);
+        return Ok(ModelRouteCacheObservationOutcome::default());
     };
     let reservation_held = pool_routing_reservation_key_for_invoke_id(&record.invoke_id)
         .is_some_and(|reservation_key| {
@@ -1675,8 +1840,7 @@ pub(crate) async fn observe_proxy_cache_hit_if_success(
         record.usage.cache_input_tokens,
         active_concurrency,
     )
-    .await?;
-    Ok(true)
+    .await
 }
 
 pub(crate) fn pool_route_orphan_recovery_failure_message(recovery_trigger: &str) -> String {
@@ -1691,34 +1855,47 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
     recovery_trigger: &'static str,
     record_route_failure: bool,
 ) {
-    if let Some(reservation_key) = pool_routing_reservation_key_for_invoke_id(invoke_id) {
+    let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id);
+    let mut reservation_released_after_failure = false;
+    if record_route_failure && let Some(account_id) = upstream_account_id {
+        let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
+        let result = if let Some(reservation_key) = reservation_key.as_deref() {
+            reservation_released_after_failure = true;
+            persist_pool_route_failure_then_release(
+                state,
+                reservation_key,
+                record_pool_route_transport_failure(
+                    &state.pool,
+                    account_id,
+                    sticky_key,
+                    &error_message,
+                    Some(invoke_id),
+                ),
+            )
+            .await
+        } else {
+            record_pool_route_transport_failure(
+                &state.pool,
+                account_id,
+                sticky_key,
+                &error_message,
+                Some(invoke_id),
+            )
+            .await
+        };
+        if let Err(err) = result {
+            warn!(
+                invoke_id,
+                account_id,
+                recovery_trigger,
+                error = %err,
+                "failed to record pool route transport failure during orphan recovery cleanup"
+            );
+        }
+    }
+
+    if !reservation_released_after_failure && let Some(reservation_key) = reservation_key {
         release_pool_routing_reservation(state, &reservation_key);
-    }
-
-    if !record_route_failure {
-        return;
-    }
-
-    let Some(account_id) = upstream_account_id else {
-        return;
-    };
-    let error_message = pool_route_orphan_recovery_failure_message(recovery_trigger);
-    if let Err(err) = record_pool_route_transport_failure(
-        &state.pool,
-        account_id,
-        sticky_key,
-        &error_message,
-        Some(invoke_id),
-    )
-    .await
-    {
-        warn!(
-            invoke_id,
-            account_id,
-            recovery_trigger,
-            error = %err,
-            "failed to record pool route transport failure during orphan recovery cleanup"
-        );
     }
 }
 
@@ -3790,6 +3967,64 @@ pub(crate) fn terminalize_proxy_runtime_snapshot_with_error(
     true
 }
 
+pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
+    state: &AppState,
+    record: &ProxyCaptureRecord,
+) {
+    if record.status != "success" {
+        return;
+    }
+
+    let metadata = terminal_payload_metadata(record.payload.as_deref());
+    match observe_proxy_cache_hit_if_success(state, record).await {
+        Ok(outcome) => {
+            if outcome.observed {
+                state
+                    .subscription_hub
+                    .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+            }
+            if outcome.availability_increased {
+                let account_allows_publish = match metadata.upstream_account_id {
+                    Some(account_id) => match pool_account_allows_model_route_availability_publish(
+                        &state.pool,
+                        account_id,
+                    )
+                    .await
+                    {
+                        Ok(allowed) => allowed,
+                        Err(err) => {
+                            warn!(
+                                invoke_id = %record.invoke_id,
+                                account_id,
+                                error = %err,
+                                "failed to verify account fence before publishing model route availability"
+                            );
+                            false
+                        }
+                    },
+                    None => false,
+                };
+                if account_allows_publish {
+                    publish_pool_routing_availability(state);
+                } else {
+                    debug!(
+                        invoke_id = %record.invoke_id,
+                        upstream_account_id = metadata.upstream_account_id,
+                        "model cache observation increased capacity without publishing because the account remains fenced"
+                    );
+                }
+            }
+        }
+        Err(err) => {
+            warn!(
+                invoke_id = %record.invoke_id,
+                error = %err,
+                "failed to observe model route cache hit"
+            );
+        }
+    }
+}
+
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
@@ -3812,19 +4047,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         );
         return Ok(());
     }
-    match observe_proxy_cache_hit_if_success(state, &record).await {
-        Ok(true) => state
-            .subscription_hub
-            .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged),
-        Ok(false) => {}
-        Err(err) => {
-            warn!(
-                invoke_id = %invoke_id,
-                error = %err,
-                "failed to observe model route cache hit"
-            );
-        }
-    }
+    observe_successful_proxy_capture_model_route_cache(state, &record).await;
     let projection = register_terminal_projection_before_enqueue(state, &persisted_record).await;
     let delta = &projection.dashboard;
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);

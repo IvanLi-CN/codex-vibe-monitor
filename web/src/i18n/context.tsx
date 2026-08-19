@@ -36,8 +36,19 @@ function translate(locale: Locale, key: string, values?: TranslationValues) {
   return formatTranslation(template, values);
 }
 
-export function I18nProvider({ children }: { children: React.ReactNode }) {
+export function I18nProvider({
+  children,
+  initialLocale,
+  persistLocale = true,
+}: {
+  children: React.ReactNode;
+  initialLocale?: Locale;
+  persistLocale?: boolean;
+}) {
   const [locale, setLocaleState] = useState<Locale>(() => {
+    if (initialLocale) {
+      return initialLocale;
+    }
     if (typeof window !== "undefined") {
       try {
         const cached = window.localStorage.getItem(STORAGE_KEY);
@@ -55,16 +66,25 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     return supportedLocales[0];
   });
 
-  const setLocale = useCallback((next: Locale) => {
-    setLocaleState((current) => (current === next ? current : next));
-    if (typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, next);
-      } catch {
-        // suppress storage write errors
+  const setLocale = useCallback(
+    (next: Locale) => {
+      setLocaleState((current) => (current === next ? current : next));
+      if (persistLocale && typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(STORAGE_KEY, next);
+        } catch {
+          // suppress storage write errors
+        }
       }
+    },
+    [persistLocale],
+  );
+
+  useEffect(() => {
+    if (!persistLocale && initialLocale) {
+      setLocaleState((current) => (current === initialLocale ? current : initialLocale));
     }
-  }, []);
+  }, [initialLocale, persistLocale]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;

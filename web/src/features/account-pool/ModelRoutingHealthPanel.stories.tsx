@@ -38,6 +38,10 @@ const states: ModelRoutingState[] = [
     lastFailureKind: "upstream_http_429_quota_exhausted",
     lastFailureMessage: "Model-specific quota exhausted.",
     cooldownUntil: new Date("2026-07-24T08:00:45.000Z").toISOString(),
+    cacheConcurrencyLimit: 1,
+    cacheRecoveryLimit: 4,
+    cacheUsageMissingSince: now,
+    cacheUsageMissingReason: "missing_cache_input_tokens",
   },
 ];
 
@@ -141,6 +145,7 @@ export const MixedStates: Story = {
     await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
     await expect(canvas.queryByText("模型不可用", { exact: true })).not.toBeInTheDocument();
     await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
+    await expect(canvas.getByTestId("model-routing-cache-usage-missing-o4-mini")).toBeVisible();
   },
 };
 
@@ -169,7 +174,9 @@ export const ResetCoolingModel: Story = {
   args: { states, writesEnabled: true, onReset: fn() },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByTestId("model-routing-reset-o4-mini"));
+    const reset = canvas.getByRole("button", { name: "恢复可用: o4-mini" });
+    await expect(reset).toBeVisible();
+    await userEvent.click(reset);
     await expect(args.onReset).toHaveBeenCalledWith("o4-mini");
   },
 };
@@ -182,5 +189,13 @@ export const ErrorState: Story = {
   args: {
     states,
     error: "模型路由状态刷新失败，请稍后重试。",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("model-routing-error")).toHaveClass(
+      "border-error/45",
+      "bg-error/15",
+      "tone-ink-error",
+    );
   },
 };

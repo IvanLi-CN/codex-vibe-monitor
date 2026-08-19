@@ -11,6 +11,65 @@ pub(crate) struct LivePoolCandidateEvaluation {
 pub(crate) const POOL_ROUTE_BINDING_FAILURE_PENALTY_WINDOW_SECS: i64 = 300;
 const POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT: usize = 12;
 
+fn no_candidate_audit(
+    terminal_reason_code: &str,
+    candidate_count: usize,
+    eligible_candidate_count: usize,
+    reservation_conflict_count: usize,
+    exclusions: &[PoolRoutingSelectionAuditExcludedCandidate],
+) -> PoolRoutingNoCandidateAudit {
+    let mut excluded_reason_counts = std::collections::BTreeMap::new();
+    for candidate in exclusions {
+        *excluded_reason_counts
+            .entry(candidate.reason_code.clone())
+            .or_insert(0) += 1;
+    }
+    PoolRoutingNoCandidateAudit {
+        terminal_reason_code: terminal_reason_code.to_string(),
+        candidate_count,
+        eligible_candidate_count,
+        reservation_conflict_count,
+        next_eligible_at: None,
+        excluded_reason_counts,
+        candidates: exclusions
+            .iter()
+            .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+            .map(|candidate| PoolRoutingNoCandidateAuditCandidate {
+                account_id: candidate.account_id,
+                account_name: candidate.account_name.clone(),
+                reason_code: candidate.reason_code.clone(),
+            })
+            .collect(),
+    }
+}
+
+async fn no_candidate_audit_for_request(
+    pool: &Pool<Sqlite>,
+    requested_model: Option<&str>,
+    terminal_reason_code: &str,
+    candidate_count: usize,
+    eligible_candidate_count: usize,
+    reservation_conflict_count: usize,
+    exclusions: &[PoolRoutingSelectionAuditExcludedCandidate],
+) -> Result<PoolRoutingNoCandidateAudit> {
+    let mut audit = no_candidate_audit(
+        terminal_reason_code,
+        candidate_count,
+        eligible_candidate_count,
+        reservation_conflict_count,
+        exclusions,
+    );
+    let cooldown_candidate_ids = exclusions
+        .iter()
+        .filter(|candidate| candidate.reason_code == "modelTemporarilyExcluded")
+        .map(|candidate| candidate.account_id)
+        .collect::<Vec<_>>();
+    audit.next_eligible_at =
+        earliest_model_route_cooldown_expiry(pool, requested_model, &cooldown_candidate_ids)
+            .await?;
+    Ok(audit)
+}
+
 fn model_route_penalty_code(score: u8) -> &'static str {
     match score {
         0 => "normal",
@@ -44,10 +103,9 @@ fn push_routing_selection_audit_exclusion(
     row: &UpstreamAccountRow,
     reason_code: &str,
 ) {
-    if exclusions.len() >= POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT
-        || exclusions
-            .iter()
-            .any(|candidate| candidate.account_id == row.id)
+    if exclusions
+        .iter()
+        .any(|candidate| candidate.account_id == row.id)
     {
         return;
     }
@@ -938,6 +996,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let route_binding_failure_penalties =
         load_recent_route_binding_failure_penalties(&state.pool).await?;
     let mut resolved_candidates = Vec::new();
+    let mut sticky_queue_reservation_conflict: Option<(i64, String)> = None;
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
         let (route, generation) =
             load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
@@ -1196,6 +1255,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 sticky_model_penalty.score() as u8;
                             if let Some(mut account) = evaluation.resolved_account.take() {
                                 account.routing_source = PoolRoutingSelectionSource::StickyReuse;
+                                let account = account
+                                    .with_sticky_affinity_generation(sticky_affinity_generation);
                                 if !excluded_upstream_route_keys
                                     .contains(&account.upstream_route_key())
                                 {
@@ -1215,9 +1276,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         || sticky_fallback_handoff_policy_enabled
                                     {
                                         if sticky_source_cut_out_guard_applies {
-                                            let account = account.with_sticky_affinity_generation(
-                                                sticky_affinity_generation,
-                                            );
                                             if reserve_sticky_model_route(
                                                 state,
                                                 reservation_key,
@@ -1230,7 +1288,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                     account,
                                                 ));
                                             }
-                                            return Ok(PoolAccountResolution::NoCandidate);
+                                            let reason_code =
+                                                if model_route_requires_expired_cooldown_probe(
+                                                    &state.pool,
+                                                    account.account_id,
+                                                    requested_model,
+                                                )
+                                                .await?
+                                                {
+                                                    "expiredCooldownProbe"
+                                                } else {
+                                                    "stickyRouteReservationConflict"
+                                                };
+                                            sticky_queue_reservation_conflict =
+                                                Some((account.account_id, reason_code.to_string()));
                                         }
                                         evaluation.score.route_binding_failure_penalty =
                                             route_binding_failure_penalty;
@@ -1241,9 +1312,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             || sticky_model_penalty != ModelRoutePenalty::Normal;
                                         saw_other_non_rate_limited_routing_candidate = true;
                                     } else {
-                                        let account = account.with_sticky_affinity_generation(
-                                            sticky_affinity_generation,
-                                        );
                                         if reserve_sticky_model_route(
                                             state,
                                             reservation_key,
@@ -1261,7 +1329,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         if cache_hit_protection.overflow_mode
                                             == CacheHitOverflowMode::Queue
                                         {
-                                            return Ok(PoolAccountResolution::NoCandidate);
+                                            let reason_code =
+                                                if model_route_requires_expired_cooldown_probe(
+                                                    &state.pool,
+                                                    account.account_id,
+                                                    requested_model,
+                                                )
+                                                .await?
+                                                {
+                                                    "expiredCooldownProbe"
+                                                } else {
+                                                    "stickyRouteReservationConflict"
+                                                };
+                                            sticky_queue_reservation_conflict =
+                                                Some((account.account_id, reason_code.to_string()));
                                         }
                                         // A normal sticky route may be handed off when reroute is
                                         // selected. Preserve it as a scored candidate so the common
@@ -1401,6 +1482,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     }
 
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    let candidate_count =
+        candidates.len() + usize::from(sticky_queue_reservation_conflict.is_some());
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
         load_transport_decode_sticky_escape_states(
             &state.pool,
@@ -1768,12 +1851,76 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             compared_score: resolved_candidates
                 .get(1)
                 .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
-            excluded_candidates: selection_audit_exclusions,
+            excluded_candidates: selection_audit_exclusions
+                .iter()
+                .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+                .cloned()
+                .collect(),
         })
     });
     let cache_hit_protection =
         resolve_cache_hit_protection_settings(&load_pool_routing_settings(&state.pool).await?);
-    for evaluation in resolved_candidates {
+    let eligible_candidate_count = resolved_candidates.len();
+    let mut reservation_conflict_count = 0_usize;
+    if let Some((sticky_account_id, terminal_reason_code)) =
+        sticky_queue_reservation_conflict.as_ref()
+    {
+        for evaluation in &resolved_candidates {
+            let Some(account) = evaluation.resolved_account.as_ref() else {
+                continue;
+            };
+            let concurrency_limit =
+                model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
+                    .await?;
+            if !pool_routing_model_reservation_is_at_capacity(
+                state,
+                reservation_key.expect("sticky queue conflict requires a reservation key"),
+                account.account_id,
+                requested_model,
+                concurrency_limit,
+            ) {
+                continue;
+            }
+            reservation_conflict_count += 1;
+            let reason_code = if account.account_id == *sticky_account_id {
+                terminal_reason_code.as_str()
+            } else if model_route_requires_expired_cooldown_probe(
+                &state.pool,
+                account.account_id,
+                requested_model,
+            )
+            .await?
+            {
+                "expiredCooldownProbe"
+            } else {
+                "modelConcurrencyLimit"
+            };
+            if !selection_audit_exclusions
+                .iter()
+                .any(|candidate| candidate.account_id == account.account_id)
+            {
+                selection_audit_exclusions.push(PoolRoutingSelectionAuditExcludedCandidate {
+                    account_id: account.account_id,
+                    account_name: account.display_name.clone(),
+                    reason_code: reason_code.to_string(),
+                });
+            }
+        }
+        return Ok(PoolAccountResolution::NoCandidate(
+            no_candidate_audit_for_request(
+                &state.pool,
+                requested_model,
+                terminal_reason_code,
+                candidate_count,
+                eligible_candidate_count,
+                reservation_conflict_count,
+                &selection_audit_exclusions,
+            )
+            .await?,
+        ));
+    }
+    let mut resolved_candidates = resolved_candidates.into_iter();
+    while let Some(evaluation) = resolved_candidates.next() {
         if let Some(account) = evaluation.resolved_account {
             if let Some(reservation_key) = reservation_key {
                 let concurrency_limit =
@@ -1786,8 +1933,92 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     requested_model,
                     concurrency_limit,
                 ) {
+                    reservation_conflict_count += 1;
+                    let reason_code = if model_route_requires_expired_cooldown_probe(
+                        &state.pool,
+                        account.account_id,
+                        requested_model,
+                    )
+                    .await?
+                    {
+                        "expiredCooldownProbe"
+                    } else if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
+                        "stickyRouteReservationConflict"
+                    } else {
+                        "modelConcurrencyLimit"
+                    };
+                    if !selection_audit_exclusions
+                        .iter()
+                        .any(|candidate| candidate.account_id == account.account_id)
+                    {
+                        selection_audit_exclusions.push(
+                            PoolRoutingSelectionAuditExcludedCandidate {
+                                account_id: account.account_id,
+                                account_name: account.display_name.clone(),
+                                reason_code: reason_code.to_string(),
+                            },
+                        );
+                    }
                     if cache_hit_protection.overflow_mode == CacheHitOverflowMode::Queue {
-                        return Ok(PoolAccountResolution::NoCandidate);
+                        for remaining in resolved_candidates {
+                            let Some(remaining_account) = remaining.resolved_account else {
+                                continue;
+                            };
+                            let remaining_limit = model_route_concurrency_limit(
+                                &state.pool,
+                                remaining_account.account_id,
+                                requested_model,
+                            )
+                            .await?;
+                            if !pool_routing_model_reservation_is_at_capacity(
+                                state,
+                                reservation_key,
+                                remaining_account.account_id,
+                                requested_model,
+                                remaining_limit,
+                            ) {
+                                continue;
+                            }
+                            reservation_conflict_count += 1;
+                            let remaining_reason = if model_route_requires_expired_cooldown_probe(
+                                &state.pool,
+                                remaining_account.account_id,
+                                requested_model,
+                            )
+                            .await?
+                            {
+                                "expiredCooldownProbe"
+                            } else if remaining_account.routing_source
+                                == PoolRoutingSelectionSource::StickyReuse
+                            {
+                                "stickyRouteReservationConflict"
+                            } else {
+                                "modelConcurrencyLimit"
+                            };
+                            if !selection_audit_exclusions.iter().any(|candidate| {
+                                candidate.account_id == remaining_account.account_id
+                            }) {
+                                selection_audit_exclusions.push(
+                                    PoolRoutingSelectionAuditExcludedCandidate {
+                                        account_id: remaining_account.account_id,
+                                        account_name: remaining_account.display_name,
+                                        reason_code: remaining_reason.to_string(),
+                                    },
+                                );
+                            }
+                        }
+                        return Ok(PoolAccountResolution::NoCandidate(
+                            no_candidate_audit_for_request(
+                                &state.pool,
+                                requested_model,
+                                reason_code,
+                                candidate_count,
+                                eligible_candidate_count,
+                                reservation_conflict_count,
+                                &selection_audit_exclusions,
+                            )
+                            .await?,
+                        ));
                     }
                     saw_model_concurrency_limited_candidate = true;
                     continue;
@@ -1809,7 +2040,26 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     // was not the limiting condition. A forced/sticky route with no legal
     // alternate must wait on the existing bounded no-account path.
     if saw_model_concurrency_limited_candidate {
-        return Ok(PoolAccountResolution::NoCandidate);
+        let terminal_reason_code = if selection_audit_exclusions
+            .iter()
+            .any(|candidate| candidate.reason_code == "expiredCooldownProbe")
+        {
+            "expiredCooldownProbe"
+        } else {
+            "modelConcurrencyLimit"
+        };
+        return Ok(PoolAccountResolution::NoCandidate(
+            no_candidate_audit_for_request(
+                &state.pool,
+                requested_model,
+                terminal_reason_code,
+                candidate_count,
+                eligible_candidate_count,
+                reservation_conflict_count,
+                &selection_audit_exclusions,
+            )
+            .await?,
+        ));
     }
 
     if sticky_route_still_reusable
@@ -1849,7 +2099,30 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         return Ok(PoolAccountResolution::Unavailable);
     }
 
-    Ok(PoolAccountResolution::NoCandidate)
+    Ok(PoolAccountResolution::NoCandidate(
+        no_candidate_audit_for_request(
+            &state.pool,
+            requested_model,
+            if selection_audit_exclusions.iter().any(|candidate| {
+                matches!(
+                    candidate.reason_code.as_str(),
+                    "policyExcluded"
+                        | "bindingConstraint"
+                        | "modelNotAllowed"
+                        | "capabilityUnsupported"
+                )
+            }) {
+                "policyExcluded"
+            } else {
+                "noEligibleCandidate"
+            },
+            candidate_count,
+            eligible_candidate_count,
+            reservation_conflict_count,
+            &selection_audit_exclusions,
+        )
+        .await?,
+    ))
 }
 
 async fn reserve_sticky_model_route(
@@ -1977,6 +2250,25 @@ mod tests {
         assert_eq!(value["selectedScore"]["modelRoutePenaltyCode"], "normal");
         assert_eq!(value["comparedScore"]["modelRoutePenalty"], 1);
         assert_eq!(value["comparedScore"]["modelRoutePenaltyCode"], "demoted");
+    }
+
+    #[test]
+    fn no_candidate_audit_keeps_full_reason_counts_with_bounded_details() {
+        let exclusions = (1..=15)
+            .map(|account_id| PoolRoutingSelectionAuditExcludedCandidate {
+                account_id,
+                account_name: format!("Account {account_id}"),
+                reason_code: "policyExcluded".to_string(),
+            })
+            .collect::<Vec<_>>();
+
+        let audit = no_candidate_audit("policyExcluded", 15, 0, 0, &exclusions);
+
+        assert_eq!(audit.excluded_reason_counts["policyExcluded"], 15);
+        assert_eq!(
+            audit.candidates.len(),
+            POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT
+        );
     }
 
     fn effective_rule(

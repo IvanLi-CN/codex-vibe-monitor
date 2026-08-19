@@ -696,7 +696,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                     }
                     Err(err) if is_reauth_error(&err) => {
                         let err_text = err.to_string();
-                        let now_iso = format_utc_iso(Utc::now());
+                        let now_iso = format_utc_iso_millis(Utc::now());
                         let proxy_snapshot = maintenance_proxy_snapshot_from_error(&err);
                         if !account_status_change_reason_is_enabled(
                             &state.pool,
@@ -769,7 +769,7 @@ pub(crate) async fn prepare_pool_account_with_scopes(
                             classify_sync_failure(&row.kind, &err_text);
                         match disposition {
                             UpstreamAccountFailureDisposition::HardUnavailable => {
-                                let now_iso = format_utc_iso(Utc::now());
+                                let now_iso = format_utc_iso_millis(Utc::now());
                                 if !account_status_change_reason_is_enabled(
                                     &state.pool,
                                     row.id,

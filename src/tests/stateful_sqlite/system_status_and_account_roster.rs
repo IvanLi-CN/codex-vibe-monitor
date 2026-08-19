@@ -1455,7 +1455,7 @@ pub(crate) async fn test_state_with_openai_base_and_proxy_timeouts(
 pub(crate) async fn test_state_with_openai_base_and_pool_no_available_wait(
     openai_base: Url,
     timeout: Duration,
-    poll_interval: Duration,
+    _poll_interval: Duration,
 ) -> Arc<AppState> {
     let mut config = test_config();
     config.openai_upstream_base_url = openai_base;
@@ -1464,7 +1464,6 @@ pub(crate) async fn test_state_with_openai_base_and_pool_no_available_wait(
         true,
         PoolNoAvailableWaitSettings {
             timeout,
-            poll_interval,
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -1486,7 +1485,6 @@ pub(crate) async fn test_state_from_config(
 fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettings {
     PoolNoAvailableWaitSettings {
         timeout: Duration::ZERO,
-        poll_interval: Duration::ZERO,
         retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
     }
 }
@@ -1632,6 +1630,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
@@ -1963,6 +1962,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
@@ -2021,6 +2021,7 @@ fn clone_state_with_retry_delay_overrides(
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: pool_group_delay,
@@ -2118,6 +2119,7 @@ pub(crate) async fn test_state_from_existing_pool(
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,

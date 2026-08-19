@@ -1470,8 +1470,43 @@ pub(crate) enum PoolAccountResolution {
     RateLimited,
     DegradedOnly,
     Unavailable,
-    NoCandidate,
+    NoCandidate(PoolRoutingNoCandidateAudit),
     BlockedByPolicy(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingNoCandidateAudit {
+    pub(crate) terminal_reason_code: String,
+    pub(crate) candidate_count: usize,
+    pub(crate) eligible_candidate_count: usize,
+    pub(crate) reservation_conflict_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_eligible_at: Option<String>,
+    pub(crate) excluded_reason_counts: std::collections::BTreeMap<String, usize>,
+    pub(crate) candidates: Vec<PoolRoutingNoCandidateAuditCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingNoCandidateAuditCandidate {
+    pub(crate) account_id: i64,
+    pub(crate) account_name: String,
+    pub(crate) reason_code: String,
+}
+
+impl PoolRoutingNoCandidateAudit {
+    pub(crate) fn no_eligible() -> Self {
+        Self {
+            terminal_reason_code: "noEligibleCandidate".to_string(),
+            candidate_count: 0,
+            eligible_candidate_count: 0,
+            reservation_conflict_count: 0,
+            next_eligible_at: None,
+            excluded_reason_counts: std::collections::BTreeMap::new(),
+            candidates: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
