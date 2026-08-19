@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use chrono::Timelike;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use sqlx::FromRow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -2354,6 +2354,22 @@ mod tests {
         );
         record.first_token_ms = Some(700.0);
         record
+    }
+
+    #[test]
+    fn api_invocation_timing_serialization_drops_invalid_values() {
+        let mut record = live_record("timing-safety", None, "success", None, 1);
+        record.t_total_ms = Some(-1.0);
+        record.first_token_ms = Some(0.0);
+        record.t_upstream_stream_ms = Some(0.0);
+        record.t_resp_parse_ms = Some(f64::INFINITY);
+
+        let payload = serde_json::to_value(&record).expect("serialize invocation timing");
+
+        assert!(payload["tTotalMs"].is_null());
+        assert_eq!(payload["firstTokenMs"], 0.0);
+        assert!(payload["tUpstreamStreamMs"].is_null());
+        assert!(payload["tRespParseMs"].is_null());
     }
 
     #[test]
@@ -4733,6 +4749,30 @@ pub(crate) enum BroadcastPayload {
     },
 }
 
+pub(crate) fn serialize_opt_finite_nonnegative_timing<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .serialize(serializer)
+}
+
+pub(crate) fn serialize_opt_finite_positive_timing<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .serialize(serializer)
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiInvocation {
@@ -4869,22 +4909,31 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) detail_prune_reason: Option<String>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_total_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_read_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_parse_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_connect_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_token_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) t_upstream_stream_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_resp_parse_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_persist_ms: Option<f64>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) created_at: String,

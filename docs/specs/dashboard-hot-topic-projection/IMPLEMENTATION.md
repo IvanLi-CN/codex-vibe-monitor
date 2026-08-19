@@ -15,6 +15,7 @@
 - working-conversations 卡片继续消费每 key 最多 16 条 recent 预览，但客户端固定映射 current/previous/earlier 三个槽位；缺失槽位使用两行中性占位，正常记录收紧为两行，失败记录保留无 label 的错误摘要行。
 - 三槽位卡片保留调用详情、账号跳转、键盘可达性、完整值 title/aria 与 blocked/in-flight 诊断；该 owner-facing 信息密度变化不修改 HTTP/SSE wire shape 或后端 recent 上限。
 - 工作对话卡片、上游账号卡片的 recent 行与账号详情调用记录共用紧凑延迟合同：四舍五入后达到 100 秒时省略小数。TTFT 使用 `firstTokenMs`，响应耗时始终使用 `tUpstreamStreamMs`；有限且非负的 `firstTokenMs`（包括 `0 ms`）有效，响应耗时只有有限且严格大于零有效，零、负值、非有限值和缺失响应统一显示 `--`。持久化列表与工作流详情/账号 workflow hydration 都以 `attempt_index DESC, id DESC` 选择唯一的最终真实 upstream attempt 来投影调用级 TTFT 和调用级用量，最终 attempt 必须是终态，排除 `budget_exhausted_final` 伪终态，较早 retry 保持 `--`；失败终态的 `0 ms` TTFT 仅在最终 attempt first-byte 同为零时保留，正值需要最终 attempt stream 证据。持久化 SQL、HTTP 运行时 hydration 叠加、SSE、客户端合并与 Demo mock 都保留有限的零值 TTFT；只有对应的有限、非负 TTFT 或有限、为正响应耗时可以输出或接受“响应中”，负值与非有限值显示不可用且不带成功色。JSON DTO 和客户端合并在输出前拒绝负值/非有限值，hourly `upstreamStream` rollup 拒绝零时长样本。格式化函数、成功色、汇总样本和工作流延迟选择分别复用这两条测量谓词，确保类型收窄不会让无效值进入绿色成功态或让无效流耗时覆盖有效 TTFT；SQL 汇总、P95、账号性能汇总也排除非有限值。请求或排队中的缺失字段显示 `--`，响应中必须保留已测得的 TTFT，未完成或无效的响应耗时显示 `--`，Demo workflow 直接透传该缺失值而不伪造流耗时，不再显示 `occurredAt` elapsed。账号详情的 TTFT 汇总和记录行使用 `text-success`，与其他成功指标对齐；深色主题的 `surface-card` 使用不透明的 base-100/base-200 混合，避免记录行出现浅色残留。
+- `ApiInvocation` 与 Prompt Cache preview 的全部 timing 字段使用 serde 有限值序列化器；账号 workflow 的嵌套 invocation record 复用同一 DTO 边界，因此 HTTP/SSE 不会泄漏 NaN、Infinity 或负值。账号 recent 行由全行原生调用按钮与 pointer-enabled 的账号、状态和错误子控件组成，避免 nested interactive axe 错误并保留详情、账号跳转、错误提示和键盘访问。
 - 账号详情由定位跳转激活的调用记录以顶层伪元素绘制聚焦轮廓，确保完整的四边圆角轮廓位于明细块之上；明细块和指标轨道继续各自裁切内部内容，Story 在截图前收起临时展开的响应体并释放其焦点。
 - working-conversations Storybook 默认强制 `conversations` workspace view；需要验证上游账号视图的 Story 显式覆盖该默认值，避免持久化 `localStorage` 状态污染后续截图与交互断言。移动组件证据边距复用 Storybook `bg-base-200`，不注入任意颜色。
 - Demo runtime 为账号详情请求页补齐 `call-attempts` 列表、筛选和分页 mock，并提供“已测得首 token、未完成流耗时”的响应中记录；页面级证据改从无登录、无真实后端依赖的 `ui_demo` 捕获，不再使用组件 Story 外壳。
@@ -22,6 +23,7 @@
 - System Status 以只读方式展示 healthy、deferred、hot-DB-read 与 cadence-miss；字段缺失时保持 unknown 兼容。
 - 完整 Dashboard topic bundle 的 10,000 mutation、双订阅共享 frame 与零 fallback/DB-read 门禁由 stateful topology test 覆盖。
 - Dashboard runtime 投影的延迟验证以 20 个更新样本的 `400ms` P95 为合同；单次传递、parallel-work materialization 与成功代理后的 SQLite sticky-route 写入使用独立的有界观察窗口，只隔离测试调度抖动，不放宽该产品目标或路由断言。
+- 质量门禁契约同时校验 records overlay、demo runtime 与 Dashboard working-conversations Playwright producer；三者使用隔离的结果目录和 HTML 输出目录，Dashboard 后台进程状态经 `dashboard_status` 汇总到最终退出码。
 
 ## Remaining Gaps
 

@@ -1092,6 +1092,8 @@ const currentAndPreviousResponse = createResponse([
       upstreamAccountPlanType: "plus",
       reasoningEffort: "medium",
       imageIntent: "yes",
+      cacheInputTokens: 144,
+      cost: 0.2,
       tTotalMs: 20_000,
     }),
     createPreview({
@@ -3861,40 +3863,36 @@ export const RunningOnlyConversation: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const currentSlot = canvasElement.querySelector(
-      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    const currentSlot = (
+      await within(canvasElement).findAllByTestId("dashboard-working-conversation-slot")
+    ).find((slot) => slot.getAttribute("data-slot-kind") === "current");
+    if (!currentSlot) {
+      throw new Error("missing current slot");
+    }
+    const currentSlotHeader = await within(currentSlot).findByTestId(
+      "dashboard-working-conversation-slot-header",
     );
-    expect(currentSlot).toBeInstanceOf(HTMLElement);
-    const currentSlotHeader = currentSlot?.querySelector(
-      '[data-testid="dashboard-working-conversation-slot-header"]',
-    );
-    expect(currentSlotHeader).toBeInstanceOf(HTMLElement);
-    expect(currentSlotHeader?.className).toContain("grid");
-    expect(currentSlotHeader?.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
-    expect(
-      currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
-    ).toBeInstanceOf(HTMLElement);
+    expect(currentSlotHeader).toHaveClass("grid");
+    expect(currentSlotHeader).toHaveClass("grid-cols-[minmax(0,1fr)_auto]");
+    await within(currentSlotHeader).findByTestId("invocation-phase-badge");
 
     const phaseLabels = Array.from(
-      canvasElement.querySelectorAll('[data-testid="invocation-phase-badge"]'),
+      currentSlot.querySelectorAll('[data-testid="invocation-phase-badge"]'),
     );
-    expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
+    expect(phaseLabels.length).toBeGreaterThanOrEqual(1);
     for (const phaseLabel of phaseLabels) {
-      const slotHeader = phaseLabel.closest(
-        '[data-testid="dashboard-working-conversation-slot-header"]',
-      );
-      expect(slotHeader).toBeInstanceOf(HTMLElement);
       expect(phaseLabel.className).toContain("inline-flex");
       expect(phaseLabel.className).toMatch(/\brounded-full\b/);
       expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
       expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
       expect(phaseLabel.className).not.toMatch(/\bborder/);
     }
-    const respondingBadge = currentSlotHeader?.querySelector(
+    const respondingBadge = currentSlotHeader.querySelector(
       '[data-testid="invocation-phase-badge"][data-phase="responding"]',
     );
-    expect(respondingBadge).toBeInstanceOf(HTMLElement);
+    expect(respondingBadge).not.toBeNull();
     const respondingIcon = respondingBadge?.querySelector('[data-testid="invocation-phase-icon"]');
+    expect(respondingIcon).not.toBeNull();
     expect(respondingIcon?.className).toContain("animate-spin");
   },
 };
@@ -4006,7 +4004,7 @@ export const FailedStatusIconDedup: Story = {
       expect.stringContaining("upstream gateway closed before first byte"),
     );
     expect(
-      slotHeader.querySelectorAll('[title*="upstream gateway closed before first byte"]'),
+      slotHeader.querySelectorAll('[aria-label*="upstream gateway closed before first byte"]'),
     ).toHaveLength(1);
     await expect(currentSlot).not.toHaveTextContent(/^失败$/);
     await expect(
@@ -4514,7 +4512,7 @@ export const UpstreamAccountTab: Story = {
     expect(
       recentSummaryLine.compareDocumentPosition(recentMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
-    await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "warning");
+    await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "error");
     await expect(recentSummaryCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(recentSummaryLine).toHaveAttribute(
       "title",
@@ -5801,11 +5799,14 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     );
 
     const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
-    if (!(firstRow instanceof HTMLButtonElement)) {
-      throw new Error("expected upstream recent row button");
+    const firstRowAction = firstRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    if (!(firstRowAction instanceof HTMLButtonElement)) {
+      throw new Error("expected upstream recent row action button");
     }
 
-    await userEvent.click(firstRow);
+    await userEvent.click(firstRowAction);
     await waitFor(() => {
       expect(
         document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,

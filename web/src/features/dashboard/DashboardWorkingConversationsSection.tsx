@@ -2025,7 +2025,7 @@ function AccountRecentInvocationRow({
         <button
           type="button"
           className={cn(
-            "inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+            "pointer-events-auto inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
             className,
           )}
           data-motion-surface
@@ -2142,16 +2142,6 @@ function AccountRecentInvocationRow({
     });
   }, [displayPromptCacheKey, onOpenConversation]);
 
-  const handleRowKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (event.target !== event.currentTarget) return;
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      handleOpenInvocation();
-    },
-    [handleOpenInvocation],
-  );
-
   const handleIdentityChipClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation();
@@ -2172,19 +2162,21 @@ function AccountRecentInvocationRow({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label={invocationActionLabel}
       data-testid="dashboard-upstream-account-recent-row"
       data-motion-surface
       className={cn(
-        "min-w-0 w-full max-w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        "relative min-w-0 w-full max-w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72",
         ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
       )}
-      onClick={handleOpenInvocation}
-      onKeyDown={handleRowKeyDown}
     >
-      <div className="flex min-w-0 flex-col gap-1.5">
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-recent-row-action"
+        aria-label={invocationActionLabel}
+        className="absolute inset-0 z-0 h-full w-full rounded-[0.85rem] appearance-none border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        onClick={handleOpenInvocation}
+      />
+      <div className="relative z-[1] pointer-events-none flex min-w-0 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           <div
             className="flex min-w-0 items-center gap-1.5"
@@ -2203,7 +2195,7 @@ function AccountRecentInvocationRow({
                 >
                   <button
                     type="button"
-                    className="min-w-0 max-w-full truncate whitespace-nowrap appearance-none"
+                    className="pointer-events-auto min-w-0 max-w-full truncate whitespace-nowrap appearance-none"
                     onClick={handleIdentityChipClick}
                     onKeyDown={handleIdentityChipKeyDown}
                   >
@@ -2235,6 +2227,7 @@ function AccountRecentInvocationRow({
             <InlineInvocationStatus
               meta={statusMeta}
               label={statusLabel}
+              className="pointer-events-auto"
               showLabel={false}
               detail={viewModel.collapsedErrorSummary}
             />
@@ -2319,7 +2312,7 @@ function AccountRecentInvocationRow({
       </div>
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
-          className="mt-1 max-w-full"
+          className="pointer-events-auto mt-1 max-w-full"
           textClassName="text-[10px] text-error"
           message={viewModel.collapsedErrorSummary}
         />

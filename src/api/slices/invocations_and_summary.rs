@@ -289,9 +289,11 @@ fn final_pool_attempt_timing_evidence_sql(
     let stream_evidence_sql = format!(
         "({stream_measured_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final'))"
     );
-    format!(
-        "LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('success', 'completed', 'warning_success', 'http_200') OR {stream_evidence_sql}{zero_first_token_sql}"
-    )
+    if column == "first_token_ms" {
+        format!("{stream_evidence_sql}{zero_first_token_sql}")
+    } else {
+        stream_evidence_sql
+    }
 }
 
 pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
@@ -361,6 +363,35 @@ fn finite_positive_timing(value: Option<f64>) -> Option<f64> {
     value.filter(|value| value.is_finite() && *value > 0.0)
 }
 
+fn final_attempt_status_is_terminal(status: &str) -> bool {
+    !matches!(
+        normalized_runtime_text(Some(status)).as_str(),
+        "" | "pending" | "running" | "budget_exhausted_final"
+    )
+}
+
+fn final_attempt_has_stream_evidence(attempt: &InvocationWorkflowAttemptRow) -> bool {
+    final_attempt_status_is_terminal(&attempt.status)
+        && finite_positive_timing(attempt.stream_latency_ms).is_some()
+}
+
+fn final_attempt_allows_zero_first_token(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+) -> bool {
+    finite_nonnegative_timing(record.first_token_ms) == Some(0.0)
+        && final_attempt_status_is_terminal(&attempt.status)
+        && finite_nonnegative_timing(attempt.first_byte_latency_ms) == Some(0.0)
+}
+
+fn final_attempt_has_first_token_evidence(
+    record: &ApiInvocation,
+    attempt: &InvocationWorkflowAttemptRow,
+) -> bool {
+    final_attempt_has_stream_evidence(attempt)
+        || final_attempt_allows_zero_first_token(record, attempt)
+}
+
 pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
     match normalized_runtime_text(record.status.as_deref()).as_str() {
         "pending" => Some(INVOCATION_LIVE_PHASE_QUEUED),
@@ -427,7 +458,7 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("attempts.id"));
         assert!(sql.contains("final_attempt.invoke_id = attempts.invoke_id"));
         assert!(sql.contains("final_attempt.occurred_at = attempts.occurred_at"));
-        assert!(sql.contains("attempts.status, ''))) IN ('success', 'completed'"));
+        assert!(!sql.contains("attempts.status, ''))) IN ('success', 'completed'"));
         assert!(sql.contains("attempts.stream_latency_ms > 0"));
         assert!(sql.contains("inv.first_token_ms = 0"));
         assert!(sql.contains(
@@ -440,12 +471,23 @@ mod invocation_live_phase_tests {
     }
 
     #[test]
+    fn final_attempt_timing_requires_stream_evidence_for_positive_values() {
+        let first_token_sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
+        let stream_sql = final_pool_invocation_timing_sql("inv", "t_upstream_stream_ms");
+
+        assert!(first_token_sql.contains("final_attempt.stream_latency_ms > 0"));
+        assert!(stream_sql.contains("final_attempt.stream_latency_ms > 0"));
+        assert!(!first_token_sql.contains("status, ''))) IN ('success', 'completed'"));
+        assert!(!stream_sql.contains("status, ''))) IN ('success', 'completed'"));
+    }
+
+    #[test]
     fn invocation_timing_sql_requires_a_real_final_attempt_measurement() {
         let sql = final_pool_invocation_timing_sql("inv", "first_token_ms");
 
-        assert!(!sql.contains("final_attempt.first_byte_latency_ms"));
+        assert!(sql.contains("final_attempt.first_byte_latency_ms"));
         assert!(sql.contains("final_attempt.stream_latency_ms > 0"));
-        assert!(!sql.contains("inv.first_token_ms = 0"));
+        assert!(sql.contains("inv.first_token_ms = 0"));
         assert!(sql.contains("inv.first_token_ms >= 0"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN inv.first_token_ms END END"));
@@ -3740,6 +3782,7 @@ pub(crate) struct InvocationWorkflowHero {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_account_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) total_duration_ms: Option<f64>,
     pub(crate) timeline_attempt_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3800,13 +3843,25 @@ pub(crate) struct InvocationWorkflowAttempt {
     pub(crate) error_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) downstream_error_message: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_finite_nonnegative_timing"
+    )]
     pub(crate) connect_latency_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_finite_nonnegative_timing"
+    )]
     pub(crate) first_token_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_finite_nonnegative_timing"
+    )]
     pub(crate) first_byte_latency_ms: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_finite_positive_timing"
+    )]
     pub(crate) stream_latency_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) upstream_request_id: Option<String>,
@@ -4538,7 +4593,13 @@ fn build_attempt_response_summary(
         "latencyMs": {
             "connect": finite_nonnegative_timing(attempt.connect_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_connect_ms).flatten())),
             "firstByte": finite_nonnegative_timing(attempt.first_byte_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_ttfb_ms).flatten())),
-            "stream": finite_positive_timing(attempt.stream_latency_ms.or_else(|| is_final_attempt.then_some(record.t_upstream_stream_ms).flatten())),
+            "stream": if is_final_attempt {
+                final_attempt_has_stream_evidence(attempt)
+                    .then_some(finite_positive_timing(attempt.stream_latency_ms))
+                    .flatten()
+            } else {
+                finite_positive_timing(attempt.stream_latency_ms)
+            },
             "requestRead": is_final_attempt.then_some(finite_nonnegative_timing(record.t_req_read_ms)).flatten(),
             "requestParse": is_final_attempt.then_some(finite_nonnegative_timing(record.t_req_parse_ms)).flatten(),
             "responseParse": is_final_attempt.then_some(finite_nonnegative_timing(record.t_resp_parse_ms)).flatten(),
@@ -4625,7 +4686,11 @@ fn build_workflow_attempt_from_row(
                 .flatten()
         })),
         first_token_ms: is_final_attempt
-            .then_some(finite_nonnegative_timing(record.first_token_ms))
+            .then(|| {
+                final_attempt_has_first_token_evidence(record, attempt)
+                    .then_some(finite_nonnegative_timing(record.first_token_ms))
+                    .flatten()
+            })
             .flatten(),
         first_byte_latency_ms: finite_nonnegative_timing(attempt.first_byte_latency_ms.or_else(
             || {
@@ -4634,11 +4699,13 @@ fn build_workflow_attempt_from_row(
                     .flatten()
             },
         )),
-        stream_latency_ms: finite_positive_timing(attempt.stream_latency_ms.or_else(|| {
-            is_final_attempt
-                .then_some(record.t_upstream_stream_ms)
+        stream_latency_ms: if is_final_attempt {
+            final_attempt_has_stream_evidence(attempt)
+                .then_some(finite_positive_timing(attempt.stream_latency_ms))
                 .flatten()
-        })),
+        } else {
+            finite_positive_timing(attempt.stream_latency_ms)
+        },
         upstream_request_id: attempt
             .upstream_request_id
             .clone()
@@ -9381,7 +9448,16 @@ where
          (LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') \
           AND ({failure_class_sql}) <> 'none'))"
     );
-    let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
+    let first_response_byte_components_valid_sql = format!(
+        "(t_req_read_ms IS NULL OR {}) AND (t_req_parse_ms IS NULL OR {}) AND (t_upstream_connect_ms IS NULL OR {}) AND (t_upstream_ttfb_ms IS NULL OR {})",
+        sqlite_nonnegative_timing_sql("t_req_read_ms"),
+        sqlite_nonnegative_timing_sql("t_req_parse_ms"),
+        sqlite_nonnegative_timing_sql("t_upstream_connect_ms"),
+        sqlite_nonnegative_timing_sql("t_upstream_ttfb_ms"),
+    );
+    let first_response_byte_total_sql = format!(
+        "CASE WHEN {first_response_byte_components_valid_sql} THEN COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0) END"
+    );
     let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
     let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
@@ -9487,6 +9563,7 @@ where
                 FROM filtered_invocations
                 WHERE {success_sql}
                   AND {ttfb_positive_sql}
+                  AND {first_response_byte_components_valid_sql}
             ) AS ranked
             WHERE ranked.row_num = 1
         ),
@@ -9526,8 +9603,8 @@ where
             CAST(COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS non_success_cost,
             COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_input_tokens,
             CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
-            SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
+            SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
             SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END) AS first_token_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
             SUM(CASE WHEN {success_sql} AND {total_nonnegative_sql} THEN 1 ELSE 0 END) AS total_latency_sample_count,
@@ -10181,7 +10258,16 @@ where
     let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
     let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
-    let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
+    let first_response_byte_components_valid_sql = format!(
+        "(t_req_read_ms IS NULL OR {}) AND (t_req_parse_ms IS NULL OR {}) AND (t_upstream_connect_ms IS NULL OR {}) AND (t_upstream_ttfb_ms IS NULL OR {})",
+        sqlite_nonnegative_timing_sql("t_req_read_ms"),
+        sqlite_nonnegative_timing_sql("t_req_parse_ms"),
+        sqlite_nonnegative_timing_sql("t_upstream_connect_ms"),
+        sqlite_nonnegative_timing_sql("t_upstream_ttfb_ms"),
+    );
+    let first_response_byte_total_sql = format!(
+        "CASE WHEN {first_response_byte_components_valid_sql} THEN COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0) END"
+    );
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -10206,8 +10292,8 @@ where
             CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {stream_positive_sql} THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_stream_duration_ms,
             SUM(CASE WHEN {success_like_sql} AND {stream_positive_sql} THEN 1 ELSE 0 END) AS performance_response_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {success_like_sql} AND {stream_positive_sql} THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_response_sum_ms,
-            SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} THEN 1 ELSE 0 END) AS performance_first_byte_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS performance_first_byte_sum_ms,
+            SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN 1 ELSE 0 END) AS performance_first_byte_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} AND {first_response_byte_components_valid_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS performance_first_byte_sum_ms,
             SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END) AS performance_first_token_sample_count,
             CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms ELSE 0 END), 0) AS REAL) AS performance_first_token_sum_ms,
             SUM(CASE WHEN {success_billed_sql} AND {total_nonnegative_sql} THEN 1 ELSE 0 END) AS performance_usage_duration_sample_count,
@@ -20670,6 +20756,23 @@ mod invocation_cost_audit_tests {
             .collect::<Vec<_>>();
         assert_eq!(mapped[0].first_token_ms, None);
         assert_eq!(mapped[1].first_token_ms, Some(840.0));
+    }
+
+    #[test]
+    fn final_attempt_status_without_stream_evidence_hides_invocation_timings() {
+        let mut record = sample_invocation(Some(0));
+        record.first_token_ms = Some(840.0);
+        let mut final_attempt = sample_attempt_row(1, "success");
+        final_attempt.first_byte_latency_ms = None;
+        final_attempt.stream_latency_ms = None;
+
+        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+
+        assert_eq!(mapped.first_token_ms, None);
+        assert_eq!(mapped.stream_latency_ms, None);
+
+        let summary = build_attempt_response_summary(&record, &final_attempt, None, None, true);
+        assert!(summary["latencyMs"]["stream"].is_null());
     }
 
     #[test]

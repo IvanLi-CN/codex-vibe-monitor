@@ -2337,8 +2337,12 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(firstRow instanceof HTMLElement)) {
       throw new Error("missing first upstream recent row");
     }
-    expect(firstRow.getAttribute("role")).toBe("button");
-    expect(firstRow.getAttribute("tabindex")).toBe("0");
+    expect(firstRow.getAttribute("role")).toBeNull();
+    expect(firstRow.getAttribute("tabindex")).toBeNull();
+    const rowAction = firstRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    expect(rowAction).toBeInstanceOf(HTMLButtonElement);
 
     const expectedConversationId = formatDashboardWorkingConversationSequenceId(
       `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
@@ -2374,7 +2378,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(endpointBadge?.className).toContain("min-h-5");
 
     act(() => {
-      firstRow.click();
+      (rowAction as HTMLButtonElement).click();
     });
 
     expect(onOpenInvocation).toHaveBeenCalledWith(

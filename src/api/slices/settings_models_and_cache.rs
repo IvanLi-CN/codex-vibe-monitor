@@ -164,12 +164,16 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) downstream_error_message: Option<String>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) connect_latency_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_token_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_byte_latency_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) stream_latency_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) upstream_request_id: Option<String>,
@@ -1082,14 +1086,23 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) billing_service_tier: Option<String>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_read_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_parse_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_connect_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_token_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) t_upstream_stream_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_resp_parse_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_persist_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_total_ms: Option<f64>,
 }
 
