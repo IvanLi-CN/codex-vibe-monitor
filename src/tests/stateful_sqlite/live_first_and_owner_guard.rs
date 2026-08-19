@@ -3224,7 +3224,6 @@ async fn endpoint_capability_persistence_error_releases_without_publishing_avail
     .expect("install capability persistence failure trigger");
 
     let availability = state.pool_routing_availability.subscribe();
-    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
     let reservation_key = "endpoint-capability-persistence-failure";
     reserve_test_pool_routing_account(&state, reservation_key, account_id).await;

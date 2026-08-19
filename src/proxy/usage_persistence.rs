@@ -4151,6 +4151,7 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                 state
                     .subscription_hub
                     .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+                state.pool_routing_snapshot.request_refresh();
             }
             if outcome.availability_increased {
                 let account_allows_publish = match metadata.upstream_account_id {
@@ -4173,9 +4174,7 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                     },
                     None => false,
                 };
-                if account_allows_publish {
-                    state.pool_routing_snapshot.request_refresh();
-                } else {
+                if !account_allows_publish {
                     debug!(
                         invoke_id = %record.invoke_id,
                         upstream_account_id = metadata.upstream_account_id,
