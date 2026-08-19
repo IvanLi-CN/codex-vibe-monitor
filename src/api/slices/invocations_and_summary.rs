@@ -289,8 +289,18 @@ fn final_pool_attempt_timing_evidence_sql(
     let live_first_token_sql = if column == "first_token_ms" {
         let first_token_sql =
             sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
+        let first_real_attempt_sql = format!(
+            " AND NOT EXISTS (SELECT 1 \
+                FROM pool_upstream_request_attempts AS prior_attempt \
+               WHERE prior_attempt.invoke_id = {attempt_ref}.invoke_id \
+                 AND prior_attempt.occurred_at = {attempt_ref}.occurred_at \
+                 AND LOWER(TRIM(COALESCE(prior_attempt.status, ''))) <> 'budget_exhausted_final' \
+                 AND (prior_attempt.attempt_index < {attempt_ref}.attempt_index \
+                      OR (prior_attempt.attempt_index = {attempt_ref}.attempt_index \
+                          AND prior_attempt.id < {attempt_ref}.id)))"
+        );
         format!(
-            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND (LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('running', 'responding') OR LOWER(TRIM(COALESCE({attempt_ref}.phase, ''))) IN ('responding', 'streaming_response')))"
+            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND (LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('running', 'responding') OR LOWER(TRIM(COALESCE({attempt_ref}.phase, ''))) IN ('responding', 'streaming_response')){first_real_attempt_sql})"
         )
     } else {
         String::new()
@@ -398,9 +408,11 @@ fn final_attempt_allows_zero_first_token(
 fn final_attempt_has_live_first_token_evidence(
     record: &ApiInvocation,
     attempt: &InvocationWorkflowAttemptRow,
+    is_first_real_attempt: bool,
 ) -> bool {
     normalized_runtime_text(record.status.as_deref()) == "running"
         && has_measured_first_token(record.first_token_ms)
+        && is_first_real_attempt
         && (matches!(
             normalized_runtime_text(Some(&attempt.status)).as_str(),
             "running" | "responding"
@@ -413,10 +425,11 @@ fn final_attempt_has_live_first_token_evidence(
 fn final_attempt_has_first_token_evidence(
     record: &ApiInvocation,
     attempt: &InvocationWorkflowAttemptRow,
+    is_first_real_attempt: bool,
 ) -> bool {
     final_attempt_has_stream_evidence(attempt)
         || final_attempt_allows_zero_first_token(record, attempt)
-        || final_attempt_has_live_first_token_evidence(record, attempt)
+        || final_attempt_has_live_first_token_evidence(record, attempt, is_first_real_attempt)
 }
 
 pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'static str> {
@@ -498,6 +511,7 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("inv.status, ''))) = 'running' AND inv.first_token_ms IS NOT NULL"));
         assert!(sql.contains("attempts.status, ''))) IN ('running', 'responding')"));
         assert!(sql.contains("attempts.phase, ''))) IN ('responding', 'streaming_response')"));
+        assert!(sql.contains("prior_attempt.attempt_index < attempts.attempt_index"));
         assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN CASE WHEN inv.first_token_ms IS NOT NULL"));
@@ -4708,6 +4722,7 @@ fn build_workflow_attempt_from_row(
     payload: Option<&Value>,
     usage_cost_audit: Option<&InvocationCostAudit>,
     is_final_attempt: bool,
+    is_first_real_attempt: bool,
 ) -> InvocationWorkflowAttempt {
     let invocation_failure_kind = is_final_attempt
         .then(|| record.failure_kind.clone())
@@ -4768,7 +4783,7 @@ fn build_workflow_attempt_from_row(
         })),
         first_token_ms: is_final_attempt
             .then(|| {
-                final_attempt_has_first_token_evidence(record, attempt)
+                final_attempt_has_first_token_evidence(record, attempt, is_first_real_attempt)
                     .then_some(finite_nonnegative_timing(record.first_token_ms))
                     .flatten()
             })
@@ -5264,6 +5279,10 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
             .filter(|attempt| !invocation_workflow_attempt_row_is_pseudo_terminal(attempt))
             .collect::<Vec<_>>();
         let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
+        let first_attempt_row_id = real_attempt_rows
+            .iter()
+            .min_by_key(|attempt| (attempt.attempt_index, attempt.attempt_row_id))
+            .map(|attempt| attempt.attempt_row_id);
         let last_success_attempt_row_id = last_success_like_attempt_row_id(&real_attempt_rows);
         let usage_cost_audit = (invocation_status_is_success_like(&record)
             && invocation_has_usage_evidence(&record))
@@ -5280,6 +5299,7 @@ pub(crate) async fn hydrate_upstream_account_attempt_workflow_entries(
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
                     final_attempt_row_id == Some(attempt_row.attempt_row_id),
+                    first_attempt_row_id == Some(attempt_row.attempt_row_id),
                 );
                 let attempt_id = attempt.attempt_id.clone()?;
                 Some((attempt_id, build_workflow_attempt_timeline_entry(attempt)))
@@ -5511,6 +5531,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                     payload_value.as_ref(),
                     None,
                     false,
+                    false,
                 )
             })
             .unwrap_or_else(|| {
@@ -5529,6 +5550,10 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         }
     } else {
         let final_attempt_row_id = final_real_attempt_row_id(&real_attempt_rows);
+        let first_attempt_row_id = real_attempt_rows
+            .iter()
+            .min_by_key(|attempt| (attempt.attempt_index, attempt.attempt_row_id))
+            .map(|attempt| attempt.attempt_row_id);
         real_attempt_rows
             .iter()
             .map(|attempt| {
@@ -5540,6 +5565,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
                         .then_some(usage_cost_audit.as_ref())
                         .flatten(),
                     final_attempt_row_id == Some(attempt.attempt_row_id),
+                    first_attempt_row_id == Some(attempt.attempt_row_id),
                 )
             })
             .collect::<Vec<_>>()
@@ -20783,6 +20809,7 @@ mod invocation_cost_audit_tests {
                     (last_success_attempt_row_id == Some(attempt.attempt_row_id))
                         .then_some(&usage_cost_audit),
                     attempt.attempt_index == 3,
+                    attempt.attempt_index == 1,
                 )
             })
             .collect::<Vec<_>>();
@@ -20833,6 +20860,7 @@ mod invocation_cost_audit_tests {
                     None,
                     None,
                     final_attempt_row_id == Some(attempt.attempt_row_id),
+                    attempt.attempt_row_id == 41,
                 )
             })
             .collect::<Vec<_>>();
@@ -20848,7 +20876,8 @@ mod invocation_cost_audit_tests {
         final_attempt.first_byte_latency_ms = None;
         final_attempt.stream_latency_ms = None;
 
-        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+        let mapped =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true, true);
 
         assert_eq!(mapped.first_token_ms, None);
         assert_eq!(mapped.stream_latency_ms, None);
@@ -20868,9 +20897,28 @@ mod invocation_cost_audit_tests {
         final_attempt.first_byte_latency_ms = Some(180.0);
         final_attempt.stream_latency_ms = None;
 
-        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+        let mapped =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true, true);
 
         assert_eq!(mapped.first_token_ms, Some(720.0));
+        assert_eq!(mapped.stream_latency_ms, None);
+    }
+
+    #[test]
+    fn pending_streaming_retry_does_not_reuse_prior_attempt_ttft() {
+        let mut record = sample_invocation(None);
+        record.status = Some("running".to_string());
+        record.first_token_ms = Some(720.0);
+        let mut final_attempt = sample_attempt_row(2, "pending");
+        final_attempt.phase = Some("streaming_response".to_string());
+        final_attempt.finished_at = None;
+        final_attempt.first_byte_latency_ms = Some(180.0);
+        final_attempt.stream_latency_ms = None;
+
+        let mapped =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true, false);
+
+        assert_eq!(mapped.first_token_ms, None);
         assert_eq!(mapped.stream_latency_ms, None);
     }
 
@@ -20881,7 +20929,8 @@ mod invocation_cost_audit_tests {
         final_attempt.stream_latency_ms = None;
         final_attempt.response_summary_json = Some(r#"{"latencyMs":{"stream":42.0}}"#.to_string());
 
-        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+        let mapped =
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true, true);
 
         assert!(
             mapped.response_summary.expect("stored response summary")["latencyMs"]["stream"]
@@ -20960,9 +21009,10 @@ mod invocation_cost_audit_tests {
         final_attempt.upstream_request_id = Some("W1scc2SS".to_string());
         final_attempt.upstream_response_body_bytes = Some(181_382);
 
-        let first = build_workflow_attempt_from_row(&record, &first_attempt, None, None, false);
+        let first =
+            build_workflow_attempt_from_row(&record, &first_attempt, None, None, false, true);
         let final_attempt =
-            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+            build_workflow_attempt_from_row(&record, &final_attempt, None, None, true, false);
 
         assert_eq!(
             first.response_summary.as_ref().expect("first summary")["headers"]["upstreamRequestId"],
@@ -21036,6 +21086,7 @@ mod invocation_cost_audit_tests {
             Some(&invocation_payload),
             None,
             false,
+            true,
         );
         let final_attempt = build_workflow_attempt_from_row(
             &record,
@@ -21043,6 +21094,7 @@ mod invocation_cost_audit_tests {
             Some(&invocation_payload),
             None,
             true,
+            false,
         );
 
         assert_eq!(
