@@ -844,6 +844,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 return Err(WsAttemptFailure {
                     status: StatusCode::BAD_GATEWAY,
                     message: format!("failed to build pool websocket upstream url: {err}"),
+                    failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                     retryable: false,
                     account_id: Some(account.account_id),
                     upstream_route_key: Some(account.upstream_route_key()),
