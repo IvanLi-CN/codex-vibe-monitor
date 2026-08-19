@@ -2779,13 +2779,32 @@ async fn rewrite_ws_downstream_message_model(
     message: AxumWsMessage,
     active_mapping: Option<&ResolvedModelMapping>,
 ) -> Result<(AxumWsMessage, Option<ResolvedModelMapping>)> {
-    let AxumWsMessage::Text(text) = message else {
-        return Ok((message, None));
+    let text = match message {
+        AxumWsMessage::Text(text) => text,
+        AxumWsMessage::Binary(_) if active_mapping.is_some() => {
+            return Err(anyhow!(
+                "websocket model mapping cannot safely rewrite a binary frame"
+            ));
+        }
+        AxumWsMessage::Binary(_) | AxumWsMessage::Ping(_) | AxumWsMessage::Pong(_) => {
+            return Ok((message, None));
+        }
+        AxumWsMessage::Close(_) => return Ok((message, None)),
     };
     let Ok(mut payload) = serde_json::from_str::<Value>(text.as_str()) else {
+        if active_mapping.is_some() {
+            return Err(anyhow!(
+                "websocket model mapping cannot safely parse a JSON frame"
+            ));
+        }
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(object) = payload.as_object() else {
+        if active_mapping.is_some() {
+            return Err(anyhow!(
+                "websocket model mapping requires a top-level JSON object"
+            ));
+        }
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(model) = object.get("model") else {
