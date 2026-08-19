@@ -139,14 +139,14 @@ async fn wait_for_p2_deadline(due_at: Option<Instant>) {
     }
 }
 
-fn p2_deadline_ready(
+fn p2_deadline_wait_armed(
     pending: &PendingBatch,
     p2_schedule: &P2ScheduleState,
     queued_p1_count: &AtomicUsize,
     p1_retry: &P1RetryState,
 ) -> bool {
     pending.has_p2()
-        && p2_schedule.ready(Instant::now())
+        && p2_schedule.due_at.is_some()
         && queued_p1_count.load(Ordering::SeqCst) == 0
         && p1_retry.ready(Instant::now())
 }
@@ -2326,7 +2326,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 }
             }
             _ = wait_for_p2_deadline(p2_schedule.due_at),
-                if p2_deadline_ready(&pending, &p2_schedule, &queued_p1_count, &p1_retry) =>
+                if p2_deadline_wait_armed(&pending, &p2_schedule, &queued_p1_count, &p1_retry) =>
             {
                 let priority_guard = p1_priority_gate
                     .lock()
@@ -4078,7 +4078,7 @@ mod tests {
             "queued P1 must be classified before checking the P2 deadline"
         );
         assert_eq!(pending.terminal_invocations.len(), 1);
-        assert!(p2_deadline_ready(
+        assert!(p2_deadline_wait_armed(
             &pending,
             &schedule,
             &queued_p1_count,
@@ -4119,7 +4119,7 @@ mod tests {
         );
 
         assert!(receiver.is_empty());
-        assert!(p2_deadline_ready(
+        assert!(p2_deadline_wait_armed(
             &pending,
             &schedule,
             &queued_p1_count,
@@ -4142,11 +4142,33 @@ mod tests {
         let mut p1_retry = P1RetryState::default();
         p1_retry.failed(0);
 
-        assert!(!p2_deadline_ready(
+        assert!(!p2_deadline_wait_armed(
             &pending,
             &schedule,
             &queued_p1_count,
             &p1_retry
+        ));
+    }
+
+    #[test]
+    fn p2_deadline_wait_registers_before_its_coalescing_deadline() {
+        let mut pending = PendingBatch::default();
+        pending.push(SqliteBatchWrite::AccountSelectedTouch(
+            BatchedAccountSelectedTouch {
+                account_id: 999_994,
+                selected_at: "2026-08-10T12:00:00Z".to_string(),
+            },
+        ));
+        let mut schedule = P2ScheduleState::default();
+        schedule.arm_if_idle(Instant::now());
+        let queued_p1_count = AtomicUsize::new(0);
+
+        assert!(!schedule.ready(Instant::now()));
+        assert!(p2_deadline_wait_armed(
+            &pending,
+            &schedule,
+            &queued_p1_count,
+            &P1RetryState::default()
         ));
     }
 
