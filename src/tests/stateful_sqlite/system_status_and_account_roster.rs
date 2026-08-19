@@ -831,6 +831,27 @@ async fn ensure_schema_normalizes_legacy_system_task_run_timestamps() {
     .expect("load normalized task timestamps");
     assert_eq!(started_at, "2026-06-22T00:45:00.125Z");
     assert_eq!(finished_at.as_deref(), Some("2026-06-22T09:15:00.000Z"));
+
+    sqlx::query(
+        "INSERT INTO system_task_runs (task_kind, trigger_kind, status, started_at, finished_at) VALUES ('startup_backfill_with_offset', 'fixture', 'success', '2026-06-22 08:45:00.125+08:00', '2026-06-22 17:15:00+08:00')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed space timestamps with explicit offsets");
+    ensure_schema(&pool)
+        .await
+        .expect("normalize offset timestamps");
+    let (offset_started_at, offset_finished_at): (String, Option<String>) = sqlx::query_as(
+        "SELECT started_at, finished_at FROM system_task_runs WHERE task_kind = 'startup_backfill_with_offset'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load normalized offset timestamps");
+    assert_eq!(offset_started_at, "2026-06-22T00:45:00.125Z");
+    assert_eq!(
+        offset_finished_at.as_deref(),
+        Some("2026-06-22T09:15:00.000Z")
+    );
 }
 
 #[tokio::test]

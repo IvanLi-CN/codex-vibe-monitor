@@ -4116,6 +4116,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             started_at = CASE
                 -- Pre-ISO task rows used the application's Shanghai-local timestamp convention.
                 WHEN started_at GLOB '????-??-?? ??:??:??*'
+                    AND (started_at GLOB '????-??-?? ??:??:??*Z'
+                        OR started_at GLOB '????-??-?? ??:??:??*[-+]??:??')
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+                WHEN started_at GLOB '????-??-?? ??:??:??*'
                     THEN COALESCE(
                         strftime('%Y-%m-%dT%H:%M:%fZ', started_at, '-8 hours'),
                         started_at
@@ -4124,6 +4128,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             END,
             finished_at = CASE
                 WHEN finished_at IS NULL THEN NULL
+                WHEN finished_at GLOB '????-??-?? ??:??:??*'
+                    AND (finished_at GLOB '????-??-?? ??:??:??*Z'
+                        OR finished_at GLOB '????-??-?? ??:??:??*[-+]??:??')
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
                 WHEN finished_at GLOB '????-??-?? ??:??:??*'
                     THEN COALESCE(
                         strftime('%Y-%m-%dT%H:%M:%fZ', finished_at, '-8 hours'),
