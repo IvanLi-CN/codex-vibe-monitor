@@ -3267,18 +3267,18 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
     progress_probe: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     progress_handler_ops: i32,
 ) -> Result<Option<Vec<i64>>> {
-    let Some(remaining_budget) =
-        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
-    else {
+    let selection_deadline = std::cmp::min(
+        selection_deadline,
+        started_at + ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET,
+    );
+    let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         return Ok(None);
     };
     let mut connection = match timeout(remaining_budget, pool.acquire()).await {
         Ok(connection) => connection?,
         Err(_) => return Ok(None),
     };
-    let Some(remaining_budget) =
-        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
-    else {
+    let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
     };
@@ -3296,9 +3296,7 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
         Instant::now() < selection_deadline
     });
     drop(handle);
-    let Some(remaining_budget) =
-        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
-    else {
+    let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now()) else {
         connection.close_on_drop();
         return Ok(None);
     };
@@ -3429,8 +3427,27 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             Ok(None)
         }
         Ok(Err(error)) => {
-            connection.lock_handle().await?.remove_progress_handler();
-            Err(error)
+            let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now())
+            else {
+                connection.close_on_drop();
+                return Ok(None);
+            };
+            let cleanup_succeeded = {
+                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                match cleanup_result {
+                    Ok(Ok(mut handle)) => {
+                        handle.remove_progress_handler();
+                        true
+                    }
+                    Ok(Err(_)) | Err(_) => false,
+                }
+            };
+            if cleanup_succeeded {
+                Err(error)
+            } else {
+                connection.close_on_drop();
+                Ok(None)
+            }
         }
         Ok(Ok(_selection)) if Instant::now() >= selection_deadline => {
             connection.close_on_drop();
@@ -3442,8 +3459,27 @@ pub(crate) async fn select_active_account_activity_v2_priority_buckets_with_dead
             Ok(None)
         }
         Ok(Ok(selection)) => {
-            connection.lock_handle().await?.remove_progress_handler();
-            Ok(Some(selection))
+            let Some(remaining_budget) = selection_deadline.checked_duration_since(Instant::now())
+            else {
+                connection.close_on_drop();
+                return Ok(None);
+            };
+            let cleanup_succeeded = {
+                let cleanup_result = timeout(remaining_budget, connection.lock_handle()).await;
+                match cleanup_result {
+                    Ok(Ok(mut handle)) => {
+                        handle.remove_progress_handler();
+                        true
+                    }
+                    Ok(Err(_)) | Err(_) => false,
+                }
+            };
+            if cleanup_succeeded {
+                Ok(Some(selection))
+            } else {
+                connection.close_on_drop();
+                Ok(None)
+            }
         }
     }
 }
@@ -3462,7 +3498,15 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
     if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
         return Ok(ActiveAccountActivityV2RepairOutcome::default());
     }
-    let mut generation_tx = pool.begin().await?;
+    let Some(remaining_budget) =
+        ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+    else {
+        return Ok(ActiveAccountActivityV2RepairOutcome::default());
+    };
+    let mut generation_tx = match timeout(remaining_budget, pool.begin()).await {
+        Ok(tx) => tx?,
+        Err(_) => return Ok(ActiveAccountActivityV2RepairOutcome::default()),
+    };
     ensure_account_activity_v2_repair_generation_tx(generation_tx.as_mut()).await?;
     generation_tx.commit().await?;
     let current_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
@@ -3482,7 +3526,15 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
         if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
             break;
         }
-        let mut tx = pool.begin().await?;
+        let Some(remaining_budget) =
+            ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET.checked_sub(started_at.elapsed())
+        else {
+            break;
+        };
+        let mut tx = match timeout(remaining_budget, pool.begin()).await {
+            Ok(tx) => tx?,
+            Err(_) => break,
+        };
         ensure_account_activity_v2_repair_generation_tx(tx.as_mut()).await?;
         sqlx::query(
                 r#"
