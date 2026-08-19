@@ -290,7 +290,7 @@ fn final_pool_attempt_timing_evidence_sql(
         let first_token_sql =
             sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
         format!(
-            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('running', 'responding'))"
+            " OR (LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'running' AND {first_token_sql} AND (LOWER(TRIM(COALESCE({attempt_ref}.status, ''))) IN ('running', 'responding') OR LOWER(TRIM(COALESCE({attempt_ref}.phase, ''))) IN ('responding', 'streaming_response')))"
         )
     } else {
         String::new()
@@ -342,8 +342,10 @@ fn has_positive_timing(values: &[Option<f64>]) -> bool {
 
 fn sqlite_finite_timing_sql(column: &str) -> String {
     // SQLite does not expose an isfinite() predicate. For REAL infinity, x - x becomes NULL;
-    // finite values keep a numeric zero, so this rejects non-finite persisted measurements.
-    format!("({column} - {column}) IS NOT NULL")
+    // finite values keep a numeric zero, so this rejects non-finite persisted measurements. The
+    // explicit numeric type guard is required because REAL-affinity columns can still contain
+    // text such as "Infinity" or "NaN".
+    format!("typeof({column}) IN ('integer', 'real') AND ({column} - {column}) IS NOT NULL")
 }
 
 fn sqlite_nonnegative_timing_sql(column: &str) -> String {
@@ -399,10 +401,13 @@ fn final_attempt_has_live_first_token_evidence(
 ) -> bool {
     normalized_runtime_text(record.status.as_deref()) == "running"
         && has_measured_first_token(record.first_token_ms)
-        && matches!(
+        && (matches!(
             normalized_runtime_text(Some(&attempt.status)).as_str(),
             "running" | "responding"
-        )
+        ) || matches!(
+            normalized_runtime_text(attempt.phase.as_deref()).as_str(),
+            "responding" | "streaming_response"
+        ))
 }
 
 fn final_attempt_has_first_token_evidence(
@@ -485,12 +490,14 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("final_attempt.occurred_at = attempts.occurred_at"));
         assert!(!sql.contains("attempts.status, ''))) IN ('success', 'completed'"));
         assert!(sql.contains("attempts.stream_latency_ms > 0"));
+        assert!(sql.contains("typeof(inv.first_token_ms) IN ('integer', 'real')"));
         assert!(sql.contains("inv.first_token_ms = 0"));
         assert!(sql.contains(
             "attempts.status, ''))) NOT IN ('', 'pending', 'running', 'budget_exhausted_final')"
         ));
         assert!(sql.contains("inv.status, ''))) = 'running' AND inv.first_token_ms IS NOT NULL"));
         assert!(sql.contains("attempts.status, ''))) IN ('running', 'responding')"));
+        assert!(sql.contains("attempts.phase, ''))) IN ('responding', 'streaming_response')"));
         assert!(sql.contains("final_attempt.status, ''))) <> 'budget_exhausted_final'"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN CASE WHEN inv.first_token_ms IS NOT NULL"));
@@ -20851,12 +20858,13 @@ mod invocation_cost_audit_tests {
     }
 
     #[test]
-    fn running_final_attempt_keeps_measured_ttft_without_stream_duration() {
+    fn pending_streaming_final_attempt_keeps_measured_ttft_without_stream_duration() {
         let mut record = sample_invocation(None);
         record.status = Some("running".to_string());
         record.first_token_ms = Some(720.0);
-        let mut final_attempt = sample_attempt_row(1, "running");
-        final_attempt.phase = Some(INVOCATION_LIVE_PHASE_RESPONDING.to_string());
+        let mut final_attempt = sample_attempt_row(1, "pending");
+        final_attempt.phase = Some("streaming_response".to_string());
+        final_attempt.finished_at = None;
         final_attempt.first_byte_latency_ms = Some(180.0);
         final_attempt.stream_latency_ms = None;
 
