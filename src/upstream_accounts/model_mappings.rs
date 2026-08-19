@@ -111,10 +111,7 @@ pub(crate) fn resolve_compiled_model_mapping(
     mappings: &[CompiledModelMapping],
     requested_model: Option<&str>,
 ) -> Option<ResolvedModelMapping> {
-    let requested_model = requested_model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?
-        .to_ascii_lowercase();
+    let requested_model = requested_model?.trim().to_ascii_lowercase();
     let mut best: Option<(usize, &CompiledModelMapping)> = None;
     for (index, mapping) in mappings.iter().enumerate() {
         if !model_mapping_pattern_matches_ascii_lowercase(
@@ -477,6 +474,18 @@ mod tests {
                 .target_model,
             "ascii"
         );
+    }
+
+    #[test]
+    fn wildcard_mapping_can_match_an_empty_model_but_none_means_no_model() {
+        let mappings = vec![mapping("*", "empty-target", true)];
+        assert_eq!(
+            resolve_model_mapping(&mappings, Some(""))
+                .expect("wildcard should match empty model")
+                .target_model,
+            "empty-target"
+        );
+        assert_eq!(resolve_model_mapping(&mappings, None), None);
     }
 
     #[test]
