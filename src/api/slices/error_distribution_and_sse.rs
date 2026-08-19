@@ -1763,16 +1763,24 @@ pub(crate) async fn fetch_perf_stats(
             )
             .await?;
             for row in rows {
+                let Some((sample_count, sum_ms, max_ms, histogram)) =
+                    validated_proxy_perf_stage_rollup(
+                        &row.stage,
+                        row.sample_count,
+                        row.sum_ms,
+                        row.max_ms,
+                        decode_approx_histogram(&row.histogram),
+                    )
+                else {
+                    continue;
+                };
                 let entry = by_stage
                     .entry(row.stage)
                     .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-                entry.0 += row.sample_count;
-                entry.1 += row.sum_ms;
-                entry.2 = entry.2.max(row.max_ms);
-                merge_approx_histogram_into(
-                    &mut entry.3,
-                    &decode_approx_histogram(&row.histogram),
-                )?;
+                entry.0 += sample_count;
+                entry.1 += sum_ms;
+                entry.2 = entry.2.max(max_ms);
+                merge_approx_histogram_into(&mut entry.3, &histogram)?;
             }
             let archived_start = Utc
                 .timestamp_opt(range_start_epoch, 0)
@@ -1791,13 +1799,24 @@ pub(crate) async fn fetch_perf_stats(
                 )
                 .await?;
             for (stage, delta) in archived_perf {
+                let Some((sample_count, sum_ms, max_ms, histogram)) =
+                    validated_proxy_perf_stage_rollup(
+                        &stage,
+                        delta.sample_count,
+                        delta.sum_ms,
+                        delta.max_ms,
+                        delta.histogram,
+                    )
+                else {
+                    continue;
+                };
                 let entry = by_stage
                     .entry(stage)
                     .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-                entry.0 += delta.sample_count;
-                entry.1 += delta.sum_ms;
-                entry.2 = entry.2.max(delta.max_ms);
-                merge_approx_histogram_into(&mut entry.3, &delta.histogram)?;
+                entry.0 += sample_count;
+                entry.1 += sum_ms;
+                entry.2 = entry.2.max(max_ms);
+                merge_approx_histogram_into(&mut entry.3, &histogram)?;
             }
         }
         for record in exact_records {

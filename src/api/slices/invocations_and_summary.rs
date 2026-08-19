@@ -417,6 +417,9 @@ pub(crate) fn runtime_invocation_live_phase(record: &ApiInvocation) -> Option<&'
 pub(crate) fn effective_runtime_invocation_live_phase(
     record: &ApiInvocation,
 ) -> Option<&'static str> {
+    if normalized_runtime_text(record.status.as_deref()) == "pending" {
+        return Some(INVOCATION_LIVE_PHASE_QUEUED);
+    }
     let inferred_phase = runtime_invocation_live_phase(record)?;
     if inferred_phase == INVOCATION_LIVE_PHASE_RESPONDING {
         return Some(inferred_phase);
@@ -3923,6 +3926,53 @@ fn parse_summary_json_or_fallback(
     }
 }
 
+fn sanitize_response_summary_timing(
+    mut summary: Value,
+    attempt: &InvocationWorkflowAttemptRow,
+    is_final_attempt: bool,
+) -> Value {
+    let Some(latency) = summary.get_mut("latencyMs").and_then(Value::as_object_mut) else {
+        return summary;
+    };
+
+    for key in [
+        "connect",
+        "firstByte",
+        "requestRead",
+        "requestParse",
+        "responseParse",
+        "persist",
+        "total",
+    ] {
+        if latency.get(key).is_some_and(|value| {
+            value
+                .as_f64()
+                .is_none_or(|value| !value.is_finite() || value < 0.0)
+        }) {
+            latency.insert(key.to_string(), Value::Null);
+        }
+    }
+
+    if is_final_attempt || latency.contains_key("stream") {
+        let stream = if is_final_attempt {
+            final_attempt_has_stream_evidence(attempt)
+                .then_some(finite_positive_timing(attempt.stream_latency_ms))
+                .flatten()
+        } else {
+            latency
+                .get("stream")
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0)
+        };
+        latency.insert(
+            "stream".to_string(),
+            stream.map_or(Value::Null, |value| json!(value)),
+        );
+    }
+
+    summary
+}
+
 fn merge_attempt_request_summary_json(raw: Option<&str>, fallback: Value) -> Option<Value> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Some(fallback);
@@ -4725,7 +4775,8 @@ fn build_workflow_attempt_from_row(
                     is_final_attempt,
                 )
             },
-        ),
+        )
+        .map(|summary| sanitize_response_summary_timing(summary, attempt, is_final_attempt)),
     }
 }
 
@@ -8296,7 +8347,7 @@ impl DashboardActivityCurrentMinuteAccumulator {
         }
         if let Some(response_duration_ms) = row
             .t_upstream_stream_ms
-            .filter(|value| value.is_finite() && *value >= 0.0)
+            .filter(|value| value.is_finite() && *value > 0.0)
         {
             self.response_duration_sample_count += 1;
             self.response_duration_sum_ms += response_duration_ms;
@@ -11319,7 +11370,7 @@ fn runtime_upstream_account_activity_preview_row_with_terminal(
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
         first_token_ms: record.first_token_ms,
-        t_upstream_stream_ms: record.t_upstream_stream_ms,
+        t_upstream_stream_ms: finite_positive_timing(record.t_upstream_stream_ms),
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,
         t_total_ms: record.t_total_ms,
@@ -20773,6 +20824,33 @@ mod invocation_cost_audit_tests {
 
         let summary = build_attempt_response_summary(&record, &final_attempt, None, None, true);
         assert!(summary["latencyMs"]["stream"].is_null());
+    }
+
+    #[test]
+    fn stored_response_summary_cannot_restore_missing_final_stream_evidence() {
+        let record = sample_invocation(None);
+        let mut final_attempt = sample_attempt_row(1, "success");
+        final_attempt.stream_latency_ms = None;
+        final_attempt.response_summary_json = Some(r#"{"latencyMs":{"stream":42.0}}"#.to_string());
+
+        let mapped = build_workflow_attempt_from_row(&record, &final_attempt, None, None, true);
+
+        assert!(
+            mapped.response_summary.expect("stored response summary")["latencyMs"]["stream"]
+                .is_null()
+        );
+    }
+
+    #[test]
+    fn pending_runtime_phase_ignores_stale_requesting_metadata() {
+        let mut record = sample_invocation(None);
+        record.status = Some("pending".to_string());
+        record.live_phase = Some(INVOCATION_LIVE_PHASE_REQUESTING.to_string());
+
+        assert_eq!(
+            effective_runtime_invocation_live_phase(&record),
+            Some(INVOCATION_LIVE_PHASE_QUEUED)
+        );
     }
 
     #[test]

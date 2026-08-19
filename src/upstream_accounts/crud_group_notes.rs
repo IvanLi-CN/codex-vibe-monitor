@@ -58,7 +58,9 @@ struct ModelRoutingAttemptRow {
     status: String,
     http_status: Option<i64>,
     failure_kind: Option<String>,
-    total_latency_ms: Option<f64>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
     event_action: Option<String>,
     event_source: Option<String>,
     event_reason_code: Option<String>,
@@ -354,7 +356,11 @@ fn model_routing_timeline_entry_from_attempt(
         .as_deref()
         .and_then(|value| serde_json::from_str::<PoolRoutingSelectionAudit>(value).ok())
         .map(sanitize_model_routing_selection_audit);
-    let total_latency_ms = row.total_latency_ms.filter(|value| *value > 0.0);
+    let total_latency_ms = model_routing_total_latency_ms(
+        row.connect_latency_ms,
+        row.first_byte_latency_ms,
+        row.stream_latency_ms,
+    );
     let record = ModelRoutingTimelineRecord {
         id: format!("attempt:{}", row.id),
         kind: "attempt".to_string(),
@@ -387,6 +393,32 @@ fn model_routing_timeline_entry_from_attempt(
         id: row.id,
         record,
     }
+}
+
+fn model_routing_total_latency_ms(
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+) -> Option<f64> {
+    let normalize_component = |value: Option<f64>, strictly_positive: bool| {
+        value.map_or(Some(0.0), |value| {
+            (value.is_finite()
+                && if strictly_positive {
+                    value > 0.0
+                } else {
+                    value >= 0.0
+                })
+            .then_some(value)
+        })
+    };
+    let connect_latency_ms = normalize_component(connect_latency_ms, false)?;
+    let first_byte_latency_ms = normalize_component(first_byte_latency_ms, false)?;
+    let stream_latency_ms = normalize_component(stream_latency_ms, true)?;
+    let total_latency_ms = connect_latency_ms + first_byte_latency_ms + stream_latency_ms;
+    total_latency_ms
+        .is_finite()
+        .then_some(total_latency_ms)
+        .filter(|value| *value > 0.0)
 }
 
 fn sanitize_model_routing_selection_audit(
@@ -471,7 +503,9 @@ async fn load_model_routing_timeline_entries(
                attempts.status,
                attempts.http_status,
                attempts.failure_kind,
-               CAST(COALESCE(attempts.connect_latency_ms, 0) + COALESCE(attempts.first_byte_latency_ms, 0) + COALESCE(attempts.stream_latency_ms, 0) AS REAL) AS total_latency_ms,
+               attempts.connect_latency_ms,
+               attempts.first_byte_latency_ms,
+               attempts.stream_latency_ms,
                event.action AS event_action,
                event.source AS event_source,
                event.reason_code AS event_reason_code,
@@ -2246,5 +2280,25 @@ mod model_routing_live_api_tests {
         assert_eq!(decoded.kind_rank, cursor.kind_rank);
         assert_eq!(decoded.id, cursor.id);
         assert!(decode_model_routing_history_cursor("not-a-cursor").is_err());
+    }
+
+    #[test]
+    fn model_routing_total_latency_requires_valid_stream_evidence() {
+        assert_eq!(
+            model_routing_total_latency_ms(Some(1.0), Some(2.0), Some(3.0)),
+            Some(6.0)
+        );
+        assert_eq!(
+            model_routing_total_latency_ms(Some(1.0), Some(2.0), Some(0.0)),
+            None
+        );
+        assert_eq!(
+            model_routing_total_latency_ms(Some(-1.0), Some(2.0), Some(3.0)),
+            None
+        );
+        assert_eq!(
+            model_routing_total_latency_ms(Some(f64::INFINITY), Some(2.0), Some(3.0)),
+            None
+        );
     }
 }
