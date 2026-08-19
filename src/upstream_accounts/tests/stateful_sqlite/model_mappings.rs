@@ -34,6 +34,38 @@ async fn empty_requested_model_uses_an_empty_model_health_key() {
 }
 
 #[tokio::test]
+async fn empty_model_cooldown_expiry_is_visible_to_failover() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_api_key_account(&state.pool, "Empty model cooldown").await;
+    observe_model_route_seen(&state.pool, account_id, Some(""))
+        .await
+        .expect("record empty model route");
+    let future = (Utc::now() + chrono::Duration::seconds(30)).to_rfc3339();
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = ?1, cooldown_until = ?2 WHERE account_id = ?3 AND model = ?4",
+    )
+    .bind(MODEL_ROUTE_STATE_COOLING_DOWN)
+    .bind(&future)
+    .bind(account_id)
+    .bind("")
+    .execute(&state.pool)
+    .await
+    .expect("mark empty model route cooling down");
+
+    assert_eq!(
+        earliest_model_route_cooldown_expiry(&state.pool, Some(""), &[account_id])
+            .await
+            .expect("load empty model cooldown expiry"),
+        Some(future)
+    );
+    assert!(
+        !model_route_requires_expired_cooldown_probe(&state.pool, account_id, Some(""))
+            .await
+            .expect("check future empty model cooldown")
+    );
+}
+
+#[tokio::test]
 async fn post_create_sync_warms_empty_model_mapping_cache_entry() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     seed_pool_routing_api_key(&state, "pool-model-cache-key").await;

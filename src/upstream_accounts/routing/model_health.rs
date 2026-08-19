@@ -455,7 +455,7 @@ pub(crate) async fn model_route_requires_expired_cooldown_probe(
     account_id: i64,
     model: Option<&str>,
 ) -> Result<bool> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(false);
     };
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
@@ -482,7 +482,7 @@ pub(crate) async fn earliest_model_route_cooldown_expiry(
     model: Option<&str>,
     account_ids: &[i64],
 ) -> Result<Option<String>> {
-    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(model) = model.map(str::trim) else {
         return Ok(None);
     };
     if account_ids.is_empty() {
