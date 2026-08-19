@@ -736,6 +736,8 @@ struct SubscriptionHubState {
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
     summary_projection: Option<Arc<SummaryProjection>>,
+    summary_http_interest_at: Option<Instant>,
+    summary_http_all_time_interest_at: Option<Instant>,
     summary_projection_revision: u64,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
     prompt_cache_prebaseline_key_hydrations: HashMap<String, BTreeSet<String>>,
@@ -3012,6 +3014,42 @@ impl SubscriptionHub {
 
     pub(crate) async fn summary_projection(&self) -> Option<Arc<SummaryProjection>> {
         self.state.lock().await.summary_projection.clone()
+    }
+
+    pub(crate) async fn note_summary_http_interest(&self, all_time: bool) {
+        let mut guard = self.state.lock().await;
+        guard.summary_http_interest_at = Some(Instant::now());
+        if all_time {
+            guard.summary_http_all_time_interest_at = Some(Instant::now());
+        }
+    }
+
+    pub(crate) async fn has_summary_owner(&self) -> bool {
+        let guard = self.state.lock().await;
+        guard
+            .active_topic_names
+            .get("stats.summary.current")
+            .copied()
+            .unwrap_or_default()
+            > 0
+            || guard
+                .summary_http_interest_at
+                .is_some_and(|at| at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+    }
+
+    pub(crate) async fn has_summary_all_time_owner(&self) -> bool {
+        let guard = self.state.lock().await;
+        guard.active_topics.iter().any(|(topic_key, topic)| {
+            matches!(topic, SubscriptionTopic::SummaryCurrent { window, .. } if window == "all")
+                && guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+        }) || guard
+            .summary_http_all_time_interest_at
+            .is_some_and(|at| at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
     }
 
     pub(crate) fn try_lock_summary_projection_refresh(
