@@ -1578,12 +1578,12 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
         .as_ref()
         .cloned()
         .expect("pool routing runtime cache should be initialized before mapping save");
-    let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool)
-        .await
-        .map_err(internal_error_tuple)?;
-    model_routing
-        .mappings_by_account
-        .insert(id, compile_model_mappings(&mappings));
+    let model_routing = build_pool_model_routing_runtime_cache_with_mapping_override(
+        &state.pool,
+        Some((id, &mappings)),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool

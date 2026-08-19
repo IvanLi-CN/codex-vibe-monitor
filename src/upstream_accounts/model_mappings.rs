@@ -193,6 +193,13 @@ pub(crate) fn account_accepts_requested_model_or_mapping(
 pub(crate) async fn build_pool_model_routing_runtime_cache(
     pool: &Pool<Sqlite>,
 ) -> Result<PoolModelRoutingRuntimeCache> {
+    build_pool_model_routing_runtime_cache_with_mapping_override(pool, None).await
+}
+
+pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override(
+    pool: &Pool<Sqlite>,
+    mapping_override: Option<(i64, &[ModelMapping])>,
+) -> Result<PoolModelRoutingRuntimeCache> {
     let query = format!(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} \
          FROM pool_upstream_accounts \
@@ -206,12 +213,16 @@ pub(crate) async fn build_pool_model_routing_runtime_cache(
     let mappings_by_account = rows
         .iter()
         .map(|row| {
-            (
-                row.id,
-                compile_model_mappings(&decode_model_mappings_json(
-                    row.model_mappings_json.as_deref(),
-                )),
-            )
+            let compiled_mappings = mapping_override
+                .as_ref()
+                .filter(|(account_id, _)| *account_id == row.id)
+                .map(|(_, mappings)| compile_model_mappings(mappings))
+                .unwrap_or_else(|| {
+                    compile_model_mappings(&decode_model_mappings_json(
+                        row.model_mappings_json.as_deref(),
+                    ))
+                });
+            (row.id, compiled_mappings)
         })
         .collect::<HashMap<_, _>>();
     let routing_account_ids = rows

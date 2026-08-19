@@ -359,3 +359,50 @@ async fn model_mapping_cache_warms_only_first_ten_finite_source_models() {
     );
     assert!(!cache.warmed_model_account_ids.contains_key("target-only"));
 }
+
+#[tokio::test]
+async fn model_mapping_cache_override_warms_mapping_only_account() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let mapped_account_id = insert_api_key_account(&state.pool, "Mapped warm account").await;
+    let source_account_id = insert_api_key_account(&state.pool, "Source warm account").await;
+    for (account_id, models) in [
+        (mapped_account_id, r#"["different-model"]"#),
+        (source_account_id, r#"["finite-0"]"#),
+    ] {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET policy_available_models_json = ?2,
+                policy_available_models_mode = 'allowlist'
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(models)
+        .execute(&state.pool)
+        .await
+        .expect("seed warm account policy");
+    }
+
+    let mappings = vec![mapping("finite-0", "mapped-target", true)];
+    let cache = build_pool_model_routing_runtime_cache_with_mapping_override(
+        &state.pool,
+        Some((mapped_account_id, &mappings)),
+    )
+    .await
+    .expect("build mapping override cache");
+
+    assert!(
+        cache
+            .warmed_model_account_ids
+            .get("finite-0")
+            .is_some_and(|account_ids| account_ids.contains(&mapped_account_id)),
+        "mapping-only account should be present in the warmed source-model index"
+    );
+    assert!(
+        !cache
+            .available_models
+            .iter()
+            .any(|model| model == "mapped-target")
+    );
+}

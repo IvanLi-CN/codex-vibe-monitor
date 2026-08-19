@@ -2782,9 +2782,7 @@ async fn rewrite_ws_downstream_message_model(
         return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(requested_model) = model.as_str().map(str::to_string) else {
-        return Err(anyhow!(
-            "websocket model mapping requires a top-level string model field"
-        ));
+        return Ok((AxumWsMessage::Text(text), None));
     };
     let Some(mapping) =
         load_model_mapping_for_account(state, account_id, Some(&requested_model)).await?
