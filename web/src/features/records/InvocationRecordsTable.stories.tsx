@@ -864,15 +864,15 @@ export const TtftAndResponseDuration: Story = {
     docs: {
       description: {
         story:
-          "Focused network view for record latency semantics. The first row displays `TTFT = 9.36 s` and independent `响应耗时 = 10.08 s`, while `上游首字节 = 0.0 ms` remains available only after expanding diagnostics.",
+          "Focused network view for record latency semantics. The first row displays `TTFT = 9.4 s` and independent `响应耗时 = 10.1 s`, while `上游首字节 = 0.0 ms` remains available only after expanding diagnostics.",
       },
     },
   },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByText(/9\.36 s/).length).toBeGreaterThan(0);
-    await expect(canvas.getAllByText(/10\.08 s/).length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText(/9\.4 s/).length).toBeGreaterThan(0);
+    await expect(canvas.getAllByText(/10\.1 s/).length).toBeGreaterThan(0);
   },
 };
 

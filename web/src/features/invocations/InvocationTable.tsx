@@ -23,6 +23,10 @@ import {
 } from "../../lib/invocation";
 import { resolveInvocationLivePhase } from "../../lib/invocationPhase";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
+import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { ListBodyState } from "../shared/ListBodyState";
@@ -69,16 +73,15 @@ const STATUS_META: Record<string, { variant: StatusMeta["variant"]; labelKey: Tr
 const INVOCATION_ID_BASE_FONT_SIZE_PX = 10;
 const INVOCATION_CARD_GAP_PX = 12;
 
-function hasMeasuredDurationMs(value: number | null | undefined): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
 function formatCompactLatencySeconds(
   value: number | null | undefined,
   localeTag: string,
   fallback: string,
+  isMeasured: (
+    value: number | null | undefined,
+  ) => value is number = isFiniteNonNegativeMilliseconds,
 ) {
-  if (!hasMeasuredDurationMs(value)) return fallback;
+  if (!isMeasured(value)) return fallback;
   const roundedSeconds = Math.round((value / 1000) * 10) / 10;
   const maximumFractionDigits = roundedSeconds >= 100 ? 0 : 1;
   return `${roundedSeconds.toLocaleString(localeTag, {
@@ -435,10 +438,10 @@ export function InvocationCardList({
     const running = rows.filter((row) => row.livePhase != null).length;
     const firstTokenSamples = rows
       .map((row) => row.record.firstTokenMs)
-      .filter(hasMeasuredDurationMs);
+      .filter(isFiniteNonNegativeMilliseconds);
     const responseSamples = rows
       .map((row) => row.record.tUpstreamStreamMs)
-      .filter(hasMeasuredDurationMs);
+      .filter(isFinitePositiveMilliseconds);
     const totalCost = rows.reduce(
       (sum, row) => sum + (typeof row.record.cost === "number" ? row.record.cost : 0),
       0,
@@ -738,13 +741,19 @@ export function InvocationCardList({
       event.preventDefault();
       handleToggle();
     };
-    const firstTokenValue = formatCompactLatencySeconds(row.record.firstTokenMs, localeTag, "--");
+    const firstTokenValue = formatCompactLatencySeconds(
+      row.record.firstTokenMs,
+      localeTag,
+      "--",
+      isFiniteNonNegativeMilliseconds,
+    );
     const responseDurationValue = formatCompactLatencySeconds(
       row.record.tUpstreamStreamMs,
       localeTag,
       "--",
+      isFinitePositiveMilliseconds,
     );
-    const hasMeasuredFirstToken = hasMeasuredDurationMs(row.record.firstTokenMs);
+    const hasMeasuredFirstToken = isFiniteNonNegativeMilliseconds(row.record.firstTokenMs);
     const cacheReadTokens = Math.max(0, row.record.cacheInputTokens ?? 0);
     const cacheWriteTokens = Math.max(
       0,

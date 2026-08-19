@@ -25,6 +25,10 @@ import {
 } from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationEndpointDisplay } from "../../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
+import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
@@ -81,12 +85,8 @@ interface InvocationWorkflowDetailPanelProps {
 
 const FALLBACK_CELL = "—";
 
-function hasMeasuredDurationMs(value: number | null | undefined): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
 function formatDurationMs(value: number | null | undefined, locale: string) {
-  if (!hasMeasuredDurationMs(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
   const seconds = value / 1000;
   const rounded = Math.round(seconds * 10) / 10;
   const precision = Math.abs(rounded) >= 100 ? 0 : 1;
@@ -96,12 +96,22 @@ function formatDurationMs(value: number | null | undefined, locale: string) {
   })} s`;
 }
 
+function formatResponseDurationMs(value: number | null | undefined, locale: string) {
+  if (!isFinitePositiveMilliseconds(value)) return FALLBACK_CELL;
+  return formatDurationMs(value, locale);
+}
+
 function formatMilliseconds(value: number | null | undefined, locale: string) {
-  if (!hasMeasuredDurationMs(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
   return `${value.toLocaleString(locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: 1,
   })} ms`;
+}
+
+function formatResponseMilliseconds(value: number | null | undefined, locale: string) {
+  if (!isFinitePositiveMilliseconds(value)) return FALLBACK_CELL;
+  return formatMilliseconds(value, locale);
 }
 
 function formatTimestamp(value: string | null | undefined, locale: string) {
@@ -776,9 +786,9 @@ function buildTimelineFacts(
     const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
     const phase = formatOptionalText(attempt.phase);
     const upstreamStatus = formatHttpStatus(attempt.httpStatus, localeTag);
-    const latencyValue = hasMeasuredDurationMs(attempt.streamLatencyMs)
-      ? `${isZh ? "流式" : "Stream"} ${formatDurationMs(attempt.streamLatencyMs, localeTag)}`
-      : hasMeasuredDurationMs(attempt.firstTokenMs)
+    const latencyValue = isFinitePositiveMilliseconds(attempt.streamLatencyMs)
+      ? `${isZh ? "流式" : "Stream"} ${formatResponseDurationMs(attempt.streamLatencyMs, localeTag)}`
+      : isFiniteNonNegativeMilliseconds(attempt.firstTokenMs)
         ? `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`
         : null;
 
@@ -799,9 +809,9 @@ function buildTimelineFacts(
       facts.push({
         key: "latency",
         label: latencyValue,
-        tone: hasMeasuredDurationMs(attempt.streamLatencyMs)
+        tone: isFinitePositiveMilliseconds(attempt.streamLatencyMs)
           ? "secondary"
-          : hasMeasuredDurationMs(attempt.firstTokenMs)
+          : isFiniteNonNegativeMilliseconds(attempt.firstTokenMs)
             ? "success"
             : "secondary",
       });
@@ -955,9 +965,9 @@ function buildAttemptMetricActions(
     {
       section: "timing",
       label: isZh ? "时间" : "Timing",
-      primary: formatDurationMs(attempt.streamLatencyMs, localeTag),
+      primary: formatResponseDurationMs(attempt.streamLatencyMs, localeTag),
       secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
-      secondaryTone: hasMeasuredDurationMs(attempt.firstTokenMs) ? "success" : undefined,
+      secondaryTone: isFiniteNonNegativeMilliseconds(attempt.firstTokenMs) ? "success" : undefined,
     },
     {
       section: "requestParsed",
@@ -1694,7 +1704,7 @@ function AttemptDetail({
     },
     {
       label: isZh ? "流式耗时" : "Stream",
-      value: formatMilliseconds(attempt.streamLatencyMs, localeTag),
+      value: formatResponseMilliseconds(attempt.streamLatencyMs, localeTag),
     },
     {
       label: isZh ? "失败类型" : "Failure Kind",
@@ -1734,7 +1744,7 @@ function AttemptDetail({
     { label: "TTFT", value: formatDurationMs(attempt.firstTokenMs, localeTag) },
     {
       label: isZh ? "流式" : "Stream",
-      value: formatMilliseconds(attempt.streamLatencyMs, localeTag),
+      value: formatResponseMilliseconds(attempt.streamLatencyMs, localeTag),
     },
     {
       label: isZh ? "读取请求" : "Request Read",

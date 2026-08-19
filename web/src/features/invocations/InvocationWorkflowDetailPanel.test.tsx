@@ -883,6 +883,29 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").not.toContain("Stream -1 ms");
   });
 
+  it("does not present zero stream timing as a completed response", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = 0;
+    attemptEntry.attempt.streamLatencyMs = 0;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").toContain("TTFT 0 s");
+    expect(host?.textContent ?? "").not.toContain("Stream 0 s");
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent?.includes("TTFT 0 s"),
+    );
+    expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
+  });
+
   it("does not present a negative TTFT as a measured duration", async () => {
     const workflowDetail = createWorkflowDetailResponse();
     const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");

@@ -1,6 +1,7 @@
 import type { TranslationKey } from "../i18n";
 import type { ApiInvocation, InvocationLivePhase, InvocationPhaseCounts } from "./api";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
+import { isFiniteNonNegativeMilliseconds, isFinitePositiveMilliseconds } from "./invocationTiming";
 
 type InvocationPhaseSource = Pick<
   ApiInvocation,
@@ -37,11 +38,11 @@ function normalizePhase(value: string | null | undefined): InvocationLivePhase |
 }
 
 function hasPositiveTiming(value: number | null | undefined): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
+  return isFinitePositiveMilliseconds(value);
 }
 
 function hasMeasuredFirstToken(value: number | null | undefined): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return isFiniteNonNegativeMilliseconds(value);
 }
 
 function resolvePreResponsePhase(record: InvocationPhaseSource): InvocationLivePhase {

@@ -4,6 +4,7 @@ import type {
   LongTermMetrics,
   ModelRoutingTimelineRecord,
 } from "../lib/api";
+import { isFiniteNonNegativeMilliseconds } from "../lib/invocationTiming";
 import { demoModel, demoNow } from "./model";
 import {
   DEMO_MODEL_ROUTE_FIXTURES,
@@ -394,9 +395,7 @@ export function demoAttemptPhase(
   firstTokenMs: number | null | undefined,
 ) {
   if (status !== "running") return "completed";
-  return typeof firstTokenMs === "number" && Number.isFinite(firstTokenMs) && firstTokenMs >= 0
-    ? "responding"
-    : "requesting";
+  return isFiniteNonNegativeMilliseconds(firstTokenMs) ? "responding" : "requesting";
 }
 
 function apiPathname(pathname: string) {

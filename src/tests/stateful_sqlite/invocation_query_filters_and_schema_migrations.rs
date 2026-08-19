@@ -2526,6 +2526,92 @@ async fn list_invocations_keeps_negative_ttft_in_requesting_phase() {
 }
 
 #[tokio::test]
+async fn persisted_nonfinite_timing_is_unavailable_to_phase_and_summary_queries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            t_upstream_ttfb_ms,
+            first_token_ms,
+            t_upstream_stream_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("summary-infinite-timing")
+    .bind("2026-03-10 09:13:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert nonfinite timing row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("running-infinite-first-token")
+    .bind("2026-03-10 09:14:00")
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(f64::INFINITY)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running nonfinite TTFT row");
+
+    let Json(summary) = fetch_invocation_summary(State(state.clone()), Query(ListQuery::default()))
+        .await
+        .expect("summary query with nonfinite timing should succeed");
+
+    assert_eq!(summary.network.avg_ttfb_ms, None);
+    assert_eq!(summary.network.p95_ttfb_ms, None);
+    assert_eq!(summary.network.avg_first_token_ms, None);
+    assert_eq!(summary.network.p95_first_token_ms, None);
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
+    assert_eq!(summary.network.avg_total_ms, None);
+    assert_eq!(summary.network.p95_total_ms, None);
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            invoke_id: Some("running-infinite-first-token".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with nonfinite running TTFT should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.records[0].live_phase.as_deref(), Some("queued"));
+}
+
+#[tokio::test]
 async fn fetch_invocation_summary_returns_zero_values_for_empty_results() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

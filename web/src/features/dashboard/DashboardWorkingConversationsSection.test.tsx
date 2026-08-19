@@ -6366,7 +6366,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
   it("keeps in-progress upstream account recent response time unavailable", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
-    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = null;
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = 0;
     upstreamAccountActivityMock.data = upstreamActivity;
 
     renderSection(createResponse([]));
@@ -6433,6 +6433,33 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(firstToken?.textContent).toBe("--");
     expect(firstToken?.className).not.toContain("text-success");
+  });
+
+  it("keeps nonfinite upstream account timing unavailable", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = Number.POSITIVE_INFINITY;
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = Number.NaN;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const row = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    expect(
+      row?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.textContent,
+    ).toBe("--");
+    expect(
+      row?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')?.textContent,
+    ).toBe("--");
   });
 
   it("toggles selection mode on conversation cards and restores navigation after exit", async () => {

@@ -70,6 +70,10 @@ import {
   isImageInvocationEndpointKind,
 } from "../../lib/invocation";
 import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
+import {
   compactUpstreamPlanLabel,
   shouldShowUpstreamPlanChip,
   upstreamPlanChipRecipe,
@@ -874,12 +878,12 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
 }
 
-function hasMeasuredLatencyMs(value: number | null | undefined): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  if (!hasMeasuredLatencyMs(value)) return "--";
+function formatCompactTimingSecondsValue(
+  value: number | null | undefined,
+  localeTag: string,
+  isMeasured: (value: number | null | undefined) => value is number,
+) {
+  if (!isMeasured(value)) return "--";
 
   const seconds = value / 1000;
   const roundedTenths = Math.round(seconds * 10) / 10;
@@ -893,8 +897,12 @@ function formatCompactLatencySecondsValue(value: number | null | undefined, loca
   })} s`;
 }
 
+function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
+  return formatCompactTimingSecondsValue(value, localeTag, isFiniteNonNegativeMilliseconds);
+}
+
 function formatCompactResponseTimeValue(value: number | null | undefined, localeTag: string) {
-  return formatCompactLatencySecondsValue(value, localeTag);
+  return formatCompactTimingSecondsValue(value, localeTag, isFinitePositiveMilliseconds);
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -2087,7 +2095,7 @@ function AccountRecentInvocationRow({
   const responseModelValue = viewModel.responseModelValue;
   const compactLatencyValues = useMemo(() => {
     return {
-      firstTokenMeasured: hasMeasuredLatencyMs(invocation.record.firstTokenMs),
+      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue: formatCompactResponseTimeValue(
         invocation.record.tUpstreamStreamMs,
@@ -2498,7 +2506,7 @@ function InvocationSlot({
   );
   const compactLatencyValues = useMemo(() => {
     return {
-      firstTokenMeasured: hasMeasuredLatencyMs(invocation.record.firstTokenMs),
+      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
       responseTimeValue: formatCompactResponseTimeValue(
         invocation.record.tUpstreamStreamMs,

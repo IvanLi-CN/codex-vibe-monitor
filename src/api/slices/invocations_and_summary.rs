@@ -240,6 +240,8 @@ pub(crate) fn final_pool_attempt_first_token_ms_sql(
 
 pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
     let attempt_phase_sql = latest_pool_attempt_phase_sql(invocation_ref);
+    let first_token_measured_sql =
+        sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.first_token_ms"));
     let upstream_account_id_sql = format!(
         "CASE WHEN json_valid({invocation_ref}.payload) THEN CAST(json_extract({invocation_ref}.payload, '$.upstreamAccountId') AS INTEGER) END"
     );
@@ -247,7 +249,7 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
         "CASE \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) NOT IN ('running', 'pending') THEN NULL \
            WHEN LOWER(TRIM(COALESCE({invocation_ref}.status, ''))) = 'pending' THEN '{queued}' \
-           WHEN {invocation_ref}.first_token_ms IS NOT NULL AND {invocation_ref}.first_token_ms >= 0 THEN '{responding}' \
+           WHEN {first_token_measured_sql} THEN '{responding}' \
            WHEN {attempt_phase} IN ('connecting', 'sending_request', 'waiting_first_byte') \
              OR {upstream_account_id} IS NOT NULL \
              OR ({invocation_ref}.t_upstream_connect_ms IS NOT NULL AND {invocation_ref}.t_upstream_connect_ms > 0) \
@@ -256,6 +258,7 @@ pub(crate) fn invocation_live_phase_sql(invocation_ref: &str) -> String {
            ELSE '{queued}' \
          END",
         attempt_phase = attempt_phase_sql,
+        first_token_measured_sql = first_token_measured_sql,
         upstream_account_id = upstream_account_id_sql,
         queued = INVOCATION_LIVE_PHASE_QUEUED,
         requesting = INVOCATION_LIVE_PHASE_REQUESTING,
@@ -268,6 +271,26 @@ fn has_positive_timing(values: &[Option<f64>]) -> bool {
         .iter()
         .flatten()
         .any(|value| value.is_finite() && *value > 0.0)
+}
+
+fn sqlite_finite_timing_sql(column: &str) -> String {
+    // SQLite does not expose an isfinite() predicate. For REAL infinity, x - x becomes NULL;
+    // finite values keep a numeric zero, so this rejects non-finite persisted measurements.
+    format!("({column} - {column}) IS NOT NULL")
+}
+
+fn sqlite_nonnegative_timing_sql(column: &str) -> String {
+    format!(
+        "{column} IS NOT NULL AND {column} >= 0 AND {}",
+        sqlite_finite_timing_sql(column)
+    )
+}
+
+fn sqlite_positive_timing_sql(column: &str) -> String {
+    format!(
+        "{column} IS NOT NULL AND {column} > 0 AND {}",
+        sqlite_finite_timing_sql(column)
+    )
 }
 
 fn has_measured_first_token(value: Option<f64>) -> bool {
@@ -2268,19 +2291,23 @@ async fn query_invocation_network_summary_on_connection(
         value: Option<f64>,
     }
 
-    let mut agg_query = QueryBuilder::new(
+    let ttfb_nonnegative_sql = sqlite_nonnegative_timing_sql("t_upstream_ttfb_ms");
+    let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
+    let stream_positive_sql = sqlite_positive_timing_sql("t_upstream_stream_ms");
+    let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
+    let mut agg_query = QueryBuilder::new(format!(
         "SELECT \
-         AVG(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
-         COALESCE(SUM(CASE WHEN t_upstream_ttfb_ms IS NOT NULL AND t_upstream_ttfb_ms >= 0 THEN 1 ELSE 0 END), 0) AS ttfb_count, \
-         AVG(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms END) AS avg_first_token_ms, \
-         COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END), 0) AS first_token_count, \
-         AVG(CASE WHEN t_upstream_stream_ms IS NOT NULL AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms END) AS avg_response_duration_ms, \
-         COALESCE(SUM(CASE WHEN t_upstream_stream_ms IS NOT NULL AND t_upstream_stream_ms > 0 THEN 1 ELSE 0 END), 0) AS response_duration_count, \
-         AVG(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS avg_total_ms, \
-         COALESCE(SUM(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN 1 ELSE 0 END), 0) AS total_count, \
-         MAX(CASE WHEN t_total_ms IS NOT NULL AND t_total_ms >= 0 THEN t_total_ms END) AS max_total_ms \
-         FROM codex_invocations WHERE 1 = 1",
-    );
+         AVG(CASE WHEN {ttfb_nonnegative_sql} THEN t_upstream_ttfb_ms END) AS avg_ttfb_ms, \
+         COALESCE(SUM(CASE WHEN {ttfb_nonnegative_sql} THEN 1 ELSE 0 END), 0) AS ttfb_count, \
+         AVG(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms END) AS avg_first_token_ms, \
+         COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END), 0) AS first_token_count, \
+         AVG(CASE WHEN {stream_positive_sql} THEN t_upstream_stream_ms END) AS avg_response_duration_ms, \
+         COALESCE(SUM(CASE WHEN {stream_positive_sql} THEN 1 ELSE 0 END), 0) AS response_duration_count, \
+         AVG(CASE WHEN {total_nonnegative_sql} THEN t_total_ms END) AS avg_total_ms, \
+         COALESCE(SUM(CASE WHEN {total_nonnegative_sql} THEN 1 ELSE 0 END), 0) AS total_count, \
+         MAX(CASE WHEN {total_nonnegative_sql} THEN t_total_ms END) AS max_total_ms \
+         FROM codex_invocations WHERE 1 = 1"
+    ));
     apply_invocation_records_filters(
         &mut agg_query,
         filters,
@@ -2310,16 +2337,12 @@ async fn query_invocation_network_summary_on_connection(
             source_scope,
             Some(SnapshotConstraint::UpTo(snapshot_id)),
         );
-        query
-            .push(" AND ")
-            .push(column)
-            .push(" IS NOT NULL AND ")
-            .push(column)
-            .push(if column == "t_upstream_stream_ms" {
-                " > 0"
-            } else {
-                " >= 0"
-            });
+        let timing_sql = if column == "t_upstream_stream_ms" {
+            sqlite_positive_timing_sql(column)
+        } else {
+            sqlite_nonnegative_timing_sql(column)
+        };
+        query.push(" AND ").push(timing_sql.as_str());
         query.push(" ORDER BY ").push(column).push(" ASC");
         query.push(" LIMIT 1 OFFSET ").push_bind(offset.max(0));
 
@@ -9259,6 +9282,9 @@ where
           AND ({failure_class_sql}) <> 'none'))"
     );
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
+    let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
+    let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
+    let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let prompt_cache_key_sql = INVOCATION_PROMPT_CACHE_KEY_SQL;
     let filtered_prompt_cache_key_sql = "filtered_invocations.prompt_cache_key";
     let preaggregated_conversation_created_at_sql = if use_attempt_fallback {
@@ -9360,7 +9386,7 @@ where
                     ) AS row_num
                 FROM filtered_invocations
                 WHERE {success_sql}
-                  AND filtered_invocations.t_upstream_ttfb_ms > 0
+                  AND {ttfb_positive_sql}
             ) AS ranked
             WHERE ranked.row_num = 1
         ),
@@ -9380,7 +9406,7 @@ where
                     ) AS row_num
                 FROM filtered_invocations
                 WHERE {success_sql}
-                  AND filtered_invocations.t_total_ms >= 0
+                  AND {total_nonnegative_sql}
             ) AS ranked
             WHERE ranked.row_num = 1
         )
@@ -9400,12 +9426,12 @@ where
             CAST(COALESCE(SUM(CASE WHEN {non_success_sql} THEN COALESCE(cost, 0) ELSE 0 END), 0) AS REAL) AS non_success_cost,
             COALESCE(SUM(COALESCE(cache_input_tokens, 0)), 0) AS cache_input_tokens,
             CAST(COALESCE(SUM(COALESCE(cost, 0)), 0) AS REAL) AS total_cost,
-            SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
-            SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END) AS first_token_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
-            SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS total_latency_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
+            SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} THEN 1 ELSE 0 END) AS first_response_byte_total_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {ttfb_positive_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS first_response_byte_total_sum_ms,
+            SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END) AS first_token_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms ELSE 0 END), 0) AS REAL) AS first_token_sum_ms,
+            SUM(CASE WHEN {success_sql} AND {total_nonnegative_sql} THEN 1 ELSE 0 END) AS total_latency_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_sql} AND {total_nonnegative_sql} THEN t_total_ms ELSE 0 END), 0) AS REAL) AS total_latency_sum_ms,
             latest_first_response_byte_total_by_account.latest_first_response_byte_total_at AS latest_first_response_byte_total_at,
             latest_first_response_byte_total_by_account.latest_first_response_byte_total_ms AS latest_first_response_byte_total_ms,
             latest_total_latency_by_account.latest_avg_total_at AS latest_avg_total_at,
@@ -10051,6 +10077,10 @@ where
     let failure_count_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND ({failure_class_sql}) IN ('service_failure', 'client_failure', 'client_abort')"
     );
+    let stream_positive_sql = sqlite_positive_timing_sql("t_upstream_stream_ms");
+    let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
+    let first_token_nonnegative_sql = sqlite_nonnegative_timing_sql("first_token_ms");
+    let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let first_response_byte_total_sql = "COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0)";
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
@@ -10072,16 +10102,16 @@ where
             CAST(COALESCE(SUM(CASE WHEN cost IS NOT NULL AND NOT ({cost_complete_sql}) THEN cost ELSE 0 END), 0) AS REAL) AS cost_unknown,
             SUM(CASE WHEN cost IS NOT NULL THEN 1 ELSE 0 END) AS has_cost,
             COALESCE(SUM(CASE WHEN {success_billed_sql} THEN COALESCE(total_tokens, 0) ELSE 0 END), 0) AS performance_total_tokens,
-            COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms > 0 THEN COALESCE(output_tokens, 0) ELSE 0 END), 0) AS performance_stream_output_tokens,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_stream_duration_ms,
-            SUM(CASE WHEN {success_like_sql} AND t_upstream_stream_ms > 0 THEN 1 ELSE 0 END) AS performance_response_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_like_sql} AND t_upstream_stream_ms > 0 THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_response_sum_ms,
-            SUM(CASE WHEN {success_billed_sql} AND t_upstream_ttfb_ms > 0 THEN 1 ELSE 0 END) AS performance_first_byte_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_upstream_ttfb_ms > 0 THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS performance_first_byte_sum_ms,
-            SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN 1 ELSE 0 END) AS performance_first_token_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN first_token_ms IS NOT NULL AND first_token_ms >= 0 THEN first_token_ms ELSE 0 END), 0) AS REAL) AS performance_first_token_sum_ms,
-            SUM(CASE WHEN {success_billed_sql} AND t_total_ms >= 0 THEN 1 ELSE 0 END) AS performance_usage_duration_sample_count,
-            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND t_total_ms >= 0 THEN t_total_ms ELSE 0 END), 0) AS REAL) AS performance_usage_duration_sum_ms
+            COALESCE(SUM(CASE WHEN {success_billed_sql} AND {stream_positive_sql} THEN COALESCE(output_tokens, 0) ELSE 0 END), 0) AS performance_stream_output_tokens,
+            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {stream_positive_sql} THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_stream_duration_ms,
+            SUM(CASE WHEN {success_like_sql} AND {stream_positive_sql} THEN 1 ELSE 0 END) AS performance_response_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_like_sql} AND {stream_positive_sql} THEN t_upstream_stream_ms ELSE 0 END), 0) AS REAL) AS performance_response_sum_ms,
+            SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} THEN 1 ELSE 0 END) AS performance_first_byte_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {ttfb_positive_sql} THEN {first_response_byte_total_sql} ELSE 0 END), 0) AS REAL) AS performance_first_byte_sum_ms,
+            SUM(CASE WHEN {first_token_nonnegative_sql} THEN 1 ELSE 0 END) AS performance_first_token_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {first_token_nonnegative_sql} THEN first_token_ms ELSE 0 END), 0) AS REAL) AS performance_first_token_sum_ms,
+            SUM(CASE WHEN {success_billed_sql} AND {total_nonnegative_sql} THEN 1 ELSE 0 END) AS performance_usage_duration_sample_count,
+            CAST(COALESCE(SUM(CASE WHEN {success_billed_sql} AND {total_nonnegative_sql} THEN t_total_ms ELSE 0 END), 0) AS REAL) AS performance_usage_duration_sum_ms
         FROM codex_invocations
         WHERE occurred_at >=
         "#,
@@ -10225,7 +10255,9 @@ async fn query_live_model_performance_duration_overrides(
     query
         .push(" AND ")
         .push(success_billed_sql.as_str())
-        .push(" AND t_total_ms >= 0 ORDER BY occurred_at ASC, id ASC");
+        .push(" AND ")
+        .push(sqlite_nonnegative_timing_sql("t_total_ms").as_str())
+        .push(" ORDER BY occurred_at ASC, id ASC");
     let mut rows = query
         .build_query_as::<SuccessfulBilledUsageDurationIntervalRow>()
         .fetch(pool);

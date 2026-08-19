@@ -27,6 +27,7 @@ import {
 import { InvocationTable } from "./InvocationTable";
 import {
   buildInvocationDetailViewModel,
+  formatSecondsFromMilliseconds,
   InvocationExpandedDetails,
 } from "./invocation-details-shared";
 import { formatReasoningEffort, getReasoningEffortTone } from "./invocation-table-reasoning";
@@ -1482,7 +1483,10 @@ describe("InvocationTable", () => {
     expect(html).not.toContain(">首字耗时<");
     expect(html).toContain("阶段耗时");
     expect(html).toContain("上游首字节");
-    expect(html).not.toContain(">0 s<");
+    expect(html).toContain('data-timing-label="上游流传输"');
+    expect(html).toMatch(
+      /data-timing-label="上游流传输"[\s\S]*?<div class="mt-1 font-mono text-sm leading-5 text-base-content\/88">—<\/div>/,
+    );
     expect(html).toContain("总耗时");
   });
 
@@ -2154,6 +2158,74 @@ describe("InvocationTable", () => {
     expect(summary?.textContent).toContain("0.7 s");
     expect(summary?.textContent).toContain("1 s");
     expect(summary?.textContent).not.toContain("0.3 s");
+  });
+
+  it("treats zero response duration as unavailable while preserving zero TTFT", async () => {
+    await renderInteractiveTable([
+      {
+        id: -96,
+        invokeId: "invocation-zero-response-duration",
+        occurredAt: "2026-03-16T09:10:32Z",
+        createdAt: "2026-03-16T09:10:32Z",
+        source: "proxy",
+        proxyDisplayName: "relay-zero-response",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "success",
+        firstTokenMs: 0,
+        tUpstreamStreamMs: 0,
+      },
+    ]);
+
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+      "0 s",
+    );
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.className).toContain(
+      "text-success",
+    );
+    expect(
+      document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
+    ).toContain("--");
+    expect(
+      document.querySelector('[data-testid="invocation-card-summary-ttft"]')?.textContent,
+    ).toContain("—");
+  });
+
+  it("keeps nonfinite timing unavailable in cards and summaries", async () => {
+    await renderInteractiveTable([
+      {
+        id: -97,
+        invokeId: "invocation-infinite-timing",
+        occurredAt: "2026-03-16T09:10:33Z",
+        createdAt: "2026-03-16T09:10:33Z",
+        source: "proxy",
+        proxyDisplayName: "relay-infinite",
+        endpoint: "/v1/responses",
+        model: "gpt-5.4",
+        status: "success",
+        firstTokenMs: Number.POSITIVE_INFINITY,
+        tUpstreamStreamMs: Number.NaN,
+      },
+    ]);
+
+    expect(document.querySelector('[data-testid="invocation-card-ttft"]')?.textContent).toContain(
+      "--",
+    );
+    expect(
+      document.querySelector('[data-testid="invocation-card-response"]')?.textContent,
+    ).toContain("--");
+    expect(
+      document.querySelector('[data-testid="invocation-card-summary-ttft"]')?.textContent,
+    ).toContain("—");
+    expect(
+      document.querySelector('[data-testid="invocation-card-summary-ttft"]')?.textContent,
+    ).toContain("—");
+  });
+
+  it("keeps negative TTFT unavailable in the expanded invocation view model", () => {
+    expect(formatSecondsFromMilliseconds(-1_500, "zh-CN")).toBe("—");
+    expect(formatSecondsFromMilliseconds(1_234, "zh-CN")).toBe("1.2 s");
+    expect(formatSecondsFromMilliseconds(99_950, "zh-CN")).toBe("100 s");
   });
 
   it("keeps TTFT measured while a responding invocation has no completed response duration", async () => {
