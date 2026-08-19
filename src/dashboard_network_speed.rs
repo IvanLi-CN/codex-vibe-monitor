@@ -786,9 +786,8 @@ impl DashboardNetworkSpeedCache {
                 terminal_snapshot.total_latency_sample_count = 1;
                 terminal_snapshot.total_latency_sum_ms = total_ms;
             }
-            if let Some(response_duration_ms) = record
-                .t_upstream_stream_ms
-                .filter(|value| value.is_finite() && *value >= 0.0)
+            if let Some(response_duration_ms) =
+                measured_response_duration_ms(record.t_upstream_stream_ms)
             {
                 terminal_snapshot.response_duration_sample_count = 1;
                 terminal_snapshot.response_duration_sum_ms = response_duration_ms;
@@ -1162,6 +1161,10 @@ impl DashboardNetworkSpeedCache {
             });
         }
     }
+}
+
+fn measured_response_duration_ms(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > 0.0)
 }
 
 fn record_scope_delta_locked(
@@ -1704,6 +1707,16 @@ pub(crate) async fn flush_dashboard_network_socket_minute_rollups(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_duration_requires_a_finite_positive_measurement() {
+        assert_eq!(measured_response_duration_ms(Some(0.1)), Some(0.1));
+        assert_eq!(measured_response_duration_ms(Some(0.0)), None);
+        assert_eq!(measured_response_duration_ms(Some(-0.1)), None);
+        assert_eq!(measured_response_duration_ms(Some(f64::INFINITY)), None);
+        assert_eq!(measured_response_duration_ms(Some(f64::NAN)), None);
+        assert_eq!(measured_response_duration_ms(None), None);
+    }
 
     fn fixed_utc(second: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(second, 0)

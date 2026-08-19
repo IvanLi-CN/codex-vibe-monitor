@@ -80,6 +80,8 @@ pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_DEGRADED: &str = "model_rou
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_COOLDOWN: &str = "model_route_cooldown";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED: &str = "model_route_recovered";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RESET: &str = "model_route_reset";
+pub(crate) const UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_CACHE_OBSERVATION_MISSING: &str =
+    "model_route_cache_observation_missing";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_STATUS_CHANGE_SUPPRESSED: &str =
     "status_change_suppressed";
 pub(crate) const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
@@ -1938,6 +1940,8 @@ pub(crate) struct ModelRoutingState {
     pub(crate) cache_low_hit_streak: i64,
     pub(crate) cache_cooldown_level: i64,
     pub(crate) cache_last_hit_rate_percent: Option<i64>,
+    pub(crate) cache_usage_missing_since: Option<String>,
+    pub(crate) cache_usage_missing_reason: Option<String>,
     pub(crate) probe_required: bool,
 }
 

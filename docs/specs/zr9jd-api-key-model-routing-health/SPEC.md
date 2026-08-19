@@ -60,7 +60,13 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 组合处于最低并行时，连续第三个低命中样本进入 15/30/60 秒缓存冷却；开始冷却时重置最低并行计数。健康观测或手动 reset 清零缓存冷却阶梯。
 - 任何模型冷却到期后只能原子放行一个探针。启用缓存保护时，探针仅在合格且不低命中时完全恢复；未知样本继续单探针，低命中样本从最低并行的连续第 1 次重新计数。禁用缓存保护时，HTTP 成功探针可按既有成功语义恢复。
 - 超过组合上限的请求遵守既有总超时与无可用候选等待边界：`queue` 进入有界等待；`reroute` 排除该组合后继续选择其他合法候选。显式禁止切换、强制绑定或无替代候选时回退有界等待。粘性复用同样受组合上限约束。
+- `queue` 的零上游审计必须统计本次可选集合内所有已达模型组合上限的候选，但仍等待排序第一的目标，不改变为 reroute。`nextEligibleAt` 只能来自本次因模型冷却被排除的候选，不得使用不可路由、策略排除或已排除账号的无关冷却时间。
+- NoCandidate 的 Storybook 中英文、移动端与暗色证据必须显式注入 locale，且不得读写产品 locale 持久化状态；证据结果不得依赖 Story 或 meta 的浏览顺序。
 - 关闭缓存保护或修改阈值时，仅清除缓存保护状态和缓存原因冷却，不清除仍有效的非缓存失败状态；仅修改溢出模式保留已学习的缓存保护状态。
+- 账号级路由成功只能清除请求开始前已存在的失败。新写入的账号路由失败及由其派生的冷却截止时间必须基于同一时刻保留亚秒精度；兼容读取既有秒级时间，但秒级失败与请求开始落在同一秒时无法证明先后，必须保守拒绝恢复和可用性广播。
+- 成功终态的缓存观测可以独立更新模型证据；仅当关联账号当前仍为 `active`、已启用、未软删除，且账号 route failure、cooldown 与连续失败 fence 均已清除时，模型容量增加才可发布全局 pool availability 信号。
+- 任一会持久化账号或模型路由 failure 的终态，必须先完成该持久化操作，再释放 combination reservation 或发布由释放产生的 pool availability 信号；持久化报错也必须在该操作返回后才允许释放，但该无 fence 的释放不得发布 availability，避免等待者在 failure fence 前重选同一路由。
+- 终态在 failure fence 持久化期间被取消时，必须释放 combination reservation 防止容量泄漏，但不得发布 availability；只有已完成并确认的 fence 或非 failure 的正常容量释放才能唤醒等待者。
 
 ### SHOULD
 
@@ -127,6 +133,10 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription, and no standalone model-routing route or main-navigation item exists.
 - Given the live routing tab renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group; Task color changes over time with recorded `normal/demoted/excluded` model-route priority, the right edge exposes the current candidate level, `available` color intensity remains proportional to real call allocation, unknown intervals are transparent and dashed, and controlled-recovery markers remain separate. Static priority text, account display names, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
+- Given cache protection is enabled but an expired model cooldown originated from an ordinary upstream failure, When the first successful HTTP or WebSocket terminal arrives, Then the route atomically returns to `available/normal`, clears the cooldown and concurrency clamp, and wakes waiting routing requests.
+- Given a cache-owned route lacks usable cache usage at a successful terminal, When the observation is first missing or below the minimum sample threshold, Then it remains constrained, persists `cacheUsageMissingSince` and `cacheUsageMissingReason`, and emits one `model_route_cache_observation_missing` event; a valid sample, manual reset, or protection disable clears both fields.
+- Given an account failure is committed after a request starts, including within the same wall-clock second, When that request later succeeds, Then the success leaves the newer failure intact and does not publish pool availability; an ambiguous legacy second-precision timestamp in that same second also fails closed.
+- Given an HTTP or WebSocket success terminal contains valid cache usage that increases model capacity, When the associated account still has a route failure fence, Then the model observation may persist but no global pool availability signal is published.
 
 ## 验收清单（Acceptance checklist）
 

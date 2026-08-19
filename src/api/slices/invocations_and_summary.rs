@@ -3897,6 +3897,8 @@ pub(crate) struct InvocationWorkflowHero {
     pub(crate) cost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) occurred_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pool_routing_no_candidate_audit: Option<PoolRoutingNoCandidateAudit>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4565,6 +4567,7 @@ fn build_invocation_usage_summary(
 
 fn build_workflow_hero(
     record: &ApiInvocation,
+    payload: Option<&Value>,
     timeline_attempt_count: usize,
 ) -> InvocationWorkflowHero {
     InvocationWorkflowHero {
@@ -4589,6 +4592,8 @@ fn build_workflow_hero(
         total_tokens: record.total_tokens,
         cost: record.cost,
         occurred_at: Some(record.occurred_at.clone()),
+        pool_routing_no_candidate_audit: payload_clone(payload, &["poolRoutingNoCandidateAudit"])
+            .and_then(|value| serde_json::from_value(value).ok()),
     }
 }
 
@@ -5625,7 +5630,7 @@ pub(crate) async fn fetch_invocation_workflow_detail(
         && pseudo_attempt_rows.is_empty();
     let timeline_attempt_count = attempts.len();
     let response = InvocationWorkflowDetailResponse {
-        hero: build_workflow_hero(&record, timeline_attempt_count),
+        hero: build_workflow_hero(&record, payload_value.as_ref(), timeline_attempt_count),
         timeline: build_workflow_timeline_entries(
             &record,
             &attempts,

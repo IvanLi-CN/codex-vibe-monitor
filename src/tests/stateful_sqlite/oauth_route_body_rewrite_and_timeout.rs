@@ -2706,6 +2706,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),

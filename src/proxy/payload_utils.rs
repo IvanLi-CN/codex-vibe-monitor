@@ -1482,6 +1482,7 @@ pub(crate) struct PoolRoutingReservationDropGuard {
     state: Arc<AppState>,
     reservation_key: String,
     active: bool,
+    publish_on_drop: bool,
 }
 
 impl PoolRoutingReservationDropGuard {
@@ -1490,18 +1491,47 @@ impl PoolRoutingReservationDropGuard {
             state,
             reservation_key,
             active: true,
+            publish_on_drop: true,
         }
     }
 
     pub(crate) fn disarm(&mut self) {
         self.active = false;
     }
+
+    pub(crate) fn suppress_availability_on_drop(&mut self) {
+        self.publish_on_drop = false;
+    }
+
+    pub(crate) fn restore_availability_on_drop(&mut self) {
+        self.publish_on_drop = true;
+    }
+
+    pub(crate) async fn fence_failure<T, E, F>(&mut self, persist_failure: F) -> Result<T, E>
+    where
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        self.suppress_availability_on_drop();
+        match persist_failure.await {
+            Ok(value) => {
+                self.restore_availability_on_drop();
+                Ok(value)
+            }
+            // A failed write never establishes a routing fence. Keep the eventual
+            // guard release silent so a waiter cannot immediately reselect it.
+            Err(err) => Err(err),
+        }
+    }
 }
 
 impl Drop for PoolRoutingReservationDropGuard {
     fn drop(&mut self) {
         if self.active {
-            release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+            release_pool_routing_reservation_with_availability(
+                self.state.as_ref(),
+                &self.reservation_key,
+                self.publish_on_drop,
+            );
         }
     }
 }
@@ -1543,6 +1573,37 @@ pub(crate) fn pool_routing_model_reservation_count(
                     .is_some_and(|value| value.eq_ignore_ascii_case(model))
         })
         .count() as i64
+}
+
+pub(crate) fn pool_routing_model_reservation_is_at_capacity(
+    state: &AppState,
+    reservation_key: &str,
+    account_id: i64,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+) -> bool {
+    let (Some(model), Some(limit)) = (
+        model.map(str::trim).filter(|value| !value.is_empty()),
+        model_concurrency_limit,
+    ) else {
+        return false;
+    };
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let active = reservations
+        .iter()
+        .filter(|(key, reservation)| {
+            key.as_str() != reservation_key
+                && reservation.account_id == account_id
+                && reservation
+                    .model
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(model))
+        })
+        .count() as i64;
+    active >= limit.max(1)
 }
 
 pub(crate) fn pool_routing_reservation_matches_model(
@@ -1677,11 +1738,96 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
 }
 
 pub(crate) fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+    release_pool_routing_reservation_with_availability(state, reservation_key, true);
+}
+
+pub(crate) fn release_pool_routing_reservation_without_availability(
+    state: &AppState,
+    reservation_key: &str,
+) {
+    release_pool_routing_reservation_with_availability(state, reservation_key, false);
+}
+
+fn release_pool_routing_reservation_with_availability(
+    state: &AppState,
+    reservation_key: &str,
+    publish_availability: bool,
+) {
     let mut reservations = state
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    reservations.remove(reservation_key);
+    let released = reservations.remove(reservation_key).is_some();
+    drop(reservations);
+    if released && publish_availability {
+        state.pool_routing_availability.publish();
+    }
+}
+
+pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
+    state: &AppState,
+    reservation_key: &str,
+    persist_failure: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    persist_pool_route_failure_then_release_with_guard(
+        state,
+        reservation_key,
+        None,
+        persist_failure,
+    )
+    .await
+}
+
+pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
+    state: &AppState,
+    reservation_key: &str,
+    reservation_guard: Option<&mut PoolRoutingReservationDropGuard>,
+    persist_failure: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let result = if let Some(guard) = reservation_guard {
+        guard.fence_failure(persist_failure).await
+    } else {
+        persist_failure.await
+    };
+    match result {
+        Ok(value) => {
+            release_pool_routing_reservation(state, reservation_key);
+            Ok(value)
+        }
+        Err(err) => {
+            // The failed write did not fence this route. Release its slot so it cannot leak,
+            // but do not wake waiters into an immediate unfenced retry.
+            release_pool_routing_reservation_without_availability(state, reservation_key);
+            Err(err)
+        }
+    }
+}
+
+pub(crate) async fn persist_pool_route_success_then_release<E>(
+    state: &AppState,
+    reservation_key: &str,
+    persist_success: impl std::future::Future<Output = Result<bool, E>>,
+) -> Result<(), E> {
+    match persist_success.await {
+        Ok(publish_availability) => {
+            // Successful capacity release wakes waiters only while its account is
+            // still selectable. A stale success keeps the newer failure fenced.
+            release_pool_routing_reservation_with_availability(
+                state,
+                reservation_key,
+                publish_availability,
+            );
+            Ok(())
+        }
+        Err(err) => {
+            release_pool_routing_reservation_without_availability(state, reservation_key);
+            Err(err)
+        }
+    }
+}
+
+pub(crate) fn publish_pool_routing_availability(state: &AppState) {
+    state.pool_routing_availability.publish();
 }
 
 pub(crate) fn consume_pool_routing_reservation(state: &AppState, reservation_key: &str) {

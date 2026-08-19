@@ -31,6 +31,7 @@
 - retention 主库写入仲裁、可恢复微批与压力期公平调度，确保归档不会长期占用 SQLite 单写者。
 - 调用明细 30/90 天分层、月度 `sqlite.gz` 归档、manifest 校验、主库 purge、raw file 删除与 orphan sweep。
 - `forward_proxy_attempts` 与 `codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
+- `system_task_runs` 的有界在线历史：运行中的行永不删除；每个 `(task_kind, status)` 的最新 200 行始终保留；`success`/`skipped` 保留 30 天且每类最多 5000 行，`failed` 保留 180 天且每类最多 10000 行。
 - `summary?window=all` / 总量统计的初始 `invocation_rollup_daily` 承接方案，以及后续迁移到 hourly rollups 前的兼容边界。
 - `README.md`、`docs/deployment.md`、`docs/specs/README.md` 与前端 `InvocationTable` 的契约更新。
 
@@ -123,10 +124,13 @@
 - fairness 不得越过已排队的 P1 terminal；pressure 拒绝后必须归还尚未产生提交的 fairness token。维护准入等待必须响应 shutdown，取消时仅丢弃尚未开始的 microtransaction。
 - archive expiry backfill 与 upstream-activity manifest rebuild 也必须先取有界候选；manifest 的清理、写入和完成 marker 各自是 coordinator-admitted microtransaction，不能在一次 archive pass 内聚集全表行。
 - shared raw blob 的 owner-path replacement 必须按引用分组分批提交；startup backfill wake 和 raw metrics inventory reset 同样经 maintenance admission。多批 reset 期间 inventory 明确处于 preparing，而不是读取半旧基线。
+- historical rollup startup backfill uses the durable `startup_backfill_progress.cursor_id` as an `archive_batches.id` keyset cursor. A pass reads at most 32 eligible archive manifests, checks paths only inside that window, and replays at most 16 batches or six seconds of work. It must defer behind the SQLite pressure gate, resume a partially replayed archive from its persisted cursor, advance past an archive whose replay could not begin before the elapsed budget, schedule that safe cursor advance for a short retry without creating a `system_task_runs` row, wrap to retry that archive after exhausting the keyset, and avoid creating `system_task_runs` for a pass that made no materialization progress.
+- Normal startup persistent preparation may report a bounded backlog hint from that same 32-candidate window, but must not load all pending manifests or scan all archive paths.
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
 - 不得更改既有 `prompt_cache_rollup_hourly` 与 `prompt_cache_upstream_account_hourly` 的生命周期或会话查询语义；它们不是 parallel-work 活动分钟日均的分母来源。
 - 常驻任务只执行 `PRAGMA wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；`VACUUM` 不放进周期任务，由 101 首次 backlog cleanup 完成后的维护窗口人工执行一次。
+- `system_task_runs` 只由 retention 主流程清理，不新增或改变 startup backfill 调度。每个删除事务最多 500 行、每个 pass 最多 5000 行，pass 间隔至少 15 秒；SQLite busy/locked 时该清理链退避 5 分钟。禁止对该表执行全量 `DELETE` 或 `VACUUM`。
 
 ## 验收标准（Acceptance Criteria）
 

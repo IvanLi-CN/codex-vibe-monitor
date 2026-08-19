@@ -1,4 +1,5 @@
 use super::*;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tracing::{debug, warn};
@@ -260,6 +261,8 @@ pub(crate) struct SystemTaskRunsListResponse {
     pub(crate) total: u64,
     pub(crate) page: u32,
     pub(crate) page_size: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_cursor: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -272,6 +275,14 @@ pub(crate) struct SystemTaskRunsQuery {
     pub(crate) limit: Option<u32>,
     pub(crate) page: Option<u32>,
     pub(crate) page_size: Option<u32>,
+    pub(crate) cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemTaskRunCursor {
+    started_at: String,
+    id: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -376,7 +387,45 @@ pub(crate) fn parse_system_task_run_bound(
         .with_context(|| format!("invalid {field_name}: {raw_value}"))
         .map_err(ApiError::bad_request)?
         .with_timezone(&Utc);
-    Ok(Some(format_utc_iso(parsed)))
+    Ok(Some(format_utc_iso_millis(parsed)))
+}
+
+fn parse_system_task_run_cursor(
+    raw: Option<&str>,
+) -> Result<Option<SystemTaskRunCursor>, ApiError> {
+    let Some(raw_value) = normalize_query_text(raw) else {
+        return Ok(None);
+    };
+    let decoded = URL_SAFE_NO_PAD
+        .decode(raw_value)
+        .context("invalid cursor encoding")
+        .map_err(ApiError::bad_request)?;
+    let cursor = serde_json::from_slice::<SystemTaskRunCursor>(&decoded)
+        .context("invalid cursor payload")
+        .map_err(ApiError::bad_request)?;
+    if cursor.id < 1 {
+        return Err(ApiError::bad_request(anyhow!("invalid cursor id")));
+    }
+    let started_at = DateTime::parse_from_rfc3339(&cursor.started_at)
+        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))
+        .unwrap_or(cursor.started_at);
+    Ok(Some(SystemTaskRunCursor {
+        started_at,
+        id: cursor.id,
+    }))
+}
+
+fn encode_system_task_run_cursor(row: &SystemTaskRunRow) -> Result<String, ApiError> {
+    let started_at = DateTime::parse_from_rfc3339(&row.started_at)
+        .map(|value| format_utc_iso_millis(value.with_timezone(&Utc)))
+        .unwrap_or_else(|_| row.started_at.clone());
+    let payload = serde_json::to_vec(&SystemTaskRunCursor {
+        started_at,
+        id: row.id,
+    })
+    .context("failed to encode system task cursor")
+    .map_err(ApiError::Internal)?;
+    Ok(URL_SAFE_NO_PAD.encode(payload))
 }
 
 pub(crate) fn count_file_size(path: &Path) -> u64 {
@@ -1098,7 +1147,7 @@ pub(crate) async fn begin_system_task_run(
     trigger_kind: impl Into<String>,
     summary: Option<String>,
 ) -> Result<SystemTaskRunHandle> {
-    let started_at = format_utc_iso(Utc::now());
+    let started_at = format_utc_iso_millis(Utc::now());
     let trigger_kind = trigger_kind.into();
     let id = sqlx::query_scalar::<_, i64>(
         r#"
@@ -1136,7 +1185,7 @@ pub(crate) async fn finish_system_task_run(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    let finished_at = format_utc_iso(Utc::now());
+    let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
         .elapsed()
@@ -1178,7 +1227,7 @@ pub(crate) async fn finish_system_task_run_batched(
     summary: Option<String>,
     detail: Option<String>,
 ) {
-    let finished_at = format_utc_iso(Utc::now());
+    let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
         .elapsed()
@@ -1218,6 +1267,12 @@ pub(crate) async fn list_system_task_runs(
     let started_at_from =
         parse_system_task_run_bound(query.started_at_from.as_deref(), "startedAtFrom")?;
     let started_at_to = parse_system_task_run_bound(query.started_at_to.as_deref(), "startedAtTo")?;
+    let cursor = parse_system_task_run_cursor(query.cursor.as_deref())?;
+    if cursor.is_some() && query.page.unwrap_or(1) > 1 {
+        return Err(ApiError::bad_request(anyhow!(
+            "cursor cannot be combined with page greater than 1"
+        )));
+    }
     let page_size = query
         .page_size
         .unwrap_or(query.limit.unwrap_or(20))
@@ -1244,24 +1299,33 @@ pub(crate) async fn list_system_task_runs(
     {
         builder.push(" AND status = ").push_bind(status);
     }
+    if started_at_from.is_some() || started_at_to.is_some() {
+        builder.push(" AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at");
+    }
     if let Some(started_at_from) = started_at_from.as_deref() {
         builder
-            .push(" AND datetime(started_at) >= datetime(")
-            .push_bind(started_at_from)
-            .push(")");
+            .push(" AND started_at >= ")
+            .push_bind(started_at_from);
     }
     if let Some(started_at_to) = started_at_to.as_deref() {
+        builder.push(" AND started_at <= ").push_bind(started_at_to);
+    }
+    if let Some(cursor) = cursor.as_ref() {
         builder
-            .push(" AND datetime(started_at) <= datetime(")
-            .push_bind(started_at_to)
-            .push(")");
+            .push(" AND (started_at < ")
+            .push_bind(&cursor.started_at)
+            .push(" OR (started_at = ")
+            .push_bind(&cursor.started_at)
+            .push(" AND id < ")
+            .push_bind(cursor.id)
+            .push("))");
     }
     builder
         .push(" ORDER BY started_at DESC, id DESC LIMIT ")
-        .push_bind(limit)
+        .push_bind(limit + 1)
         .push(" OFFSET ")
         .push_bind(offset);
-    let rows = builder
+    let mut rows = builder
         .build_query_as::<SystemTaskRunRow>()
         .fetch_all(&state.pool)
         .await?;
@@ -1284,28 +1348,39 @@ pub(crate) async fn list_system_task_runs(
     {
         count_builder.push(" AND status = ").push_bind(status);
     }
+    if started_at_from.is_some() || started_at_to.is_some() {
+        count_builder.push(" AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) = started_at");
+    }
     if let Some(started_at_from) = started_at_from.as_deref() {
         count_builder
-            .push(" AND datetime(started_at) >= datetime(")
-            .push_bind(started_at_from)
-            .push(")");
+            .push(" AND started_at >= ")
+            .push_bind(started_at_from);
     }
     if let Some(started_at_to) = started_at_to.as_deref() {
         count_builder
-            .push(" AND datetime(started_at) <= datetime(")
-            .push_bind(started_at_to)
-            .push(")");
+            .push(" AND started_at <= ")
+            .push_bind(started_at_to);
     }
     let total = count_builder
         .build_query_scalar::<i64>()
         .fetch_one(&state.pool)
         .await?;
 
+    let has_next_page = rows.len() > page_size as usize;
+    if has_next_page {
+        rows.pop();
+    }
+    let next_cursor = has_next_page
+        .then(|| rows.last().map(encode_system_task_run_cursor))
+        .flatten()
+        .transpose()?;
+
     Ok(Json(SystemTaskRunsListResponse {
         items: rows.into_iter().map(Into::into).collect(),
         total: total.max(0) as u64,
         page,
         page_size,
+        next_cursor,
     }))
 }
 
@@ -1313,15 +1388,16 @@ pub(crate) fn summarize_retention_run_for_system_task(
     summary: &RetentionRunSummary,
 ) -> (String, String) {
     let brief = format!(
-        "compressed={} archived_invocations={} pruned_details={} model_routes_pruned={} orphan_raw_removed={}",
+        "compressed={} archived_invocations={} pruned_details={} model_routes_pruned={} task_runs_pruned={} orphan_raw_removed={}",
         summary.raw_files_compressed,
         summary.invocation_rows_archived,
         summary.invocation_details_pruned,
         summary.model_route_rows_pruned,
+        summary.system_task_run_rows_pruned,
         summary.orphan_raw_files_removed
     );
     let detail = format!(
-        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} orphan_raw_files_removed={}",
+        "dry_run={} raw_candidates={} raw_compressed={} raw_bytes_before={} raw_bytes_after={} details_pruned={} invocation_rows_archived={} forward_proxy_attempt_rows_archived={} pool_attempt_rows_archived={} quota_rows_archived={} archive_batches_touched={} archive_batches_deleted={} raw_files_removed={} model_routes_pruned={} task_runs_pruned={} orphan_raw_files_removed={}",
         summary.dry_run,
         summary.raw_files_compression_candidates,
         summary.raw_files_compressed,
@@ -1336,6 +1412,7 @@ pub(crate) fn summarize_retention_run_for_system_task(
         summary.archive_batches_deleted,
         summary.raw_files_removed,
         summary.model_route_rows_pruned,
+        summary.system_task_run_rows_pruned,
         summary.orphan_raw_files_removed
     );
     (brief, detail)

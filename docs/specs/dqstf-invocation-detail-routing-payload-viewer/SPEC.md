@@ -104,6 +104,7 @@ Dashboard / Live / Records 三处调用详情曾经以“摘要字段 + 局部�
 - 点击尝试块后，默认展示概览，并可通过次级操作进入请求 / 响应；点击路由块后，默认展示概览，并可通过次级操作进入 `请求 / 请求头 / 请求体`；点击失败裁定块后，默认展示概览，并可通过次级操作进入 `裁定 / 返回体`。
 - 对包含重试的调用，每个 Attempt 的响应详情必须显示自身响应体大小、响应头和 lazy response-body 内容；如果历史记录没有该 attempt 原文，应明确显示 `attempt_response_body_not_captured` 的 unavailable 状态。
 - 历史 pseudo-attempt 在纠偏后不得再显示为 Attempt；若旧记录从未持久化真实 body，允许继续显示 unavailable。
+- 零真实 upstream attempt 的 pool 未分配终态必须从 invocation payload 读取并显示 `poolRoutingNoCandidateAudit`，包含稳定 reason code、候选/可用/容量冲突计数、下一可用时间（如有）和有界候选排除明细；不得伪造 Attempt 行。
 - JSON、NDJSON、SSE JSON data 均显示可折叠、高亮、键盘可操作的结构化视图。
 - 纯文本、解析失败内容和超长无空格文本保持可读并自动换行。
 - 超过 `1 MiB` 的 payload 默认不解析，手动操作后才进入结构化视图。
@@ -141,6 +142,20 @@ PR: include
 证据说明：失败 attempt `qPvNNAK8` 展开后显示 `HTTP 502 / service_failure`、`attempt_raw_file`、独立大小/编码元数据与实际 JSON 响应体；响应体 action 的内嵌 focus ring 在 rail 右端完整闭合；页面来自 mock-only、免登录 Demo。
 
 ![Attempt-scoped response body replay](./assets/attempt-response-body-focus-ring-2026-07-28.png)
+
+组件级未分配上游账号诊断证据：Chrome 中的 mock-only Storybook `NoCandidateAudit` 场景，覆盖桌面明色、移动端明色与桌面暗色；截图只包含诊断组件及其上下文边距，已由负责人确认。
+
+- 视觉证据目标源：`storybook_canvas`
+- 目标程序：Chrome
+- 目标视口：`1440x900`、`393x852`、`1440x900`
+- 证据资产：
+  - `./assets/no-candidate-audit-desktop-light.png`
+  - `./assets/no-candidate-audit-mobile-light.png`
+  - `./assets/no-candidate-audit-desktop-dark.png`
+
+PR: include
+
+![No-candidate routing audit](./assets/no-candidate-audit-desktop-light.png)
 
 ## References
 

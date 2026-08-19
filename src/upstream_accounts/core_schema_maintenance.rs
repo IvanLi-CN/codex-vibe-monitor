@@ -817,6 +817,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             cache_low_hit_streak INTEGER NOT NULL DEFAULT 0,
             cache_cooldown_level INTEGER NOT NULL DEFAULT 0,
             cache_last_hit_rate_percent INTEGER,
+            cache_usage_missing_since TEXT,
+            cache_usage_missing_reason TEXT,
             UNIQUE(account_id, model),
             FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
         )
@@ -865,6 +867,20 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure model route cache_last_hit_rate_percent")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_usage_missing_since",
+    )
+    .await
+    .context("failed to ensure model route cache_usage_missing_since")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_account_model_routes",
+        "cache_usage_missing_reason",
+    )
+    .await
+    .context("failed to ensure model route cache_usage_missing_reason")?;
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_model_routes_account_seen

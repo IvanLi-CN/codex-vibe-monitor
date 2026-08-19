@@ -129,6 +129,10 @@ function demoModelRoutingStates(accountId: number) {
         lastFailureMessage: coolingDown || degraded ? "Demo request ended with HTTP 502." : null,
         cooldownUntil: coolingDown ? demoModelRouteTimestamp(fixture.minutesAgo - 60) : null,
         probeRequired: coolingDown,
+        cacheConcurrencyLimit: coolingDown ? 1 : null,
+        cacheRecoveryLimit: coolingDown ? 4 : null,
+        cacheUsageMissingSince: coolingDown ? demoModelRouteTimestamp(fixture.minutesAgo) : null,
+        cacheUsageMissingReason: coolingDown ? "missing_cache_input_tokens" : null,
       };
     });
 }
@@ -1379,22 +1383,30 @@ function invocations() {
         const accountId = routingRequest?.accountId ?? rowAccountId;
         const model = routingRequest?.model ?? rowModel;
         const status = routingRequest?.terminalStatus ?? rowStatus;
+        const isNoCandidate = id === 9003;
+        const effectiveStatus = isNoCandidate ? "http_503" : status;
         const account = accounts.get(accountId);
         const isFailure =
-          status === "http_502" ||
-          status === "http_401" ||
-          status === "http_429" ||
-          status === "client_cancelled";
+          effectiveStatus === "http_502" ||
+          effectiveStatus === "http_401" ||
+          effectiveStatus === "http_429" ||
+          effectiveStatus === "http_503" ||
+          effectiveStatus === "client_cancelled";
         const failureClass =
-          status === "client_cancelled" ? "client_abort" : isFailure ? "service_failure" : "none";
-        const failureKind =
-          status === "http_429"
+          effectiveStatus === "client_cancelled"
+            ? "client_abort"
+            : isFailure
+              ? "service_failure"
+              : "none";
+        const failureKind = isNoCandidate
+          ? "pool_no_available_account"
+          : effectiveStatus === "http_429"
             ? "rate_limited"
-            : status === "client_cancelled"
+            : effectiveStatus === "client_cancelled"
               ? "downstream_cancelled"
-              : status === "http_401"
+              : effectiveStatus === "http_401"
                 ? "upstream_auth_rejected"
-                : status === "http_502"
+                : effectiveStatus === "http_502"
                   ? "upstream_timeout"
                   : null;
         const occurredAt = routingRequest
@@ -1407,15 +1419,15 @@ function invocations() {
           createdAt: occurredAt,
           source: "proxy",
           proxyDisplayName: proxyName(proxyKey),
-          upstreamAccountId: accountId,
-          upstreamAccountName: account?.displayName ?? null,
-          upstreamAccountPlanType: account?.planType ?? null,
+          upstreamAccountId: isNoCandidate ? null : accountId,
+          upstreamAccountName: isNoCandidate ? null : (account?.displayName ?? null),
+          upstreamAccountPlanType: isNoCandidate ? null : (account?.planType ?? null),
           endpoint,
           model,
           requestModel: model,
-          responseModel: status === "success" ? model : null,
-          status,
-          livePhase: status === "running" ? "responding" : null,
+          responseModel: effectiveStatus === "success" ? model : null,
+          status: effectiveStatus,
+          livePhase: effectiveStatus === "running" ? "responding" : null,
           requestedServiceTier: accountId === 101 ? "priority" : "auto",
           serviceTier: accountId === 101 ? "priority" : "auto",
           billingServiceTier: accountId === 101 ? "priority" : "standard",
@@ -1434,33 +1446,47 @@ function invocations() {
           costReasoning: Number((cost * 0.08).toFixed(4)),
           failureClass,
           failureKind,
-          isActionable: isFailure && status !== "client_cancelled",
+          isActionable: isFailure && effectiveStatus !== "client_cancelled",
           errorMessage:
-            failureKind === "upstream_timeout"
-              ? "Simulated upstream timeout after 1.8 seconds."
-              : failureKind === "upstream_auth_rejected"
-                ? "Simulated upstream authorization rejection."
-                : failureKind === "rate_limited"
-                  ? "Simulated upstream rate limit."
-                  : failureKind === "downstream_cancelled"
-                    ? "Simulated client cancellation."
-                    : null,
+            failureKind === "pool_no_available_account"
+              ? "No healthy pool account is available for the requested model."
+              : failureKind === "upstream_timeout"
+                ? "Simulated upstream timeout after 1.8 seconds."
+                : failureKind === "upstream_auth_rejected"
+                  ? "Simulated upstream authorization rejection."
+                  : failureKind === "rate_limited"
+                    ? "Simulated upstream rate limit."
+                    : failureKind === "downstream_cancelled"
+                      ? "Simulated client cancellation."
+                      : null,
           downstreamStatusCode:
-            status === "http_502"
-              ? 502
-              : status === "http_401"
-                ? 401
-                : status === "http_429"
-                  ? 429
-                  : null,
+            effectiveStatus === "http_503"
+              ? 503
+              : effectiveStatus === "http_502"
+                ? 502
+                : effectiveStatus === "http_401"
+                  ? 401
+                  : effectiveStatus === "http_429"
+                    ? 429
+                    : null,
           requesterIp: id % 2 === 0 ? "203.0.113.24" : "198.51.100.86",
           promptCacheKey,
           stickyKey: promptCacheKey,
-          routeMode: account?.groupName === "standby" ? "fallback" : "pool",
-          poolAttemptCount: status === "http_429" ? 2 : status === "http_502" ? 3 : 1,
-          poolDistinctAccountCount: status === "http_502" ? 2 : 1,
+          routeMode: isNoCandidate
+            ? "pool"
+            : account?.groupName === "standby"
+              ? "fallback"
+              : "pool",
+          poolAttemptCount: isNoCandidate
+            ? 0
+            : effectiveStatus === "http_429"
+              ? 2
+              : effectiveStatus === "http_502"
+                ? 3
+                : 1,
+          poolDistinctAccountCount: isNoCandidate ? 0 : effectiveStatus === "http_502" ? 2 : 1,
           poolAttemptTerminalReason: isFailure ? failureKind : "completed",
-          transport: status === "running" ? "websocket" : "http",
+          transport: effectiveStatus === "running" ? "websocket" : "http",
           tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
           tUpstreamTtfbMs: ttfb,
           firstTokenMs:
@@ -1483,7 +1509,11 @@ function invocations() {
           rawMetadata: {
             request: {
               demo: true,
-              routeMode: account?.groupName === "standby" ? "fallback" : "pool",
+              routeMode: isNoCandidate
+                ? "pool"
+                : account?.groupName === "standby"
+                  ? "fallback"
+                  : "pool",
             },
             response: { model, requestId: `req_demo_${id}` },
           },
@@ -2329,6 +2359,7 @@ function systemTasks() {
 function poolAttempts(invokeId: string) {
   const record = invocations().find((item) => item.invokeId === invokeId);
   if (!record) return [];
+  if (record.poolAttemptCount === 0) return [];
   const accountId = record.upstreamAccountId ?? 101;
   const fallback = accountId === 105 ? 106 : 102;
   const needsRetry = (record.poolAttemptCount ?? 1) > 1;
@@ -2468,6 +2499,8 @@ function upstreamAccountAttempts(accountId: number, search: URLSearchParams) {
 function buildDemoInvocationWorkflowDetail(
   record: ReturnType<typeof invocations>[number],
 ): ApiInvocationWorkflowDetailResponse {
+  const isNoCandidate =
+    record.poolAttemptCount === 0 && record.failureKind === "pool_no_available_account";
   const finalStatus =
     record.status === "success"
       ? "completed"
@@ -2633,6 +2666,10 @@ function buildDemoInvocationWorkflowDetail(
     },
   ];
 
+  if (isNoCandidate) {
+    timeline.splice(1, 1);
+  }
+
   if (record.failureClass && record.failureClass !== "none") {
     timeline.push({
       blockId: `final-${record.id}`,
@@ -2678,8 +2715,30 @@ function buildDemoInvocationWorkflowDetail(
       upstreamAccountId: record.upstreamAccountId ?? null,
       upstreamAccountName: record.upstreamAccountName ?? null,
       totalDurationMs: record.tTotalMs ?? null,
-      timelineAttemptCount: 1,
+      timelineAttemptCount: isNoCandidate ? 0 : 1,
       poolAttemptCount: record.poolAttemptCount ?? 1,
+      poolRoutingNoCandidateAudit: isNoCandidate
+        ? {
+            terminalReasonCode: "modelConcurrencyLimit",
+            candidateCount: 3,
+            eligibleCandidateCount: 2,
+            reservationConflictCount: 2,
+            nextEligibleAt: null,
+            excludedReasonCounts: { modelConcurrencyLimit: 2 },
+            candidates: [
+              {
+                accountId: 101,
+                accountName: "dzw",
+                reasonCode: "modelConcurrencyLimit",
+              },
+              {
+                accountId: 102,
+                accountName: "Ciii2",
+                reasonCode: "modelConcurrencyLimit",
+              },
+            ],
+          }
+        : null,
       totalTokens: record.totalTokens ?? null,
       cost: record.cost ?? null,
       occurredAt: record.occurredAt,

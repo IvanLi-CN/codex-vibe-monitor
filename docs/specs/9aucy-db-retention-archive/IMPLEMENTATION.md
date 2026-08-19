@@ -21,10 +21,13 @@
 - Note: segment identities are derived from their source row IDs, and publication verifies and syncs the artifact before source mutation. A conflicting existing identity is retained as evidence and aborts the batch instead of replacing archive bytes.
 - Note: fairness preserves queued P1 priority, and a pressure-deferred admission returns its unused token. Shutdown cancels only a queued admission; an already-admitted microtransaction still completes or rolls back at its database boundary.
 - Note: archive expiry and upstream-activity manifest passes use candidate-plus-one probes. Existing manifest rows are cleared, replacement rows are written, and the completion marker is committed through separately budgeted maintenance microtransactions.
+- Note: Historical rollup startup replay uses the persisted `archive_batches.id` cursor instead of loading all pending manifests. Each pass selects no more than 32 candidates, inspects only selected paths, and replays no more than 16 archive batches within six seconds. The cursor survives restarts; partial replay keeps the current archive cursor, while an archive that cannot start before budget expiry advances to the next keyset candidate, schedules a short no-audit retry, and is retried on wrap. A path-only/no-progress pass does not produce a startup task-run audit row.
+- Note: Normal startup persistent preparation uses the same bounded historical-rollup candidate window for its backlog hint; it never loads the full pending archive set or performs an unbounded filesystem existence scan.
 - Note: raw blob path replacement batches owner references before releasing the old file. Archive-driven startup wakeups and raw-metrics inventory reset use the same maintenance admission; the inventory remains `preparing` until its bounded reset completes.
 - Note: startup persistent preparation does not hold a global background permit around nested retention writers. Each writer acquires its own maintenance admission, and a deferred pass remains eligible for the prompt retry schedule instead of being recorded as complete.
 - Note: raw-metrics inventory reset is resumable. The inventory worker checks for an interrupted `resetting` state and advances one pressure-gated reset batch before resuming normal inventory, so a restart or defer cannot strand the snapshot indefinitely.
 - Note: archive publication paths include a process-local monotonic suffix in addition to PID and timestamp, preventing parallel test or worker collisions when timestamp resolution is coarse.
+- Note: `system_task_runs` retention is part of the existing retention pass. It preserves running rows and the latest 200 rows per `(task_kind, status)`, deletes terminal history in 500-row transactions with a 5000-row pass ceiling, and uses a dedicated five-minute SQLite-pressure backoff without changing startup backfill scheduling.
 
 ## Verification
 
@@ -33,6 +36,7 @@
 - `cargo test retention_write_scheduler_fairness -- --nocapture`
 - `cargo test retention_write_scheduler_lock_and_cancel -- --nocapture`
 - `cargo test prepared_archive_publish_reuses_a_matching_identity -- --nocapture`
+- `cargo test historical_rollup_startup -- --nocapture`
 - `cargo fmt --check`
 - `cargo check`
 - Shared testbox source build: `cargo test -q` with the repository testbox runner; preserve the run log and exit code for the release gate.

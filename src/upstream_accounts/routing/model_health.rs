@@ -13,6 +13,9 @@ pub(crate) const MODEL_ROUTE_COOLDOWN_BASE_SECS: i64 = 15;
 pub(crate) const MODEL_ROUTE_COOLDOWN_MAX_SECS: i64 = 60;
 const CACHE_HIT_FAILURE_KIND: &str = "cache_hit_rate";
 const CACHE_HIT_FAILURE_MESSAGE: &str = "cache hit rate below configured threshold";
+const CACHE_USAGE_MISSING_REASON_CODE: &str = "cache_usage_missing";
+const CACHE_USAGE_MISSING_MESSAGE: &str =
+    "cache usage is unavailable for a cache-protected model route";
 
 struct CacheHitRouteEvent {
     action: &'static str,
@@ -26,6 +29,12 @@ struct CacheHitRouteEvent {
     reason_message: Option<&'static str>,
     reason_code: Option<&'static str>,
     failure_kind: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ModelRouteCacheObservationOutcome {
+    pub(crate) observed: bool,
+    pub(crate) availability_increased: bool,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -54,6 +63,10 @@ struct ModelRouteRow {
     cache_cooldown_level: i64,
     #[sqlx(default)]
     cache_last_hit_rate_percent: Option<i64>,
+    #[sqlx(default)]
+    cache_usage_missing_since: Option<String>,
+    #[sqlx(default)]
+    cache_usage_missing_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -82,6 +95,10 @@ struct ModelRoutingLiveRouteRow {
     cache_cooldown_level: i64,
     #[sqlx(default)]
     cache_last_hit_rate_percent: Option<i64>,
+    #[sqlx(default)]
+    cache_usage_missing_since: Option<String>,
+    #[sqlx(default)]
+    cache_usage_missing_reason: Option<String>,
 }
 
 impl ModelRoutingLiveRouteRow {
@@ -106,6 +123,8 @@ impl ModelRoutingLiveRouteRow {
             cache_low_hit_streak: self.cache_low_hit_streak,
             cache_cooldown_level: self.cache_cooldown_level,
             cache_last_hit_rate_percent: self.cache_last_hit_rate_percent,
+            cache_usage_missing_since: self.cache_usage_missing_since,
+            cache_usage_missing_reason: self.cache_usage_missing_reason,
         });
         ModelRoutingLiveAccount {
             account_id: self.account_id,
@@ -147,6 +166,18 @@ fn cutoff_string() -> String {
 
 fn account_is_api_key(kind: Option<&str>) -> bool {
     kind == Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+}
+
+fn is_cache_owned_route(row: &ModelRouteRow) -> bool {
+    row.last_failure_kind.as_deref() == Some(CACHE_HIT_FAILURE_KIND)
+        || row.cache_concurrency_limit.is_some()
+        || row.cache_recovery_limit.is_some()
+}
+
+fn cache_protection_controls_route_state(row: &ModelRouteRow) -> bool {
+    row.last_failure_kind.as_deref() == Some(CACHE_HIT_FAILURE_KIND)
+        || (row.last_failure_kind.is_none()
+            && (row.cache_concurrency_limit.is_some() || row.cache_recovery_limit.is_some()))
 }
 
 fn effective_row_state(
@@ -209,6 +240,8 @@ fn model_state_from_row(row: ModelRouteRow) -> ModelRoutingState {
         cache_low_hit_streak: row.cache_low_hit_streak,
         cache_cooldown_level: row.cache_cooldown_level,
         cache_last_hit_rate_percent: row.cache_last_hit_rate_percent,
+        cache_usage_missing_since: row.cache_usage_missing_since,
+        cache_usage_missing_reason: row.cache_usage_missing_reason,
         probe_required: row.state == MODEL_ROUTE_STATE_COOLING_DOWN
             && row
                 .cooldown_until
@@ -268,7 +301,8 @@ pub(crate) async fn load_model_routing_states(
                streak_started_at, changed_at, last_seen_at, last_success_at,
                last_failure_at, last_failure_kind, last_failure_message, cooldown_until,
                reset_fence_at, cache_concurrency_limit, cache_recovery_limit,
-               cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent
+               cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent,
+               cache_usage_missing_since, cache_usage_missing_reason
           FROM pool_upstream_account_model_routes
          WHERE account_id = ?1 AND last_seen_at >= ?2
          ORDER BY model COLLATE NOCASE ASC
@@ -306,7 +340,9 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
                routes.cache_recovery_limit,
                routes.cache_low_hit_streak,
                routes.cache_cooldown_level,
-               routes.cache_last_hit_rate_percent
+               routes.cache_last_hit_rate_percent,
+               routes.cache_usage_missing_since,
+               routes.cache_usage_missing_reason
           FROM pool_upstream_account_model_routes AS routes
           JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
          WHERE accounts.kind = ?1
@@ -352,7 +388,8 @@ pub(crate) async fn model_route_penalty(
                streak_started_at, changed_at, last_seen_at, last_success_at,
                last_failure_at, last_failure_kind, last_failure_message, cooldown_until,
                reset_fence_at, cache_concurrency_limit, cache_recovery_limit,
-               cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent
+               cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent,
+               cache_usage_missing_since, cache_usage_missing_reason
           FROM pool_upstream_account_model_routes
          WHERE account_id = ?1 AND model = ?2 AND last_seen_at >= ?3
         "#,
@@ -412,13 +449,71 @@ pub(crate) async fn model_route_concurrency_limit(
         .map(|limit| limit.max(1)))
 }
 
+pub(crate) async fn model_route_requires_expired_cooldown_probe(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    model: Option<&str>,
+) -> Result<bool> {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+        return Ok(false);
+    }
+    let row = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT state, cooldown_until FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some_and(|(state, cooldown_until)| {
+        state == MODEL_ROUTE_STATE_COOLING_DOWN
+            && cooldown_until
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                .is_some_and(|until| until <= Utc::now())
+    }))
+}
+
+pub(crate) async fn earliest_model_route_cooldown_expiry(
+    pool: &Pool<Sqlite>,
+    model: Option<&str>,
+    account_ids: &[i64],
+) -> Result<Option<String>> {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if account_ids.is_empty() {
+        return Ok(None);
+    }
+    let now = Utc::now();
+    let cooldowns = sqlx::query_as::<_, (i64, String)>(
+        "SELECT account_id, cooldown_until FROM pool_upstream_account_model_routes WHERE model = ?1 AND state = ?2 AND cooldown_until IS NOT NULL",
+    )
+    .bind(model)
+    .bind(MODEL_ROUTE_STATE_COOLING_DOWN)
+    .fetch_all(pool)
+    .await?;
+    Ok(cooldowns
+        .into_iter()
+        .filter(|(account_id, _)| account_ids.contains(account_id))
+        .filter_map(|(_, cooldown)| {
+            parse_to_utc_datetime(&cooldown)
+                .filter(|until| *until > now)
+                .map(|until| (until, cooldown))
+        })
+        .min_by_key(|(until, _)| *until)
+        .map(|(_, cooldown)| cooldown))
+}
+
 pub(crate) async fn clear_cache_hit_protection_state(
     pool: &Pool<Sqlite>,
     reason_code: &str,
 ) -> Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let rows = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE last_failure_kind = ?1 OR cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL OR cache_low_hit_streak != 0 OR cache_cooldown_level != 0 OR cache_last_hit_rate_percent IS NOT NULL",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE last_failure_kind = ?1 OR cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL OR cache_low_hit_streak != 0 OR cache_cooldown_level != 0 OR cache_last_hit_rate_percent IS NOT NULL OR cache_usage_missing_since IS NOT NULL",
     )
     .bind(CACHE_HIT_FAILURE_KIND)
     .fetch_all(&mut *tx)
@@ -431,15 +526,21 @@ pub(crate) async fn clear_cache_hit_protection_state(
         r#"
         UPDATE pool_upstream_account_model_routes
            SET state = CASE
-                   WHEN last_failure_kind = ?1 THEN ?2
+                   WHEN last_failure_kind = ?1
+                     OR (last_failure_kind IS NULL AND (cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL))
+                   THEN ?2
                    ELSE state
                END,
                priority = CASE
-                   WHEN last_failure_kind = ?1 THEN ?3
+                   WHEN last_failure_kind = ?1
+                     OR (last_failure_kind IS NULL AND (cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL))
+                   THEN ?3
                    ELSE priority
                END,
                cooldown_until = CASE
-                   WHEN last_failure_kind = ?1 THEN NULL
+                   WHEN last_failure_kind = ?1
+                     OR (last_failure_kind IS NULL AND (cache_concurrency_limit IS NOT NULL OR cache_recovery_limit IS NOT NULL))
+                   THEN NULL
                    ELSE cooldown_until
                END,
                last_failure_at = CASE WHEN last_failure_kind = ?1 THEN NULL ELSE last_failure_at END,
@@ -449,7 +550,9 @@ pub(crate) async fn clear_cache_hit_protection_state(
                cache_recovery_limit = NULL,
                cache_low_hit_streak = 0,
                cache_cooldown_level = 0,
-               cache_last_hit_rate_percent = NULL
+               cache_last_hit_rate_percent = NULL,
+               cache_usage_missing_since = NULL,
+               cache_usage_missing_reason = NULL
         "#,
     )
     .bind(CACHE_HIT_FAILURE_KIND)
@@ -460,7 +563,7 @@ pub(crate) async fn clear_cache_hit_protection_state(
     tx.commit().await?;
 
     for row in rows {
-        let cache_owned_failure = row.last_failure_kind.as_deref() == Some(CACHE_HIT_FAILURE_KIND);
+        let cache_controlled_state = cache_protection_controls_route_state(&row);
         persist_model_event(
             pool,
             row.account_id,
@@ -470,19 +573,23 @@ pub(crate) async fn clear_cache_hit_protection_state(
             UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
             "cache_hit_settings_cleanup",
             Some(&row.state),
-            Some(if cache_owned_failure {
+            Some(if cache_controlled_state {
                 MODEL_ROUTE_STATE_AVAILABLE
             } else {
                 row.state.as_str()
             }),
             Some(&row.priority),
-            Some(if cache_owned_failure {
+            Some(if cache_controlled_state {
                 MODEL_ROUTE_PRIORITY_NORMAL
             } else {
                 row.priority.as_str()
             }),
             row.consecutive_failures,
-            None,
+            if cache_controlled_state {
+                None
+            } else {
+                row.cooldown_until.as_deref()
+            },
             Some("cache hit protection settings changed"),
             Some(reason_code),
             None,
@@ -493,6 +600,112 @@ pub(crate) async fn clear_cache_hit_protection_state(
     Ok(())
 }
 
+async fn mark_model_route_cache_usage_missing(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    model: &str,
+    reason: &'static str,
+) -> Result<ModelRouteCacheObservationOutcome> {
+    let now = now_string();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let enabled = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT cache_hit_protection_enabled FROM pool_routing_settings WHERE id = 1",
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten()
+    .unwrap_or_default()
+        != 0;
+    if !enabled {
+        tx.commit().await?;
+        return Ok(ModelRouteCacheObservationOutcome::default());
+    }
+    let row = sqlx::query_as::<_, ModelRouteRow>(
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
+        tx.commit().await?;
+        return Ok(ModelRouteCacheObservationOutcome::default());
+    };
+    if !is_cache_owned_route(&row) {
+        tx.commit().await?;
+        return Ok(ModelRouteCacheObservationOutcome::default());
+    }
+    let first_missing_sample = row.cache_usage_missing_since.is_none();
+    let (state_before, priority_before, _) = effective_row_state(&row, Utc::now());
+    let cooling_is_active = row.state == MODEL_ROUTE_STATE_COOLING_DOWN
+        && row
+            .cooldown_until
+            .as_deref()
+            .and_then(parse_to_utc_datetime)
+            .is_some_and(|until| until > Utc::now());
+    let state_after = if cooling_is_active {
+        MODEL_ROUTE_STATE_COOLING_DOWN
+    } else {
+        MODEL_ROUTE_STATE_DEGRADED
+    };
+    let priority_after = if cooling_is_active {
+        MODEL_ROUTE_PRIORITY_EXCLUDED
+    } else {
+        MODEL_ROUTE_PRIORITY_DEMOTED
+    };
+    let changed = state_before != state_after
+        || priority_before != priority_after
+        || row.cache_concurrency_limit != Some(1);
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = CASE WHEN ?5 = 1 THEN ?6 ELSE changed_at END, last_seen_at = ?6, cooldown_until = CASE WHEN ?7 = 1 THEN cooldown_until ELSE NULL END, cache_concurrency_limit = 1, cache_recovery_limit = COALESCE(cache_recovery_limit, cache_concurrency_limit, 1), cache_usage_missing_since = COALESCE(cache_usage_missing_since, ?6), cache_usage_missing_reason = COALESCE(cache_usage_missing_reason, ?8) WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .bind(state_after)
+    .bind(priority_after)
+    .bind(if changed { 1 } else { 0 })
+    .bind(&now)
+    .bind(if cooling_is_active { 1 } else { 0 })
+    .bind(reason)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    if first_missing_sample {
+        warn!(
+            account_id,
+            model,
+            reason,
+            cache_usage_missing_since = %now,
+            "cache-protected model route remains constrained because cache usage is unavailable"
+        );
+        persist_model_event(
+            pool,
+            account_id,
+            None,
+            model,
+            UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_CACHE_OBSERVATION_MISSING,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            "awaiting_cache_usage",
+            Some(&state_before),
+            Some(state_after),
+            Some(&priority_before),
+            Some(priority_after),
+            row.consecutive_failures,
+            row.cooldown_until.as_deref(),
+            Some(CACHE_USAGE_MISSING_MESSAGE),
+            Some(CACHE_USAGE_MISSING_REASON_CODE),
+            None,
+            row.last_failure_kind.as_deref(),
+        )
+        .await?;
+    }
+    Ok(ModelRouteCacheObservationOutcome {
+        observed: true,
+        availability_increased: false,
+    })
+}
+
 pub(crate) async fn observe_model_route_cache_hit(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -500,20 +713,39 @@ pub(crate) async fn observe_model_route_cache_hit(
     input_tokens: Option<i64>,
     cache_input_tokens: Option<i64>,
     active_concurrency: i64,
-) -> Result<()> {
+) -> Result<ModelRouteCacheObservationOutcome> {
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
-        return Ok(());
+        return Ok(ModelRouteCacheObservationOutcome::default());
     }
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(());
+        return Ok(ModelRouteCacheObservationOutcome::default());
     };
-    let Some(input_tokens) =
-        input_tokens.filter(|value| *value >= CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS as i64)
-    else {
-        return Ok(());
+    let Some(input_tokens) = input_tokens else {
+        return mark_model_route_cache_usage_missing(
+            pool,
+            account_id,
+            model,
+            "missing_input_tokens",
+        )
+        .await;
     };
+    if input_tokens < CACHE_HIT_PROTECTION_MIN_INPUT_TOKENS as i64 {
+        return mark_model_route_cache_usage_missing(
+            pool,
+            account_id,
+            model,
+            "input_below_cache_observation_threshold",
+        )
+        .await;
+    }
     let Some(cache_input_tokens) = cache_input_tokens else {
-        return Ok(());
+        return mark_model_route_cache_usage_missing(
+            pool,
+            account_id,
+            model,
+            "missing_cache_input_tokens",
+        )
+        .await;
     };
     let cached = cache_input_tokens.clamp(0, input_tokens);
     let hit_rate_percent = cached.saturating_mul(100) / input_tokens;
@@ -527,7 +759,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     .unwrap_or((Some(0), Some(10)));
     if settings.0.unwrap_or_default() == 0 {
         tx.commit().await?;
-        return Ok(());
+        return Ok(ModelRouteCacheObservationOutcome::default());
     }
     let threshold_percent = settings
         .1
@@ -537,7 +769,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     let low_hit =
         cached.saturating_mul(100) < input_tokens.saturating_mul(i64::from(threshold_percent));
     let row = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(model)
@@ -545,7 +777,7 @@ pub(crate) async fn observe_model_route_cache_hit(
     .await?;
     let Some(row) = row else {
         tx.commit().await?;
-        return Ok(());
+        return Ok(ModelRouteCacheObservationOutcome::default());
     };
     let expired_probe = row.state == MODEL_ROUTE_STATE_COOLING_DOWN
         && row
@@ -563,7 +795,7 @@ pub(crate) async fn observe_model_route_cache_hit(
         // Requests already in flight when the combination entered cooldown do
         // not shorten the cooldown or consume the eventual single probe.
         sqlx::query(
-            "UPDATE pool_upstream_account_model_routes SET last_seen_at = ?3, cache_last_hit_rate_percent = ?4 WHERE account_id = ?1 AND model = ?2",
+            "UPDATE pool_upstream_account_model_routes SET last_seen_at = ?3, cache_last_hit_rate_percent = ?4, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?2",
         )
         .bind(account_id)
         .bind(model)
@@ -572,7 +804,10 @@ pub(crate) async fn observe_model_route_cache_hit(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(());
+        return Ok(ModelRouteCacheObservationOutcome {
+            observed: true,
+            availability_increased: false,
+        });
     }
     let (before_state, before_priority, _) = effective_row_state(&row, Utc::now());
     let mut event = None;
@@ -598,7 +833,7 @@ pub(crate) async fn observe_model_route_cache_hit(
                 .to_rfc3339()
         });
         sqlx::query(
-            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = ?5, last_failure_kind = ?6, last_failure_message = ?7, cooldown_until = ?8, cache_concurrency_limit = ?9, cache_recovery_limit = ?10, cache_low_hit_streak = ?11, cache_cooldown_level = ?12, cache_last_hit_rate_percent = ?13 WHERE account_id = ?1 AND model = ?2",
+            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = ?5, last_failure_kind = ?6, last_failure_message = ?7, cooldown_until = ?8, cache_concurrency_limit = ?9, cache_recovery_limit = ?10, cache_low_hit_streak = ?11, cache_cooldown_level = ?12, cache_last_hit_rate_percent = ?13, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?2",
         )
         .bind(account_id)
         .bind(model)
@@ -657,7 +892,7 @@ pub(crate) async fn observe_model_route_cache_hit(
         });
     } else if expired_probe {
         sqlx::query(
-            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = ?6 WHERE account_id = ?1 AND model = ?2",
+            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = ?6, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?2",
         )
         .bind(account_id)
         .bind(model)
@@ -689,7 +924,7 @@ pub(crate) async fn observe_model_route_cache_hit(
         let next_limit = current_limit.saturating_add(1);
         let recovered = next_limit >= recovery_limit;
         sqlx::query(
-            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_at END, last_failure_kind = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_kind END, last_failure_message = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_message END, cooldown_until = NULL, cache_concurrency_limit = ?8, cache_recovery_limit = ?9, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = ?10 WHERE account_id = ?1 AND model = ?2",
+            "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, changed_at = ?5, last_seen_at = ?5, last_failure_at = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_at END, last_failure_kind = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_kind END, last_failure_message = CASE WHEN ?6 = 1 AND last_failure_kind = ?7 THEN NULL ELSE last_failure_message END, cooldown_until = NULL, cache_concurrency_limit = ?8, cache_recovery_limit = ?9, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = ?10, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?2",
         )
         .bind(account_id)
         .bind(model)
@@ -740,10 +975,16 @@ pub(crate) async fn observe_model_route_cache_hit(
         .await?;
     }
     tx.commit().await?;
+    let availability_increased = event
+        .as_ref()
+        .is_some_and(|event| event.action == UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED);
     if let Some(event) = event {
         persist_cache_hit_route_event(pool, account_id, model, event).await?;
     }
-    Ok(())
+    Ok(ModelRouteCacheObservationOutcome {
+        observed: true,
+        availability_increased,
+    })
 }
 
 pub(crate) async fn load_model_route_penalties(
@@ -1040,7 +1281,7 @@ pub(crate) async fn observe_model_route_seen(
     let now = now_string();
     let cutoff = cutoff_string();
     sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5) ON CONFLICT(account_id, model) DO UPDATE SET state = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.state ELSE pool_upstream_account_model_routes.state END, priority = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.priority ELSE pool_upstream_account_model_routes.priority END, consecutive_failures = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.consecutive_failures END, streak_started_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.streak_started_at END, changed_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_success_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_success_at END, last_failure_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_at END, last_failure_kind = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_kind END, last_failure_message = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_message END, cooldown_until = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cooldown_until END, reset_fence_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.reset_fence_at END, cache_concurrency_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_concurrency_limit END, cache_recovery_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_recovery_limit END, cache_low_hit_streak = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_low_hit_streak END, cache_cooldown_level = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_cooldown_level END, cache_last_hit_rate_percent = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_last_hit_rate_percent END",
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5) ON CONFLICT(account_id, model) DO UPDATE SET state = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.state ELSE pool_upstream_account_model_routes.state END, priority = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.priority ELSE pool_upstream_account_model_routes.priority END, consecutive_failures = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.consecutive_failures END, streak_started_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.streak_started_at END, changed_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_success_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_success_at END, last_failure_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_at END, last_failure_kind = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_kind END, last_failure_message = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.last_failure_message END, cooldown_until = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cooldown_until END, reset_fence_at = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.reset_fence_at END, cache_concurrency_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_concurrency_limit END, cache_recovery_limit = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_recovery_limit END, cache_low_hit_streak = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_low_hit_streak END, cache_cooldown_level = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN 0 ELSE pool_upstream_account_model_routes.cache_cooldown_level END, cache_last_hit_rate_percent = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_last_hit_rate_percent END, cache_usage_missing_since = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_usage_missing_since END, cache_usage_missing_reason = CASE WHEN julianday(pool_upstream_account_model_routes.last_seen_at) < julianday(?6) THEN NULL ELSE pool_upstream_account_model_routes.cache_usage_missing_reason END",
     )
     .bind(account_id)
     .bind(model)
@@ -1145,15 +1386,15 @@ pub(crate) async fn record_model_route_success_from_attempt(
     account_id: i64,
     attempt_id: i64,
     request_started_at: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
-        return Ok(());
+        return Ok(false);
     }
     let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(model) = attempt_context.request_model else {
-        return Ok(());
+        return Ok(false);
     };
     let cache_protection_enabled =
         resolve_cache_hit_protection_settings(&load_pool_routing_settings(pool).await?).enabled;
@@ -1166,7 +1407,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
         .execute(&mut *tx)
         .await?;
     let row = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(&model)
@@ -1184,15 +1425,9 @@ pub(crate) async fn record_model_route_success_from_attempt(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(());
+        return Ok(false);
     };
-    let expired_probe = row.state == MODEL_ROUTE_STATE_COOLING_DOWN
-        && row
-            .cooldown_until
-            .as_deref()
-            .and_then(parse_to_utc_datetime)
-            .is_some_and(|until| until <= Utc::now());
-    if cache_protection_enabled && (expired_probe || row.cache_concurrency_limit.is_some()) {
+    if cache_protection_enabled && is_cache_owned_route(&row) {
         // The terminal usage observer decides whether a cache-protected route
         // recovers, remains clamped, or re-enters cooldown. A bare HTTP success
         // is deliberately insufficient while the feature is enabled.
@@ -1205,7 +1440,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(());
+        return Ok(false);
     }
     if let (Some(started), Some(last_failure)) =
         (request_started_at, row.last_failure_at.as_deref())
@@ -1213,7 +1448,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
             parse_to_utc_datetime(started).is_some_and(|request| failure > request)
         })
     {
-        return Ok(());
+        return Ok(false);
     }
     if request_started_at
         .and_then(parse_to_utc_datetime)
@@ -1225,7 +1460,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
         .is_some_and(|(request, reset)| request <= reset)
     {
         tx.commit().await?;
-        return Ok(());
+        return Ok(false);
     }
     let (before_state, before_priority, _) = effective_row_state(&row, Utc::now());
     let changed = before_state != MODEL_ROUTE_STATE_AVAILABLE
@@ -1233,7 +1468,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
         || row.consecutive_failures != 0
         || row.cooldown_until.is_some();
     sqlx::query(
-        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, consecutive_failures = 0, streak_started_at = NULL, changed_at = CASE WHEN ?5 = 1 THEN ?2 ELSE changed_at END, last_seen_at = ?2, last_success_at = ?2, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0 WHERE account_id = ?1 AND model = ?6",
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, consecutive_failures = 0, streak_started_at = NULL, changed_at = CASE WHEN ?5 = 1 THEN ?2 ELSE changed_at END, last_seen_at = ?2, last_success_at = ?2, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?6",
     )
     .bind(account_id)
     .bind(&now)
@@ -1266,7 +1501,7 @@ pub(crate) async fn record_model_route_success_from_attempt(
         )
         .await?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 pub(crate) async fn record_model_route_failure_from_attempt(
@@ -1463,7 +1698,7 @@ async fn record_model_route_failure_inner(
     let sanitized_error_message = error_message.and_then(sanitize_account_action_message);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let existing = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(model)
@@ -1579,7 +1814,7 @@ async fn record_model_route_failure_inner(
     let changed =
         before_state != state || before_priority != priority || before_cooldown != cooldown_until;
     sqlx::query(
-        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7, ?8, ?9, ?10) ON CONFLICT(account_id, model) DO UPDATE SET state = excluded.state, priority = excluded.priority, consecutive_failures = excluded.consecutive_failures, streak_started_at = excluded.streak_started_at, changed_at = CASE WHEN ?11 = 1 THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_failure_at = excluded.last_failure_at, last_failure_kind = excluded.last_failure_kind, last_failure_message = excluded.last_failure_message, cooldown_until = excluded.cooldown_until, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = NULL",
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?7, ?8, ?9, ?10) ON CONFLICT(account_id, model) DO UPDATE SET state = excluded.state, priority = excluded.priority, consecutive_failures = excluded.consecutive_failures, streak_started_at = excluded.streak_started_at, changed_at = CASE WHEN ?11 = 1 THEN excluded.changed_at ELSE pool_upstream_account_model_routes.changed_at END, last_seen_at = excluded.last_seen_at, last_failure_at = excluded.last_failure_at, last_failure_kind = excluded.last_failure_kind, last_failure_message = excluded.last_failure_message, cooldown_until = excluded.cooldown_until, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = NULL, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL",
     )
     .bind(account_id)
     .bind(model)
@@ -1637,7 +1872,7 @@ pub(crate) async fn reset_model_route(
         return Ok(None);
     }
     let Some(row) = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(model)
@@ -1646,7 +1881,7 @@ pub(crate) async fn reset_model_route(
     let (before_state, before_priority, _) = effective_row_state(&row, Utc::now());
     let now = now_string();
     sqlx::query(
-        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, consecutive_failures = 0, streak_started_at = NULL, changed_at = ?2, reset_fence_at = ?2, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = NULL WHERE account_id = ?1 AND model = ?5",
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, consecutive_failures = 0, streak_started_at = NULL, changed_at = ?2, reset_fence_at = ?2, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_last_hit_rate_percent = NULL, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?5",
     )
     .bind(account_id)
     .bind(&now)
@@ -1676,7 +1911,7 @@ pub(crate) async fn reset_model_route(
     )
     .await?;
     let updated = sqlx::query_as::<_, ModelRouteRow>(
-        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )
     .bind(account_id)
     .bind(model)

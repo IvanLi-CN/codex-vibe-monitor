@@ -4111,6 +4111,66 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        UPDATE system_task_runs
+        SET
+            started_at = CASE
+                -- Pre-ISO task rows used the application's Shanghai-local timestamp convention.
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    AND started_at GLOB '????-??-?? ??:??:??*'
+                    AND (started_at GLOB '????-??-?? ??:??:??*Z'
+                        OR started_at GLOB '????-??-?? ??:??:??*[-+]??:??')
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    AND started_at GLOB '????-??-?? ??:??:??*'
+                    THEN COALESCE(
+                        strftime('%Y-%m-%dT%H:%M:%fZ', started_at, '-8 hours'),
+                        started_at
+                    )
+                WHEN date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                    AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at)
+                ELSE started_at
+            END,
+            finished_at = CASE
+                WHEN finished_at IS NULL THEN NULL
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    AND finished_at GLOB '????-??-?? ??:??:??*'
+                    AND (finished_at GLOB '????-??-?? ??:??:??*Z'
+                        OR finished_at GLOB '????-??-?? ??:??:??*[-+]??:??')
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    AND finished_at GLOB '????-??-?? ??:??:??*'
+                    THEN COALESCE(
+                        strftime('%Y-%m-%dT%H:%M:%fZ', finished_at, '-8 hours'),
+                        finished_at
+                    )
+                WHEN date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                    AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                    THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', finished_at), finished_at)
+                ELSE finished_at
+            END
+        WHERE
+            (started_at NOT GLOB '????-??-??T??:??:??.???Z'
+                AND date(substr(started_at, 1, 10)) = substr(started_at, 1, 10)
+                AND time(substr(started_at, 12, 8)) = substr(started_at, 12, 8)
+                AND strftime('%Y-%m-%dT%H:%M:%fZ', started_at) IS NOT NULL)
+            OR (finished_at IS NOT NULL
+                AND finished_at NOT GLOB '????-??-??T??:??:??.???Z'
+                AND date(substr(finished_at, 1, 10)) = substr(finished_at, 1, 10)
+                AND time(substr(finished_at, 12, 8)) = substr(finished_at, 12, 8)
+                AND strftime('%Y-%m-%dT%H:%M:%fZ', finished_at) IS NOT NULL)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to normalize system_task_runs timestamps to UTC ISO")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_system_task_runs_task_time
         ON system_task_runs (task_kind, started_at DESC, id DESC)
         "#,
@@ -4128,6 +4188,26 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_system_task_runs_status_time")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_started_at_id
+        ON system_task_runs (started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_started_at_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_system_task_runs_task_status_time
+        ON system_task_runs (task_kind, status, started_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_system_task_runs_task_status_time")?;
 
     sqlx::query(
         r#"

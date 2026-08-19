@@ -2107,6 +2107,7 @@ pub(crate) struct AppState {
     pub(crate) system_status_cache: Arc<Mutex<SystemStatusCacheState>>,
     pub(crate) pool_routing_reservations:
         Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
+    pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,
@@ -2114,6 +2115,30 @@ pub(crate) struct AppState {
     pub(crate) fallback_proxy_429_retry_delay_override: Option<Duration>,
     pub(crate) pool_no_available_wait: PoolNoAvailableWaitSettings,
     pub(crate) upstream_accounts: Arc<UpstreamAccountsRuntime>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRoutingAvailabilitySignal {
+    sender: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for PoolRoutingAvailabilitySignal {
+    fn default() -> Self {
+        let (sender, _receiver) = tokio::sync::watch::channel(0);
+        Self { sender }
+    }
+}
+
+impl PoolRoutingAvailabilitySignal {
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.sender.subscribe()
+    }
+
+    pub(crate) fn publish(&self) {
+        self.sender.send_modify(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -176,6 +176,7 @@ pub(crate) async fn update_pool_routing_settings(
             state
                 .subscription_hub
                 .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+            publish_pool_routing_availability(state.as_ref());
         }
         if api_key.is_some() {
             refresh_pool_routing_runtime_cache(state.as_ref())
@@ -1510,8 +1511,9 @@ pub(crate) async fn create_api_key_account_inner(
         .upstream_accounts
         .account_ops
         .run_post_create_sync(state.clone(), inserted_id)
-        .await
-        .map_err(request_runtime_error_tuple)?;
+        .await;
+    publish_new_account_routing_availability_if_selectable(state.as_ref(), inserted_id).await;
+    let detail = detail.map_err(request_runtime_error_tuple)?;
     Ok(detail)
 }
 
@@ -1546,6 +1548,7 @@ pub(crate) async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let was_fresh_routable = is_account_selectable_for_fresh_assignment(&row, false, Utc::now());
     let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && account_update_requests_manual_recovery(&payload)
         && route_failure_kind_requires_manual_api_key_recovery(
@@ -2293,6 +2296,15 @@ pub(crate) async fn update_upstream_account_inner(
     record_account_update_action(&state.pool, id, "account settings were updated")
         .await
         .map_err(internal_error_tuple)?;
+    let refreshed_row = load_upstream_account_row(&state.pool, id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    if !was_fresh_routable
+        && is_account_selectable_for_fresh_assignment(&refreshed_row, false, Utc::now())
+    {
+        publish_pool_routing_availability(state);
+    }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await
@@ -2738,6 +2750,7 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         {
             warn!(account_id, error = %err, "OAuth callback created account but initial sync failed");
         }
+        publish_new_account_routing_availability_if_selectable(state.as_ref(), account_id).await;
         account_id
     };
 

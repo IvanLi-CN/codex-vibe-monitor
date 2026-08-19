@@ -182,8 +182,8 @@ body,
   );
   --tone-ink-error: color-mix(
     in oklab,
-    oklch(var(--color-base-content)) 40%,
-    oklch(var(--color-error)) 60%
+    oklch(var(--color-base-content)) 54%,
+    oklch(var(--color-error)) 46%
   );
   --chip-neutral-surface: oklch(96% 0.012 258);
   --chip-neutral-border: oklch(76% 0.025 258);

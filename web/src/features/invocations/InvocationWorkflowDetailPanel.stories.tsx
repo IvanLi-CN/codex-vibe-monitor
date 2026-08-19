@@ -1107,7 +1107,7 @@ const meta = {
   tags: ["autodocs"],
   decorators: [
     (Story, context) => (
-      <I18nProvider>
+      <I18nProvider initialLocale={context.parameters.locale ?? "zh"} persistLocale={false}>
         {context.parameters.pageSurface ? (
           <Story />
         ) : (
@@ -1120,6 +1120,10 @@ const meta = {
   ],
   parameters: {
     viewport: { defaultViewport: "desktop1280" },
+    a11y: {
+      options: { rules: { "color-contrast": { enabled: true } } },
+      config: { rules: [{ id: "color-contrast", enabled: true }] },
+    },
   },
 } satisfies Meta<typeof InvocationWorkflowDetailPanel>;
 
@@ -1219,6 +1223,9 @@ export const BlockedPoolWorkflow: Story = {
     record: blockedWorkflowRecord,
     size: "default",
   },
+  parameters: {
+    viewport: { defaultViewport: "desktop1440" },
+  },
   decorators: [
     (Story) => (
       <>
@@ -1227,6 +1234,122 @@ export const BlockedPoolWorkflow: Story = {
       </>
     ),
   ],
+};
+
+export const NoCandidateAudit: Story = {
+  args: {
+    record: blockedWorkflowRecord,
+    size: "default",
+  },
+  parameters: {
+    locale: "zh",
+  },
+  decorators: [
+    (Story) => (
+      <>
+        <WorkflowFetchMock
+          recordId={77}
+          response={{
+            ...blockedWorkflowResponse,
+            hero: {
+              ...blockedWorkflowResponse.hero,
+              poolRoutingNoCandidateAudit: {
+                terminalReasonCode: "modelConcurrencyLimit",
+                candidateCount: 3,
+                eligibleCandidateCount: 2,
+                reservationConflictCount: 2,
+                nextEligibleAt: "2026-08-19T02:04:05Z",
+                excludedReasonCounts: {
+                  modelConcurrencyLimit: 11,
+                  policyExcluded: 5,
+                },
+                candidates: [
+                  {
+                    accountId: 12,
+                    accountName: "dzw",
+                    reasonCode: "modelConcurrencyLimit",
+                  },
+                  {
+                    accountId: 13,
+                    accountName: "Ciii2",
+                    reasonCode: "modelConcurrencyLimit",
+                  },
+                  {
+                    accountId: 14,
+                    accountName: "upstream-account-with-an-extra-long-operator-label",
+                    reasonCode: "policyExcluded",
+                  },
+                ],
+              },
+            },
+          }}
+        />
+        <Story />
+      </>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("pool-routing-no-candidate-audit")).toBeVisible();
+    await expect(
+      canvas.getAllByText(/模型并发容量已满|Model concurrency capacity is full/),
+    ).toHaveLength(3);
+    await expect(canvas.getAllByText("modelConcurrencyLimit", { exact: true })).toHaveLength(3);
+    await expect(canvas.getByText(/下一可用时间|Next eligible at/)).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-next-eligible-at"),
+    ).not.toBeEmptyDOMElement();
+    await expect(canvas.getByTestId("pool-routing-no-candidate-reason-counts")).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-reason-count-modelConcurrencyLimit"),
+    ).toHaveTextContent("11");
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-reason-count-policyExcluded"),
+    ).toHaveTextContent("5");
+    await expect(
+      canvas.getByText("upstream-account-with-an-extra-long-operator-label"),
+    ).toBeVisible();
+  },
+};
+
+export const NoCandidateAuditEnglish: Story = {
+  ...NoCandidateAudit,
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    locale: "en",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Next eligible at")).toBeVisible());
+    await expect(canvas.getByText("Model concurrency capacity is full")).toBeVisible();
+    await expect(
+      canvas.getByTestId("pool-routing-no-candidate-next-eligible-at"),
+    ).not.toBeEmptyDOMElement();
+  },
+};
+
+export const NoCandidateAuditMobile: Story = {
+  ...NoCandidateAudit,
+  args: {
+    ...NoCandidateAudit.args,
+    size: "compact",
+  },
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    locale: "zh",
+    viewport: { defaultViewport: "mobile393" },
+  },
+};
+
+export const NoCandidateAuditDark: Story = {
+  ...NoCandidateAudit,
+  parameters: {
+    ...NoCandidateAudit.parameters,
+    locale: "zh",
+  },
+  globals: {
+    themeMode: "dark",
+  },
 };
 
 export const FailedPoolWorkflowDark: Story = {

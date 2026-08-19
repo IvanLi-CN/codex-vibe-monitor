@@ -1813,6 +1813,14 @@ const baseTranslations = {
       "Live request streaming treatment must be an integer from 0 to 100.",
     "settings.routing.errors.cacheHitThreshold":
       "Cache hit threshold must be an integer from 1 to 100.",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissing":
+      "Cache usage is unavailable ({{reason}}) since {{since}}; this route remains limited to one probe.",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.missing_input_tokens":
+      "input token usage is missing",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.missing_cache_input_tokens":
+      "cache input token usage is missing",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.input_below_cache_observation_threshold":
+      "input is below the cache observation threshold",
     "accountPool.upstreamAccounts.modelRouting.cacheLimit":
       "Cache limit {{limit}} / {{recovery}} · hit {{hitRate}}% · floor streak {{streak}} · cooldown {{cooldownLevel}}/3",
     "settings.externalApiKeys.title": "External API Keys",
@@ -4897,6 +4905,14 @@ const baseTranslations = {
     "settings.routing.errors.liveRequestStreamingPercent":
       "实时请求体流式转发的实验组占比必须是 0 到 100 的整数。",
     "settings.routing.errors.cacheHitThreshold": "缓存命中阈值必须是 1 到 100 的整数。",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissing":
+      "缓存 usage 自 {{since}} 起不可用（{{reason}}）；该路由继续限制为单探针。",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.missing_input_tokens":
+      "缺少输入 token usage",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.missing_cache_input_tokens":
+      "缺少缓存输入 token usage",
+    "accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.input_below_cache_observation_threshold":
+      "输入低于缓存观测阈值",
     "accountPool.upstreamAccounts.modelRouting.cacheLimit":
       "缓存并行上限 {{limit}} / {{recovery}} · 命中 {{hitRate}}% · 最低并行连续 {{streak}} · 冷却阶梯 {{cooldownLevel}}/3",
     "settings.externalApiKeys.title": "External API Keys",

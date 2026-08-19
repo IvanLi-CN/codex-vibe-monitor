@@ -190,6 +190,17 @@ function ModelRoutingHistory({ accountId, model }: { accountId?: number; model: 
   );
 }
 
+function cacheUsageMissingReasonLabel(
+  reason: string | null | undefined,
+  t: (key: string) => string,
+) {
+  const normalized = reason?.trim();
+  if (!normalized) return t("accountPool.upstreamAccounts.latestAction.unknown");
+  const key = `accountPool.upstreamAccounts.modelRouting.cacheUsageMissingReasons.${normalized}`;
+  const translated = t(key);
+  return translated === key ? t("accountPool.upstreamAccounts.latestAction.unknown") : translated;
+}
+
 export interface ModelRoutingHealthPanelProps {
   accountId?: number;
   states: ModelRoutingState[];
@@ -230,11 +241,7 @@ export function ModelRoutingHealthPanel({
       </CardHeader>
       <CardContent className="grid gap-2 px-4 pb-4">
         {error ? (
-          <Alert
-            variant="default"
-            className="border-error/45 bg-error/10"
-            data-testid="model-routing-error"
-          >
+          <Alert variant="error" data-testid="model-routing-error">
             <AppIcon name="alert-outline" className="h-4 w-4" aria-hidden />
             <span>{error}</span>
           </Alert>
@@ -247,6 +254,7 @@ export function ModelRoutingHealthPanel({
           <div className="overflow-hidden rounded-lg border border-base-300/70">
             {states.map((route) => {
               const expanded = expandedModel === route.model;
+              const cacheUsageMissing = Boolean(route.cacheUsageMissingSince);
               const protection = route.probeRequired
                 ? t("accountPool.upstreamAccounts.modelRouting.cacheProbe")
                 : route.cacheConcurrencyLimit != null
@@ -289,6 +297,17 @@ export function ModelRoutingHealthPanel({
                           .filter(Boolean)
                           .join(" · ")}
                       </span>
+                      {cacheUsageMissing ? (
+                        <span
+                          className="mt-1 block break-words text-xs leading-4 tone-ink-warning"
+                          data-testid={`model-routing-cache-usage-missing-${route.model}`}
+                        >
+                          {t("accountPool.upstreamAccounts.modelRouting.cacheUsageMissing", {
+                            reason: cacheUsageMissingReasonLabel(route.cacheUsageMissingReason, t),
+                            since: formatBeijing(route.cacheUsageMissingSince),
+                          })}
+                        </span>
+                      ) : null}
                     </button>
                     <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
                     {route.cooldownUntil ? (
@@ -296,7 +315,7 @@ export function ModelRoutingHealthPanel({
                         {formatBeijing(route.cooldownUntil)}
                       </span>
                     ) : null}
-                    {route.state !== "available" ? (
+                    {route.state !== "available" || cacheUsageMissing ? (
                       <Button
                         type="button"
                         size="sm"
@@ -304,6 +323,7 @@ export function ModelRoutingHealthPanel({
                         disabled={!writesEnabled || resettingModel === route.model}
                         onClick={() => onReset(route.model)}
                         data-testid={`model-routing-reset-${route.model}`}
+                        aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
                       >
                         {resettingModel === route.model
                           ? t("accountPool.upstreamAccounts.modelRouting.resetting")
