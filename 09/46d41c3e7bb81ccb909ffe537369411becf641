@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.64.2",
+  "base_stable_version": "2.64.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-19T04:26:50Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.64.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e0ab3abea2aa42b3afda21e6a81d8bea14e26913",
+  "pr_number": 815,
+  "pr_title": "fix(maintenance): bound historical rollup backfill",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.64.2",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.64.2",
+  "target_sha": "0946d41c3e7bb81ccb909ffe537369411becf641",
+  "type_label": "type:patch"
+}
