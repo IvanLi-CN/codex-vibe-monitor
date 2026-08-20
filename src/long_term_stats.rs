@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 const LONG_TERM_TIMEZONE: &str = "Asia/Shanghai";
 const LONG_TERM_STATE_ID: i64 = 1;
@@ -852,10 +853,20 @@ async fn load_or_inspect_long_term_archive_compatibility(
 fn long_term_archive_file_fingerprint(file_path: &str) -> Result<String> {
     // Archive manifests are updated separately from file replacement. Hash the opened source
     // bytes rather than its mutable metadata so a stale manifest cannot reuse old capability.
-    crate::maintenance::hourly_rollup_archive_support::sha256_hex_file(std::path::Path::new(
-        file_path,
-    ))
-    .with_context(|| format!("failed to fingerprint long-term archive {file_path}"))
+    let mut file = std::fs::File::open(file_path).with_context(|| {
+        format!("failed to open long-term archive {file_path} for fingerprinting")
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let bytes_read = std::io::Read::read(&mut file, &mut buffer)
+            .with_context(|| format!("failed to fingerprint long-term archive {file_path}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn long_term_archive_legacy_crossing_start(
@@ -1865,6 +1876,20 @@ async fn ensure_long_term_projection_source_indexes(pool: &Pool<Sqlite>) -> Resu
         return Ok(());
     }
     let columns = load_sqlite_table_columns(pool, "codex_invocations").await?;
+    if columns.contains("status") {
+        // Terminal delta scans advance by id. Index the exact terminal predicate so a dense
+        // running/pending prefix cannot turn a bounded incremental flush into a table scan.
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_terminal_id
+            ON codex_invocations (id)
+            WHERE LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to ensure long-term projection terminal id index")?;
+    }
     if !columns.contains("occurred_at") || !columns.contains("t_total_ms") {
         return Ok(());
     }
@@ -10724,6 +10749,56 @@ mod tests {
         .execute(pool)
         .await
         .expect("invocation schema");
+    }
+
+    #[tokio::test]
+    async fn terminal_projection_seek_uses_terminal_id_index_after_pending_prefix() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_test_invocations(&pool).await;
+        sqlx::query(
+            r#"
+            WITH RECURSIVE source(id) AS (
+                VALUES(1)
+                UNION ALL
+                SELECT id + 1 FROM source WHERE id < 1025
+            )
+            INSERT INTO codex_invocations (id, occurred_at, status)
+            SELECT
+                id,
+                printf('2026-07-%02d 00:00:00', (id % 28) + 1),
+                CASE WHEN id = 1025 THEN 'success' ELSE 'running' END
+            FROM source
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("sparse terminal source rows");
+        ensure_long_term_projection_source_indexes(&pool)
+            .await
+            .expect("projection source indexes");
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+            "EXPLAIN QUERY PLAN SELECT id FROM codex_invocations WHERE id > ?1 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') ORDER BY id ASC LIMIT ?2",
+        )
+        .bind(0_i64)
+        .bind(LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH)
+        .fetch_all(&pool)
+        .await
+        .expect("terminal seek query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_codex_invocations_long_term_projection_terminal_id")
+                && detail.contains("id>?")
+        }));
+        let rows = load_long_term_projection_terminal_rows(&pool, 0)
+            .await
+            .expect("terminal projection seek");
+        assert_eq!(
+            rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
+            vec![1025]
+        );
     }
 
     async fn create_long_term_integrity_oracle(pool: &Pool<Sqlite>) {
