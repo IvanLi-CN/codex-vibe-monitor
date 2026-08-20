@@ -7603,6 +7603,20 @@ fn runtime_record_is_success_for_summary_row(row: &UpstreamAccountInvocationPrev
 }
 
 fn summary_projection_record_totals(record: &SummaryProjectionRecord) -> StatsTotals {
+    summary_projection_record_totals_with_archived_pending_terminal(record, false)
+}
+
+fn summary_projection_all_time_record_totals(record: &SummaryProjectionRecord) -> StatsTotals {
+    // Completed archive batches can contain legacy rows whose status stayed `pending` after the
+    // terminal writer failed. The all-time rollup contract treats those retained historical rows
+    // as terminal; their normal failure classification still determines non-success totals.
+    summary_projection_record_totals_with_archived_pending_terminal(record, true)
+}
+
+fn summary_projection_record_totals_with_archived_pending_terminal(
+    record: &SummaryProjectionRecord,
+    archived_pending_is_terminal: bool,
+) -> StatsTotals {
     let classification = resolve_failure_classification(
         Some(record.row.status.as_str()),
         record.row.error_message.as_deref(),
@@ -7611,7 +7625,8 @@ fn summary_projection_record_totals(record: &SummaryProjectionRecord) -> StatsTo
         record.row.is_actionable,
     );
     let status = normalized_runtime_text(Some(record.row.status.as_str()));
-    let terminal = !matches!(status.as_str(), "running" | "pending");
+    let terminal = !matches!(status.as_str(), "running" | "pending")
+        || (archived_pending_is_terminal && record.is_archive_record && status == "pending");
     let mut totals = StatsTotals {
         total_count: 1,
         total_tokens: record.row.total_tokens,
@@ -8139,6 +8154,34 @@ fn summary_projection_archive_is_fully_within_exact_horizon(
         return false;
     };
     start >= exact_horizon.start && end <= exact_horizon.end
+}
+
+fn summary_projection_archive_has_coverage_bounds(
+    archive: &crate::stats::ArchiveBatchPathRow,
+) -> bool {
+    archive
+        .coverage_start_at()
+        .and_then(parse_to_utc_datetime)
+        .is_some()
+        && archive
+            .coverage_end_at()
+            .and_then(parse_to_utc_datetime)
+            .is_some()
+}
+
+fn summary_projection_effective_replay_coverage(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    mut coverage: SummaryProjectionArchiveReplayCoverage,
+) -> SummaryProjectionArchiveReplayCoverage {
+    // Older archive manifests predate bounded coverage timestamps. Their materialization flag
+    // is the established proof for the compact global invocation rollup; do not replace that
+    // aggregate with an unscoped raw scan. Account and usage markers remain independent.
+    if archive.has_materialized_historical_rollups()
+        && !summary_projection_archive_has_coverage_bounds(archive)
+    {
+        coverage.overall = true;
+    }
+    coverage
 }
 
 fn summary_projection_archive_exact_ranges(
@@ -9179,7 +9222,9 @@ async fn build_summary_projection(
     // All-time has no finite request boundary. A materialized archive outside the bounded exact
     // horizon whose replay marker is absent cannot be reconstructed without an unbounded file
     // scan, so preserve an exact last-good all-time response (or its existing unavailable
-    // contract) rather than publish a partial compact aggregate.
+    // contract) rather than publish a partial compact aggregate. Archives selected for this
+    // refresh are the exception: their bounded exact rows are retained below even if old
+    // metadata omitted coverage timestamps.
     let all_time_exact_range = ExactUtcRange {
         start: archive_start,
         end,
@@ -9214,6 +9259,7 @@ async fn build_summary_projection(
                     archive,
                     all_time_exact_range,
                 )
+                && !archive_path_set.contains(archive.file_path())
         });
     let all_time_account_exact_source_unavailable =
         missing_account_all_time_archives.iter().any(|archive| {
@@ -9222,6 +9268,7 @@ async fn build_summary_projection(
                     archive,
                     all_time_exact_range,
                 )
+                && !archive_path_set.contains(archive.file_path())
         });
     // Archive writers maintain this compact per-batch account manifest.  Hydrate account scope
     // from it before considering archive file I/O; this is the bounded discovery source for
@@ -9299,10 +9346,13 @@ async fn build_summary_projection(
         // A large materialized archive cannot be opened merely to discover account ids within
         // the refresh deadline.  Without a bounded discovery cache we fail closed above instead
         // of publishing a projection that silently undercounts an archive-only account.
-        let replay_coverage = archive_replay_coverage
-            .get(archive.file_path())
-            .copied()
-            .unwrap_or_default();
+        let replay_coverage = summary_projection_effective_replay_coverage(
+            archive,
+            archive_replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default(),
+        );
         if archive.has_materialized_historical_rollups()
             && row_count.is_some_and(|count| count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
             && replay_coverage.account_stats
@@ -9379,10 +9429,13 @@ async fn build_summary_projection(
         ) else {
             continue;
         };
-        let replay_coverage = archive_replay_coverage
-            .get(archive.file_path())
-            .copied()
-            .unwrap_or_default();
+        let replay_coverage = summary_projection_effective_replay_coverage(
+            archive,
+            archive_replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default(),
+        );
         archive_exact_ranges.extend(summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
             Some(replay_coverage.overall),
@@ -9535,10 +9588,13 @@ async fn build_summary_projection(
         ) else {
             continue;
         };
-        let replay_coverage = archive_replay_coverage
-            .get(archive.file_path())
-            .copied()
-            .unwrap_or_default();
+        let replay_coverage = summary_projection_effective_replay_coverage(
+            &archive,
+            archive_replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default(),
+        );
         let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
             Some(replay_coverage.overall),
@@ -9841,14 +9897,18 @@ async fn build_summary_projection(
             }
         }
         // A materialized archive without a durable replay marker replaces its complete bucket
-        // in the all-time baseline too. The exact set contains both archive rows and every
-        // persisted live row for that bucket, so the compact prefix is never published alone.
+        // in the all-time baseline too. The exact set contains the materialized archive rows
+        // plus every co-located persisted live row. Unmaterialized sibling archives remain
+        // owned by the bounded delta helper above; adding their retained range records here
+        // would double count the sibling after its durable overlap subtraction.
         for record in &records {
             let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
             if exact_global_total_rollup_buckets.contains(&bucket)
+                && (record.is_persisted_live_record || record.archive_has_materialized_rollups)
                 && !(record.is_persisted_live_record && record.row.id > rollup_live_cursor)
             {
-                global_totals = global_totals.add(summary_projection_record_totals(record));
+                global_totals =
+                    global_totals.add(summary_projection_all_time_record_totals(record));
             }
         }
         if global_all_time_source_unavailable {
