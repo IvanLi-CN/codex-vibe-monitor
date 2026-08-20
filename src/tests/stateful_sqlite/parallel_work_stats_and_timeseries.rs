@@ -8025,7 +8025,7 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
         "missing archive should bubble the repair cause"
     );
 
-    let Json(summary) = fetch_summary_from_memory_snapshot(
+    let summary = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8034,13 +8034,11 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("read-only all-time summary should fall back to current materialized rollups");
-    assert_eq!(summary.total_count, 99);
-    assert_eq!(summary.success_count, 99);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 990);
-    assert!((summary.total_cost - 9.9).abs() < 1e-9);
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "an unreadable archive without replay coverage must not publish an inexact all-time snapshot"
+    );
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
@@ -9089,7 +9087,7 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
 }
 
 #[tokio::test]
-async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives() {
+async fn all_time_stats_tolerate_unreadable_pending_archives_while_summary_fails_closed() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -9175,7 +9173,7 @@ async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives()
     assert_eq!(stats.total_tokens, 10);
     assert!((stats.total_cost - 0.10).abs() < 1e-9);
 
-    let Json(summary) = fetch_summary_from_memory_snapshot(
+    let summary = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9184,13 +9182,11 @@ async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives()
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("fetch all-time summary with unreadable pending archive");
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 10);
-    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "a materialized bucket marker is not an archive-level replay proof for the memory projection"
+    );
 }
 
 #[tokio::test]

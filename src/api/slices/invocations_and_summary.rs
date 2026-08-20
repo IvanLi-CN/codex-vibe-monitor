@@ -7179,6 +7179,7 @@ pub(crate) struct SummaryProjectionRecord {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct SummaryProjectionArchiveReplayCoverage {
+    overall: bool,
     account_stats: bool,
     usage_breakdown: bool,
 }
@@ -8382,6 +8383,11 @@ async fn merge_summary_projection_archive_records_with_coverage(
     )
     .await
     .map_err(|error| anyhow!("summary projection persisted live-id lookup failed: {error:?}"))?;
+    let retained_persisted_live_row_ids = records_by_invoke_id
+        .values()
+        .filter(|record| record.is_persisted_live_record)
+        .map(|record| record.row.id)
+        .collect::<HashSet<_>>();
     for row in rows {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
@@ -8390,7 +8396,8 @@ async fn merge_summary_projection_archive_records_with_coverage(
         // Persisted/live rows are the richer, authoritative copy. A materialized archive is
         // covered globally, but account coverage is independent: account rollups can lag the
         // global target and must retain this exact archive copy for account-scoped reads.
-        if persisted_live_row_ids.contains(&row.id)
+        if (persisted_live_row_ids.contains(&row.id)
+            && retained_persisted_live_row_ids.contains(&row.id))
             || persisted_live_ids.contains(&row.invoke_id)
             || records_by_invoke_id.contains_key(&row.invoke_id)
         {
@@ -8805,6 +8812,8 @@ async fn load_summary_projection_archive_replay_coverage(
          WHERE dataset = 'codex_invocations' AND target IN (",
     );
     query
+        .push_bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+        .push(", ")
         .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
         .push(", ")
         .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
@@ -8824,6 +8833,9 @@ async fn load_summary_projection_archive_replay_coverage(
     let mut coverage = HashMap::<String, SummaryProjectionArchiveReplayCoverage>::new();
     for (file_path, target) in rows {
         let entry = coverage.entry(file_path).or_default();
+        if target == HOURLY_ROLLUP_TARGET_INVOCATIONS {
+            entry.overall = true;
+        }
         if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY {
             entry.account_stats = true;
         }
@@ -9161,7 +9173,7 @@ async fn build_summary_projection(
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
         else {
-            if archive.has_materialized_historical_rollups() {
+            if archive.has_materialized_historical_rollups() || replay_coverage.overall {
                 // A materialized archive remains answerable from its durable rollup baseline.
                 // A missing raw file may prevent account discovery from being enriched, but it
                 // must not suppress the independently valid global projection.
@@ -9237,7 +9249,7 @@ async fn build_summary_projection(
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if archive.has_materialized_historical_rollups() {
+            if archive.has_materialized_historical_rollups() || replay_coverage.overall {
                 // Preserve the read-only historical fallback: durable rollups are still the
                 // canonical baseline when a materialized raw archive is unavailable. Only an
                 // unmaterialized archive has no independent durable source and must fail closed.
@@ -25777,10 +25789,79 @@ mod request_compression_query_tests {
 
         let now = Utc::now();
         let archive_range = ExactUtcRange {
-            start: now - ChronoDuration::hours(9),
-            end: now - ChronoDuration::hours(7),
+            start: now - ChronoDuration::hours(2),
+            end: now + ChronoDuration::minutes(1),
         };
         let mut records = HashMap::new();
+        records.insert(
+            "live-authoritative-copy".to_string(),
+            SummaryProjectionRecord {
+                row: UpstreamAccountInvocationPreviewRow {
+                    upstream_account_id: None,
+                    id: 7,
+                    invoke_id: "live-authoritative-copy".to_string(),
+                    prompt_cache_key: None,
+                    occurred_at: now.to_rfc3339(),
+                    conversation_created_at: None,
+                    status: "success".to_string(),
+                    live_phase: None,
+                    failure_class: None,
+                    route_mode: None,
+                    model: None,
+                    request_model: None,
+                    response_model: None,
+                    total_tokens: 17,
+                    cost: Some(1.7),
+                    cost_input: None,
+                    cost_cache_write: None,
+                    cost_cache_read: None,
+                    cost_output: None,
+                    cost_reasoning: None,
+                    source: Some(SOURCE_PROXY.to_string()),
+                    input_tokens: None,
+                    output_tokens: None,
+                    cache_input_tokens: None,
+                    reasoning_tokens: None,
+                    reasoning_effort: None,
+                    error_message: None,
+                    downstream_status_code: None,
+                    downstream_error_message: None,
+                    failure_kind: None,
+                    is_actionable: None,
+                    proxy_display_name: None,
+                    upstream_account_name: None,
+                    upstream_account_plan_type: None,
+                    response_content_encoding: None,
+                    request_compression_algorithm: None,
+                    transport: None,
+                    requested_service_tier: None,
+                    service_tier: None,
+                    billing_service_tier: None,
+                    t_req_read_ms: None,
+                    t_req_parse_ms: None,
+                    t_upstream_connect_ms: None,
+                    t_upstream_ttfb_ms: None,
+                    first_token_ms: None,
+                    t_upstream_stream_ms: None,
+                    t_resp_parse_ms: None,
+                    t_persist_ms: None,
+                    t_total_ms: None,
+                    endpoint: None,
+                    compaction_request_kind: None,
+                    compaction_response_kind: None,
+                    image_intent: None,
+                },
+                occurred_at: now,
+                global_rollup_covered: false,
+                account_rollup_covered: false,
+                usage_global_rollup_covered: false,
+                usage_account_rollup_covered: false,
+                is_persisted_live_record: true,
+                is_archive_record: false,
+                archive_has_materialized_rollups: false,
+                account_archive_totals_fallback_included: false,
+            },
+        );
         let mut budget = 0;
         let mut bytes = 0;
         merge_summary_projection_archive_records_with_coverage(
@@ -25802,10 +25883,8 @@ mod request_compression_query_tests {
         )
         .await
         .expect("bounded persisted-id lookup");
-        assert!(
-            records.is_empty(),
-            "the richer persisted live row must suppress an archive replay with the same id"
-        );
+        assert_eq!(records.len(), 1);
+        assert!(records.contains_key("live-authoritative-copy"));
     }
 
     #[tokio::test]
