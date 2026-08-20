@@ -1671,10 +1671,13 @@ pub(crate) fn reserve_pool_routing_account_for_model(
     account: &PoolResolvedAccount,
     model: Option<&str>,
 ) -> bool {
-    let model_concurrency_limit = state
-        .pool_routing_snapshot
-        .current()
-        .and_then(|snapshot| snapshot.model_route_concurrency_limit(account.account_id, model));
+    // This is also used after a live-first handoff. A mutation may have fenced
+    // the snapshot since the account was selected, so a missing snapshot must
+    // not turn a configured model limit into an unlimited reservation.
+    let Some(snapshot) = state.pool_routing_snapshot.current() else {
+        return false;
+    };
+    let model_concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, model);
     try_reserve_pool_routing_account_for_model(
         state,
         reservation_key,

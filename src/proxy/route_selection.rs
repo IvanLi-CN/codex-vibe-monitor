@@ -2059,9 +2059,16 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let mut reservation_guard = match reservation_guard {
         Some(guard) => guard,
         None => {
-            let concurrency_limit = state.pool_routing_snapshot.current().and_then(|snapshot| {
-                snapshot.model_route_concurrency_limit(account.account_id, requested_model)
-            });
+            let Some(routing_snapshot) = state.pool_routing_snapshot.current() else {
+                return Err(build_pool_no_available_account_error(
+                    0,
+                    1,
+                    state.pool_no_available_wait.retry_after_secs,
+                    None,
+                ));
+            };
+            let concurrency_limit =
+                routing_snapshot.model_route_concurrency_limit(account.account_id, requested_model);
             if !try_reserve_pool_routing_account_for_model(
                 state.as_ref(),
                 &reservation_key,
@@ -3413,9 +3420,14 @@ async fn continue_or_retry_pool_live_request_inner(
                     )
                 } else {
                     (
-                        Some(initial_account.clone()),
+                        None,
                         PoolFailoverProgress {
+                            // The live-first attempt has persisted a route-failure fence.
+                            // Re-enter selection so a cold or updated snapshot cannot resend
+                            // the fenced account through the preferred-account shortcut.
+                            excluded_account_ids: vec![initial_account.account_id],
                             attempt_count: 1,
+                            last_error: Some(first_error),
                             responses_total_timeout_started_at,
                             no_available_wait_deadline,
                             ..PoolFailoverProgress::default()

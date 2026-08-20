@@ -2167,9 +2167,11 @@ async fn reserve_sticky_model_route(
     let Some(reservation_key) = reservation_key else {
         return Ok(true);
     };
-    let concurrency_limit = state.pool_routing_snapshot.current().and_then(|snapshot| {
-        snapshot.model_route_concurrency_limit(account.account_id, requested_model)
-    });
+    let Some(snapshot) = state.pool_routing_snapshot.current() else {
+        return Ok(false);
+    };
+    let concurrency_limit =
+        snapshot.model_route_concurrency_limit(account.account_id, requested_model);
     Ok(try_reserve_pool_routing_account_for_model(
         state,
         reservation_key,

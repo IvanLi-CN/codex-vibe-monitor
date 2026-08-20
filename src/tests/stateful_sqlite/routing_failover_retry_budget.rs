@@ -3143,6 +3143,77 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_a_routable_accoun
 }
 
 #[tokio::test]
+async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Fenced Model", "upstream-fenced-model").await;
+    let model = "gpt-fenced-model";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit the model route to one reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish model reservation fixture");
+
+    let account = match resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("fenced-model-holder"),
+    )
+    .await
+    .expect("reserve the published model route")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("expected a model route reservation, got {other:?}"),
+    };
+
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "the mutation fence must make the route snapshot unavailable"
+    );
+    assert!(
+        !reserve_pool_routing_account_for_model(
+            state.as_ref(),
+            "fenced-model-retry",
+            &account,
+            Some(model),
+        ),
+        "a delayed preferred-account reservation must not bypass a cold snapshot's cap"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key("fenced-model-retry"),
+        "the rejected retry must not create a second model reservation"
+    );
+
+    release_pool_routing_reservation(&state, "fenced-model-holder");
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation_is_released() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
