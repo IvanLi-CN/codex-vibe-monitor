@@ -1038,6 +1038,96 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn cancelling_live_first_before_model_mapping_releases_its_routing_reservation() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts before blocking model mapping");
+
+    // `load_model_mapping_for_account` takes this lock after selection has
+    // reserved the account. Holding it makes the cancellation window exact.
+    let runtime_cache_guard = state.pool_routing_runtime_cache.lock().await;
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    body_tx
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","input":"pending"}"#,
+        )))
+        .await
+        .expect("send live-first request body");
+    drop(body_tx);
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        let uri = "/v1/responses".parse().expect("valid responses uri");
+        proxy_openai_v1_via_pool(
+            request_state,
+            9842,
+            &uri,
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
+            runtime_timeouts,
+            None,
+        )
+        .await
+    });
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if state
+                .pool_routing_reservations
+                .lock()
+                .expect("lock routing reservations")
+                .len()
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("selection should reserve before model mapping is allowed to complete");
+
+    request_task.abort();
+    let join_error = request_task
+        .await
+        .expect_err("cancelling the request should cancel its task");
+    assert!(join_error.is_cancelled());
+    drop(runtime_cache_guard);
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if state
+                .pool_routing_reservations
+                .lock()
+                .expect("lock routing reservations")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelling before model mapping must release the routing reservation");
+}
+
 #[test]
 fn proxy_openai_v1_responses_live_first_failover_restores_full_retry_budget_for_follow_up_accounts()
 {

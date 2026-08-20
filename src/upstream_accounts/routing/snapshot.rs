@@ -251,7 +251,9 @@ struct PoolRoutingSnapshotRefreshState {
 
 const REFRESH_PENDING_BIT: u64 = 1 << 63;
 const REFRESH_PUBLISHING_BIT: u64 = 1 << 62;
-const REFRESH_GENERATION_MASK: u64 = !(REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT);
+const REFRESH_RECONCILING_BIT: u64 = 1 << 61;
+const REFRESH_GENERATION_MASK: u64 =
+    !(REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT);
 
 impl Default for PoolRoutingSnapshotStore {
     fn default() -> Self {
@@ -290,7 +292,7 @@ impl PoolRoutingSnapshotStore {
         // Atomically fence an older reconciler and make the pending state
         // visible before waiting for refresh_state. This blocks stale capacity
         // wakeups while a mutation is queued behind a completing refresh.
-        self.advance_refresh_epoch();
+        let queued_refresh = self.advance_refresh_epoch();
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -298,13 +300,43 @@ impl PoolRoutingSnapshotStore {
         refresh_state.pending = true;
         refresh_state.wake_waiters |= wake_waiters;
         drop(refresh_state);
-        self.refresh_tx.send_modify(|generation| {
-            *generation = generation.wrapping_add(1);
-        });
+        if queued_refresh {
+            self.refresh_tx.send_modify(|generation| {
+                *generation = generation.wrapping_add(1);
+            });
+        }
     }
 
     pub(crate) fn subscribe_refresh(&self) -> tokio::sync::watch::Receiver<u64> {
         self.refresh_tx.subscribe()
+    }
+
+    pub(crate) fn begin_refresh(&self) -> Option<u64> {
+        loop {
+            let refresh_epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if refresh_epoch & REFRESH_PUBLISHING_BIT != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if refresh_epoch & REFRESH_RECONCILING_BIT != 0 {
+                return None;
+            }
+            let refresh_generation = refresh_epoch & REFRESH_GENERATION_MASK;
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    refresh_epoch,
+                    refresh_generation | REFRESH_RECONCILING_BIT,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return Some(refresh_generation);
+            }
+        }
     }
 
     pub(crate) fn complete_refresh(
@@ -313,31 +345,33 @@ impl PoolRoutingSnapshotStore {
         snapshot: PoolRoutingSnapshot,
         publish_availability: impl Fn(),
     ) -> bool {
-        if self.refresh_generation() != refresh_generation {
-            return false;
-        }
         let mut refresh_state = self
             .refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned");
-        if self.refresh_generation() != refresh_generation {
-            return false;
-        }
         let refresh_epoch = self
             .refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire);
         if refresh_epoch & REFRESH_PUBLISHING_BIT != 0
+            || refresh_epoch & REFRESH_RECONCILING_BIT == 0
             || refresh_epoch & REFRESH_GENERATION_MASK != refresh_generation
-            || self
-                .refresh_epoch
-                .compare_exchange(
-                    refresh_epoch,
-                    refresh_generation | REFRESH_PUBLISHING_BIT,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                )
-                .is_err()
         {
+            drop(refresh_state);
+            self.abandon_refresh();
+            return false;
+        }
+        if self
+            .refresh_epoch
+            .compare_exchange(
+                refresh_epoch,
+                refresh_generation | REFRESH_PUBLISHING_BIT,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            drop(refresh_state);
+            self.abandon_refresh();
             return false;
         }
         // A mutation cannot advance the epoch while this publishing lease is
@@ -381,7 +415,7 @@ impl PoolRoutingSnapshotStore {
         if self
             .refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire)
-            & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT)
+            & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT)
             != 0
         {
             return true;
@@ -403,7 +437,8 @@ impl PoolRoutingSnapshotStore {
             let epoch = self
                 .refresh_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
-            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT) != 0 {
+            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT) != 0
+            {
                 // A release during a snapshot rebuild must wake only after its
                 // fenced snapshot is current. Retain the wake across both the
                 // pending and publishing phases instead of dropping it.
@@ -444,22 +479,19 @@ impl PoolRoutingSnapshotStore {
         }
     }
 
-    fn advance_refresh_epoch(&self) {
+    fn abandon_refresh(&self) {
         loop {
             let epoch = self
                 .refresh_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
-            if epoch & REFRESH_PUBLISHING_BIT != 0 {
-                std::hint::spin_loop();
-                continue;
+            if epoch & REFRESH_RECONCILING_BIT == 0 {
+                return;
             }
-            let next_generation =
-                (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
             if self
                 .refresh_epoch
                 .compare_exchange(
                     epoch,
-                    next_generation | REFRESH_PENDING_BIT,
+                    epoch & !REFRESH_RECONCILING_BIT,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -469,10 +501,42 @@ impl PoolRoutingSnapshotStore {
             }
         }
     }
+
+    fn advance_refresh_epoch(&self) -> bool {
+        loop {
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & REFRESH_PUBLISHING_BIT != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if epoch & REFRESH_PENDING_BIT != 0 {
+                return false;
+            }
+            let next_generation =
+                (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    epoch,
+                    next_generation | REFRESH_PENDING_BIT | (epoch & REFRESH_RECONCILING_BIT),
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
 }
 
 pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()> {
-    let refresh_generation = state.pool_routing_snapshot.refresh_generation();
+    let Some(refresh_generation) = state.pool_routing_snapshot.begin_refresh() else {
+        return Ok(());
+    };
+    let snapshot = async {
     let candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
     let account_ids = candidates
         .iter()
@@ -570,9 +634,7 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
     .into_iter()
     .map(|(sticky_key, model_key, generation)| ((sticky_key, model_key), generation))
     .collect();
-    state.pool_routing_snapshot.complete_refresh(
-        refresh_generation,
-        PoolRoutingSnapshot {
+    Ok(PoolRoutingSnapshot {
             candidate_order: candidates.iter().map(|candidate| candidate.id).collect(),
             candidates: candidates
                 .into_iter()
@@ -590,9 +652,21 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
             sticky_generations,
             sticky_model_generations,
             cache_hit_protection: resolve_cache_hit_protection_settings(&settings),
-        },
-        || state.pool_routing_availability.publish(),
-    );
+        })
+    }
+    .await;
+    let snapshot = match snapshot {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            state.pool_routing_snapshot.abandon_refresh();
+            return Err(error);
+        }
+    };
+    state
+        .pool_routing_snapshot
+        .complete_refresh(refresh_generation, snapshot, || {
+            state.pool_routing_availability.publish()
+        });
     Ok(())
 }
 
@@ -656,7 +730,9 @@ mod snapshot_store_tests {
     fn stale_refresh_cannot_install_after_a_newer_mutation() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
-        let stale_generation = store.refresh_generation();
+        let stale_generation = store
+            .begin_refresh()
+            .expect("queued refresh should claim its reconciliation lease");
         store.request_refresh();
 
         assert!(
@@ -670,9 +746,44 @@ mod snapshot_store_tests {
     }
 
     #[test]
+    fn events_during_reconciliation_coalesce_into_one_successor_refresh() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh();
+        let first_generation = store
+            .begin_refresh()
+            .expect("queued refresh should claim its reconciliation lease");
+
+        store.request_refresh_and_wake_waiters();
+        let successor_generation = store.refresh_generation();
+        store.request_refresh_and_wake_waiters();
+        assert_eq!(
+            store.refresh_generation(),
+            successor_generation,
+            "additional outage events must not keep invalidating the queued successor"
+        );
+        assert!(
+            !store.complete_refresh(first_generation, empty_snapshot(), || {}),
+            "the build predating the first new event must not install"
+        );
+
+        let successor = store
+            .begin_refresh()
+            .expect("one successor should remain after the stale build exits");
+        assert_eq!(successor, successor_generation);
+        assert!(store.complete_refresh(successor, empty_snapshot(), || {}));
+        assert!(store.current().is_some());
+        assert!(
+            !store.refresh_pending(),
+            "the coalesced successor should restore a current snapshot"
+        );
+    }
+
+    #[test]
     fn initial_refresh_can_install_without_a_mutation_event() {
         let store = PoolRoutingSnapshotStore::new();
-        let initial_generation = store.refresh_generation();
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
         let published_availability = std::cell::Cell::new(false);
 
         assert!(
@@ -692,7 +803,9 @@ mod snapshot_store_tests {
     fn pending_refresh_wakes_waiters_only_after_the_snapshot_installs() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh_and_wake_waiters();
-        let generation = store.refresh_generation();
+        let generation = store
+            .begin_refresh()
+            .expect("pending refresh should claim its reconciliation lease");
         let published_availability = std::cell::Cell::new(false);
 
         assert!(store.complete_refresh(generation, empty_snapshot(), || {
@@ -706,7 +819,9 @@ mod snapshot_store_tests {
     fn availability_release_deferred_while_pending_wakes_after_snapshot_install() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
-        let generation = store.refresh_generation();
+        let generation = store
+            .begin_refresh()
+            .expect("pending refresh should claim its reconciliation lease");
         let publish_count = std::cell::Cell::new(0);
 
         store.publish_availability_if_ready(|| publish_count.set(publish_count.get() + 1));

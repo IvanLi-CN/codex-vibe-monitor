@@ -261,9 +261,18 @@ pub(crate) fn spawn_pool_routing_snapshot_reconcile(state: Arc<AppState>) {
                 _ = refreshes.changed() => {},
                 _ = ticker.tick() => {},
             }
-            if let Err(err) = refresh_pool_routing_snapshot(state.as_ref()).await {
-                state.pool_routing_snapshot.invalidate();
-                warn!(error = %err, "failed to reconcile pool routing snapshot");
+            loop {
+                if let Err(err) = refresh_pool_routing_snapshot(state.as_ref()).await {
+                    state.pool_routing_snapshot.invalidate();
+                    warn!(error = %err, "failed to reconcile pool routing snapshot");
+                    break;
+                }
+                // Mutations arriving during a rebuild are coalesced into one
+                // successor generation. Install that current snapshot now
+                // instead of waiting for the next 60-second reconciliation.
+                if !state.pool_routing_snapshot.refresh_pending() {
+                    break;
+                }
             }
         }
     });

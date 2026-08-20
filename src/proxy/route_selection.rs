@@ -4716,6 +4716,14 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     no_candidate_request_body_snapshot,
                                 )
                                 .await?;
+                            // Selection has inserted the reservation before returning. Own it
+                            // before any model-mapping or timeout await so cancellation cannot
+                            // leak a model-cap slot in the live-first handoff window.
+                            let mut live_first_reservation_guard =
+                                PoolRoutingReservationDropGuard::new(
+                                    state.clone(),
+                                    pool_routing_reservation_key.clone(),
+                                );
                             let mut pool_attempt_trace_context =
                                 build_via_pool_attempt_trace_context(
                                     proxy_request_id,
@@ -4762,8 +4770,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 )
                                 .await
                                 {
-                                    Ok(upstream) => upstream,
-                                    Err(first_error) => continue_or_retry_pool_live_request(
+                                    Ok(upstream) => {
+                                        live_first_reservation_guard.disarm();
+                                        upstream
+                                    }
+                                    Err(first_error) => match continue_or_retry_pool_live_request(
                                         state.clone(),
                                         proxy_request_id,
                                         method.clone(),
@@ -4786,9 +4797,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         first_error,
                                     )
                                     .await
-                                    .map_err(|err| {
-                                        proxy_error_response_from_pool_upstream_error(err, None)
-                                    })?,
+                                    {
+                                        Ok(upstream) => {
+                                            live_first_reservation_guard.disarm();
+                                            upstream
+                                        }
+                                        Err(err) => {
+                                            return Err(
+                                                proxy_error_response_from_pool_upstream_error(
+                                                    err, None,
+                                                ),
+                                            );
+                                        }
+                                    },
                                 };
                                 let account = upstream.account;
                                 let upstream_attempt_started_at_utc =

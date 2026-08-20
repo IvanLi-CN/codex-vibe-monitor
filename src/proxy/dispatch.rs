@@ -729,6 +729,7 @@ struct PreparedCaptureRequestBody {
     live_first_pool_response: Option<PoolUpstreamResponse>,
     prepared_live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
     live_first_attempt_failed: bool,
+    live_first_failed_account_id: Option<i64>,
     live_first_request_body_first_byte_at: Option<Instant>,
     live_oauth_rewrite_rx:
         Option<watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>>,
@@ -808,6 +809,7 @@ async fn prepare_capture_request_body(
             live_first_pool_response: None,
             prepared_live_request_streaming_decision: None,
             live_first_attempt_failed: false,
+            live_first_failed_account_id: None,
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
             live_first_experiment_group: None,
@@ -835,6 +837,7 @@ async fn prepare_capture_request_body(
             live_first_pool_response: None,
             prepared_live_request_streaming_decision: None,
             live_first_attempt_failed: false,
+            live_first_failed_account_id: None,
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
             live_first_experiment_group: None,
@@ -929,6 +932,7 @@ async fn prepare_capture_request_body(
     let mut live_first_pool_response = None;
     let mut prepared_live_request_streaming_decision = None;
     let mut live_first_attempt_failed = false;
+    let mut live_first_failed_account_id = None;
     let mut live_first_request_body_first_byte_at = None;
     let mut live_first_experiment_group = None;
     let mut live_route_lookup_cache_hit = live_routing_hot_cache_hit;
@@ -1102,6 +1106,7 @@ async fn prepare_capture_request_body(
                             },
                         ),
                         live_first_attempt_failed: false,
+                        live_first_failed_account_id: None,
                         live_first_request_body_first_byte_at: None,
                         live_oauth_rewrite_rx: None,
                         live_first_experiment_group,
@@ -1132,6 +1137,7 @@ async fn prepare_capture_request_body(
                     .as_ref()
                     .map(|(snapshot, _)| snapshot.request_compression.level_preset)
                     .unwrap_or_default();
+                let initial_account_id = initial_account.account_id;
                 let model_mapping = match load_model_mapping_for_account(
                     state.as_ref(),
                     initial_account.account_id,
@@ -1207,7 +1213,7 @@ async fn prepare_capture_request_body(
                         response_timeout,
                         response_timeout.map(|_| req_read_started),
                         live_body_sticky_key.as_deref(),
-                        initial_account,
+                        initial_account.clone(),
                         model_mapping,
                         Some(&trace_context),
                         live_route_reservation_guard.take(),
@@ -1256,6 +1262,7 @@ async fn prepare_capture_request_body(
                             live_first_attempt_failed = true;
                             live_first_request_body_first_byte_at =
                                 *first_upstream_body_poll_at_rx.borrow();
+                            live_first_failed_account_id = Some(initial_account_id);
                             warn!(
                                 proxy_request_id,
                                 error = %error.message,
@@ -1340,6 +1347,7 @@ async fn prepare_capture_request_body(
         live_first_pool_response,
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
+        live_first_failed_account_id,
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
         live_first_experiment_group,
@@ -1486,6 +1494,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         mut live_first_pool_response,
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
+        live_first_failed_account_id,
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx,
         live_first_experiment_group,
@@ -2042,7 +2051,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             prompt_cache_binding_constraint.clone(),
             prompt_cache_conversation_override.clone(),
             None,
-            PoolFailoverProgress::default(),
+            PoolFailoverProgress {
+                excluded_account_ids: live_first_failed_account_id.into_iter().collect(),
+                attempt_count: usize::from(live_first_failed_account_id.is_some()),
+                ..PoolFailoverProgress::default()
+            },
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
             false,
         )
