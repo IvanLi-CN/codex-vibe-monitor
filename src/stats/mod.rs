@@ -1342,6 +1342,25 @@ pub(crate) async fn load_invocation_archives_missing_rollup_target(
     target: &str,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_invocation_archives_missing_rollup_target_with_limit(executor, target, range, None).await
+}
+
+pub(crate) async fn load_invocation_archives_missing_rollup_target_bounded(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    limit: usize,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_invocation_archives_missing_rollup_target_with_limit(executor, target, range, Some(limit))
+        .await
+}
+
+async fn load_invocation_archives_missing_rollup_target_with_limit(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    limit: Option<usize>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
@@ -1401,6 +1420,11 @@ pub(crate) async fn load_invocation_archives_missing_rollup_target(
     }
 
     query.push(" ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC");
+    if let Some(limit) = limit {
+        query
+            .push(" LIMIT ")
+            .push_bind((limit.saturating_add(1)) as i64);
+    }
     query
         .build_query_as::<ArchiveBatchPathRow>()
         .fetch_all(executor)
@@ -1421,10 +1445,25 @@ pub(crate) async fn load_completed_invocation_archive_paths_in_range(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
-    load_completed_archive_paths_for_dataset_in_range(
+    load_completed_archive_paths_for_dataset_in_range_with_limit(
         executor,
         HOURLY_ROLLUP_DATASET_INVOCATIONS,
         range,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn load_completed_invocation_archive_paths_in_range_bounded(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    limit: usize,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_completed_archive_paths_for_dataset_in_range_with_limit(
+        executor,
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        range,
+        Some(limit),
     )
     .await
 }
@@ -1433,6 +1472,16 @@ pub(crate) async fn load_completed_archive_paths_for_dataset_in_range(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     dataset: &str,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+) -> Result<Vec<ArchiveBatchPathRow>> {
+    load_completed_archive_paths_for_dataset_in_range_with_limit(executor, dataset, range, None)
+        .await
+}
+
+async fn load_completed_archive_paths_for_dataset_in_range_with_limit(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    dataset: &str,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    limit: Option<usize>,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         r#"
@@ -1481,6 +1530,11 @@ pub(crate) async fn load_completed_archive_paths_for_dataset_in_range(
     }
 
     query.push(" ORDER BY month_key ASC, created_at ASC, id ASC");
+    if let Some(limit) = limit {
+        query
+            .push(" LIMIT ")
+            .push_bind((limit.saturating_add(1)) as i64);
+    }
     query
         .build_query_as::<ArchiveBatchPathRow>()
         .fetch_all(executor)
@@ -3825,9 +3879,27 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_hourly_rollup_
     exclude_invocation_ids: Option<&HashSet<i64>>,
     upstream_account_id: i64,
 ) -> Result<Vec<UpstreamAccountStatsRollupRecord>> {
+    let archive_rows = load_invocation_archives_missing_rollup_target_bounded(
+        pool,
+        rollup_target,
+        range,
+        SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES,
+    )
+    .await?;
+    if archive_rows.len() > SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES {
+        return Err(anyhow!(
+            "summary account archive batch cardinality exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES})"
+        ));
+    }
     let archive_rows =
-        load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
-            .await?;
+        if account_archive_target_treats_materialized_batch_as_replayed(rollup_target) {
+            archive_rows
+                .into_iter()
+                .filter(|archive_row| archive_row.historical_rollups_materialized_at.is_none())
+                .collect::<Vec<_>>()
+        } else {
+            archive_rows
+        };
     let mut archive_deltas = BTreeMap::<i64, UpstreamAccountStatsDelta>::new();
 
     for archive_row in archive_rows {
@@ -3943,6 +4015,9 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
 /// Aggregate unmaterialized account archive rows in one archive pass.  The summary projection
 /// uses this for its all-time account snapshots so account cardinality does not multiply archive
 /// opens and decompression work.
+const SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS: usize = 50_000;
+const SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES: usize = 4_096;
+
 pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_account(
     pool: &Pool<Sqlite>,
     rollup_target: &str,
@@ -3950,10 +4025,62 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_acco
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<HashMap<i64, StatsTotals>> {
+    let archive_rows = load_invocation_archives_missing_rollup_target_bounded(
+        pool,
+        rollup_target,
+        range,
+        SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES,
+    )
+    .await?;
     let archive_rows =
-        load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
-            .await?;
+        if account_archive_target_treats_materialized_batch_as_replayed(rollup_target) {
+            archive_rows
+                .into_iter()
+                .filter(|archive_row| archive_row.historical_rollups_materialized_at.is_none())
+                .collect::<Vec<_>>()
+        } else {
+            archive_rows
+        };
+    if archive_rows.len() > SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES {
+        return Err(anyhow!(
+            "summary account archive batch cardinality exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES})"
+        ));
+    }
+    let archive_paths = archive_rows
+        .iter()
+        .map(|row| row.file_path.clone())
+        .collect::<Vec<_>>();
+    if archive_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut row_count_query = QueryBuilder::<Sqlite>::new(
+        "SELECT file_path, row_count FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path IN (",
+    );
+    {
+        let mut separated = row_count_query.separated(", ");
+        for path in &archive_paths {
+            separated.push_bind(path);
+        }
+    }
+    row_count_query.push(")");
+    let row_counts = row_count_query
+        .build_query_as::<(String, i64)>()
+        .fetch_all(pool)
+        .await
+        .context("summary account archive row-count hydration failed")?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    if row_counts
+        .values()
+        .any(|row_count| *row_count > SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS as i64)
+    {
+        return Err(anyhow!(
+            "summary account archive exact rows exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS})"
+        ));
+    }
     let mut totals_by_account = HashMap::<i64, StatsTotals>::new();
+    let mut scanned_rows = 0usize;
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
@@ -3972,6 +4099,12 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_acco
             .await?;
             if rows.is_empty() {
                 break;
+            }
+            scanned_rows = scanned_rows.saturating_add(rows.len());
+            if scanned_rows > SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS {
+                return Err(anyhow!(
+                    "summary account archive exact rows exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_ROWS})"
+                ));
             }
             cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
             for row in rows {

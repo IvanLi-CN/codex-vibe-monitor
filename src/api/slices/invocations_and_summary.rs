@@ -6997,6 +6997,11 @@ const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // atomically and cannot expose a partial projection to the request path.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
+// Account and archive metadata are admission-controlled independently from exact invocation
+// rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
+// previous projection, rather than publishing a partial aggregate.
+const SUMMARY_PROJECTION_MAX_ACCOUNTS: usize = 50_000;
+const SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES: usize = 4_096;
 const SUMMARY_PROJECTION_MIN_EXACT_HORIZON: ChronoDuration = ChronoDuration::hours(48);
 // Summary duration/calendar ranges are backed by the configured live retention plus the
 // archive grace used by the existing range readers.  Deriving this once from configuration
@@ -7237,6 +7242,11 @@ impl SummaryProjection {
             }
             if let Some(response) = self.all_time_by_account.get(&upstream_account_id) {
                 return Ok(response.clone());
+            }
+            if upstream_account_id.is_some() {
+                return Err(ApiError::unavailable(anyhow!(
+                    "summary all-time account snapshot is not hydrated"
+                )));
             }
         }
         let now = Utc::now();
@@ -7502,11 +7512,18 @@ async fn load_summary_projection_account_rollup_totals(
                 COALESCE(SUM(non_success_cost), 0.0) AS non_success_cost \
          FROM upstream_account_stats_hourly \
          WHERE upstream_account_id > 0 \
-         GROUP BY upstream_account_id",
+         GROUP BY upstream_account_id \
+         LIMIT ?1",
     )
+    .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection all-time account rollup hydration failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+        return Err(anyhow!(
+            "summary projection account rollup cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
     Ok(rows
         .into_iter()
         .map(|row| (row.upstream_account_id, row.into_totals()))
@@ -7522,14 +7539,21 @@ async fn load_summary_projection_live_tail_account_totals(
         "SELECT {account_expression} AS upstream_account_id, {} \
          FROM codex_invocations \
          WHERE id > ?1 AND {account_expression} > 0 \
-         GROUP BY upstream_account_id",
+         GROUP BY upstream_account_id \
+         LIMIT ?2",
         crate::stats::stats_success_failure_select_sql(),
     );
     let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(&query)
         .bind(rollup_live_cursor)
+        .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
         .fetch_all(pool)
         .await
         .context("summary projection live-tail account hydration failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+        return Err(anyhow!(
+            "summary projection live-tail account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
     Ok(rows
         .into_iter()
         .map(|row| (row.upstream_account_id, row.into_totals()))
@@ -8207,6 +8231,21 @@ async fn load_summary_projection_rollup_live_cursor(pool: &Pool<Sqlite>) -> Resu
     Ok(cursor)
 }
 
+async fn load_summary_projection_account_rollup_live_cursor(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    // Account activity v2 advances independently from the global invocation rollup.  A global
+    // cursor therefore cannot be used to suppress an account-scoped exact row when this marker
+    // is behind it.
+    sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress \
+         WHERE dataset = 'invocation_account_activity_v2_repair_live_cursor'",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection account rollup cursor hydration failed")
+}
+
 async fn load_summary_projection_archive_account_ids(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
@@ -8245,6 +8284,105 @@ async fn load_summary_projection_archive_account_ids(
         .collect())
 }
 
+async fn load_summary_projection_archive_row_counts(
+    pool: &Pool<Sqlite>,
+    archive_paths: &[String],
+) -> Result<HashMap<String, i64>> {
+    if archive_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT file_path, row_count FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for path in archive_paths {
+            separated.push_bind(path);
+        }
+    }
+    query
+        .push(") LIMIT ")
+        .push_bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64);
+    let rows = query
+        .build_query_as::<(String, i64)>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection archive row-count hydration failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        return Err(anyhow!(
+            "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+        ));
+    }
+    Ok(rows.into_iter().collect())
+}
+
+async fn load_summary_projection_archive_manifest_accounts(
+    pool: &Pool<Sqlite>,
+    archive_paths: &[String],
+) -> Result<Vec<(String, i64)>> {
+    if archive_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT batches.file_path, activity.account_id \
+         FROM archive_batches AS batches \
+         JOIN archive_batch_upstream_activity AS activity \
+           ON activity.archive_batch_id = batches.id \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND activity.account_id > 0 \
+           AND batches.file_path IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for path in archive_paths {
+            separated.push_bind(path);
+        }
+    }
+    query
+        .push(") LIMIT ")
+        .push_bind((SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64);
+    let rows = query
+        .build_query_as::<(String, i64)>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection archive account manifest hydration failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection archive account manifest exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+        ));
+    }
+    Ok(rows)
+}
+
+async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Result<HashSet<i64>> {
+    let pool_rows =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts WHERE id > 0 LIMIT ?1")
+            .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
+            .fetch_all(pool)
+            .await
+            .context("summary projection account hydration failed")?;
+    let rollup_rows = sqlx::query_scalar::<_, i64>(
+        "SELECT DISTINCT upstream_account_id \
+         FROM upstream_account_stats_hourly \
+         WHERE upstream_account_id > 0 \
+         LIMIT ?1",
+    )
+    .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
+    .fetch_all(pool)
+    .await
+    .context("summary projection historical account hydration failed")?;
+    if pool_rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS
+        || rollup_rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS
+    {
+        return Err(anyhow!(
+            "summary projection durable account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
+    Ok(pool_rows.into_iter().chain(rollup_rows).collect())
+}
+
 /// Reads every input needed by the hot path while running off-request.  The resulting projection
 /// is swapped atomically in the subscription hub only after the complete baseline is available.
 async fn build_summary_projection(
@@ -8277,6 +8415,10 @@ async fn build_summary_projection(
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(&state.pool, Some(rollup_range)).await?;
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
+    let account_rollup_live_cursor =
+        load_summary_projection_account_rollup_live_cursor(&state.pool)
+            .await?
+            .unwrap_or(rollup_live_cursor);
     let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
         &state.pool,
         InvocationSourceScope::All,
@@ -8330,13 +8472,16 @@ async fn build_summary_projection(
         .filter_map(|row| {
             let occurred_at = parse_to_utc_datetime(&row.occurred_at)?;
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+            // Coverage is a property of the exact scope key and its own live cursor, not merely
+            // of the global cursor. Account activity may lag the global rollup, so a live row is
+            // suppressible only when the corresponding bucket/scope aggregate is caught up.
             let global_rollup_covered =
                 row.id <= rollup_live_cursor && hourly_rollup_totals.contains_key(&(bucket, None));
-            let account_rollup_covered = row.id <= rollup_live_cursor
+            let account_rollup_covered = row.id <= account_rollup_live_cursor
                 && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
             let usage_global_rollup_covered =
                 row.id <= rollup_live_cursor && hourly_rollup_usage.contains_key(&(bucket, None));
-            let usage_account_rollup_covered = row.id <= rollup_live_cursor
+            let usage_account_rollup_covered = row.id <= account_rollup_live_cursor
                 && hourly_rollup_usage.contains_key(&(bucket, row.upstream_account_id));
             Some((
                 row.invoke_id.clone(),
@@ -8358,12 +8503,7 @@ async fn build_summary_projection(
         .filter_map(|record| record.row.upstream_account_id)
         .filter(|account_id| *account_id > 0)
         .collect::<HashSet<_>>();
-    known_account_ids.extend(
-        sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts")
-            .fetch_all(&state.pool)
-            .await
-            .context("summary projection account coverage hydration failed")?,
-    );
+    known_account_ids.extend(load_summary_projection_durable_account_ids(&state.pool).await?);
     known_account_ids.extend(
         hourly_rollup_totals
             .keys()
@@ -8376,19 +8516,30 @@ async fn build_summary_projection(
             .filter_map(|(_, account_id)| *account_id)
             .filter(|account_id| *account_id > 0),
     );
+    if known_account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+        return Err(anyhow!(
+            "summary projection account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
     let mut exact_record_budget = records_by_invoke_id.len();
-    let archives = crate::stats::load_completed_invocation_archive_paths_in_range(
+    let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
         &state.pool,
         Some((archive_start, end)),
+        SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
     )
     .await?;
     let archive_paths = archives
         .iter()
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
+    if archive_paths.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        return Err(anyhow!(
+            "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+        ));
+    }
     let archive_path_set = archive_paths.iter().cloned().collect::<HashSet<_>>();
     archive_account_ids_by_file.retain(|path, _| archive_path_set.contains(path));
     let mut cached_archive_account_id_count = archive_account_ids_by_file
@@ -8400,30 +8551,13 @@ async fn build_summary_projection(
             "summary projection archive account cache exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    let archive_row_counts = sqlx::query_as::<_, (String, i64)>(
-        "SELECT file_path, row_count FROM archive_batches \
-         WHERE dataset = 'codex_invocations' AND status = 'completed'",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .context("summary projection archive row-count hydration failed")?
-    .into_iter()
-    .collect::<HashMap<_, _>>();
+    let archive_row_counts =
+        load_summary_projection_archive_row_counts(&state.pool, &archive_paths).await?;
     // Archive writers maintain this compact per-batch account manifest.  Hydrate account scope
     // from it before considering archive file I/O; this is the bounded discovery source for
     // large materialized archives and also covers accounts no longer present in live tables.
-    let manifest_accounts = sqlx::query_as::<_, (String, i64)>(
-        "SELECT batches.file_path, activity.account_id \
-         FROM archive_batches AS batches \
-         JOIN archive_batch_upstream_activity AS activity \
-           ON activity.archive_batch_id = batches.id \
-         WHERE batches.dataset = 'codex_invocations' \
-           AND batches.status = 'completed' \
-           AND activity.account_id > 0",
-    )
-    .fetch_all(&state.pool)
-    .await
-    .context("summary projection archive account manifest hydration failed")?;
+    let manifest_accounts =
+        load_summary_projection_archive_manifest_accounts(&state.pool, &archive_paths).await?;
     for (file_path, account_id) in manifest_accounts {
         if !archive_path_set.contains(&file_path) {
             continue;
@@ -8522,7 +8656,7 @@ async fn build_summary_projection(
         drop(temp_cleanup);
     }
     for archive in archives {
-        if summary_projection_archive_exact_ranges(
+        let exact_ranges = summary_projection_archive_exact_ranges(
             archive.has_materialized_historical_rollups(),
             ExactUtcRange {
                 start: archive_start,
@@ -8532,10 +8666,18 @@ async fn build_summary_projection(
             &hourly_rollup_totals,
             &hourly_rollup_usage,
             &known_account_ids,
-        )
-        .is_empty()
-        {
+        );
+        if exact_ranges.is_empty() {
             continue;
+        }
+        if !archive.has_materialized_historical_rollups()
+            && archive_row_counts
+                .get(archive.file_path())
+                .is_some_and(|count| *count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
+        {
+            return Err(anyhow!(
+                "summary projection exact archive boundary exceeds bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+            ));
         }
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
@@ -8642,22 +8784,12 @@ async fn build_summary_projection(
             .filter(|account_id| *account_id > 0)
             .collect::<HashSet<_>>(),
     );
-    account_ids.extend(
-        sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts")
-            .fetch_all(&state.pool)
-            .await
-            .context("summary projection account hydration failed")?,
-    );
-    account_ids.extend(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT DISTINCT upstream_account_id \
-             FROM upstream_account_stats_hourly \
-             WHERE upstream_account_id > 0",
-        )
-        .fetch_all(&state.pool)
-        .await
-        .context("summary projection historical account hydration failed")?,
-    );
+    account_ids.extend(load_summary_projection_durable_account_ids(&state.pool).await?);
+    if account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+        return Err(anyhow!(
+            "summary projection account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
     let mut closed_window_requests = Vec::new();
     let mut in_progress_by_account = HashMap::new();
     let mut active_in_progress_accounts = HashSet::new();
@@ -8686,6 +8818,29 @@ async fn build_summary_projection(
             .map_err(|error| {
                 anyhow!("summary projection in-progress hydration failed: {error:?}")
             })?;
+    let mut account_ids_with_projection_data = records
+        .iter()
+        .filter_map(|record| record.row.upstream_account_id)
+        .filter(|account_id| *account_id > 0)
+        .collect::<HashSet<_>>();
+    account_ids_with_projection_data.extend(
+        hourly_rollup_totals
+            .keys()
+            .filter_map(|(_, account_id)| *account_id)
+            .filter(|account_id| *account_id > 0),
+    );
+    account_ids_with_projection_data.extend(
+        hourly_rollup_usage
+            .keys()
+            .filter_map(|(_, account_id)| *account_id)
+            .filter(|account_id| *account_id > 0),
+    );
+    account_ids_with_projection_data.extend(
+        archive_account_ids_by_file
+            .values()
+            .flat_map(|account_ids| account_ids.iter().copied())
+            .filter(|account_id| *account_id > 0),
+    );
     let mut batched_all_time_by_account = HashMap::<i64, StatsTotals>::new();
     if all_time_was_fully_rebuilt {
         let global_params = SummaryQuery {
@@ -8737,15 +8892,70 @@ async fn build_summary_projection(
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
         }
+        // A global materialization marker does not prove account coverage. Boundary and
+        // account-lag archive/live rows remain in the exact canonical set; fold those rows into
+        // the all-time account aggregate once instead of silently constructing a zero response.
+        for record in &records {
+            let Some(account_id) = record.row.upstream_account_id.filter(|id| *id > 0) else {
+                continue;
+            };
+            if record.account_rollup_covered {
+                continue;
+            }
+            let classification = resolve_failure_classification(
+                Some(record.row.status.as_str()),
+                record.row.error_message.as_deref(),
+                record.row.failure_kind.as_deref(),
+                record.row.failure_class.as_deref(),
+                record.row.is_actionable,
+            );
+            let status = normalized_runtime_text(Some(record.row.status.as_str()));
+            let terminal = !matches!(status.as_str(), "running" | "pending");
+            let mut totals = StatsTotals {
+                total_count: 1,
+                total_tokens: record.row.total_tokens,
+                total_cost: record.row.cost.unwrap_or_default(),
+                ..StatsTotals::default()
+            };
+            if runtime_record_is_success_for_summary_row(&record.row)
+                && classification.failure_class == FailureClass::None
+            {
+                totals.success_count = 1;
+            }
+            if terminal && classification.failure_class != FailureClass::None {
+                totals.failure_count = 1;
+                totals.non_success_cost = record.row.cost.unwrap_or_default();
+            }
+            let entry = batched_all_time_by_account.entry(account_id).or_default();
+            *entry = entry.add(totals);
+        }
     }
     for upstream_account_id in std::iter::once(None).chain(account_ids.iter().copied().map(Some)) {
         if all_time_was_fully_rebuilt && let Some(account_id) = upstream_account_id {
-            let totals = batched_all_time_by_account
-                .get(&account_id)
-                .copied()
-                .unwrap_or_default();
+            let totals = match batched_all_time_by_account.get(&account_id).copied() {
+                Some(totals) => totals,
+                None if account_ids_with_projection_data.contains(&account_id) => {
+                    // A legal account with known history but no exact all-time aggregate must
+                    // not fall through to the retained records view, which would silently
+                    // undercount archive-only history.
+                    continue;
+                }
+                None => StatsTotals::default(),
+            };
             let mut response = totals.into_response();
             response.non_success_cost = Some(totals.non_success_cost);
+            response.maintenance = Some(maintenance.clone());
+            all_time_by_account.insert(Some(account_id), response);
+        }
+        if !all_time_was_fully_rebuilt
+            && let Some(account_id) = upstream_account_id
+            && !all_time_by_account.contains_key(&Some(account_id))
+            && !account_ids_with_projection_data.contains(&account_id)
+        {
+            // A newly observed pool account with no history has an exact zero all-time response;
+            // keep it keyed so the request path never falls through to records-only aggregation.
+            let mut response = StatsTotals::default().into_response();
+            response.non_success_cost = Some(0.0);
             response.maintenance = Some(maintenance.clone());
             all_time_by_account.insert(Some(account_id), response);
         }
