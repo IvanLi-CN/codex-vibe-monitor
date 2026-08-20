@@ -7227,6 +7227,14 @@ pub(crate) struct SummaryProjection {
     // Keep both account and global keys so a materialized archive never turns an exact
     // usage breakdown into an empty response on the memory-only request path.
     hourly_rollup_usage: HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
+    // A replay marker can lag after a historical rollup has been partially materialized.  For
+    // these buckets hydration retains the archive plus every persisted live row as the exact
+    // replacement source.  The request reducer must therefore suppress the compact bucket only
+    // for the affected scope, never merely because one archive row happened to be selected.
+    exact_global_total_rollup_buckets: HashSet<i64>,
+    exact_account_total_rollup_buckets: HashSet<i64>,
+    exact_global_usage_rollup_buckets: HashSet<i64>,
+    exact_account_usage_rollup_buckets: HashSet<i64>,
     rollup_live_cursor: i64,
     // These indexes are constructed once off-request.  They retain only the largest legal
     // current-window result for the global view and each account, so a hot `current` read never
@@ -7247,6 +7255,7 @@ pub(crate) struct SummaryProjection {
     // zero once the global projection is fresh) from an account whose durable history could not
     // be hydrated. The latter must retain the unavailable contract rather than become zero.
     all_time_account_ids_with_projection_data: HashSet<i64>,
+    known_account_ids: HashSet<i64>,
     // Archive files are immutable once completed. Reuse their bounded account-key discovery on
     // later refreshes so maintenance never repeatedly scans a large low-cardinality archive.
     archive_account_ids_by_file: HashMap<String, HashSet<i64>>,
@@ -7364,7 +7373,11 @@ impl SummaryProjection {
                 return Ok(response.clone());
             }
             if upstream_account_id.is_some() {
-                if !account_has_projection_data {
+                if !account_has_projection_data
+                    && !self
+                        .known_account_ids
+                        .contains(&upstream_account_id.expect("account branch has an account id"))
+                {
                     return Ok(self.empty_all_time_account_response(upstream_account_id));
                 }
                 return Err(ApiError::unavailable(anyhow!(
@@ -7478,35 +7491,18 @@ impl SummaryProjection {
             usage_selected.truncate(limit);
         }
 
-        // A materialized archive with an incomplete replay marker contributes its complete
-        // exact bucket here. Its compact rollup can contain only a prefix of that archive, so
-        // add either the exact rows or the compact aggregate for this scope, never both. This
-        // deliberately excludes live-tail rows: those are an increment beyond a valid rollup
-        // cursor and must continue to be added to the aggregate.
-        let exact_total_rollup_buckets = selected
-            .iter()
-            .filter(|record| {
-                record.is_archive_record
-                    && record.archive_has_materialized_rollups
-                    && match upstream_account_id {
-                        None => !record.global_rollup_covered,
-                        Some(_) => !record.account_rollup_covered,
-                    }
-            })
-            .map(|record| align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0))
-            .collect::<HashSet<_>>();
-        let exact_usage_rollup_buckets = usage_selected
-            .iter()
-            .filter(|record| {
-                record.is_archive_record
-                    && record.archive_has_materialized_rollups
-                    && match upstream_account_id {
-                        None => !record.usage_global_rollup_covered,
-                        Some(_) => !record.usage_account_rollup_covered,
-                    }
-            })
-            .map(|record| align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0))
-            .collect::<HashSet<_>>();
+        // A materialized archive with an incomplete replay marker uses the scoped exact bucket
+        // set prepared during hydration. It contains the archive and every co-located persisted
+        // live contribution, so add either that exact source or the compact aggregate, never a
+        // partial mixture.
+        let exact_total_rollup_buckets = match upstream_account_id {
+            None => &self.exact_global_total_rollup_buckets,
+            Some(_) => &self.exact_account_total_rollup_buckets,
+        };
+        let exact_usage_rollup_buckets = match upstream_account_id {
+            None => &self.exact_global_usage_rollup_buckets,
+            Some(_) => &self.exact_account_usage_rollup_buckets,
+        };
 
         let mut totals = StatsTotals::default();
         let mut usage_breakdown = UsageBreakdownAccumulator::default();
@@ -7763,8 +7759,9 @@ impl SummaryProjectionAccountTotalsRow {
 
 async fn load_summary_projection_account_rollup_totals(
     pool: &Pool<Sqlite>,
+    exact_replacement_buckets: &HashSet<i64>,
 ) -> Result<HashMap<i64, StatsTotals>> {
-    let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT upstream_account_id, COALESCE(SUM(total_count), 0) AS total_count, \
                 COALESCE(SUM(success_count), 0) AS success_count, \
                 COALESCE(SUM(failure_count), 0) AS failure_count, \
@@ -7772,14 +7769,24 @@ async fn load_summary_projection_account_rollup_totals(
                 COALESCE(SUM(total_tokens), 0) AS total_tokens, \
                 COALESCE(SUM(non_success_cost), 0.0) AS non_success_cost \
          FROM upstream_account_stats_hourly \
-         WHERE upstream_account_id > 0 \
-         GROUP BY upstream_account_id \
-         LIMIT ?1",
-    )
-    .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
-    .fetch_all(pool)
-    .await
-    .context("summary projection all-time account rollup hydration failed")?;
+         WHERE upstream_account_id > 0",
+    );
+    if !exact_replacement_buckets.is_empty() {
+        query.push(" AND bucket_start_epoch NOT IN (");
+        let mut separated = query.separated(", ");
+        for bucket in exact_replacement_buckets {
+            separated.push_bind(*bucket);
+        }
+        separated.push_unseparated(")");
+    }
+    query
+        .push(" GROUP BY upstream_account_id LIMIT ")
+        .push_bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64);
+    let rows = query
+        .build_query_as::<SummaryProjectionAccountTotalsRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection all-time account rollup hydration failed")?;
     if rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
         return Err(anyhow!(
             "summary projection account rollup cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
@@ -8121,6 +8128,19 @@ fn summary_projection_archive_overlap_range(
     (start < end).then_some(ExactUtcRange { start, end })
 }
 
+fn summary_projection_archive_is_fully_within_exact_horizon(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    exact_horizon: ExactUtcRange,
+) -> bool {
+    let Some(start) = archive.coverage_start_at().and_then(parse_to_utc_datetime) else {
+        return false;
+    };
+    let Some(end) = archive.coverage_end_at().and_then(parse_to_utc_datetime) else {
+        return false;
+    };
+    start >= exact_horizon.start && end <= exact_horizon.end
+}
+
 fn summary_projection_archive_exact_ranges(
     archive_has_materialized_rollups: bool,
     exact_range: ExactUtcRange,
@@ -8218,6 +8238,52 @@ fn summary_projection_archive_exact_ranges_with_coverage(
         }
     }
     ranges
+}
+
+fn summary_projection_merge_exact_ranges(mut ranges: Vec<ExactUtcRange>) -> Vec<ExactUtcRange> {
+    ranges.sort_by_key(|range| range.start);
+    let mut merged = Vec::<ExactUtcRange>::new();
+    for range in ranges {
+        if let Some(previous) = merged.last_mut()
+            && previous.end >= range.start
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+fn summary_projection_mark_exact_replacement_buckets(
+    archive_has_materialized_rollups: bool,
+    replay_coverage: SummaryProjectionArchiveReplayCoverage,
+    exact_range: ExactUtcRange,
+    _protected_boundary_buckets: &HashSet<i64>,
+    exact_global_total_rollup_buckets: &mut HashSet<i64>,
+    exact_account_total_rollup_buckets: &mut HashSet<i64>,
+    exact_global_usage_rollup_buckets: &mut HashSet<i64>,
+    exact_account_usage_rollup_buckets: &mut HashSet<i64>,
+) {
+    if !archive_has_materialized_rollups {
+        return;
+    }
+    let first_full_bucket = ceil_hour_epoch(exact_range.start.timestamp());
+    let end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
+    let mut bucket = first_full_bucket;
+    while bucket < end {
+        if !replay_coverage.overall {
+            exact_global_total_rollup_buckets.insert(bucket);
+        }
+        if !replay_coverage.account_stats {
+            exact_account_total_rollup_buckets.insert(bucket);
+        }
+        if !replay_coverage.usage_breakdown {
+            exact_global_usage_rollup_buckets.insert(bucket);
+            exact_account_usage_rollup_buckets.insert(bucket);
+        }
+        bucket = bucket.saturating_add(3_600);
+    }
 }
 
 async fn merge_summary_projection_archive_records(
@@ -8418,11 +8484,6 @@ async fn merge_summary_projection_archive_records_with_coverage(
     )
     .await
     .map_err(|error| anyhow!("summary projection persisted live-id lookup failed: {error:?}"))?;
-    let retained_persisted_live_row_ids = records_by_invoke_id
-        .values()
-        .filter(|record| record.is_persisted_live_record)
-        .map(|record| record.row.id)
-        .collect::<HashSet<_>>();
     for row in rows {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
@@ -8431,8 +8492,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         // Persisted/live rows are the richer, authoritative copy. A materialized archive is
         // covered globally, but account coverage is independent: account rollups can lag the
         // global target and must retain this exact archive copy for account-scoped reads.
-        if (persisted_live_row_ids.contains(&row.id)
-            && retained_persisted_live_row_ids.contains(&row.id))
+        if persisted_live_row_ids.contains(&row.id)
             || persisted_live_ids.contains(&row.invoke_id)
             || records_by_invoke_id.contains_key(&row.invoke_id)
         {
@@ -8450,17 +8510,16 @@ async fn merge_summary_projection_archive_records_with_coverage(
         let bucket_is_full_rollup = bucket >= full_rollup_start
             && bucket < full_rollup_end
             && !protected_boundary_buckets.contains(&bucket);
-        // A protected boundary is retained for exact account/usage detail, but its durable
-        // global totals remain authoritative. Only an interior full hour needs a replay marker
-        // before raw rows replace the compact global aggregate.
+        // Replay coverage applies to the entire immutable archive. A protected rolling-window
+        // boundary may still be a complete hour for an all-time or differently aligned request,
+        // so a missing marker must retain the exact source for every scope rather than trusting
+        // the compact bucket there.
         let global_rollup_covered = archive_has_materialized_rollups
             && hourly_rollup_totals.contains_key(&(bucket, None))
-            && (!bucket_is_full_rollup
-                || overall_rollup_archive_replayed.is_none_or(|replayed| replayed));
+            && overall_rollup_archive_replayed.is_none_or(|replayed| replayed);
         let account_rollup_covered = archive_has_materialized_rollups
             && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id))
-            && (!bucket_is_full_rollup
-                || account_rollup_archive_replayed.is_none_or(|replayed| replayed));
+            && account_rollup_archive_replayed.is_none_or(|replayed| replayed);
         let usage_cursor_covers_row = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor);
         let usage_global_rollup_covered = hourly_rollup_usage.contains_key(&(bucket, None))
             && ((archive_has_materialized_rollups
@@ -8471,8 +8530,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
             && (archive_has_materialized_rollups
                 && usage_rollup_archive_replayed.is_none_or(|replayed| replayed)
                 || usage_cursor_covers_row);
-        let account_archive_totals_fallback_included =
-            archive_has_materialized_rollups && account_rollup_archive_replayed != Some(true);
+        let account_archive_totals_fallback_included = false;
         if bucket_is_full_rollup
             && global_rollup_covered
             && account_rollup_covered
@@ -9053,7 +9111,6 @@ async fn build_summary_projection(
             ))
         })
         .collect::<HashMap<_, _>>();
-    let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
     let mut exact_record_bytes = records_by_invoke_id
         .values()
         .map(|record| summary_projection_preview_row_bytes(&record.row))
@@ -9089,7 +9146,6 @@ async fn build_summary_projection(
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
-    let mut exact_record_budget = records_by_invoke_id.len();
     let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
         &state.pool,
         Some((archive_start, end)),
@@ -9120,6 +9176,53 @@ async fn build_summary_projection(
         load_summary_projection_archive_row_counts(&state.pool, &archive_paths).await?;
     let archive_replay_coverage =
         load_summary_projection_archive_replay_coverage(&state.pool, &archive_paths).await?;
+    // All-time has no finite request boundary. A materialized archive outside the bounded exact
+    // horizon whose replay marker is absent cannot be reconstructed without an unbounded file
+    // scan, so preserve an exact last-good all-time response (or its existing unavailable
+    // contract) rather than publish a partial compact aggregate.
+    let all_time_exact_range = ExactUtcRange {
+        start: archive_start,
+        end,
+    };
+    let missing_global_all_time_archives =
+        crate::stats::load_invocation_archives_missing_rollup_target_bounded(
+            &state.pool,
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            None,
+            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+        )
+        .await?;
+    let missing_account_all_time_archives =
+        crate::stats::load_invocation_archives_missing_rollup_target_bounded(
+            &state.pool,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            None,
+            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+        )
+        .await?;
+    if missing_global_all_time_archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
+        || missing_account_all_time_archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
+    {
+        return Err(anyhow!(
+            "summary projection all-time replay coverage exceeded bounded archive batch budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+        ));
+    }
+    let all_time_global_exact_source_unavailable =
+        missing_global_all_time_archives.iter().any(|archive| {
+            archive.has_materialized_historical_rollups()
+                && !summary_projection_archive_is_fully_within_exact_horizon(
+                    archive,
+                    all_time_exact_range,
+                )
+        });
+    let all_time_account_exact_source_unavailable =
+        missing_account_all_time_archives.iter().any(|archive| {
+            archive.has_materialized_historical_rollups()
+                && !summary_projection_archive_is_fully_within_exact_horizon(
+                    archive,
+                    all_time_exact_range,
+                )
+        });
     // Archive writers maintain this compact per-batch account manifest.  Hydrate account scope
     // from it before considering archive file I/O; this is the bounded discovery source for
     // large materialized archives and also covers accounts no longer present in live tables.
@@ -9256,6 +9359,172 @@ async fn build_summary_projection(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
+
+    // A missing replay marker means the compact rollup might contain only a prefix of this
+    // archive. Reconstruct the complete affected full hour off-request, including retained live
+    // rows, before allowing the reducer to replace that bucket. This prevents an archive repair
+    // from suppressing a co-located live failure or terminal tail.
+    let mut exact_global_total_rollup_buckets = HashSet::new();
+    let mut exact_account_total_rollup_buckets = HashSet::new();
+    let mut exact_global_usage_rollup_buckets = HashSet::new();
+    let mut exact_account_usage_rollup_buckets = HashSet::new();
+    let mut archive_exact_ranges = Vec::new();
+    for archive in &archives {
+        let Some(archive_range) = summary_projection_archive_overlap_range(
+            archive,
+            ExactUtcRange {
+                start: archive_start,
+                end,
+            },
+        ) else {
+            continue;
+        };
+        let replay_coverage = archive_replay_coverage
+            .get(archive.file_path())
+            .copied()
+            .unwrap_or_default();
+        archive_exact_ranges.extend(summary_projection_archive_exact_ranges_with_coverage(
+            archive.has_materialized_historical_rollups(),
+            Some(replay_coverage.overall),
+            Some(replay_coverage.account_stats),
+            Some(replay_coverage.usage_breakdown),
+            archive_range,
+            &protected_boundary_buckets,
+            &hourly_rollup_totals,
+            &hourly_rollup_usage,
+            &known_account_ids,
+        ));
+        summary_projection_mark_exact_replacement_buckets(
+            archive.has_materialized_historical_rollups(),
+            replay_coverage,
+            archive_range,
+            &protected_boundary_buckets,
+            &mut exact_global_total_rollup_buckets,
+            &mut exact_account_total_rollup_buckets,
+            &mut exact_global_usage_rollup_buckets,
+            &mut exact_account_usage_rollup_buckets,
+        );
+    }
+    let exact_live_ranges = summary_projection_merge_exact_ranges(archive_exact_ranges)
+        .into_iter()
+        .filter_map(|range| {
+            (range.start < live_start).then_some(ExactUtcRange {
+                start: range.start,
+                end: range.end.min(live_start),
+            })
+        })
+        .collect::<Vec<_>>();
+    for record in records_by_invoke_id.values_mut() {
+        let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+        if exact_global_total_rollup_buckets.contains(&bucket) {
+            record.global_rollup_covered = false;
+        }
+        if exact_account_total_rollup_buckets.contains(&bucket) {
+            record.account_rollup_covered = false;
+        }
+        if exact_global_usage_rollup_buckets.contains(&bucket) {
+            record.usage_global_rollup_covered = false;
+        }
+        if exact_account_usage_rollup_buckets.contains(&bucket) {
+            record.usage_account_rollup_covered = false;
+        }
+    }
+    for range in exact_live_ranges {
+        let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+            .saturating_sub(records_by_invoke_id.len())
+            .saturating_add(1);
+        let mut exact_live_rows = query_live_upstream_account_activity_preview_rows_with_limit(
+            &state.pool,
+            InvocationSourceScope::All,
+            range,
+            None,
+            Some(remaining),
+            false,
+            UpstreamAccountActivityPreviewReadTelemetry {
+                route: "summary_projection",
+                builder: "exact_replacement_bucket",
+                purpose: "summary_projection_archive_live_replacement",
+            },
+        )
+        .await
+        .map_err(|error| {
+            anyhow!("summary projection exact live replacement hydration failed: {error:?}")
+        })?;
+        if exact_live_rows.len() >= remaining {
+            return Err(anyhow!(
+                "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+            ));
+        }
+        let statuses = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT id, status FROM codex_invocations WHERE occurred_at >= ?1 AND occurred_at < ?2",
+        )
+        .bind(db_occurred_at_lower_bound(range.start))
+        .bind(db_occurred_at_upper_bound(range.end))
+        .fetch_all(&state.pool)
+        .await
+        .context("summary projection exact live replacement status hydration failed")?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        for row in &mut exact_live_rows {
+            if let Some(status) = statuses.get(&row.id).and_then(|status| status.clone()) {
+                row.status = status;
+            }
+        }
+        for row in exact_live_rows {
+            let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+                continue;
+            };
+            let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+            let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
+            if is_new {
+                exact_record_bytes =
+                    exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
+                if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+                    return Err(anyhow!(
+                        "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+                    ));
+                }
+            }
+            records_by_invoke_id.insert(
+                row.invoke_id.clone(),
+                SummaryProjectionRecord {
+                    global_rollup_covered: row.id <= rollup_live_cursor
+                        && hourly_rollup_totals.contains_key(&(bucket, None))
+                        && !exact_global_total_rollup_buckets.contains(&bucket),
+                    account_rollup_covered: account_rollup_live_cursor
+                        .is_some_and(|cursor| row.id <= cursor)
+                        && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id))
+                        && !exact_account_total_rollup_buckets.contains(&bucket),
+                    usage_global_rollup_covered: row.id <= rollup_live_cursor
+                        && hourly_rollup_usage.contains_key(&(bucket, None))
+                        && !exact_global_usage_rollup_buckets.contains(&bucket),
+                    usage_account_rollup_covered: account_rollup_live_cursor
+                        .is_some_and(|cursor| row.id <= cursor)
+                        && hourly_rollup_usage.contains_key(&(bucket, row.upstream_account_id))
+                        && !exact_account_usage_rollup_buckets.contains(&bucket),
+                    is_persisted_live_record: true,
+                    is_archive_record: false,
+                    archive_has_materialized_rollups: false,
+                    account_archive_totals_fallback_included: false,
+                    row,
+                    occurred_at,
+                },
+            );
+        }
+    }
+    known_account_ids.extend(
+        records_by_invoke_id
+            .values()
+            .filter_map(|record| record.row.upstream_account_id)
+            .filter(|account_id| *account_id > 0),
+    );
+    if records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+        ));
+    }
+    let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
+    let mut exact_record_budget = records_by_invoke_id.len();
     for archive in archives {
         let Some(archive_range) = summary_projection_archive_overlap_range(
             &archive,
@@ -9335,7 +9604,7 @@ async fn build_summary_projection(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
-    let mut global_all_time_source_unavailable = false;
+    let mut global_all_time_source_unavailable = all_time_global_exact_source_unavailable;
     // Runtime is an authoritative typed overlay until the terminal writer persists it.  Replace
     // only matching live keys; a new in-flight record is inserted exactly once.
     for runtime_record in state.proxy_runtime_invocations.snapshot() {
@@ -9479,7 +9748,7 @@ async fn build_summary_projection(
             .filter(|account_id| *account_id > 0),
     );
     let mut batched_all_time_by_account = HashMap::<i64, StatsTotals>::new();
-    let mut account_all_time_unavailable = false;
+    let mut account_all_time_unavailable = all_time_account_exact_source_unavailable;
     let previous_all_time_by_account = all_time_by_account.clone();
     let all_time_built_at = Instant::now();
     if all_time_was_fully_rebuilt {
@@ -9491,7 +9760,7 @@ async fn build_summary_projection(
         // A global rollup in another hour does not cover an unreadable unmaterialized archive.
         // Keep an exact prior all-time result only while its own freshness budget permits it;
         // otherwise `all` must use the endpoint unavailable contract instead of a partial sum.
-        global_all_time_source_unavailable = !unavailable_unmaterialized_archive_ranges.is_empty();
+        global_all_time_source_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -9513,7 +9782,9 @@ async fn build_summary_projection(
         } else {
             all_time_rollup_totals
                 .iter()
-                .filter(|((_, account_id), _)| account_id.is_none())
+                .filter(|((bucket, account_id), _)| {
+                    account_id.is_none() && !exact_global_total_rollup_buckets.contains(bucket)
+                })
                 .fold(StatsTotals::default(), |totals, (_, bucket_totals)| {
                     totals.add(*bucket_totals)
                 })
@@ -9569,6 +9840,17 @@ async fn build_summary_projection(
                 ));
             }
         }
+        // A materialized archive without a durable replay marker replaces its complete bucket
+        // in the all-time baseline too. The exact set contains both archive rows and every
+        // persisted live row for that bucket, so the compact prefix is never published alone.
+        for record in &records {
+            let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+            if exact_global_total_rollup_buckets.contains(&bucket)
+                && !(record.is_persisted_live_record && record.row.id > rollup_live_cursor)
+            {
+                global_totals = global_totals.add(summary_projection_record_totals(record));
+            }
+        }
         if global_all_time_source_unavailable {
             // Retain only an exact prior aggregate, whose independent age still gates serving,
             // rather than publishing a zero or partial `all` response.
@@ -9587,7 +9869,11 @@ async fn build_summary_projection(
         let account_totals = if !has_any_completed_archive {
             load_summary_projection_live_account_totals(&state.pool).await?
         } else {
-            load_summary_projection_account_rollup_totals(&state.pool).await?
+            load_summary_projection_account_rollup_totals(
+                &state.pool,
+                &exact_account_total_rollup_buckets,
+            )
+            .await?
         };
         for (account_id, totals) in account_totals {
             batched_all_time_by_account.insert(account_id, totals);
@@ -9654,6 +9940,13 @@ async fn build_summary_projection(
             else {
                 continue;
             };
+            if record.is_persisted_live_record
+                && account_rollup_live_cursor.is_some_and(|cursor| record.row.id > cursor)
+            {
+                // The bounded account live-tail aggregate already owns this row. Exact bucket
+                // replacement only needs the compact-rollup prefix and archive contribution.
+                continue;
+            }
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
         }
@@ -9764,6 +10057,10 @@ async fn build_summary_projection(
         hourly_rollup_totals,
         hourly_rollup_non_success_tokens,
         hourly_rollup_usage,
+        exact_global_total_rollup_buckets,
+        exact_account_total_rollup_buckets,
+        exact_global_usage_rollup_buckets,
+        exact_account_usage_rollup_buckets,
         rollup_live_cursor,
         all_time_by_account,
         all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
@@ -9774,6 +10071,7 @@ async fn build_summary_projection(
         },
         all_time_account_refreshed_at,
         all_time_account_ids_with_projection_data: account_ids_with_projection_data,
+        known_account_ids: account_ids,
         archive_account_ids_by_file,
         unavailable_unmaterialized_archive_ranges,
         closed_window_by_key: HashMap::new(),
@@ -24909,6 +25207,63 @@ mod request_compression_query_tests {
     }
 
     #[test]
+    fn summary_projection_marks_partial_replay_as_scope_exact_replacement() {
+        let start = Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("valid range start");
+        let exact_range = ExactUtcRange {
+            start,
+            end: start + ChronoDuration::hours(2),
+        };
+        let first_bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+        let mut global_totals = HashSet::new();
+        let mut account_totals = HashSet::new();
+        let mut global_usage = HashSet::new();
+        let mut account_usage = HashSet::new();
+        summary_projection_mark_exact_replacement_buckets(
+            true,
+            SummaryProjectionArchiveReplayCoverage {
+                overall: false,
+                account_stats: true,
+                usage_breakdown: false,
+            },
+            exact_range,
+            &HashSet::new(),
+            &mut global_totals,
+            &mut account_totals,
+            &mut global_usage,
+            &mut account_usage,
+        );
+
+        assert!(global_totals.contains(&first_bucket));
+        assert!(!account_totals.contains(&first_bucket));
+        assert!(global_usage.contains(&first_bucket));
+        assert!(account_usage.contains(&first_bucket));
+    }
+
+    #[test]
+    fn summary_projection_all_time_requires_exact_horizon_coverage_for_partial_archive() {
+        let start = Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("valid horizon start");
+        let horizon = ExactUtcRange {
+            start,
+            end: start + ChronoDuration::days(30),
+        };
+        let older_archive = crate::stats::ArchiveBatchPathRow::with_coverage(
+            "archive.sqlite.gz".to_string(),
+            Some((start - ChronoDuration::hours(1)).to_rfc3339()),
+            Some((start + ChronoDuration::hours(1)).to_rfc3339()),
+        );
+        assert!(
+            !summary_projection_archive_is_fully_within_exact_horizon(&older_archive, horizon),
+            "all-time cannot use a bounded replacement for an archive extending before it"
+        );
+    }
+
+    #[test]
     fn summary_projection_archive_overlap_avoids_unrelated_old_batch_io() {
         let requested_range = ExactUtcRange {
             start: Utc
@@ -25176,6 +25531,31 @@ mod request_compression_query_tests {
         assert_eq!(response.in_progress_retry_conversation_count, Some(0));
         assert!(response.in_progress_phase_counts.is_some());
         assert!(response.maintenance.is_some());
+    }
+
+    #[test]
+    fn summary_projection_known_all_time_account_without_exact_snapshot_is_unavailable() {
+        let projection = SummaryProjection {
+            all_time_refreshed_at: Some(Instant::now()),
+            known_account_ids: HashSet::from([42]),
+            freshness: SummaryProjectionFreshness {
+                global_all_time_eligible: true,
+                ..SummaryProjectionFreshness::default()
+            },
+            ..SummaryProjection::default()
+        };
+        let error = projection
+            .response_for_query(
+                &SummaryQuery {
+                    window: Some("all".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: Some(42),
+                },
+                100,
+            )
+            .expect_err("known account without an exact all-time snapshot must not become zero");
+        assert!(matches!(error, ApiError::Unavailable(_)));
     }
 
     #[tokio::test]
@@ -26225,12 +26605,25 @@ mod request_compression_query_tests {
         assert!(!record.global_rollup_covered);
         assert_eq!(record.row.total_tokens, 9);
 
-        // The exact record replaces the partial compact aggregate for this full hour. A
-        // projection view must not add the rollup's prefix once the missing replay marker has
-        // intentionally selected the archive source of truth.
+        // Replacing a partial compact aggregate requires every co-located live contribution,
+        // not only the archive repair row. This models a retained terminal failure whose source
+        // archive prunes successful detail rows after materialization.
+        let mut retained_live_record = record.clone();
+        retained_live_record.row.id = 9;
+        retained_live_record.row.invoke_id = "retained-live-tail".to_string();
+        retained_live_record.row.total_tokens = 3;
+        retained_live_record.row.cost = Some(0.2);
+        retained_live_record.row.status = "failed".to_string();
+        retained_live_record.row.failure_class = Some("service_failure".to_string());
+        retained_live_record.is_archive_record = false;
+        retained_live_record.is_persisted_live_record = true;
+        retained_live_record.global_rollup_covered = false;
+
+        // The exact bucket replaces the partial compact aggregate, then adds both the archive
+        // and retained live records from the canonical projection.
         let projection = SummaryProjection {
-            records: vec![record.clone()],
-            hourly_buckets: BTreeMap::from([(bucket, vec![0])]),
+            records: vec![record.clone(), retained_live_record],
+            hourly_buckets: BTreeMap::from([(bucket, vec![0, 1])]),
             hourly_rollup_totals: HashMap::from([(
                 (bucket, None),
                 StatsTotals {
@@ -26241,6 +26634,7 @@ mod request_compression_query_tests {
                     ..StatsTotals::default()
                 },
             )]),
+            exact_global_total_rollup_buckets: HashSet::from([bucket]),
             refreshed_at: Some(Instant::now()),
             ..SummaryProjection::default()
         };
@@ -26255,10 +26649,12 @@ mod request_compression_query_tests {
                 100,
             )
             .expect("fresh in-memory range response");
-        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_count, 2);
         assert_eq!(response.success_count, 1);
-        assert_eq!(response.total_tokens, 9);
-        assert_eq!(response.total_cost, 1.0);
+        assert_eq!(response.failure_count, 1);
+        assert_eq!(response.total_tokens, 12);
+        assert_eq!(response.total_cost, 1.2);
+        assert_eq!(response.non_success_cost, Some(0.2));
     }
 
     #[tokio::test]

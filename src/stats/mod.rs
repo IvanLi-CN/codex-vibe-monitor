@@ -4256,9 +4256,14 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_acco
         SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES,
     )
     .await?;
-    // The missing-target query already excludes archives with an account replay marker. A
-    // global materialization timestamp alone is not proof of account-scope coverage, so retain
-    // materialized archives whose account target is still absent and aggregate them exactly.
+    // Missing account replay for a materialized archive is repaired by SummaryProjection's
+    // bounded exact bucket replacement. Adding the whole archive here on top of its compact
+    // account rollup can double count a partially replayed prefix, so this aggregate is reserved
+    // for archives with no materialized historical baseline at all.
+    let archive_rows = archive_rows
+        .into_iter()
+        .filter(|archive_row| archive_row.historical_rollups_materialized_at.is_none())
+        .collect::<Vec<_>>();
     if archive_rows.len() > SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES {
         return Err(anyhow!(
             "summary account archive batch cardinality exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES})"
