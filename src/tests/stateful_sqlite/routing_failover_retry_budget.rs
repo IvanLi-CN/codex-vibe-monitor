@@ -3005,6 +3005,98 @@ async fn cancelling_websocket_reservation_guard_releases_and_wakes_waiters() {
 }
 
 #[tokio::test]
+async fn cancelling_websocket_failure_fence_guard_cools_snapshot_without_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "WebSocket Failure Fence Cancellation",
+        "ws-failure-fence-cancel-key",
+    )
+    .await;
+    let model = "gpt-websocket-failure-fence-cancellation";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed websocket failure-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before websocket failure-fence cancellation");
+
+    let reservation_key = "websocket-failure-fence-cancellation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let mut reservation_guard =
+            PoolRoutingReservationGuard::new_for_test(task_state, reservation_key.to_string());
+        reservation_guard.suppress_availability_on_drop_for_test();
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    started_rx
+        .await
+        .expect("websocket failure fence must begin before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the websocket failure fence should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "failure-fence cancellation must release websocket model capacity"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "failure-fence cancellation must not wake waiters into the stale snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "failure-fence cancellation must request a snapshot refresh"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "failure-fence cancellation must fail closed while the stale snapshot is replaced"
+    );
+    assert!(matches!(
+        resolve_pool_account_for_request_with_route_requirement(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+        )
+        .await
+        .expect("resolve while the websocket failure fence is pending"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
+}
+
+#[tokio::test]
 async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

@@ -385,6 +385,11 @@ impl PoolRoutingReservationGuard {
         Self::new(state, reservation_key)
     }
 
+    #[cfg(test)]
+    pub(crate) fn suppress_availability_on_drop_for_test(&mut self) {
+        self.suppress_availability_on_drop();
+    }
+
     fn suppress_availability_on_drop(&mut self) {
         self.publish_availability_on_drop = false;
     }
@@ -415,6 +420,16 @@ impl PoolRoutingReservationGuard {
         );
         self.armed = false;
     }
+
+    fn release_after_failed_fence(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.state
+            .pool_routing_snapshot
+            .request_refresh_and_defer_availability_wake();
+        self.release_without_availability();
+    }
 }
 
 impl Drop for PoolRoutingReservationGuard {
@@ -422,7 +437,7 @@ impl Drop for PoolRoutingReservationGuard {
         if self.publish_availability_on_drop {
             self.release();
         } else {
-            self.release_without_availability();
+            self.release_after_failed_fence();
         }
     }
 }
@@ -1145,7 +1160,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 reservation_guard.restore_availability_on_drop();
                 reservation_guard.release();
             } else {
-                reservation_guard.release_without_availability();
+                reservation_guard.release_after_failed_fence();
             }
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
@@ -1209,7 +1224,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 reservation_guard.restore_availability_on_drop();
                 reservation_guard.release();
             } else {
-                reservation_guard.release_without_availability();
+                reservation_guard.release_after_failed_fence();
             }
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
@@ -1276,7 +1291,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             reservation_guard.restore_availability_on_drop();
             reservation_guard.release();
         } else {
-            reservation_guard.release_without_availability();
+            reservation_guard.release_after_failed_fence();
         }
         return Err(WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
@@ -1921,7 +1936,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         reservation_guard.restore_availability_on_drop();
         reservation_guard.release();
     } else {
-        reservation_guard.release_without_availability();
+        reservation_guard.release_after_failed_fence();
     }
 }
 

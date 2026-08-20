@@ -5102,7 +5102,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             live_prompt_cache_key
                                                 .as_deref()
                                                 .or(live_body_sticky_key.as_deref()),
-                                            None,
+                                            live_requested_model.as_deref(),
                                             ),
                                         )
                                         .await
@@ -5124,6 +5124,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 let sticky_key_for_record = live_body_sticky_key.clone();
                                 let prompt_cache_key_for_record = live_prompt_cache_key.clone();
                                 let invoke_id_for_record = upstream_invoke_id.clone();
+                                let requested_model_for_record = live_requested_model.clone();
                                 let occurred_at_for_record = format_naive(
                                     upstream_attempt_started_at_utc
                                         .with_timezone(&Shanghai)
@@ -5290,7 +5291,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
-                                                None,
+                                                requested_model_for_record.as_deref(),
                                             ),
                                         )
                                             .await
@@ -5398,7 +5399,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             prompt_cache_key_for_record
                                                 .as_deref()
                                                 .or(sticky_key_for_record.as_deref()),
-                                            None,
+                                            requested_model_for_record.as_deref(),
                                             ),
                                         )
                                         .await
@@ -5555,7 +5556,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 Some(request_body_snapshot.clone()),
                             )
                             .await?;
-                        let request_body_model = request_analysis.requested_model;
+                        let request_body_model = requested_model;
                         let effective_prompt_cache_key = body_prompt_cache_key
                             .clone()
                             .or(header_prompt_cache_key.clone());
@@ -5581,11 +5582,15 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             &headers,
                             Some(request_body_snapshot),
                             handshake_timeout,
-                            Some(build_via_pool_attempt_trace_context(
-                                proxy_request_id,
-                                original_uri.path(),
-                                body_sticky_key.clone(),
-                            )),
+                            Some({
+                                let mut trace = build_via_pool_attempt_trace_context(
+                                    proxy_request_id,
+                                    original_uri.path(),
+                                    body_sticky_key.clone(),
+                                );
+                                trace.request_model = request_body_model.clone();
+                                trace
+                            }),
                             Some(PoolAttemptRuntimeSnapshotContext {
                                 capture_target: capture_target
                                     .unwrap_or(ProxyCaptureTarget::Responses),
@@ -5877,7 +5882,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.as_deref(),
-                        None,
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.request_model.as_deref()),
                         ),
                     )
                     .await
@@ -5899,6 +5906,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let sticky_key_for_record = sticky_key.clone();
         let prompt_cache_key_for_record = prompt_cache_key.clone();
         let invoke_id_for_record = upstream_invoke_id.clone();
+        let requested_model_for_record = pending_pool_attempt_record
+            .as_ref()
+            .and_then(|pending| pending.request_model.clone());
         let occurred_at_for_record = format_naive(
             upstream_attempt_started_at_utc
                 .with_timezone(&Shanghai)
@@ -6036,7 +6046,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        None,
+                        requested_model_for_record.as_deref(),
                     ),
                 )
                 .await
@@ -6135,7 +6145,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .and_then(|pending| pending.attempt_id),
                     account.sticky_affinity_generation,
                     prompt_cache_key_for_record.as_deref(),
-                    None,
+                    requested_model_for_record.as_deref(),
                     ),
                 )
                     .await
