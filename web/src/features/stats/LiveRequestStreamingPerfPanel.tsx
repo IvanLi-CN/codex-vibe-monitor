@@ -48,7 +48,11 @@ function CohortColumn({
   cohort?: LiveRequestStreamingCohortStats;
 }) {
   const { t } = useTranslation();
-  const sampleCount = cohort?.successSampleCount ?? 0;
+  const successSampleCount = cohort?.successSampleCount ?? 0;
+  const firstResponseSampleCount = cohort?.firstResponseByteSampleCount ?? successSampleCount;
+  const firstTokenSampleCount = cohort?.firstTokenSampleCount ?? successSampleCount;
+  const overlapSampleCount = cohort?.requestUpstreamOverlapSampleCount ?? successSampleCount;
+  const sampleCount = Math.min(firstResponseSampleCount, firstTokenSampleCount, overlapSampleCount);
   const sampleSufficient = cohort?.sufficientSamples ?? false;
   return (
     <div className="min-w-0 border-l border-base-300/70 pl-4 first:border-l-0 first:pl-0">
@@ -68,14 +72,17 @@ function CohortColumn({
         <Metric
           label={t("stats.liveRequestStreaming.firstResponse")}
           value={formatMs(cohort?.firstResponseByteTotalMs?.p50Ms)}
+          sampleCount={firstResponseSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.firstToken")}
           value={formatMs(cohort?.firstTokenMs?.p50Ms)}
+          sampleCount={firstTokenSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.overlap")}
           value={formatMs(cohort?.requestUpstreamOverlapMs?.p50Ms)}
+          sampleCount={overlapSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.retryRisk")}
@@ -86,10 +93,23 @@ function CohortColumn({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  sampleCount,
+}: {
+  label: string;
+  value: string;
+  sampleCount?: number;
+}) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-base-content/65">{label}</dt>
+      <dt className="flex min-w-0 items-baseline gap-1 text-base-content/65">
+        <span>{label}</span>
+        {sampleCount != null ? (
+          <span className="font-mono text-xs text-base-content/45">n={sampleCount}</span>
+        ) : null}
+      </dt>
       <dd className="font-mono text-base-content">{value}</dd>
     </div>
   );
@@ -103,7 +123,22 @@ export function LiveRequestStreamingPerfPanel({
   const { t } = useTranslation();
   const control = findCohort(data?.cohorts ?? [], "control", "buffered");
   const treatment = findCohort(data?.cohorts ?? [], "treatment", "live_first");
-  const benefitsReady = Boolean(control?.sufficientSamples && treatment?.sufficientSamples);
+  const metricHasEnoughSamples = (
+    cohort: LiveRequestStreamingCohortStats | undefined,
+    metric:
+      | "firstResponseByteSampleCount"
+      | "firstTokenSampleCount"
+      | "requestUpstreamOverlapSampleCount",
+  ) => (cohort?.[metric] ?? cohort?.successSampleCount ?? 0) >= MIN_SUCCESS_SAMPLES;
+  const responseBenefitReady =
+    metricHasEnoughSamples(control, "firstResponseByteSampleCount") &&
+    metricHasEnoughSamples(treatment, "firstResponseByteSampleCount");
+  const tokenBenefitReady =
+    metricHasEnoughSamples(control, "firstTokenSampleCount") &&
+    metricHasEnoughSamples(treatment, "firstTokenSampleCount");
+  const overlapBenefitReady =
+    metricHasEnoughSamples(control, "requestUpstreamOverlapSampleCount") &&
+    metricHasEnoughSamples(treatment, "requestUpstreamOverlapSampleCount");
 
   return (
     <section className="surface-panel" data-testid="live-request-streaming-perf-panel">
@@ -138,7 +173,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.responseBenefit")}
                 value={
-                  benefitsReady
+                  responseBenefitReady
                     ? formatBenefit(
                         control?.firstResponseByteTotalMs?.p50Ms,
                         treatment?.firstResponseByteTotalMs?.p50Ms,
@@ -149,7 +184,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.tokenBenefit")}
                 value={
-                  benefitsReady
+                  tokenBenefitReady
                     ? formatBenefit(control?.firstTokenMs?.p50Ms, treatment?.firstTokenMs?.p50Ms)
                     : "-"
                 }
@@ -157,7 +192,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.overlapBenefit")}
                 value={
-                  benefitsReady
+                  overlapBenefitReady
                     ? formatBenefit(
                         control?.requestUpstreamOverlapMs?.p50Ms,
                         treatment?.requestUpstreamOverlapMs?.p50Ms,

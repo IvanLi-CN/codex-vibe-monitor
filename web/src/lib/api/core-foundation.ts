@@ -1308,6 +1308,9 @@ export interface LiveRequestStreamingCohortStats {
   successSampleCount: number;
   invocationCount: number;
   sufficientSamples: boolean;
+  firstResponseByteSampleCount?: number;
+  firstTokenSampleCount?: number;
+  requestUpstreamOverlapSampleCount?: number;
   firstResponseByteTotalMs?: LiveRequestStreamingPercentiles | null;
   firstTokenMs?: LiveRequestStreamingPercentiles | null;
   requestUpstreamOverlapMs?: LiveRequestStreamingPercentiles | null;

@@ -140,6 +140,9 @@ export const CacheHitProtection: Story = {
 };
 
 export const LiveRequestStreamingEnabled: Story = {
+  globals: {
+    themeMode: "dark",
+  },
   args: {
     draft: {
       requestCompressionAlgorithm: "zstd",
@@ -167,8 +170,8 @@ export const LiveRequestStreamingEnabled: Story = {
   },
   decorators: [
     (Story) => (
-      <div className="bg-base-300 p-12">
-        <div className="bg-base-200">
+      <div className="my-16 bg-[#2d343e] p-12">
+        <div className="bg-[#171e28]">
           <Story />
         </div>
       </div>

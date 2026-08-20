@@ -479,6 +479,84 @@ async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routi
 }
 
 #[tokio::test]
+async fn live_first_capture_responses_failure_excludes_sticky_account_from_replay() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 99)]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+
+    let sticky_key = "live-first-sticky-failure";
+    upsert_sticky_route(
+        &state.pool,
+        sticky_key,
+        primary_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await
+    .expect("seed sticky route toward the failing account");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(format!(
+            r#"{{"model":"gpt-5","stickyKey":"{sticky_key}","input":"hello"}}"#
+        )),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read capture response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode capture response body");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    let attempts = attempts
+        .lock()
+        .expect("lock live-first sticky failure attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert!(matches!(
+        attempts.get("Bearer upstream-secondary").copied(),
+        Some(count) if count >= 1
+    ));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn cancelling_live_first_request_releases_its_routing_reservation() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_secs(5);

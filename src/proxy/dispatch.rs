@@ -735,6 +735,13 @@ struct PreparedCaptureRequestBody {
     live_first_experiment_group: Option<String>,
 }
 
+async fn wait_for_live_request_body_finalization(finalization_rx: &mut watch::Receiver<bool>) {
+    if *finalization_rx.borrow() {
+        return;
+    }
+    let _ = finalization_rx.changed().await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_capture_request_body(
     state: Arc<AppState>,
@@ -813,6 +820,16 @@ async fn prepare_capture_request_body(
         .expect("live pipeline is present before the first attempt")
         .request_body_error_rx
         .clone();
+    let mut live_request_body_finalization_rx = live_pipeline
+        .as_ref()
+        .expect("live pipeline is present before the first attempt")
+        .finalization_rx
+        .clone();
+    let live_route_metadata_changed_rx = live_pipeline
+        .as_ref()
+        .expect("live pipeline is present before routing")
+        .route_metadata_changed_rx
+        .clone();
     let live_oauth_rewrite_rx = live_pipeline
         .as_ref()
         .expect("live pipeline is present before routing")
@@ -838,12 +855,7 @@ async fn prepare_capture_request_body(
         .prompt_cache_key
         .clone()
         .or_else(|| header_prompt_cache_key.map(str::to_string));
-    let live_candidate = live_body_key_probe.model.is_some()
-        && (codex_imagegen_protocol_from_headers(headers).is_some()
-            || live_first_image_intent_known(
-                Some(capture_target),
-                live_body_key_probe.image_intent,
-            ));
+    let live_candidate = live_body_key_probe.model.is_some();
     let mut live_first_pool_response = None;
     let mut prepared_live_request_streaming_decision = None;
     let mut live_first_attempt_failed = false;
@@ -1078,7 +1090,7 @@ async fn prepare_capture_request_body(
                         ),
                         response_timeout,
                         response_timeout.map(|_| req_read_started),
-                        None,
+                        live_body_sticky_key.as_deref(),
                         initial_account,
                         model_mapping,
                         Some(&trace_context),
@@ -1089,9 +1101,26 @@ async fn prepare_capture_request_body(
                     .await
                     {
                         Ok(response) => {
-                            live_first_request_body_first_byte_at =
-                                response.live_request_body_first_byte_at;
-                            live_first_pool_response = Some(response);
+                            // An upstream is allowed to respond before it has
+                            // consumed the complete HTTP request body. Do not
+                            // accept that provisional response until the local
+                            // parser confirms that no later JSON field changed
+                            // the selected route.
+                            wait_for_live_request_body_finalization(
+                                &mut live_request_body_finalization_rx,
+                            )
+                            .await;
+                            if *live_route_metadata_changed_rx.borrow() {
+                                live_first_attempt_failed = true;
+                                warn!(
+                                    proxy_request_id,
+                                    "late routing metadata cancelled the live-first attempt; replaying the captured request"
+                                );
+                            } else {
+                                live_first_request_body_first_byte_at =
+                                    response.live_request_body_first_byte_at;
+                                live_first_pool_response = Some(response);
+                            }
                         }
                         Err(error) => {
                             live_first_attempt_failed = true;
@@ -1144,6 +1173,10 @@ async fn prepare_capture_request_body(
                 },
                 partial_body: Vec::new(),
             });
+            if snapshot_result.is_ok() {
+                wait_for_live_request_body_finalization(&mut live_request_body_finalization_rx)
+                    .await;
+            }
             live_request_body_error_rx
                 .borrow()
                 .clone()
@@ -2836,25 +2869,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 stream_response_parser.successful_terminal_seen();
             let decoded_chunk = stream_response_decoder.ingest(&chunk);
             let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
-            if should_capture_ttft(capture_target, &request_info_for_task) && token_observed {
-                let observed_ms = chunk_received_at
-                    .saturating_duration_since(proxy_request_started_at_for_task)
-                    .as_secs_f64()
-                    * 1_000.0;
-                first_token_ms = Some(observed_ms);
-                live_request_streaming_measurement_for_task.first_token_ms = Some(
-                    chunk_received_at
-                        .saturating_duration_since(request_body_consumption_started_at_for_task)
-                        .as_secs_f64()
-                        * 1_000.0,
-                );
-                broadcast_proxy_capture_first_token_runtime_snapshot(
-                    state_for_task.as_ref(),
-                    &invoke_id_for_task,
-                    &occurred_at_for_task,
-                    observed_ms,
-                );
-            }
             let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                 && stream_response_parser.successful_terminal_seen();
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -2901,7 +2915,32 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_write_error_kind = Some("receiver_dropped");
                     let _ = proxy_request_permit_for_task.take();
                 } else {
-                    last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                    let forwarded_at = Instant::now();
+                    last_downstream_forwarded_chunk_at = Some(forwarded_at);
+                    if first_token_ms.is_none()
+                        && should_capture_ttft(capture_target, &request_info_for_task)
+                        && token_observed
+                    {
+                        let observed_ms = forwarded_at
+                            .saturating_duration_since(proxy_request_started_at_for_task)
+                            .as_secs_f64()
+                            * 1_000.0;
+                        first_token_ms = Some(observed_ms);
+                        live_request_streaming_measurement_for_task.first_token_ms = Some(
+                            forwarded_at
+                                .saturating_duration_since(
+                                    request_body_consumption_started_at_for_task,
+                                )
+                                .as_secs_f64()
+                                * 1_000.0,
+                        );
+                        broadcast_proxy_capture_first_token_runtime_snapshot(
+                            state_for_task.as_ref(),
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            observed_ms,
+                        );
+                    }
                     if !downstream_first_byte_logged {
                         downstream_first_byte_logged = true;
                         let downstream_first_byte_elapsed =
@@ -3178,19 +3217,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_response_parser.successful_terminal_seen();
                     let decoded_chunk = stream_response_decoder.ingest(&chunk);
                     let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
-                    if should_capture_ttft(capture_target, &request_info_for_task) && token_observed
-                    {
-                        let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
-                        first_token_ms = Some(observed_ms);
-                        live_request_streaming_measurement_for_task.first_token_ms =
-                            Some(elapsed_ms(request_body_consumption_started_at_for_task));
-                        broadcast_proxy_capture_first_token_runtime_snapshot(
-                            state_for_task.as_ref(),
-                            &invoke_id_for_task,
-                            &occurred_at_for_task,
-                            observed_ms,
-                        );
-                    }
                     let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                         && stream_response_parser.successful_terminal_seen();
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -3257,7 +3283,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             last_upstream_chunk_gap_ms = gap_before_send_ms;
                             let _ = proxy_request_permit_for_task.take();
                         } else {
-                            last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                            let forwarded_at = Instant::now();
+                            last_downstream_forwarded_chunk_at = Some(forwarded_at);
+                            if first_token_ms.is_none()
+                                && should_capture_ttft(capture_target, &request_info_for_task)
+                                && token_observed
+                            {
+                                let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
+                                first_token_ms = Some(observed_ms);
+                                live_request_streaming_measurement_for_task.first_token_ms =
+                                    Some(elapsed_ms(request_body_consumption_started_at_for_task));
+                                broadcast_proxy_capture_first_token_runtime_snapshot(
+                                    state_for_task.as_ref(),
+                                    &invoke_id_for_task,
+                                    &occurred_at_for_task,
+                                    observed_ms,
+                                );
+                            }
                             if !downstream_first_byte_logged {
                                 downstream_first_byte_logged = true;
                                 let downstream_first_byte_elapsed =

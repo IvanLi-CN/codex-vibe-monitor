@@ -2104,13 +2104,25 @@ async fn query_live_request_streaming_perf(
                 .split_once(':')
                 .map(|(cohort, mode)| (cohort.to_string(), mode.to_string()))
                 .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+            let first_response_byte_sample_count =
+                i64::try_from(entry.first_response_byte_total_ms.len()).unwrap_or(i64::MAX);
+            let first_token_sample_count =
+                i64::try_from(entry.first_token_ms.len()).unwrap_or(i64::MAX);
+            let request_upstream_overlap_sample_count =
+                i64::try_from(entry.request_upstream_overlap_ms.len()).unwrap_or(i64::MAX);
             LiveRequestStreamingCohortStats {
                 cohort,
                 transport_mode,
                 success_sample_count: entry.success_sample_count,
                 invocation_count: entry.invocation_count,
-                sufficient_samples: entry.success_sample_count
-                    >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+                sufficient_samples: first_response_byte_sample_count
+                    >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+                    && first_token_sample_count >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+                    && request_upstream_overlap_sample_count
+                        >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+                first_response_byte_sample_count,
+                first_token_sample_count,
+                request_upstream_overlap_sample_count,
                 first_response_byte_total_ms: live_request_streaming_percentiles(
                     &mut entry.first_response_byte_total_ms,
                 ),
