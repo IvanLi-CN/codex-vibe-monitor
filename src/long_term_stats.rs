@@ -954,11 +954,10 @@ async fn load_long_term_archive_invocation_rows_for_range(
                 .await?,
         );
     }
-    rows.sort_by(|left, right| {
-        left.occurred_at
-            .cmp(&right.occurred_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    // The canonical, legacy-crossing, and RFC3339 queries each preserve their own seek order.
+    // Their union has no single text order across timestamp encodings, so retain a stable archive
+    // row order without reinterpreting timestamps after the sargable range seeks.
+    rows.sort_by_key(|row| row.id);
     Ok(rows)
 }
 
