@@ -321,15 +321,20 @@ impl PoolRoutingSnapshotStore {
         if self.refresh_generation() != refresh_generation {
             return false;
         }
-        if self
+        let refresh_epoch = self
             .refresh_epoch
-            .compare_exchange(
-                refresh_generation | REFRESH_PENDING_BIT,
-                refresh_generation | REFRESH_PUBLISHING_BIT,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_err()
+            .load(std::sync::atomic::Ordering::Acquire);
+        if refresh_epoch & REFRESH_PUBLISHING_BIT != 0
+            || refresh_epoch & REFRESH_GENERATION_MASK != refresh_generation
+            || self
+                .refresh_epoch
+                .compare_exchange(
+                    refresh_epoch,
+                    refresh_generation | REFRESH_PUBLISHING_BIT,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_err()
         {
             return false;
         }
@@ -636,5 +641,38 @@ mod snapshot_store_tests {
         );
         assert!(store.current().is_none());
         assert!(store.refresh_pending());
+    }
+
+    #[test]
+    fn initial_refresh_can_install_without_a_mutation_event() {
+        let store = PoolRoutingSnapshotStore::new();
+        let initial_generation = store.refresh_generation();
+        let mut published_availability = false;
+
+        assert!(
+            store.complete_refresh(initial_generation, empty_snapshot(), || {
+                published_availability = true;
+            })
+        );
+        assert!(store.current().is_some());
+        assert!(!store.refresh_pending());
+        assert!(
+            !published_availability,
+            "an initial refresh must not publish a waiter wake without a queued capacity event"
+        );
+    }
+
+    #[test]
+    fn pending_refresh_wakes_waiters_only_after_the_snapshot_installs() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh_and_wake_waiters();
+        let generation = store.refresh_generation();
+        let mut published_availability = false;
+
+        assert!(store.complete_refresh(generation, empty_snapshot(), || {
+            published_availability = true;
+        }));
+        assert!(published_availability);
+        assert!(!store.refresh_pending());
     }
 }

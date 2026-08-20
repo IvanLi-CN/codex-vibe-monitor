@@ -2605,6 +2605,70 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
+async fn guarded_broadcast_failure_wakes_waiters_after_the_refreshed_fence_installs() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Guarded Broadcast Failure",
+        "guarded-broadcast-failure-key",
+    )
+    .await;
+    let reservation_key = "guarded-broadcast-failure-reservation";
+    let model = "gpt-guarded-broadcast-failure";
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install initial routing snapshot");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "upstream transport failure",
+                Some("guarded-broadcast-failure-invoke"),
+                Some(model),
+            ))
+            .await
+            .expect("persist and broadcast the failure fence");
+    }
+
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "the guard release must wait for the updated snapshot before waking waiters"
+    );
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install routing snapshot after broadcast failure");
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "the installed failure fence must wake NoCandidate waiters"
+    );
+}
+
+#[tokio::test]
 async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
