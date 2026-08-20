@@ -2855,15 +2855,41 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
                 .clone()
                 .or_else(|| usage_tracker.trace.request_model.clone());
             if let Some(model) = requested_model.as_deref() {
-                if !reserve_pool_routing_account_for_model(
+                if !pool_routing_reservation_matches_model(
                     state,
                     reservation_key,
-                    &usage_tracker.account,
+                    usage_tracker.account.account_id,
                     Some(model),
                 ) {
-                    return Err(anyhow!(
-                        "websocket model route is at its concurrency limit for {model}; retry later"
-                    ));
+                    if model_route_penalty(
+                        &state.pool,
+                        usage_tracker.account.account_id,
+                        Some(model),
+                    )
+                    .await?
+                        == ModelRoutePenalty::Excluded
+                    {
+                        return Err(anyhow!(
+                            "websocket model route is cooling down for {model}; retry after cooldown"
+                        ));
+                    }
+                    let concurrency_limit = model_route_concurrency_limit(
+                        &state.pool,
+                        usage_tracker.account.account_id,
+                        Some(model),
+                    )
+                    .await?;
+                    if !try_reserve_pool_routing_account_for_model(
+                        state,
+                        reservation_key,
+                        &usage_tracker.account,
+                        Some(model),
+                        concurrency_limit,
+                    ) {
+                        return Err(anyhow!(
+                            "websocket model route is at its concurrency limit for {model}; retry later"
+                        ));
+                    }
                 }
                 usage_tracker.trace.request_model = Some(model.to_string());
                 update_pool_upstream_request_attempt_model(
