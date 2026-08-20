@@ -590,7 +590,6 @@ struct LongTermArchiveCompatibility {
 #[derive(Debug, Clone)]
 struct LongTermRfc3339Compatibility {
     max_duration_ms: Option<f64>,
-    min_occurred_at: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -908,7 +907,17 @@ fn long_term_rfc3339_text_bounds(
             ))
         })
         .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string())
-        .unwrap_or_else(|| compatibility.min_occurred_at.clone());
+        // Zero-duration rows cannot cross into the target date. Keep their candidate seek to the
+        // RFC3339 offset window instead of reopening the range at the archive's first old row.
+        .unwrap_or_else(|| {
+            start
+                .checked_sub_signed(ChronoDuration::seconds(
+                    LONG_TERM_RFC3339_TEXT_LOWER_OFFSET_SECONDS,
+                ))
+                .unwrap_or(start)
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string()
+        });
     let upper = end
         .checked_add_signed(ChronoDuration::hours(15))
         .unwrap_or(end)
@@ -949,9 +958,6 @@ async fn load_long_term_archive_invocation_rows_for_range(
     if compatibility.has_rfc3339 {
         let rfc3339_compatibility = LongTermRfc3339Compatibility {
             max_duration_ms: compatibility.rfc3339_max_duration_ms,
-            min_occurred_at: compatibility.rfc3339_min_occurred_at.clone().context(
-                "long-term archive RFC3339 compatibility cache is missing a bounded start",
-            )?,
         };
         let (rfc3339_lower, rfc3339_upper) =
             long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
@@ -2775,23 +2781,20 @@ async fn load_long_term_projection_live_rfc3339_compatibility(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<LongTermRfc3339Compatibility>> {
     let terminal_filter = "instr(occurred_at, 'T') > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')";
-    let minimum = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT occurred_at FROM codex_invocations WHERE {terminal_filter} ORDER BY occurred_at ASC LIMIT 1"
+    let has_rfc3339 = sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT 1 FROM codex_invocations WHERE {terminal_filter} LIMIT 1"
     ))
     .fetch_optional(pool)
     .await?;
-    let Some(min_occurred_at) = minimum else {
+    if has_rfc3339.is_none() {
         return Ok(None);
-    };
+    }
     let max_duration_ms = sqlx::query_scalar::<_, f64>(&format!(
         "SELECT t_total_ms FROM codex_invocations WHERE {terminal_filter} AND t_total_ms IS NOT NULL AND t_total_ms > 0 ORDER BY t_total_ms DESC LIMIT 1"
     ))
     .fetch_optional(pool)
     .await?;
-    Ok(Some(LongTermRfc3339Compatibility {
-        max_duration_ms,
-        min_occurred_at,
-    }))
+    Ok(Some(LongTermRfc3339Compatibility { max_duration_ms }))
 }
 
 fn long_term_projection_live_rfc3339_query(select: &str) -> String {
@@ -14074,7 +14077,7 @@ mod tests {
         );
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, t_total_ms) VALUES (2, 'rfc3339', '2026-07-25T16:00:00Z', 'success', 100, 2000)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (2, 'rfc3339', '2026-07-25T16:00:00Z', 'success', 100)",
         )
         .execute(&pool)
         .await
@@ -14085,12 +14088,19 @@ mod tests {
         .execute(&pool)
         .await
         .expect("RFC3339 negative-offset invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (4, 'rfc3339-historical', '2020-01-01T00:00:00Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("historical RFC3339 invocation");
         let rfc3339_compatibility = load_long_term_projection_live_rfc3339_compatibility(&pool)
             .await
             .expect("updated RFC3339 compatibility gate")
             .expect("RFC3339 compatibility metadata");
         let (rfc3339_lower, rfc3339_upper) =
             long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
+        assert_eq!(rfc3339_lower, "2026-07-25T01:59:59");
         let query =
             long_term_projection_live_rfc3339_query("SELECT inv.id FROM codex_invocations inv");
         let plan =
@@ -15781,10 +15791,6 @@ mod tests {
         );
         let rfc3339_compatibility = LongTermRfc3339Compatibility {
             max_duration_ms: compatibility.rfc3339_max_duration_ms,
-            min_occurred_at: compatibility
-                .rfc3339_min_occurred_at
-                .clone()
-                .expect("RFC3339 archive compatibility start"),
         };
         let (rfc3339_lower, rfc3339_upper) =
             long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
