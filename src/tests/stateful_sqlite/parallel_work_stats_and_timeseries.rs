@@ -8984,7 +8984,7 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
 }
 
 #[tokio::test]
-async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() {
+async fn all_time_summary_fails_closed_when_unreadable_replay_lacks_usage_and_account_coverage() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -9067,7 +9067,7 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
 
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt replayed legacy archive batch");
 
-    let Json(summary) = fetch_summary_from_memory_snapshot(
+    let summary = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9076,14 +9076,11 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("fetch all-time summary with unreadable replayed legacy archive");
-
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 10);
-    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "global replay alone cannot prove the account and usage dimensions of Summary"
+    );
 }
 
 #[tokio::test]

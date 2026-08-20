@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime_mutation_bus::RuntimeMutation;
+use crate::runtime_mutation_bus::{RuntimeMutation, SequencedRuntimeMutation};
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
     RESPONSE_TIER_PRICE_VERSION_SUFFIX, estimate_proxy_cost_breakdown, has_billable_usage,
@@ -6994,6 +6994,9 @@ pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
 const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
 const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+// Do not turn a locked or overloaded SQLite database into a continuous sequence of timed-out
+// full hydrations. Mutations remain coalesced as dirty while this bounded retry gate is active.
+const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 // Reconcile before the 15-second serving budget expires; a timed-out build is discarded
 // atomically and cannot expose a partial projection to the request path.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
@@ -7182,6 +7185,13 @@ struct SummaryProjectionArchiveReplayCoverage {
     overall: bool,
     account_stats: bool,
     usage_breakdown: bool,
+}
+
+impl SummaryProjectionArchiveReplayCoverage {
+    fn supports_unavailable_archive(self, archive_has_materialized_rollups: bool) -> bool {
+        archive_has_materialized_rollups
+            || (self.overall && self.account_stats && self.usage_breakdown)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -8982,12 +8992,12 @@ async fn build_summary_projection(
             let global_rollup_covered =
                 row.id <= rollup_live_cursor && hourly_rollup_totals.contains_key(&(bucket, None));
             let account_rollup_covered = account_rollup_live_cursor
-                .is_none_or(|cursor| row.id <= cursor)
+                .is_some_and(|cursor| row.id <= cursor)
                 && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
             let usage_global_rollup_covered =
                 row.id <= rollup_live_cursor && hourly_rollup_usage.contains_key(&(bucket, None));
             let usage_account_rollup_covered = account_rollup_live_cursor
-                .is_none_or(|cursor| row.id <= cursor)
+                .is_some_and(|cursor| row.id <= cursor)
                 && hourly_rollup_usage.contains_key(&(bucket, row.upstream_account_id));
             Some((
                 row.invoke_id.clone(),
@@ -9173,10 +9183,12 @@ async fn build_summary_projection(
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
         else {
-            if archive.has_materialized_historical_rollups() || replay_coverage.overall {
+            if replay_coverage
+                .supports_unavailable_archive(archive.has_materialized_historical_rollups())
+            {
                 // A materialized archive remains answerable from its durable rollup baseline.
-                // A missing raw file may prevent account discovery from being enriched, but it
-                // must not suppress the independently valid global projection.
+                // Replay fallback additionally needs every response dimension, otherwise a
+                // global total could conceal missing account or usage/model detail.
                 continue;
             }
             if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
@@ -9249,10 +9261,11 @@ async fn build_summary_projection(
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if archive.has_materialized_historical_rollups() || replay_coverage.overall {
-                // Preserve the read-only historical fallback: durable rollups are still the
-                // canonical baseline when a materialized raw archive is unavailable. Only an
-                // unmaterialized archive has no independent durable source and must fail closed.
+            if replay_coverage
+                .supports_unavailable_archive(archive.has_materialized_historical_rollups())
+            {
+                // Preserve the read-only historical fallback only when durable state proves
+                // every response dimension. A global-only replay marker is not enough.
                 continue;
             }
             if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
@@ -9766,6 +9779,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_refresh_attempt = None;
+        let mut retry_not_before = None;
         let mut dirty = false;
         loop {
             let trigger_refresh = tokio::select! {
@@ -9791,14 +9805,8 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                         | Ok(BroadcastPayload::DashboardActivityLive { .. })
                         | Err(broadcast::error::RecvError::Lagged(_))
                 ).then_some(Trigger::Mutation),
-                mutation = mutation_receiver.recv() => matches!(
-                    mutation,
-                    Ok(event) if matches!(
-                        event.mutation,
-                        RuntimeMutation::Invocation(_)
-                            | RuntimeMutation::AttemptChanged { .. }
-                    )
-                ).then_some(Trigger::Mutation),
+                mutation = mutation_receiver.recv() => summary_snapshot_runtime_mutation_is_dirty(mutation)
+                    .then_some(Trigger::Mutation),
             };
             let Some(trigger) = trigger_refresh else {
                 continue;
@@ -9823,9 +9831,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 continue;
             }
             let now = Instant::now();
-            if last_refresh_attempt.is_some_and(|attempt| {
-                now.duration_since(attempt) < SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
-            }) {
+            if !summary_snapshot_refresh_is_due(last_refresh_attempt, retry_not_before, now) {
                 continue;
             }
             // Merge a burst before starting the expensive off-request baseline. The hub lock
@@ -9835,16 +9841,48 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             while mutation_receiver.try_recv().is_ok() {}
             last_refresh_attempt = Some(Instant::now());
             match refresh_summary_snapshots(state.as_ref()).await {
-                Ok(()) => dirty = false,
+                Ok(()) => {
+                    dirty = false;
+                    retry_not_before = None;
+                }
                 Err(error) => {
+                    retry_not_before = Some(summary_snapshot_retry_not_before(Instant::now()));
                     warn!(
                         ?error,
-                        "summary snapshot maintenance failed; retaining last-good responses"
+                        retry_after_secs = SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF.as_secs(),
+                        "summary snapshot maintenance failed; retaining last-good responses before a bounded retry"
                     );
                 }
             }
         }
     });
+}
+
+fn summary_snapshot_runtime_mutation_is_dirty(
+    mutation: Result<SequencedRuntimeMutation, broadcast::error::RecvError>,
+) -> bool {
+    match mutation {
+        Ok(event) => matches!(
+            event.mutation,
+            RuntimeMutation::Invocation(_) | RuntimeMutation::AttemptChanged { .. }
+        ),
+        Err(broadcast::error::RecvError::Lagged(_)) => true,
+        Err(broadcast::error::RecvError::Closed) => false,
+    }
+}
+
+fn summary_snapshot_retry_not_before(failed_at: Instant) -> Instant {
+    failed_at + SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF
+}
+
+fn summary_snapshot_refresh_is_due(
+    last_refresh_attempt: Option<Instant>,
+    retry_not_before: Option<Instant>,
+    now: Instant,
+) -> bool {
+    !last_refresh_attempt
+        .is_some_and(|attempt| now.duration_since(attempt) < SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL)
+        && !retry_not_before.is_some_and(|retry_at| now < retry_at)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -25083,8 +25121,34 @@ mod request_compression_query_tests {
         }
     }
 
+    #[test]
+    fn summary_snapshot_marks_a_lagged_mutation_bus_dirty() {
+        assert!(summary_snapshot_runtime_mutation_is_dirty(Err(
+            broadcast::error::RecvError::Lagged(1)
+        )));
+        assert!(!summary_snapshot_runtime_mutation_is_dirty(Err(
+            broadcast::error::RecvError::Closed
+        )));
+    }
+
+    #[test]
+    fn summary_snapshot_failure_backoff_coalesces_retries() {
+        let now = Instant::now();
+        let retry_at = summary_snapshot_retry_not_before(now);
+        assert!(!summary_snapshot_refresh_is_due(
+            Some(now - SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL),
+            Some(retry_at),
+            now,
+        ));
+        assert!(summary_snapshot_refresh_is_due(
+            Some(now - SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL),
+            Some(retry_at),
+            retry_at,
+        ));
+    }
+
     #[tokio::test]
-    async fn summary_projection_uses_scope_coverage_for_persisted_live_rows() {
+    async fn summary_projection_requires_account_cursor_for_persisted_live_coverage() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -25175,14 +25239,14 @@ mod request_compression_query_tests {
         assert_eq!(account_all_time_before.total_tokens, 17);
 
         sqlx::query(
-            "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+            "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 42, 0, 0, 0, 0, 0, 0)",
         )
         .bind(bucket)
         .execute(&state.pool)
         .await
         .expect("insert account totals rollup");
         sqlx::query(
-            "INSERT INTO upstream_account_usage_breakdown_hourly (bucket_start_epoch, source, upstream_account_key, upstream_account_id, normalized_model, normalized_reasoning_effort, request_count, cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) VALUES (?1, 'proxy', '42', 42, 'gpt-5', 'high', 1, 3, 0, 14, 1.25, 1)",
+            "INSERT INTO upstream_account_usage_breakdown_hourly (bucket_start_epoch, source, upstream_account_key, upstream_account_id, normalized_model, normalized_reasoning_effort, request_count, cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) VALUES (?1, 'proxy', '42', 42, 'gpt-5', 'high', 0, 0, 0, 0, 0, 1)",
         )
         .bind(bucket)
         .execute(&state.pool)
@@ -25190,7 +25254,7 @@ mod request_compression_query_tests {
         .expect("insert account usage rollup");
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("rehydrate with account coverage");
+            .expect("rehydrate without account cursor coverage");
         state.pool.close().await;
 
         let Json(account_after) = fetch_summary(
@@ -25203,13 +25267,13 @@ mod request_compression_query_tests {
             }),
         )
         .await
-        .expect("serve account rollup projection without sqlite");
+        .expect("serve account exact projection without sqlite");
         assert_eq!(account_after.total_count, 1);
         assert_eq!(account_after.total_tokens, 17);
         let account_usage = account_after
             .usage_breakdown
             .as_ref()
-            .expect("account rollup usage");
+            .expect("account exact usage without an account cursor");
         assert_eq!(account_usage.models.len(), 1);
         assert_eq!(account_usage.models[0].model, "gpt-5");
         assert_eq!(account_usage.models[0].output_tokens, 14);
@@ -25520,7 +25584,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_fails_closed_for_unmaterialized_unavailable_archive() {
+    async fn summary_projection_fails_closed_for_unmaterialized_archive_with_global_only_replay() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -25553,6 +25617,15 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert unavailable unmaterialized archive manifest");
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', '/definitely/missing/unmaterialized-summary.sqlite.gz', \
+                     'summary-unavailable-test')",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+        .execute(&state.pool)
+        .await
+        .expect("mark only global replay coverage");
 
         hydrate_summary_snapshots(state.as_ref())
             .await
@@ -25565,7 +25638,7 @@ mod request_compression_query_tests {
         assert_eq!(
             projection.unavailable_unmaterialized_archive_ranges.len(),
             1,
-            "hydration must retain the unavailable exact range instead of silently skipping it"
+            "global-only replay cannot prove account or usage dimensions for a missing archive"
         );
         state.pool.close().await;
 
@@ -25746,7 +25819,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_archive_merge_prefers_persisted_live_id() {
+    async fn summary_projection_archive_merge_prefers_resident_persisted_live_id() {
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
