@@ -4032,15 +4032,9 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_acco
         SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES,
     )
     .await?;
-    let archive_rows =
-        if account_archive_target_treats_materialized_batch_as_replayed(rollup_target) {
-            archive_rows
-                .into_iter()
-                .filter(|archive_row| archive_row.historical_rollups_materialized_at.is_none())
-                .collect::<Vec<_>>()
-        } else {
-            archive_rows
-        };
+    // The missing-target query already excludes archives with an account replay marker. A
+    // global materialization timestamp alone is not proof of account-scope coverage, so retain
+    // materialized archives whose account target is still absent and aggregate them exactly.
     if archive_rows.len() > SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES {
         return Err(anyhow!(
             "summary account archive batch cardinality exceeded bounded budget ({SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES})"
