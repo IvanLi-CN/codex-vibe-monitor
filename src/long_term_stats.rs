@@ -564,7 +564,6 @@ async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<Strin
 struct LongTermArchiveInvocationRangeQueries {
     canonical: String,
     crossing_text: String,
-    unbounded_crossing_text: String,
     rfc3339: String,
     parts: LongTermArchiveInvocationQueryParts,
 }
@@ -576,10 +575,11 @@ struct LongTermArchiveInvocationQueryParts {
     t_total_ms_column: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct LongTermArchiveCompatibility {
     has_legacy_crossing: bool,
     legacy_max_duration_ms: Option<f64>,
+    legacy_min_occurred_at: Option<String>,
     has_rfc3339: bool,
 }
 
@@ -593,14 +593,6 @@ async fn long_term_archive_invocation_query_for_range(
     );
     let crossing_text = format!(
         "{} WHERE {} AND occurred_at >= ?1 AND occurred_at < ?2 AND CASE WHEN instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN julianday(occurred_at) + {} / 86400000.0 END >= julianday(?2)",
-        query.select,
-        query.terminal_filter,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-    );
-    let unbounded_crossing_text = format!(
-        "{} WHERE {} AND occurred_at < ?1 AND CASE WHEN instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN julianday(occurred_at) + {} / 86400000.0 END >= julianday(?1)",
         query.select,
         query.terminal_filter,
         query.t_total_ms_column,
@@ -623,7 +615,6 @@ async fn long_term_archive_invocation_query_for_range(
     Ok(LongTermArchiveInvocationRangeQueries {
         canonical,
         crossing_text,
-        unbounded_crossing_text,
         rfc3339,
         parts: query,
     })
@@ -633,10 +624,13 @@ async fn inspect_long_term_archive_compatibility(
     pool: &Pool<Sqlite>,
     query: &LongTermArchiveInvocationQueryParts,
 ) -> Result<LongTermArchiveCompatibility> {
-    let (legacy_max_duration_ms, has_rfc3339) = sqlx::query_as::<_, (Option<f64>, i64)>(&format!(
-        "SELECT MAX(CASE WHEN {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN {} END), EXISTS(SELECT 1 FROM codex_invocations WHERE {} AND instr(occurred_at, 'T') > 0)",
+    let (legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339) = sqlx::query_as::<_, (Option<f64>, Option<String>, i64)>(&format!(
+        "SELECT MAX(CASE WHEN {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN {} END), MIN(CASE WHEN {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN occurred_at END), EXISTS(SELECT 1 FROM codex_invocations WHERE {} AND instr(occurred_at, 'T') > 0)",
         query.terminal_filter,
         query.t_total_ms_column,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        query.terminal_filter,
         query.t_total_ms_column,
         query.t_total_ms_column,
         query.terminal_filter,
@@ -646,6 +640,7 @@ async fn inspect_long_term_archive_compatibility(
     Ok(LongTermArchiveCompatibility {
         has_legacy_crossing: legacy_max_duration_ms.is_some(),
         legacy_max_duration_ms,
+        legacy_min_occurred_at,
         has_rfc3339: has_rfc3339 != 0,
     })
 }
@@ -655,16 +650,18 @@ async fn load_long_term_archive_compatibility(
     file_path: &str,
     archive_sha256: &str,
 ) -> Result<Option<LongTermArchiveCompatibility>> {
-    let row = sqlx::query_as::<_, (i64, Option<f64>, i64)>(
-        "SELECT has_legacy_crossing, legacy_max_duration_ms, has_rfc3339 FROM long_term_projection_archive_compatibility WHERE file_path = ?1 AND archive_sha256 = ?2",
+    let row = sqlx::query_as::<_, (i64, Option<f64>, Option<String>, i64)>(
+        "SELECT has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339 FROM long_term_projection_archive_compatibility WHERE file_path = ?1 AND archive_sha256 = ?2",
     )
     .bind(file_path)
     .bind(archive_sha256)
     .fetch_optional(pool)
     .await?;
     Ok(row.and_then(
-        |(has_legacy_crossing, legacy_max_duration_ms, has_rfc3339)| {
-            if has_legacy_crossing != 0 && legacy_max_duration_ms.is_none() {
+        |(has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339)| {
+            if has_legacy_crossing != 0
+                && (legacy_max_duration_ms.is_none() || legacy_min_occurred_at.is_none())
+            {
                 // This cache entry predates the bounded crossing metadata. Reinspect the
                 // immutable archive once rather than retaining its old prefix scan.
                 None
@@ -672,6 +669,7 @@ async fn load_long_term_archive_compatibility(
                 Some(LongTermArchiveCompatibility {
                     has_legacy_crossing: has_legacy_crossing != 0,
                     legacy_max_duration_ms,
+                    legacy_min_occurred_at,
                     has_rfc3339: has_rfc3339 != 0,
                 })
             }
@@ -701,12 +699,13 @@ async fn persist_long_term_archive_compatibility(
 ) -> Result<()> {
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
-        "INSERT INTO long_term_projection_archive_compatibility (file_path, archive_sha256, has_legacy_crossing, legacy_max_duration_ms, has_rfc3339) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(file_path) DO UPDATE SET archive_sha256 = excluded.archive_sha256, has_legacy_crossing = excluded.has_legacy_crossing, legacy_max_duration_ms = excluded.legacy_max_duration_ms, has_rfc3339 = excluded.has_rfc3339, updated_at = datetime('now')",
+        "INSERT INTO long_term_projection_archive_compatibility (file_path, archive_sha256, has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(file_path) DO UPDATE SET archive_sha256 = excluded.archive_sha256, has_legacy_crossing = excluded.has_legacy_crossing, legacy_max_duration_ms = excluded.legacy_max_duration_ms, legacy_min_occurred_at = excluded.legacy_min_occurred_at, has_rfc3339 = excluded.has_rfc3339, updated_at = datetime('now')",
     )
     .bind(file_path)
     .bind(archive_sha256)
     .bind(compatibility.has_legacy_crossing)
     .bind(compatibility.legacy_max_duration_ms)
+    .bind(&compatibility.legacy_min_occurred_at)
     .bind(compatibility.has_rfc3339)
     .execute(&mut *transaction)
     .await?;
@@ -736,7 +735,7 @@ async fn load_or_inspect_long_term_archive_compatibility(
             pool,
             file_path,
             archive_sha256,
-            compatibility,
+            compatibility.clone(),
             control,
         )
         .await?;
@@ -775,27 +774,18 @@ async fn load_long_term_archive_invocation_rows_for_range(
         .fetch_all(pool)
         .await?;
     if compatibility.has_legacy_crossing {
-        let crossing_rows = match compatibility
+        let crossing_start = compatibility
             .legacy_max_duration_ms
             .and_then(|max_duration_ms| {
                 long_term_archive_legacy_crossing_start(&start, max_duration_ms)
-            }) {
-            Some(crossing_start) => {
-                sqlx::query_as::<_, LongTermInvocationRow>(&queries.crossing_text)
-                    .bind(crossing_start)
-                    .bind(&start_text)
-                    .fetch_all(pool)
-                    .await?
-            }
-            // Preserve compatibility with corrupt or unrepresentably large legacy durations.
-            // Normal archived data always takes the bounded occurred_at range above.
-            None => {
-                sqlx::query_as::<_, LongTermInvocationRow>(&queries.unbounded_crossing_text)
-                    .bind(&start_text)
-                    .fetch_all(pool)
-                    .await?
-            }
-        };
+            })
+            .or_else(|| compatibility.legacy_min_occurred_at.clone())
+            .context("long-term archive legacy compatibility cache is missing a bounded start")?;
+        let crossing_rows = sqlx::query_as::<_, LongTermInvocationRow>(&queries.crossing_text)
+            .bind(crossing_start)
+            .bind(&start_text)
+            .fetch_all(pool)
+            .await?;
         rows.extend(crossing_rows);
     }
     if compatibility.has_rfc3339 {
@@ -8568,6 +8558,7 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
             archive_sha256 TEXT NOT NULL,
             has_legacy_crossing INTEGER NOT NULL,
             legacy_max_duration_ms REAL,
+            legacy_min_occurred_at TEXT,
             has_rfc3339 INTEGER NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -8582,6 +8573,16 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await;
     if let Err(error) = archive_legacy_duration_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let archive_legacy_start_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_archive_compatibility ADD COLUMN legacy_min_occurred_at TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = archive_legacy_start_migration
         && !error.to_string().contains("duplicate column name")
     {
         return Err(error.into());
@@ -15088,13 +15089,14 @@ mod tests {
         let original = LongTermArchiveCompatibility {
             has_legacy_crossing: true,
             legacy_max_duration_ms: Some(2_000.0),
+            legacy_min_occurred_at: Some("2026-07-25 23:59:59".to_string()),
             has_rfc3339: false,
         };
         persist_long_term_archive_compatibility(
             &pool,
             "archive.sqlite.gz",
             "archive-sha-one",
-            original,
+            original.clone(),
             &control,
         )
         .await
@@ -15228,6 +15230,7 @@ mod tests {
             LongTermArchiveCompatibility {
                 has_legacy_crossing: false,
                 legacy_max_duration_ms: None,
+                legacy_min_occurred_at: None,
                 has_rfc3339: true,
             }
         );
@@ -15264,7 +15267,7 @@ mod tests {
         .await
         .expect("archive occurred_at index");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (1, '2026-01-01 00:00:00', 'success', 2000), (2, '2026-07-25 23:59:59', 'success', 2000), (3, '2026-07-26 12:00:00', 'success', 100)",
+            "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (1, '2026-01-01 00:00:00', 'success', 2000), (2, '2026-07-25 23:59:59', 'success', 2000), (3, '2026-07-26 12:00:00', 'success', 100), (4, '2026-02-01 00:00:00', 'success', 1e300)",
         )
         .execute(&pool)
         .await
@@ -15297,18 +15300,22 @@ mod tests {
             compatibility,
             LongTermArchiveCompatibility {
                 has_legacy_crossing: true,
-                legacy_max_duration_ms: Some(2_000.0),
+                legacy_max_duration_ms: Some(1e300),
+                legacy_min_occurred_at: Some("2026-01-01 00:00:00".to_string()),
                 has_rfc3339: false,
             }
         );
-        let crossing_start = long_term_archive_legacy_crossing_start(&start, 2_000.0)
-            .expect("bounded crossing start");
+        assert!(long_term_archive_legacy_crossing_start(&start, 1e300).is_none());
+        let crossing_start = compatibility
+            .legacy_min_occurred_at
+            .as_deref()
+            .expect("cached bounded legacy start");
         let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
         let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
             "EXPLAIN QUERY PLAN {}",
             queries.crossing_text
         ))
-        .bind(&crossing_start)
+        .bind(crossing_start)
         .bind(&start_text)
         .fetch_all(&pool)
         .await
@@ -15338,7 +15345,7 @@ mod tests {
                 .expect("bounded legacy archive rows");
         assert_eq!(
             rows.into_iter().map(|row| row.id).collect::<Vec<_>>(),
-            vec![2, 3]
+            vec![2, 3, 4]
         );
     }
 
@@ -15406,6 +15413,7 @@ mod tests {
             LongTermArchiveCompatibility {
                 has_legacy_crossing: false,
                 legacy_max_duration_ms: None,
+                legacy_min_occurred_at: None,
                 has_rfc3339: false,
             },
             start,
