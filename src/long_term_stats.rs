@@ -1058,6 +1058,10 @@ const LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS: usize =
 // transaction also updates the bucket marker, so leave one row of headroom.
 const LONG_TERM_PROJECTION_REBUILD_SEGMENT_ROWS: usize =
     (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 1) / 3;
+// Publishing a rebuilt date updates its dirty generation, public backup pointer, and owner
+// claim. Keep those changes, plus the cursor and status rows, inside one 512-row transaction.
+const LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES: usize =
+    (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2) / 3;
 
 #[derive(Debug)]
 struct LongTermProjectionWriteControl<'a> {
@@ -2849,7 +2853,7 @@ async fn release_long_term_projection_daily_backups(
     backups: &[(String, String)],
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
-    for batch in backups.chunks(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS) {
+    for batch in backups.chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES) {
         let (mut transaction, permit) = control.begin(pool).await?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
@@ -2860,6 +2864,19 @@ async fn release_long_term_projection_daily_backups(
                 .push("(bucket_date = ")
                 .push_bind(bucket_date)
                 .push(" AND active_daily_backup_token = ")
+                .push_bind(rebuild_token)
+                .push(")");
+        }
+        query.build().execute(&mut *transaction).await?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "DELETE FROM long_term_projection_daily_backup_claims WHERE ",
+        );
+        let mut claims = query.separated(" OR ");
+        for (bucket_date, rebuild_token) in batch {
+            claims
+                .push("(bucket_date = ")
+                .push_bind(bucket_date)
+                .push(" AND rebuild_token = ")
                 .push_bind(rebuild_token)
                 .push(")");
         }
@@ -2892,21 +2909,45 @@ async fn ensure_long_term_projection_daily_backup_for_date(
     reset_interval_baseline: bool,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
     let active = sqlx::query_scalar::<_, Option<String>>(
         "SELECT active_daily_backup_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
     )
     .bind(bucket_date)
-    .fetch_optional(pool)
-    .await?
-    .flatten();
-    if let Some(active) = active {
-        if active == rebuild_token {
-            return Ok(());
-        }
-        bail!(
-            "long-term projection daily backup for {} is owned by {active}",
-            bucket_date
-        );
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let active = active.flatten();
+    if let Some(active) = active.as_deref()
+        && active != rebuild_token
+    {
+        bail!("long-term projection daily backup for {bucket_date} is owned by {active}");
+    }
+    let owner = sqlx::query_scalar::<_, String>(
+        "SELECT rebuild_token FROM long_term_projection_daily_backup_claims WHERE bucket_date = ?1",
+    )
+    .bind(bucket_date)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(owner) = owner.as_deref()
+        && owner != rebuild_token
+    {
+        bail!("long-term projection daily backup for {bucket_date} is owned by {owner}");
+    }
+    if owner.is_none() {
+        sqlx::query(
+            "INSERT INTO long_term_projection_daily_backup_claims (bucket_date, rebuild_token) VALUES (?1, ?2)",
+        )
+        .bind(bucket_date)
+        .bind(rebuild_token)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    control.commit(transaction, permit).await?;
+
+    // A previous worker may have completed the backup publication before cancellation. Keep
+    // that complete snapshot live while the same owner resumes the replacement.
+    if active.as_deref() == Some(rebuild_token) {
+        return Ok(());
     }
 
     clear_long_term_projection_daily_backup(pool, rebuild_token, control).await?;
@@ -3082,6 +3123,12 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     mark_ready: bool,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    if rebuilds.len() > LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES {
+        bail!(
+            "long-term projection rebuild publication has {} dates; maximum is {LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES}",
+            rebuilds.len()
+        );
+    }
     let repaired_start_date = rebuilds
         .iter()
         .filter(|rebuild| !rebuild.daily.is_empty())
@@ -3206,7 +3253,60 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
         clear_long_term_projection_rebuild_members(pool, token, control).await?;
     }
 
+    // Releasing the public backup, clearing the matching dirty generation, and advancing the
+    // cursor are one publication boundary. A cancelled worker therefore leaves either the
+    // last-good snapshot and old cursor, or a fully published replacement and new cursor.
     let (mut transaction, permit) = control.begin(pool).await?;
+    let published_dirty = clear_dirty_buckets
+        .iter()
+        .filter(|dirty| {
+            rebuilds
+                .iter()
+                .any(|rebuild| rebuild.bucket_date == dirty.bucket_date)
+        })
+        .collect::<Vec<_>>();
+    if !published_dirty.is_empty() {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("DELETE FROM long_term_projection_dirty_buckets WHERE ");
+        let mut dates = query.separated(" OR ");
+        for dirty in published_dirty {
+            dates
+                .push("(bucket_date = ")
+                .push_bind(&dirty.bucket_date)
+                .push(" AND generation = ")
+                .push_bind(dirty.generation)
+                .push(")");
+        }
+        query.build().execute(&mut *transaction).await?;
+    }
+    if !rebuild_tokens.is_empty() {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
+        );
+        let mut dates = query.separated(" OR ");
+        for (rebuild, token) in rebuilds.iter().zip(&rebuild_tokens) {
+            dates
+                .push("(bucket_date = ")
+                .push_bind(&rebuild.bucket_date)
+                .push(" AND active_daily_backup_token = ")
+                .push_bind(token)
+                .push(")");
+        }
+        query.build().execute(&mut *transaction).await?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "DELETE FROM long_term_projection_daily_backup_claims WHERE ",
+        );
+        let mut claims = query.separated(" OR ");
+        for (rebuild, token) in rebuilds.iter().zip(&rebuild_tokens) {
+            claims
+                .push("(bucket_date = ")
+                .push_bind(&rebuild.bucket_date)
+                .push(" AND rebuild_token = ")
+                .push_bind(token)
+                .push(")");
+        }
+        query.build().execute(&mut *transaction).await?;
+    }
     if let Some(cursor) = next_cursor {
         sqlx::query(
             "INSERT INTO long_term_projection_state (consumer, cursor_row_id, last_flush_at, last_error) VALUES (?1, ?2, datetime('now'), NULL) ON CONFLICT(consumer) DO UPDATE SET cursor_row_id = MAX(long_term_projection_state.cursor_row_id, excluded.cursor_row_id), last_flush_at = excluded.last_flush_at, last_error = NULL, updated_at = datetime('now')",
@@ -3228,27 +3328,6 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await?;
-    for (rebuild, token) in rebuilds.iter().zip(&rebuild_tokens) {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        if let Some(dirty) = clear_dirty_buckets
-            .iter()
-            .find(|dirty| dirty.bucket_date == rebuild.bucket_date)
-        {
-            sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2")
-                .bind(&dirty.bucket_date)
-                .bind(dirty.generation)
-                .execute(&mut *transaction)
-                .await?;
-        }
-        sqlx::query(
-            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2",
-        )
-        .bind(&rebuild.bucket_date)
-        .bind(token)
-        .execute(&mut *transaction)
-        .await?;
-        control.commit(transaction, permit).await?;
-    }
     for token in rebuild_tokens {
         clear_long_term_projection_daily_backup(pool, &token, control).await?;
     }
@@ -7130,6 +7209,18 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .context("failed to ensure long-term projection daily backup index")?;
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_daily_backup_claims (
+            bucket_date TEXT PRIMARY KEY,
+            rebuild_token TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection daily backup claim table")?;
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS long_term_projection_intervals (
             bucket_kind TEXT NOT NULL,
             bucket_date TEXT NOT NULL,
@@ -10373,7 +10464,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupted_date_rebuild_keeps_last_good_daily_rows_public() {
+    async fn daily_backup_claim_keeps_competing_rebuild_from_publishing_partial_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let date_text = date.to_string();
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls) VALUES (?1, 'model', 'model:last-good', 'last good', 41)",
+        )
+        .bind(&date_text)
+        .execute(&pool)
+        .await
+        .expect("seed last-good daily row");
+        sqlx::query(
+            "INSERT INTO long_term_projection_daily_backup_claims (bucket_date, rebuild_token) VALUES (?1, 'owner-one')",
+        )
+        .bind(&date_text)
+        .execute(&pool)
+        .await
+        .expect("reserve first owner");
+        let control = LongTermProjectionWriteControl::unrestricted();
+
+        let error = ensure_long_term_projection_daily_backup_for_date(
+            &pool,
+            &date_text,
+            "owner-two",
+            true,
+            &control,
+        )
+        .await
+        .expect_err("competing owner cannot replace an uncommitted snapshot");
+        assert!(error.to_string().contains("owner-one"));
+        let public_rows = load_long_term_daily_rows(&pool, "model", None, &date_text, &date_text)
+            .await
+            .expect("public live rows while snapshot is reserved");
+        assert_eq!(public_rows.len(), 1);
+        assert_eq!(public_rows[0].series_key, "model:last-good");
+        assert_eq!(public_rows[0].calls, 41);
+
+        ensure_long_term_projection_daily_backup_for_date(
+            &pool,
+            &date_text,
+            "owner-one",
+            true,
+            &control,
+        )
+        .await
+        .expect("first owner completes a snapshot");
+        let active = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT active_daily_backup_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
+        )
+        .bind(&date_text)
+        .fetch_one(&pool)
+        .await
+        .expect("active backup owner");
+        assert_eq!(active.as_deref(), Some("owner-one"));
+        let error = ensure_long_term_projection_daily_backup_for_date(
+            &pool,
+            &date_text,
+            "owner-two",
+            true,
+            &control,
+        )
+        .await
+        .expect_err("competing owner cannot replace a published snapshot");
+        assert!(error.to_string().contains("owner-one"));
+
+        release_long_term_projection_daily_backups(
+            &pool,
+            &[(date_text.clone(), "owner-one".to_string())],
+            &control,
+        )
+        .await
+        .expect("release completed owner");
+        let claims = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_projection_daily_backup_claims WHERE bucket_date = ?1",
+        )
+        .bind(&date_text)
+        .fetch_one(&pool)
+        .await
+        .expect("released claim");
+        assert_eq!(claims, 0);
+    }
+
+    #[tokio::test]
+    async fn interrupted_date_rebuild_keeps_publication_and_cursor_uncommitted() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -10439,7 +10620,7 @@ mod tests {
             &shutdown,
             &gate,
             &committed_batches,
-            11,
+            10,
         );
         let rebuild = LongTermProjectionDateRebuild {
             bucket_date: date_text.clone(),
@@ -10462,14 +10643,14 @@ mod tests {
             &control,
         )
         .await
-        .expect_err("cancellation after cursor commit but before public pointer handoff");
+        .expect_err("cancellation before atomic publication");
         assert!(shutdown.is_cancelled());
-        assert_eq!(committed_batches.load(Ordering::Acquire), 11);
+        assert_eq!(committed_batches.load(Ordering::Acquire), 10);
         assert_eq!(
             load_long_term_projection_cursor(&pool)
                 .await
-                .expect("durable cursor before handoff"),
-            321
+                .expect("cursor remains before publication"),
+            0
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -10497,6 +10678,60 @@ mod tests {
         assert_eq!(public_rows.len(), 1);
         assert_eq!(public_rows[0].series_key, "model:last-good");
         assert_eq!(public_rows[0].calls, 41);
+
+        let unrestricted = LongTermProjectionWriteControl::unrestricted();
+        commit_long_term_projection_date_rebuilds_with_control(
+            &pool,
+            &[rebuild],
+            Some(321),
+            &[LongTermProjectionDirtyBucket {
+                bucket_date: date_text.clone(),
+                generation: 1,
+            }],
+            false,
+            &unrestricted,
+        )
+        .await
+        .expect("resume atomically interrupted rebuild");
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("cursor after publication"),
+            321
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("cleared dirty date"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT active_daily_backup_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("released backup pointer"),
+            None
+        );
+        let published_rows =
+            load_long_term_daily_rows(&pool, "model", None, &date_text, &date_text)
+                .await
+                .expect("public rebuilt daily rows");
+        assert_eq!(
+            published_rows.len(),
+            LONG_TERM_PROJECTION_WRITE_BATCH_ROWS + 1
+        );
+        assert!(
+            published_rows
+                .iter()
+                .all(|row| row.series_key.starts_with("model:rebuilt-"))
+        );
     }
 
     #[tokio::test]
