@@ -7650,8 +7650,14 @@ async fn load_summary_projection_account_rollup_totals(
 
 async fn load_summary_projection_live_tail_account_totals(
     pool: &Pool<Sqlite>,
-    rollup_live_cursor: i64,
+    account_rollup_live_cursor: Option<i64>,
 ) -> Result<HashMap<i64, StatsTotals>> {
+    // Account activity has its own durable cursor. A missing marker means that no account
+    // prefix is proven to be represented by the account rollup, so archive-backed all-time
+    // hydration must not silently add the entire live table as a second source.
+    let Some(account_rollup_live_cursor) = account_rollup_live_cursor else {
+        return Ok(HashMap::new());
+    };
     let account_expression = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let query = format!(
         "SELECT {account_expression} AS upstream_account_id, {} \
@@ -7662,7 +7668,7 @@ async fn load_summary_projection_live_tail_account_totals(
         crate::stats::stats_success_failure_select_sql(),
     );
     let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(&query)
-        .bind(rollup_live_cursor)
+        .bind(account_rollup_live_cursor)
         .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
         .fetch_all(pool)
         .await
@@ -7670,6 +7676,34 @@ async fn load_summary_projection_live_tail_account_totals(
     if rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
         return Err(anyhow!(
             "summary projection live-tail account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+        ));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.upstream_account_id, row.into_totals()))
+        .collect())
+}
+
+async fn load_summary_projection_live_account_totals(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<i64, StatsTotals>> {
+    let account_expression = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let query = format!(
+        "SELECT {account_expression} AS upstream_account_id, {} \
+         FROM codex_invocations \
+         WHERE {account_expression} > 0 \
+         GROUP BY upstream_account_id \
+         LIMIT ?1",
+        crate::stats::stats_success_failure_select_sql(),
+    );
+    let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(&query)
+        .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
+        .fetch_all(pool)
+        .await
+        .context("summary projection live account totals hydration failed")?;
+    if rows.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+        return Err(anyhow!(
+            "summary projection live account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
         ));
     }
     Ok(rows
@@ -9234,12 +9268,32 @@ async fn build_summary_projection(
         // refresh path without defeating the rebuild deadline.
         let (all_time_rollup_totals, _) =
             load_summary_projection_rollup_totals(&state.pool).await?;
-        let mut global_totals = all_time_rollup_totals
-            .iter()
-            .filter(|((_, account_id), _)| account_id.is_none())
-            .fold(StatsTotals::default(), |totals, (_, bucket_totals)| {
-                totals.add(*bucket_totals)
-            });
+        // With no completed archives, the canonical live rows are authoritative even when a
+        // stale hourly rollup exists. Once archives are present, the rollup is the historical
+        // prefix and only rows beyond the shared live cursor are an exact live tail.
+        let mut global_totals = if !has_archives {
+            // Without archives the live table is the complete durable history. Keep that
+            // history compact by hydrating one aggregate row instead of retaining/sorting every
+            // old live record in the projection.
+            StatsTotals::from(
+                crate::stats::query_stats_row(
+                    &state.pool,
+                    crate::stats::StatsFilter::All,
+                    InvocationSourceScope::All,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection live all-time hydration failed: {error:?}")
+                })?,
+            )
+        } else {
+            all_time_rollup_totals
+                .iter()
+                .filter(|((_, account_id), _)| account_id.is_none())
+                .fold(StatsTotals::default(), |totals, (_, bucket_totals)| {
+                    totals.add(*bucket_totals)
+                })
+        };
         let live_tail_ids = if !has_archives {
             HashSet::new()
         } else {
@@ -9254,6 +9308,19 @@ async fn build_summary_projection(
                 anyhow!("summary projection live-tail id hydration failed: {error:?}")
             })?
         };
+        if has_archives && rollup_live_cursor > 0 {
+            global_totals = global_totals.add(
+                crate::stats::query_live_invocation_totals_after_id(
+                    &state.pool,
+                    InvocationSourceScope::All,
+                    rollup_live_cursor,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection live-tail totals hydration failed: {error:?}")
+                })?,
+            );
+        }
         global_totals = global_totals.add(
             crate::stats::query_unmaterialized_invocation_archive_totals_bounded(
                 &state.pool,
@@ -9267,25 +9334,24 @@ async fn build_summary_projection(
                 anyhow!("summary projection global archive hydration failed: {error:?}")
             })?,
         );
-        for record in &records {
-            if record.is_archive_record || record.global_rollup_covered {
-                continue;
-            }
-            global_totals = global_totals.add(summary_projection_record_totals(record));
-        }
         let mut global_response = global_totals.into_response();
         global_response.non_success_cost = Some(global_totals.non_success_cost);
         global_response.maintenance = Some(maintenance.clone());
         all_time_by_account.insert(None, global_response);
 
-        for (account_id, totals) in
+        let account_totals = if !has_archives {
+            load_summary_projection_live_account_totals(&state.pool).await?
+        } else {
             load_summary_projection_account_rollup_totals(&state.pool).await?
-        {
+        };
+        for (account_id, totals) in account_totals {
             batched_all_time_by_account.insert(account_id, totals);
         }
-        for (account_id, totals) in
-            load_summary_projection_live_tail_account_totals(&state.pool, rollup_live_cursor)
-                .await?
+        for (account_id, totals) in load_summary_projection_live_tail_account_totals(
+            &state.pool,
+            account_rollup_live_cursor,
+        )
+        .await?
         {
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
@@ -25120,7 +25186,10 @@ mod request_compression_query_tests {
         let error = hydrate_summary_snapshots(state.as_ref())
             .await
             .expect_err("in-horizon overflow must not truncate silently");
-        assert!(error.to_string().contains("exact horizon exceeded"));
+        assert!(
+            error.to_string().contains("exact horizon exceeded"),
+            "in-horizon overflow must fail closed with an explicit bound: {error:#}"
+        );
         assert!(state.subscription_hub.summary_projection().await.is_none());
     }
 

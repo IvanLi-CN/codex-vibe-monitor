@@ -5364,6 +5364,26 @@ pub(crate) async fn query_invocation_totals(
     ))
 }
 
+/// Aggregate the bounded live tail which follows the durable hourly-rollup cursor. This keeps
+/// all-time projection hydration exact when those rows are older than the retained exact horizon,
+/// without materializing the rows themselves into the canonical projection.
+pub(crate) async fn query_live_invocation_totals_after_id(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    start_after_id: i64,
+) -> Result<StatsTotals> {
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query.push(stats_success_failure_select_sql());
+    query
+        .push(" FROM codex_invocations WHERE id > ")
+        .push_bind(start_after_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    let row = query.build_query_as::<StatsRow>().fetch_one(pool).await?;
+    Ok(StatsTotals::from(row))
+}
+
 pub(crate) async fn query_invocation_hourly_rollup_range(
     pool: &Pool<Sqlite>,
     range_start_epoch: i64,
