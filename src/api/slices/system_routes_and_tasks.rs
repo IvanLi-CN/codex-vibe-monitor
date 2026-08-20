@@ -1144,14 +1144,21 @@ fn system_status_snapshot_refresh_delay() -> Duration {
         .expect("system status refresh lead must be shorter than the cache TTL")
 }
 
+fn system_status_snapshot_refresh_cadence_period() -> Duration {
+    // Reapply the lead after every publication. A TTL-sized period only protects the first
+    // scan and eventually schedules later refreshes at a last-good entry's expiry boundary.
+    system_status_snapshot_refresh_delay()
+}
+
 pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
         // Startup has already completed the first durable hydration before this producer is
-        // spawned. Schedule the next bounded scan before the TTL boundary rather than accepting
-        // interval's immediate first tick and duplicating SQLite/archive file work at readiness.
+        // spawned. Keep every bounded scan ahead of the public TTL rather than only advancing the
+        // first tick; a 60-second period would eventually start a scan at the prior snapshot's
+        // expiry boundary when a preceding scan completed after its scheduled tick.
         let mut cadence = tokio::time::interval_at(
             tokio::time::Instant::now() + system_status_snapshot_refresh_delay(),
-            Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+            system_status_snapshot_refresh_cadence_period(),
         );
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -1482,9 +1489,14 @@ mod runtime_pressure_health_tests {
     }
 
     #[test]
-    fn system_status_refresh_budget_completes_before_cache_ceiling() {
+    fn system_status_refresh_cadence_preserves_lead_before_cache_ceiling() {
+        assert_eq!(
+            system_status_snapshot_refresh_cadence_period(),
+            system_status_snapshot_refresh_delay()
+        );
         assert!(
-            system_status_snapshot_refresh_delay() + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
+            system_status_snapshot_refresh_cadence_period()
+                + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
                 < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
         );
     }

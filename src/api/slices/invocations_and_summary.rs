@@ -6991,17 +6991,20 @@ pub(crate) async fn load_in_progress_conversation_count(
 
 pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
 pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
-// Owner checks are memory-only. Tick often enough to start the bounded refresh before the
-// 15-second serving budget ends, while idle owners never schedule SQLite/archive work.
-const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+// Owner checks are memory-only. Polling at this cadence gives the runtime refresh a bounded
+// scheduling phase without performing SQLite/archive work while no consumer owns Summary.
+const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
+// Allow for hub coordination after a due tick. Hub state mutex holders never await durable I/O,
+// but this explicit budget keeps that short handoff out of the freshness critical path.
+const SUMMARY_SNAPSHOT_COORDINATION_SLACK: Duration = Duration::from_millis(500);
 const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // Do not turn a locked or overloaded SQLite database into a continuous sequence of timed-out
 // full hydrations. Mutations remain coalesced as dirty while this bounded retry gate is active.
 const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
-// A cadence refresh begins after the 10-second floor and waits 250ms to coalesce events. Keep
-// its build deadline below the remaining 4.75 seconds so a successful rebuild never creates an
-// unavailable interval before the hard 15-second freshness ceiling.
+// A cadence refresh begins after the 10-second floor without event debounce. Its scheduling
+// phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
+// serving ceiling; mutations still use the separate debounce below.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // Account and archive metadata are admission-controlled independently from exact invocation
@@ -8370,6 +8373,20 @@ fn summary_projection_exact_bucket_ranges(buckets: &HashSet<i64>) -> Vec<ExactUt
     )
 }
 
+fn summary_projection_extend_exact_buckets_for_ranges(
+    buckets: &mut HashSet<i64>,
+    ranges: impl IntoIterator<Item = ExactUtcRange>,
+) {
+    for range in ranges {
+        let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+        let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+        while bucket <= last_bucket {
+            buckets.insert(bucket);
+            bucket = bucket.saturating_add(3_600);
+        }
+    }
+}
+
 fn summary_projection_mark_exact_replacement_buckets(
     archive_has_materialized_rollups: bool,
     replay_coverage: SummaryProjectionArchiveReplayCoverage,
@@ -8837,7 +8854,10 @@ fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = S
 }
 
 pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
-    refresh_summary_snapshots_with_mode(state, true).await
+    // Readiness remains unavailable until this complete durable hydration succeeds. The short
+    // runtime deadline prevents serving stale hot reads during normal operation, but must not
+    // reject a valid startup build solely because it needs more than that runtime budget.
+    refresh_summary_snapshots_startup(state, true).await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
@@ -8845,9 +8865,26 @@ async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     refresh_summary_snapshots_with_mode(state, include_all_time).await
 }
 
+async fn refresh_summary_snapshots_startup(state: &AppState, include_all_time: bool) -> Result<()> {
+    refresh_summary_snapshots_with_deadline(state, include_all_time, None).await
+}
+
 async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     include_all_time: bool,
+) -> Result<()> {
+    refresh_summary_snapshots_with_deadline(
+        state,
+        include_all_time,
+        Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+    )
+    .await
+}
+
+async fn refresh_summary_snapshots_with_deadline(
+    state: &AppState,
+    include_all_time: bool,
+    deadline: Option<Duration>,
 ) -> Result<()> {
     let Ok(_refresh_guard) = state.subscription_hub.try_lock_summary_projection_refresh() else {
         debug!("summary projection refresh already in flight; coalescing trigger");
@@ -8868,17 +8905,13 @@ async fn refresh_summary_snapshots_with_mode(
                 projection.freshness.account_all_time_eligible.clone(),
             )
         });
-    let projection = tokio::time::timeout(
-        SUMMARY_PROJECTION_BUILD_DEADLINE,
-        build_summary_projection(state, include_all_time, previous_all_time),
-    )
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "summary projection build exceeded {:?}",
-            SUMMARY_PROJECTION_BUILD_DEADLINE
-        )
-    })??;
+    let build = build_summary_projection(state, include_all_time, previous_all_time);
+    let projection = match deadline {
+        Some(deadline) => tokio::time::timeout(deadline, build)
+            .await
+            .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
+        None => build.await?,
+    };
     state
         .subscription_hub
         .store_summary_projection(projection)
@@ -9660,6 +9693,43 @@ async fn build_summary_projection(
     exact_archive_buckets.extend(exact_account_total_rollup_buckets.iter().copied());
     exact_archive_buckets.extend(exact_global_usage_rollup_buckets.iter().copied());
     exact_archive_buckets.extend(exact_account_usage_rollup_buckets.iter().copied());
+    // A materialized archive can be fully replayed yet still lack one scope's compact bucket.
+    // Its raw fallback must also pull co-located persisted/live rows before archive/live ID
+    // exclusion picks the richer live copy; otherwise both sources disappear for that scope.
+    // Plan all such buckets before exact-live hydration so archive and live use one source set.
+    for archive in &archives {
+        let Some(archive_range) = summary_projection_archive_overlap_range(
+            archive,
+            ExactUtcRange {
+                start: archive_start,
+                end,
+            },
+        ) else {
+            continue;
+        };
+        let replay_coverage = summary_projection_effective_replay_coverage(
+            archive,
+            archive_replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default(),
+        );
+        let raw_fallback_ranges = summary_projection_archive_exact_ranges_with_coverage(
+            archive.has_materialized_historical_rollups(),
+            Some(replay_coverage.overall),
+            Some(replay_coverage.account_stats),
+            Some(replay_coverage.usage_breakdown),
+            archive_range,
+            &exact_archive_buckets,
+            &hourly_rollup_totals,
+            &hourly_rollup_usage,
+            &known_account_ids,
+        );
+        summary_projection_extend_exact_buckets_for_ranges(
+            &mut exact_archive_buckets,
+            raw_fallback_ranges,
+        );
+    }
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
         .into_iter()
         .filter_map(|range| {
@@ -10468,9 +10538,12 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             if !summary_snapshot_refresh_is_due(last_refresh_attempt, retry_not_before, now) {
                 continue;
             }
-            // Merge a burst before starting the expensive off-request baseline. The hub lock
-            // turns arrivals during this wait/build into a single subsequent attempt.
-            tokio::time::sleep(SUMMARY_SNAPSHOT_EVENT_DEBOUNCE).await;
+            // Merge mutation bursts before starting the expensive off-request baseline. A due
+            // cadence already spent its full minimum interval and must start immediately to
+            // retain the strict hot-read freshness budget.
+            if matches!(trigger, SummarySnapshotTrigger::Mutation) {
+                tokio::time::sleep(SUMMARY_SNAPSHOT_EVENT_DEBOUNCE).await;
+            }
             while receiver.try_recv().is_ok() {}
             while mutation_receiver.try_recv().is_ok() {}
             last_refresh_attempt = Some(Instant::now());
@@ -25417,6 +25490,15 @@ mod request_compression_query_tests {
                         .timestamp_opt(missing_account_bucket + 3_600, 0)
                         .unwrap()
         }));
+        let mut live_replacement_buckets = HashSet::new();
+        summary_projection_extend_exact_buckets_for_ranges(
+            &mut live_replacement_buckets,
+            ranges.clone(),
+        );
+        assert!(
+            live_replacement_buckets.contains(&missing_account_bucket),
+            "a raw archive fallback bucket must also hydrate its persisted/live replacement"
+        );
 
         totals.insert((missing_account_bucket, Some(42)), StatsTotals::default());
         usage_totals.insert((missing_account_bucket, Some(42)), usage);
@@ -25964,7 +26046,8 @@ mod request_compression_query_tests {
     fn summary_snapshot_refresh_budget_completes_before_freshness_ceiling() {
         assert!(
             SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
-                + SUMMARY_SNAPSHOT_EVENT_DEBOUNCE
+                + SUMMARY_SNAPSHOT_REFRESH_INTERVAL
+                + SUMMARY_SNAPSHOT_COORDINATION_SLACK
                 + SUMMARY_PROJECTION_BUILD_DEADLINE
                 < SUMMARY_SNAPSHOT_MAX_STALE
         );
