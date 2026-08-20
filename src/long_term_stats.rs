@@ -1647,6 +1647,21 @@ async fn ensure_long_term_projection_source_indexes(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure long-term projection text end index")?;
+    if columns.contains("status") {
+        // This stays empty for normal canonical timestamps. Targeted repairs can use it to
+        // decide whether the non-sargable RFC3339 compatibility branch is necessary at all.
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_rfc3339
+            ON codex_invocations (id)
+            WHERE instr(occurred_at, 'T') > 0
+              AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to ensure long-term projection RFC3339 index")?;
+    }
     Ok(())
 }
 
@@ -2481,6 +2496,24 @@ fn long_term_projection_crossing_text_query(select: &str) -> String {
     )
 }
 
+const LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY: &str = r#"
+    SELECT EXISTS(
+        SELECT 1
+        FROM codex_invocations
+        WHERE instr(occurred_at, 'T') > 0
+          AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
+    )
+    "#;
+
+async fn long_term_projection_live_has_rfc3339_rows(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar::<_, i64>(LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY)
+            .fetch_one(pool)
+            .await?
+            != 0,
+    )
+}
+
 async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.interval_index.clear();
@@ -3284,19 +3317,21 @@ async fn load_long_term_projection_rows_for_date(
             .fetch_all(pool)
             .await?,
     );
-    let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("inv.occurred_at");
-    let rfc3339_reaches_range_start =
-        long_term_rfc3339_reaches_epoch_sql("inv.occurred_at", "inv.t_total_ms", "?1");
-    let rfc3339_query = format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND {rfc3339_epoch} < ?2 AND ({rfc3339_epoch} >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND {rfc3339_reaches_range_start}))"
-    );
-    rows.extend(
-        sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
-            .bind(start.timestamp())
-            .bind(end.timestamp())
-            .fetch_all(pool)
-            .await?,
-    );
+    if long_term_projection_live_has_rfc3339_rows(pool).await? {
+        let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("inv.occurred_at");
+        let rfc3339_reaches_range_start =
+            long_term_rfc3339_reaches_epoch_sql("inv.occurred_at", "inv.t_total_ms", "?1");
+        let rfc3339_query = format!(
+            "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND {rfc3339_epoch} < ?2 AND ({rfc3339_epoch} >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND {rfc3339_reaches_range_start}))"
+        );
+        rows.extend(
+            sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
+                .bind(start.timestamp())
+                .bind(end.timestamp())
+                .fetch_all(pool)
+                .await?,
+        );
+    }
     rows.sort_by(|left, right| {
         left.occurred_at
             .cmp(&right.occurred_at)
@@ -13537,6 +13572,95 @@ mod tests {
             detail.contains("idx_codex_invocations_occurred_at")
                 && detail.contains("occurred_at>? AND occurred_at<?")
         }));
+    }
+
+    #[tokio::test]
+    async fn projection_date_rebuild_skips_rfc3339_fallback_for_canonical_live_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        create_long_term_test_invocations(&pool).await;
+        ensure_long_term_projection_source_indexes(&pool)
+            .await
+            .expect("projection source indexes");
+        sqlx::query(
+            "CREATE INDEX idx_codex_invocations_occurred_at ON codex_invocations (occurred_at)",
+        )
+        .execute(&pool)
+        .await
+        .expect("occurred_at index");
+        let compatibility_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+            "EXPLAIN QUERY PLAN {LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY}"
+        ))
+        .fetch_all(&pool)
+        .await
+        .expect("RFC3339 compatibility query plan");
+        assert!(compatibility_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_codex_invocations_long_term_projection_rfc3339")
+        }));
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (1, 'canonical', '2026-07-26 12:00:00', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("canonical invocation");
+
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let start = Shanghai
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
+            .single()
+            .expect("Shanghai day start");
+        let end = Shanghai
+            .from_local_datetime(
+                &date
+                    .succ_opt()
+                    .expect("next date")
+                    .and_hms_opt(0, 0, 0)
+                    .expect("day end"),
+            )
+            .single()
+            .expect("Shanghai day end");
+        assert!(
+            !long_term_projection_live_has_rfc3339_rows(&pool)
+                .await
+                .expect("canonical compatibility gate")
+        );
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let canonical_rows =
+            load_long_term_projection_rows_for_date(&pool, date, start, end, &control)
+                .await
+                .expect("canonical projection rows");
+        assert_eq!(
+            canonical_rows
+                .iter()
+                .filter_map(|row| row.invoke_id.as_deref())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["canonical"])
+        );
+
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (2, 'rfc3339', '2026-07-25T16:00:00Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 invocation");
+        assert!(
+            long_term_projection_live_has_rfc3339_rows(&pool)
+                .await
+                .expect("updated RFC3339 compatibility gate")
+        );
+        let mixed_rows = load_long_term_projection_rows_for_date(&pool, date, start, end, &control)
+            .await
+            .expect("mixed projection rows");
+        assert_eq!(
+            mixed_rows
+                .iter()
+                .filter_map(|row| row.invoke_id.as_deref())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["canonical", "rfc3339"])
+        );
     }
 
     #[test]
