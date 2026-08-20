@@ -1511,6 +1511,17 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
             .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
 
     let request_payload = json!({
         "model": "gpt-5.4",

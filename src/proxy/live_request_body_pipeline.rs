@@ -98,7 +98,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
                 let _ = request_body_error_tx.send(Some(RequestBodyReadError {
                     status: StatusCode::BAD_REQUEST,
                     message: format!("request body must be valid JSON: {err}"),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_INVALID_JSON,
                     partial_body: Vec::new(),
                 }));
             }

@@ -479,6 +479,174 @@ async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routi
 }
 
 #[tokio::test]
+async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_response() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
+        )
+        .await
+    });
+    body_tx
+        .send(Ok(Bytes::from_static(br#"{"model":"gpt-5","input":[{}],"#)))
+        .await
+        .expect("send valid live request prefix");
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let response_received = attempts
+                .lock()
+                .expect("lock provisional upstream attempts")
+                .get("Bearer upstream-primary")
+                .copied()
+                .unwrap_or_default()
+                > 0;
+            if response_received {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("upstream should respond before malformed tail arrives");
+    body_tx
+        .send(Ok(Bytes::from_static(b"}")))
+        .await
+        .expect("send malformed trailing comma terminator");
+    drop(body_tx);
+
+    let response = timeout(Duration::from_secs(1), request_task)
+        .await
+        .expect("malformed live request should resolve")
+        .expect("malformed live request task should join");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read malformed request response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode malformed request response");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("request body must be valid JSON"))
+    );
+
+    let attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<String>)>(
+                r#"
+                SELECT status, http_status, downstream_http_status, failure_kind
+                FROM pool_upstream_request_attempts
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query provisional pool attempt");
+            if let Some(row) = row.filter(|row| row.0 != "pending") {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("provisional pool attempt should be finalized");
+    assert_eq!(
+        attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(attempt.1, Some(200));
+    assert_eq!(attempt.2, Some(400));
+    assert_eq!(
+        attempt.3.as_deref(),
+        Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
+    );
+
+    let invocation = timeout(Duration::from_secs(1), async {
+        loop {
+            let row =
+                sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+                    r#"
+                SELECT status, failure_kind, failure_class, payload
+                FROM codex_invocations
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+                )
+                .fetch_optional(&state.pool)
+                .await
+                .expect("query malformed live invocation");
+            if let Some(row) = row {
+                break row;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("malformed live invocation should be persisted");
+    assert_eq!(invocation.0, "failed");
+    assert_eq!(
+        invocation.1.as_deref(),
+        Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
+    );
+    assert_eq!(invocation.2.as_deref(), Some(FAILURE_CLASS_CLIENT));
+    let invocation_payload: Value = serde_json::from_str(
+        invocation
+            .3
+            .as_deref()
+            .expect("malformed live invocation payload"),
+    )
+    .expect("decode malformed live invocation payload");
+    assert_eq!(invocation_payload["liveFirstAttemptFailed"], true);
+    assert_eq!(invocation_payload["liveFirstCaptureFailed"], true);
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn live_first_capture_responses_failure_excludes_sticky_account_from_replay() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);

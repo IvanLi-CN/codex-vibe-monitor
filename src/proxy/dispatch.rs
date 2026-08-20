@@ -742,6 +742,40 @@ async fn wait_for_live_request_body_finalization(finalization_rx: &mut watch::Re
     let _ = finalization_rx.changed().await;
 }
 
+async fn reject_live_first_provisional_response_after_body_error(
+    state: &AppState,
+    response: &mut PoolUpstreamResponse,
+    request_body_error: &RequestBodyReadError,
+) {
+    let upstream_status = response.response.status();
+    let upstream_request_id = response
+        .response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    finalize_tracked_pool_attempt(
+        state,
+        response.pending_attempt_record.as_ref(),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(upstream_status),
+        Some(request_body_error.status),
+        Some(request_body_error.failure_kind),
+        None,
+        Some(request_body_error.message.as_str()),
+        Some(response.connect_latency_ms),
+        Some(response.first_byte_latency_ms),
+        None,
+        upstream_request_id,
+        "live-first invalid request body after provisional response",
+    )
+    .await;
+    complete_deferred_pool_early_phase_cleanup_guard(
+        &mut response.deferred_early_phase_cleanup_guard,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_capture_request_body(
     state: Arc<AppState>,
@@ -1100,7 +1134,7 @@ async fn prepare_capture_request_body(
                     )
                     .await
                     {
-                        Ok(response) => {
+                        Ok(mut response) => {
                             // An upstream is allowed to respond before it has
                             // consumed the complete HTTP request body. Do not
                             // accept that provisional response until the local
@@ -1110,7 +1144,23 @@ async fn prepare_capture_request_body(
                                 &mut live_request_body_finalization_rx,
                             )
                             .await;
-                            if *live_route_metadata_changed_rx.borrow() {
+                            let request_body_error =
+                                { live_request_body_error_rx.borrow().clone() };
+                            if let Some(request_body_error) = request_body_error {
+                                live_first_attempt_failed = true;
+                                warn!(
+                                    proxy_request_id,
+                                    status = %request_body_error.status,
+                                    failure_kind = request_body_error.failure_kind,
+                                    "live-first request body validation cancelled a provisional upstream response"
+                                );
+                                reject_live_first_provisional_response_after_body_error(
+                                    state.as_ref(),
+                                    &mut response,
+                                    &request_body_error,
+                                )
+                                .await;
+                            } else if *live_route_metadata_changed_rx.borrow() {
                                 live_first_attempt_failed = true;
                                 warn!(
                                     proxy_request_id,
@@ -1451,7 +1501,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }),
                     &capture_failure_decision,
                     &LiveRequestStreamingMeasurement {
+                        first_attempt_failed: live_first_attempt_failed,
+                        fallback_or_retry: live_first_attempt_failed,
                         capture_failed: true,
+                        ambiguous_upstream_delivery: live_first_attempt_failed,
                         experiment_account_group: live_first_experiment_group.clone(),
                         ..LiveRequestStreamingMeasurement::default()
                     },
