@@ -565,6 +565,7 @@ struct LongTermArchiveInvocationRangeQueries {
     canonical: String,
     crossing_text: String,
     rfc3339: String,
+    compatibility: String,
 }
 
 #[derive(Debug)]
@@ -603,11 +604,68 @@ async fn long_term_archive_invocation_query_for_range(
         query.t_total_ms_column,
         rfc3339_reaches_range_start,
     );
+    let compatibility = format!(
+        "SELECT COALESCE(MAX(CASE WHEN instr(occurred_at, 'T') = 0 AND occurred_at < ?1 AND CASE WHEN {} IS NOT NULL AND {} > 0 THEN julianday(occurred_at) + {} / 86400000.0 END >= julianday(?1) THEN 1 ELSE 0 END), 0), COALESCE(MAX(CASE WHEN instr(occurred_at, 'T') > 0 AND {} < ?3 AND ({} >= ?2 OR ({} IS NOT NULL AND {} > 0 AND {})) THEN 1 ELSE 0 END), 0) FROM codex_invocations WHERE {}",
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        rfc3339_epoch,
+        rfc3339_epoch,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        rfc3339_reaches_range_start,
+        query.terminal_filter,
+    );
     Ok(LongTermArchiveInvocationRangeQueries {
         canonical,
         crossing_text,
         rfc3339,
+        compatibility,
     })
+}
+
+async fn load_long_term_archive_invocation_rows_for_range(
+    pool: &Pool<Sqlite>,
+    queries: &LongTermArchiveInvocationRangeQueries,
+    start: chrono::DateTime<chrono_tz::Tz>,
+    end: chrono::DateTime<chrono_tz::Tz>,
+) -> Result<Vec<LongTermInvocationRow>> {
+    let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
+    let end_text = end.format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut rows = sqlx::query_as::<_, LongTermInvocationRow>(&queries.canonical)
+        .bind(&start_text)
+        .bind(&end_text)
+        .fetch_all(pool)
+        .await?;
+    let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
+        .bind(&start_text)
+        .bind(start.timestamp())
+        .bind(end.timestamp())
+        .fetch_one(pool)
+        .await?;
+    if compatibility.0 != 0 {
+        rows.extend(
+            sqlx::query_as::<_, LongTermInvocationRow>(&queries.crossing_text)
+                .bind(&start_text)
+                .fetch_all(pool)
+                .await?,
+        );
+    }
+    if compatibility.1 != 0 {
+        rows.extend(
+            sqlx::query_as::<_, LongTermInvocationRow>(&queries.rfc3339)
+                .bind(start.timestamp())
+                .bind(end.timestamp())
+                .fetch_all(pool)
+                .await?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(rows)
 }
 
 fn long_term_rfc3339_whole_second_sql(value: &str) -> String {
@@ -746,7 +804,6 @@ async fn long_term_archive_invocation_query_parts(
         "#,
         invoke_id = select("invoke_id"),
         status = select("status"),
-        status_column = status_column,
         model = select("model"),
         request_model = request_model,
         response_model = response_model,
@@ -3181,39 +3238,16 @@ async fn load_long_term_projection_rows_for_date(
             );
         };
         let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
-        let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
-        let end_text = end.format("%Y-%m-%d %H:%M:%S").to_string();
-        let archive_rows = async {
-            let mut archive_rows =
-                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.canonical)
-                    .bind(&start_text)
-                    .bind(&end_text)
-                    .fetch_all(&archive_pool)
-                    .await?;
-            archive_rows.extend(
-                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.crossing_text)
-                    .bind(&start_text)
-                    .fetch_all(&archive_pool)
-                    .await?,
-            );
-            archive_rows.extend(
-                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.rfc3339)
-                    .bind(start.timestamp())
-                    .bind(end.timestamp())
-                    .fetch_all(&archive_pool)
-                    .await?,
-            );
-            Ok::<_, sqlx::Error>(archive_rows)
-        }
+        let archive_rows = load_long_term_archive_invocation_rows_for_range(
+            &archive_pool,
+            &archive_query,
+            start,
+            end,
+        )
         .await;
         archive_pool.close().await;
         drop(cleanup);
         let mut archive_rows = archive_rows?;
-        archive_rows.sort_by(|left, right| {
-            left.occurred_at
-                .cmp(&right.occurred_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
         for mut row in archive_rows {
             if row.upstream_account_id.is_none()
                 && let Some(invoke_id) = row.invoke_id.as_ref()
@@ -5710,7 +5744,7 @@ async fn refresh_long_term_stats_once(
     let result = refresh_long_term_stats_inner(
         pool,
         retention_days,
-        was_ready,
+        !was_ready,
         &refresh_started_at,
         control,
     )
@@ -5734,7 +5768,7 @@ async fn refresh_long_term_stats_once(
 async fn refresh_long_term_stats_inner(
     pool: &Pool<Sqlite>,
     retention_days: u64,
-    was_ready_before_refresh: bool,
+    initial_materialization: bool,
     refresh_started_at: &str,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
@@ -5766,7 +5800,7 @@ async fn refresh_long_term_stats_inner(
     .fetch_one(pool)
     .await?
         != 0;
-    let ready_state = was_ready_before_refresh && !legacy_model_keys;
+    let ready_state = !initial_materialization && !legacy_model_keys;
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let integrity_audit_due = ready_state && long_term_integrity_audit_due(pool).await?;
     let mut terminal_proof_reconciliation_incomplete =
@@ -6855,7 +6889,7 @@ async fn apply_long_term_refresh_rollups_with_control(
     } else {
         LONG_TERM_STATUS_READY
     };
-    let last_error = if status == LONG_TERM_STATUS_ERROR && !was_ready_before_refresh {
+    let last_error = if status == LONG_TERM_STATUS_ERROR && initial_materialization {
         Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR.to_string())
     } else if terminal_proof_reconciliation_incomplete {
         Some(LONG_TERM_TERMINAL_PROOF_UNAVAILABLE_ERROR.to_string())
@@ -14672,29 +14706,77 @@ mod tests {
                 && detail.contains("occurred_at>? AND occurred_at<?")
         }));
 
-        let mut rows = sqlx::query_as::<_, (i64,)>(&queries.canonical)
+        let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
             .bind(&start_text)
-            .bind(&end_text)
-            .fetch_all(&pool)
+            .bind(start.timestamp())
+            .bind(end.timestamp())
+            .fetch_one(&pool)
             .await
-            .expect("canonical archive range rows");
-        rows.extend(
-            sqlx::query_as::<_, (i64,)>(&queries.crossing_text)
-                .bind(&start_text)
-                .fetch_all(&pool)
-                .await
-                .expect("crossing legacy archive range rows"),
-        );
-        rows.extend(
-            sqlx::query_as::<_, (i64,)>(&queries.rfc3339)
-                .bind(start.timestamp())
-                .bind(end.timestamp())
-                .fetch_all(&pool)
-                .await
-                .expect("RFC3339 archive range rows"),
-        );
-        rows.sort_unstable();
-        assert_eq!(rows, vec![(1,), (2,), (5,), (7,), (8,)]);
+            .expect("archive compatibility probe");
+        assert_eq!(compatibility, (0, 1));
+        let rows = load_long_term_archive_invocation_rows_for_range(&pool, &queries, start, end)
+            .await
+            .expect("archive range rows");
+        let ids = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 2, 5, 7, 8]);
+    }
+
+    #[tokio::test]
+    async fn archive_range_skips_compatibility_result_queries_for_standard_timestamps() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, status TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive invocation schema");
+        sqlx::query(
+            "CREATE INDEX idx_archive_standard_occurred_at ON codex_invocations (occurred_at)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive occurred_at index");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (1, '2026-07-26 12:00:00', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("standard archive row");
+        let queries = long_term_archive_invocation_query_for_range(&pool)
+            .await
+            .expect("archive range queries");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let start = Shanghai
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
+            .single()
+            .expect("Shanghai day start");
+        let end = Shanghai
+            .from_local_datetime(
+                &date
+                    .succ_opt()
+                    .expect("next date")
+                    .and_hms_opt(0, 0, 0)
+                    .expect("next day start"),
+            )
+            .single()
+            .expect("Shanghai next day start");
+        let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
+        let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
+            .bind(&start_text)
+            .bind(start.timestamp())
+            .bind(end.timestamp())
+            .fetch_one(&pool)
+            .await
+            .expect("archive compatibility probe");
+        assert_eq!(compatibility, (0, 0));
+        let rows = load_long_term_archive_invocation_rows_for_range(&pool, &queries, start, end)
+            .await
+            .expect("standard archive range rows");
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![1]);
     }
 
     #[tokio::test]
