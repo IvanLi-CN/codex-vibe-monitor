@@ -255,7 +255,7 @@ async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
     );
 
     let Json(live) = get_model_routing_live(
-        State(state),
+        State(state.clone()),
         Query(ModelRoutingLiveQuery {
             window: Some("15m".to_string()),
             model: Some(model.to_string()),
@@ -291,6 +291,160 @@ async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
             .all(|record| record.occurred_at != expired_utc),
         "the expired standalone event must remain outside the 15-minute window"
     );
+
+    let Json(first_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: None,
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the first mixed-format model routing history page");
+    assert_eq!(first_page.items.len(), 1);
+    assert_eq!(first_page.items[0].id, format!("attempt:{attempt_id}"));
+    let cursor = first_page
+        .next_cursor
+        .expect("the standalone event should produce a second history page");
+
+    let Json(second_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the second mixed-format model routing history page");
+    assert_eq!(second_page.items.len(), 1);
+    assert_eq!(second_page.items[0].kind, "event");
+    assert_eq!(second_page.items[0].occurred_at, recent_utc);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    let cursor = second_page
+        .next_cursor
+        .expect("the older standalone event should produce a third history page");
+
+    let Json(third_page) = list_upstream_account_model_routing_events(
+        State(state),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the third mixed-format model routing history page");
+    assert_eq!(third_page.items.len(), 1);
+    assert_eq!(third_page.items[0].kind, "event");
+    assert_eq!(third_page.items[0].occurred_at, expired_utc);
+    assert_ne!(first_page.items[0].id, third_page.items[0].id);
+    assert_ne!(second_page.items[0].id, third_page.items[0].id);
+    assert!(third_page.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn model_routing_timeline_schema_upgrade_adds_epoch_columns_and_indexes() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline upgrade account",
+        "timeline-upgrade-api-key",
+        None,
+        None,
+    )
+    .await;
+    let now = Utc::now();
+    let legacy_attempt_time = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let legacy_event_time = format_utc_iso(now - ChronoDuration::seconds(1));
+
+    for index in [
+        "idx_pool_upstream_request_attempts_timeline_epoch",
+        "idx_pool_upstream_account_events_attempt_latest",
+        "idx_pool_upstream_account_events_timeline_unlinked_epoch",
+    ] {
+        sqlx::query(&format!("DROP INDEX {index}"))
+            .execute(&state.pool)
+            .await
+            .expect("remove current timeline index before upgrade migration");
+    }
+    sqlx::query("ALTER TABLE pool_upstream_request_attempts DROP COLUMN occurred_epoch_ms")
+        .execute(&state.pool)
+        .await
+        .expect("restore the pre-epoch attempts table");
+    sqlx::query("ALTER TABLE pool_upstream_account_events DROP COLUMN occurred_epoch_ms")
+        .execute(&state.pool)
+        .await
+        .expect("restore the pre-epoch events table");
+
+    let attempt_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id,
+            upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
+            status
+        ) VALUES ('timeline-upgrade-attempt', ?1, '/v1/responses', 'pool', 'gpt-timeline-upgrade', ?2, 'timeline-upgrade', 1, 1, 0, 'success')
+        RETURNING id
+        "#,
+    )
+    .bind(&legacy_attempt_time)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert pre-migration timeline attempt");
+    let event_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, attempt_id, model,
+            model_route_state_before, model_route_state_after, created_at
+        ) VALUES (?1, ?2, 'model_route_state_changed', 'call', ?3, 'gpt-timeline-upgrade', 'available', 'degraded', ?2)
+        RETURNING id
+        "#,
+    )
+    .bind(account_id)
+    .bind(&legacy_event_time)
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert pre-migration linked event");
+
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("upgrade legacy timeline tables with epoch columns and indexes");
+    let attempt_epoch_ms: i64 = sqlx::query_scalar(
+        "SELECT occurred_epoch_ms FROM pool_upstream_request_attempts WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read generated epoch from migrated attempt");
+    let event_epoch_ms: i64 = sqlx::query_scalar(
+        "SELECT occurred_epoch_ms FROM pool_upstream_account_events WHERE id = ?1",
+    )
+    .bind(event_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read generated epoch from migrated event");
+    assert_eq!(attempt_epoch_ms, now.timestamp() * 1_000);
+    assert_eq!(
+        event_epoch_ms,
+        (now - ChronoDuration::seconds(1)).timestamp() * 1_000
+    );
+
+    let timeline_indexes = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_pool_upstream_request_attempts_timeline_epoch', 'idx_pool_upstream_account_events_attempt_latest', 'idx_pool_upstream_account_events_timeline_unlinked_epoch') ORDER BY name",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("list migrated timeline indexes");
+    assert_eq!(timeline_indexes.len(), 3);
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("rerun upgraded timeline schema idempotently");
 }
 
 #[tokio::test]
