@@ -120,6 +120,172 @@ async fn insert_model_failure_attempt(
 }
 
 #[tokio::test]
+async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("timeline schema migration should be idempotent");
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline index account",
+        "timeline-index-api-key",
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-timeline-index";
+    let now = Utc::now();
+    let recent_local = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let recent_utc = format_utc_iso(now - ChronoDuration::seconds(1));
+    let expired_utc = format_utc_iso(now - ChronoDuration::minutes(20));
+    let expired_local = format_naive(
+        (now - ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let attempt_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id,
+            upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
+            status
+        ) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'timeline-index', 1, 1, 0, 'success')
+        RETURNING id
+        "#,
+    )
+    .bind("timeline-index-attempt")
+    .bind(&recent_local)
+    .bind(model)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert local-timestamp timeline attempt");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, attempt_id, model,
+            model_route_state_before, model_route_state_after, created_at
+        ) VALUES
+            (?1, ?2, 'model_route_state_changed', 'call', ?3, ?4, 'available', 'degraded', ?2),
+            (?1, ?5, 'model_route_state_changed', 'call', ?3, ?4, 'degraded', 'available', ?5),
+            (?1, ?6, 'model_route_state_changed', 'call', NULL, ?4, 'available', 'degraded', ?6),
+            (?1, ?7, 'model_route_state_changed', 'call', NULL, ?4, 'available', 'degraded', ?7)
+        "#,
+    )
+    .bind(account_id)
+    .bind(&recent_local)
+    .bind(attempt_id)
+    .bind(model)
+    .bind(&recent_utc)
+    .bind(&recent_utc)
+    .bind(&expired_local)
+    .execute(&state.pool)
+    .await
+    .expect("insert linked and standalone timeline events");
+
+    let cutoff_epoch_ms = (Utc::now() - ChronoDuration::minutes(15)).timestamp_millis();
+    let attempt_plan = build_model_routing_attempt_timeline_query(
+        "EXPLAIN QUERY PLAN ",
+        None,
+        None,
+        cutoff_epoch_ms,
+        10,
+        None,
+        None,
+    )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(&state.pool)
+    .await
+    .expect("explain production attempt timeline query")
+    .into_iter()
+    .map(|(_, _, _, detail)| detail)
+    .collect::<Vec<_>>();
+    assert!(
+        attempt_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH attempts USING INDEX idx_pool_upstream_request_attempts_timeline_epoch",
+            )
+        }),
+        "attempt timeline query must use the epoch range index: {attempt_plan:?}"
+    );
+    assert!(
+        attempt_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH latest USING INDEX idx_pool_upstream_account_events_attempt_latest",
+            )
+        }),
+        "latest event subquery must use the attempt index: {attempt_plan:?}"
+    );
+    assert!(
+        attempt_plan
+            .iter()
+            .all(|detail| !detail.contains("TEMP B-TREE")),
+        "attempt timeline query must not sort through a temporary B-tree: {attempt_plan:?}"
+    );
+
+    let event_plan = build_model_routing_event_timeline_query(
+        "EXPLAIN QUERY PLAN ",
+        None,
+        None,
+        cutoff_epoch_ms,
+        10,
+        None,
+        None,
+    )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(&state.pool)
+    .await
+    .expect("explain production standalone event timeline query")
+    .into_iter()
+    .map(|(_, _, _, detail)| detail)
+    .collect::<Vec<_>>();
+    assert!(
+        event_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH event USING INDEX idx_pool_upstream_account_events_timeline_unlinked_epoch",
+            )
+        }),
+        "standalone event timeline query must use the epoch range index: {event_plan:?}"
+    );
+    assert!(
+        event_plan
+            .iter()
+            .all(|detail| !detail.contains("TEMP B-TREE")),
+        "standalone event timeline query must not sort through a temporary B-tree: {event_plan:?}"
+    );
+
+    let Json(live) = get_model_routing_live(
+        State(state),
+        Query(ModelRoutingLiveQuery {
+            window: Some("15m".to_string()),
+            model: Some(model.to_string()),
+            state: None,
+            limit: Some(10),
+        }),
+    )
+    .await
+    .expect("load mixed-format model routing timeline");
+    assert!(
+        live.records
+            .iter()
+            .any(|record| record.id == format!("attempt:{attempt_id}")),
+        "the local-timestamp attempt should remain visible in the 15-minute window"
+    );
+    assert!(
+        live.records
+            .iter()
+            .any(|record| record.kind == "event" && record.occurred_at == recent_utc),
+        "the RFC3339 standalone event should remain visible in the 15-minute window"
+    );
+    assert!(
+        live.records
+            .iter()
+            .all(|record| record.occurred_at != expired_utc),
+        "the expired standalone event must remain outside the 15-minute window"
+    );
+}
+
+#[tokio::test]
 async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
