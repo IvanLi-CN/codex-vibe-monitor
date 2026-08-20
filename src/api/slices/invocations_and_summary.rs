@@ -9880,9 +9880,9 @@ fn summary_snapshot_refresh_is_due(
     retry_not_before: Option<Instant>,
     now: Instant,
 ) -> bool {
-    !last_refresh_attempt
-        .is_some_and(|attempt| now.duration_since(attempt) < SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL)
-        && !retry_not_before.is_some_and(|retry_at| now < retry_at)
+    last_refresh_attempt
+        .is_none_or(|attempt| now.duration_since(attempt) >= SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL)
+        && retry_not_before.is_none_or(|retry_at| now >= retry_at)
 }
 
 #[derive(Debug, Clone, Copy)]
