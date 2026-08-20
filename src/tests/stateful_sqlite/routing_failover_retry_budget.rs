@@ -2681,6 +2681,13 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
     let account_id =
         insert_test_pool_api_key_account(&state, "Failed Failure Fence", "failed-fence-key").await;
     let reservation_key = "failed-fence-reservation";
+    let model = "gpt-failed-fence";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed failed-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before partially committed failure persistence");
     state
         .pool_routing_reservations
         .lock()
@@ -2689,7 +2696,7 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
             reservation_key.to_string(),
             PoolRoutingReservation {
                 account_id,
-                model: Some("gpt-failed-fence".to_string()),
+                model: Some(model.to_string()),
                 proxy_key: None,
                 snapshot_generation: None,
                 created_at: Instant::now(),
@@ -2699,7 +2706,17 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
     let initial_generation = *availability.borrow();
 
     let result = persist_pool_route_failure_then_release(state.as_ref(), reservation_key, async {
-        Err::<(), _>("simulated persistence failure")
+        record_pool_route_transport_failure_for_model(
+            &state.pool,
+            account_id,
+            None,
+            "durable failure before an audit error",
+            Some("partially-committed-failure-fence-invoke"),
+            Some(model),
+        )
+        .await
+        .expect("durable health mutation must commit before the simulated audit error");
+        Err::<(), _>("simulated post-mutation audit failure")
     })
     .await;
 
@@ -2719,6 +2736,14 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
         *availability.borrow(),
         initial_generation,
         "unfenced release must not wake waiters into an immediate retry"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "a post-mutation persistence error must request a replacement snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "a post-mutation persistence error must fail closed instead of retaining stale candidates"
     );
 }
 

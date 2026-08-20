@@ -1920,8 +1920,12 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
             Ok(value)
         }
         Err(err) => {
-            // The failed write did not fence this route. Release its slot so it cannot leak,
-            // but do not wake waiters into an immediate unfenced retry.
+            // A persistence error may arrive after the durable health mutation but before its
+            // in-memory fence/audit completes. Cold-fence conservatively before releasing so
+            // no caller, including orphan recovery without a drop guard, can reuse stale state.
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
             release_pool_routing_reservation_without_availability(state, reservation_key);
             Err(err)
         }
