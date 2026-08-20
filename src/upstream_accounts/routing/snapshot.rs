@@ -385,16 +385,16 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn request_refresh(&self) {
-        self.request_refresh_inner(false);
+        self.request_refresh_inner(false, false);
     }
 
     pub(crate) fn request_refresh_and_wake_waiters(&self, publish_availability: impl FnOnce()) {
-        self.request_refresh_inner(true);
+        self.request_refresh_inner(true, false);
         publish_availability();
     }
 
     pub(crate) fn request_refresh_and_defer_availability_wake(&self) {
-        self.request_refresh_inner(true);
+        self.request_refresh_inner(true, false);
     }
 
     /// Schedules one replacement after a persisted capacity recovery without
@@ -416,7 +416,7 @@ impl PoolRoutingSnapshotStore {
             != 0
         {
             drop(refresh_state);
-            self.request_refresh_and_defer_availability_wake();
+            self.request_refresh_inner(true, true);
             return;
         }
         if refresh_state.pending {
@@ -535,11 +535,11 @@ impl PoolRoutingSnapshotStore {
         }
     }
 
-    fn request_refresh_inner(&self, wake_waiters: bool) {
+    fn request_refresh_inner(&self, wake_waiters: bool, ensure_recovery_successor: bool) {
         // Atomically fence an older reconciler and make the pending state
         // visible before waiting for refresh_state. This blocks stale capacity
         // wakeups while a mutation is queued behind a completing refresh.
-        let queued_refresh = self.advance_refresh_epoch(wake_waiters);
+        let queued_refresh = self.advance_refresh_epoch(wake_waiters, ensure_recovery_successor);
         // The committed mutation is now newer than the visible snapshot. Do
         // not select from that stale view while an event refresh catches up.
         *self
@@ -667,7 +667,7 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn invalidate(&self) {
-        self.advance_refresh_epoch(false);
+        self.advance_refresh_epoch(false, false);
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -788,7 +788,7 @@ impl PoolRoutingSnapshotStore {
         }
     }
 
-    fn advance_refresh_epoch(&self, wake_waiters: bool) -> bool {
+    fn advance_refresh_epoch(&self, wake_waiters: bool, ensure_recovery_successor: bool) -> bool {
         loop {
             let epoch = self
                 .refresh_epoch
@@ -800,6 +800,32 @@ impl PoolRoutingSnapshotStore {
             let successor_queued = epoch & REFRESH_COALESCED_SUCCESSOR_BIT != 0;
             let availability_followup_used = epoch & REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT != 0;
             if epoch & REFRESH_PENDING_BIT != 0 {
+                if ensure_recovery_successor && !successor_queued {
+                    let next_generation =
+                        (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
+                    let next_epoch = next_generation
+                        | REFRESH_PENDING_BIT
+                        | (epoch
+                            & (REFRESH_RECONCILING_BIT | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT));
+                    if self
+                        .refresh_epoch
+                        .compare_exchange(
+                            epoch,
+                            next_epoch,
+                            std::sync::atomic::Ordering::AcqRel,
+                            std::sync::atomic::Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        // A recovery is capacity-bearing. Make the active
+                        // build stale so its lease queues one successor; if
+                        // no lease owns the pending work, wake the reconciler
+                        // directly. Ordinary events retain the existing
+                        // bounded coalescing behavior.
+                        return epoch & REFRESH_RECONCILING_BIT == 0;
+                    }
+                    continue;
+                }
                 if wake_waiters && successor_queued && !availability_followup_used {
                     let next_epoch = epoch
                         | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
@@ -1337,8 +1363,15 @@ mod snapshot_store_tests {
             .begin_refresh()
             .expect("initial refresh should claim its reconciliation lease");
         assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+        let mut refreshes = store.subscribe_refresh();
 
         store.request_refresh();
+        assert!(
+            refreshes
+                .has_changed()
+                .expect("the initial refresh must signal the reconciler")
+        );
+        refreshes.borrow_and_update();
         let stale_generation = store
             .begin_refresh()
             .expect("the queued refresh should claim its reconciliation lease");
@@ -1353,6 +1386,26 @@ mod snapshot_store_tests {
                 panic!("a fenced stale refresh must not wake waiters")
             }),
             "the refresh that predated the recovery must not install"
+        );
+        assert!(
+            refreshes
+                .has_changed()
+                .expect("the capacity recovery must schedule one successor"),
+            "a deferred recovery wake must not wait for the periodic ticker"
+        );
+        refreshes.borrow_and_update();
+        let successor_generation = store
+            .begin_refresh()
+            .expect("the recovery successor should claim its reconciliation lease");
+        let published_availability = std::cell::Cell::new(false);
+        assert!(
+            store.complete_refresh(successor_generation, empty_snapshot(), || {
+                published_availability.set(true);
+            })
+        );
+        assert!(
+            published_availability.get(),
+            "the recovery successor must publish the deferred waiter wake"
         );
     }
 
