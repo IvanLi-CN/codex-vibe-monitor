@@ -1323,19 +1323,19 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
             SELECT
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date(strftime('%s', OLD.occurred_at), 'unixepoch', '+8 hours')
+                THEN date((julianday(OLD.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
                 ELSE date(OLD.occurred_at) END,
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date(CAST(strftime('%s', OLD.occurred_at) AS INTEGER) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date((julianday(OLD.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0) END
             WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
             UNION ALL
             SELECT
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date(strftime('%s', NEW.occurred_at), 'unixepoch', '+8 hours')
+                THEN date((julianday(NEW.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
                 ELSE date(NEW.occurred_at) END,
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date(CAST(strftime('%s', NEW.occurred_at) AS INTEGER) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date((julianday(NEW.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0) END
             WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
             UNION ALL
@@ -12836,6 +12836,45 @@ mod tests {
         .await
         .expect("newer marker remains");
         assert_eq!(generation, 2);
+    }
+
+    #[tokio::test]
+    async fn invocation_correction_marks_rfc3339_fractional_cross_day_buckets() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, source TEXT, status TEXT, occurred_at TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, t_total_ms REAL, t_req_read_ms REAL, t_req_parse_ms REAL, t_upstream_connect_ms REAL, t_upstream_ttfb_ms REAL, t_upstream_stream_ms REAL, error_message TEXT, failure_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("invocation schema");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        ensure_long_term_projection_correction_trigger(&pool)
+            .await
+            .expect("correction trigger");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model, t_total_ms) VALUES (1, '2026-07-25T15:59:59.500Z', 'success', 'before', 600)",
+        )
+        .execute(&pool)
+        .await
+        .expect("fractional RFC3339 invocation");
+
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("historical correction");
+        let dirty_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("dirty correction dates");
+        assert_eq!(dirty_dates, vec!["2026-07-25", "2026-07-26"]);
     }
 
     #[tokio::test]
