@@ -318,6 +318,7 @@ pub(crate) struct PoolRoutingReservationGuard {
     state: Arc<AppState>,
     reservation_key: String,
     armed: bool,
+    publish_availability_on_drop: bool,
 }
 
 impl PoolRoutingReservationGuard {
@@ -326,7 +327,21 @@ impl PoolRoutingReservationGuard {
             state,
             reservation_key,
             armed: true,
+            publish_availability_on_drop: true,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(state: Arc<AppState>, reservation_key: String) -> Self {
+        Self::new(state, reservation_key)
+    }
+
+    fn suppress_availability_on_drop(&mut self) {
+        self.publish_availability_on_drop = false;
+    }
+
+    fn restore_availability_on_drop(&mut self) {
+        self.publish_availability_on_drop = true;
     }
 
     fn release(&mut self) {
@@ -351,9 +366,11 @@ impl PoolRoutingReservationGuard {
 
 impl Drop for PoolRoutingReservationGuard {
     fn drop(&mut self) {
-        // Cancellation can happen while a failure fence is still persisting.
-        // Only explicit completed paths may publish availability.
-        self.release_without_availability();
+        if self.publish_availability_on_drop {
+            self.release();
+        } else {
+            self.release_without_availability();
+        }
     }
 }
 
@@ -1011,6 +1028,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
+            reservation_guard.suppress_availability_on_drop();
             let failure_recorded =
                 match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                     state.as_ref(),
@@ -1049,6 +1067,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 );
             }
             if failure_recorded {
+                reservation_guard.restore_availability_on_drop();
                 reservation_guard.release();
             } else {
                 reservation_guard.release_without_availability();
@@ -1084,6 +1103,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
+            reservation_guard.suppress_availability_on_drop();
             let failure_recorded =
                 match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                     state.as_ref(),
@@ -1110,6 +1130,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     }
                 };
             if failure_recorded {
+                reservation_guard.restore_availability_on_drop();
                 reservation_guard.release();
             } else {
                 reservation_guard.release_without_availability();
@@ -1148,6 +1169,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await;
         complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
+        reservation_guard.suppress_availability_on_drop();
         let failure_recorded =
             match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                 state.as_ref(),
@@ -1174,6 +1196,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 }
             };
         if failure_recorded {
+            reservation_guard.restore_availability_on_drop();
             reservation_guard.release();
         } else {
             reservation_guard.release_without_availability();
@@ -1770,6 +1793,9 @@ pub(crate) async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
+    if upstream_route_failure.is_some() {
+        reservation_guard.suppress_availability_on_drop();
+    }
     let failure_recorded = if let Some(message) = upstream_route_failure.as_deref() {
         match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
             state.as_ref(),
@@ -1814,6 +1840,7 @@ pub(crate) async fn proxy_websocket_tunnel(
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
     if failure_recorded {
+        reservation_guard.restore_availability_on_drop();
         reservation_guard.release();
     } else {
         reservation_guard.release_without_availability();

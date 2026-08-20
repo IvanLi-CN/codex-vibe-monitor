@@ -2083,34 +2083,42 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
-    let request_state = state.clone();
-    let request_task = tokio::spawn(async move {
-        proxy_openai_v1(
-            State(request_state),
-            OriginalUri("/v1/responses".parse().expect("valid uri")),
-            Method::POST,
-            HeaderMap::from_iter([(
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            )]),
-            Body::from(
-                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
-                    .as_bytes()
-                    .to_vec(),
-            ),
-        )
-        .await
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let mutation_state = state.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should signal once the bounded wait starts");
+        std::thread::sleep(Duration::from_millis(40));
+        runtime_handle.block_on(async move {
+            set_test_account_status(&mutation_state.pool, delayed_id, "active").await;
+            mutation_state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters();
+            refresh_pool_routing_snapshot(mutation_state.as_ref())
+                .await
+                .expect("install recovered-account snapshot before waking the waiter");
+        });
     });
 
-    let pool = state.pool.clone();
-    let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
-    });
-
-    let response = request_task.await.expect("request task should join");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
     release_task
-        .await
+        .join()
         .expect("delayed account release task should join");
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -2817,6 +2825,62 @@ async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_wait
         *availability.borrow(),
         initial_generation,
         "healthy capacity released by handoff cancellation must wake waiters"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_websocket_reservation_guard_releases_and_wakes_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "WebSocket Cancellation", "ws-cancel-key").await;
+    let reservation_key = "websocket-cancellation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-websocket-cancellation".to_string()),
+                proxy_key: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let _reservation_guard =
+            PoolRoutingReservationGuard::new_for_test(task_state, reservation_key.to_string());
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    started_rx
+        .await
+        .expect("websocket reservation must be owned before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the websocket request should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "ordinary websocket cancellation must release its routing reservation"
+    );
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "ordinary websocket cancellation must wake waiters for released capacity"
     );
 }
 

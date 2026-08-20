@@ -238,12 +238,12 @@ impl PoolRoutingModelRouteSnapshot {
 pub(crate) struct PoolRoutingSnapshotStore {
     snapshot: std::sync::RwLock<Option<Arc<PoolRoutingSnapshot>>>,
     refresh_tx: tokio::sync::watch::Sender<u64>,
+    refresh_generation: std::sync::atomic::AtomicU64,
     refresh_state: std::sync::Mutex<PoolRoutingSnapshotRefreshState>,
 }
 
 #[derive(Debug, Default)]
 struct PoolRoutingSnapshotRefreshState {
-    generation: u64,
     pending: bool,
     wake_waiters: bool,
 }
@@ -260,6 +260,7 @@ impl PoolRoutingSnapshotStore {
         Self {
             snapshot: std::sync::RwLock::new(None),
             refresh_tx,
+            refresh_generation: std::sync::atomic::AtomicU64::new(0),
             refresh_state: std::sync::Mutex::new(PoolRoutingSnapshotRefreshState::default()),
         }
     }
@@ -280,13 +281,17 @@ impl PoolRoutingSnapshotStore {
     }
 
     fn request_refresh_inner(&self, wake_waiters: bool) {
+        // Advance before waiting for refresh_state. A reconciler that already
+        // loaded an older database view must not publish it while this mutation
+        // is waiting to record its event.
+        self.refresh_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let mut refresh_state = self
             .refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned");
         refresh_state.pending = true;
         refresh_state.wake_waiters |= wake_waiters;
-        refresh_state.generation = refresh_state.generation.wrapping_add(1);
         drop(refresh_state);
         self.refresh_tx.send_modify(|generation| {
             *generation = generation.wrapping_add(1);
@@ -303,11 +308,14 @@ impl PoolRoutingSnapshotStore {
         snapshot: PoolRoutingSnapshot,
         publish_availability: impl FnOnce(),
     ) -> bool {
+        if self.refresh_generation() != refresh_generation {
+            return false;
+        }
         let mut refresh_state = self
             .refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned");
-        if refresh_state.generation != refresh_generation {
+        if self.refresh_generation() != refresh_generation {
             return false;
         }
         *self
@@ -316,13 +324,16 @@ impl PoolRoutingSnapshotStore {
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
         let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
-        if wake_waiters {
+        drop(refresh_state);
+        if wake_waiters && self.refresh_generation() == refresh_generation {
             publish_availability();
         }
         true
     }
 
     pub(crate) fn invalidate(&self) {
+        self.refresh_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -334,7 +345,6 @@ impl PoolRoutingSnapshotStore {
         // Stay fail-closed and retain a queued recovery wake until a later
         // reconciler pass installs a current snapshot.
         refresh_state.pending = true;
-        refresh_state.generation = refresh_state.generation.wrapping_add(1);
     }
 
     pub(crate) fn refresh_pending(&self) -> bool {
@@ -345,10 +355,8 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn refresh_generation(&self) -> u64 {
-        self.refresh_state
-            .lock()
-            .expect("pool routing snapshot refresh lock poisoned")
-            .generation
+        self.refresh_generation
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl FnOnce()) {
@@ -486,4 +494,34 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
         || state.pool_routing_availability.publish(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_store_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_request_advances_generation_before_waiting_for_refresh_state() {
+        let store = Arc::new(PoolRoutingSnapshotStore::new());
+        let previous_generation = store.refresh_generation();
+        let refresh_state = store
+            .refresh_state
+            .lock()
+            .expect("lock refresh state for test");
+        let requested_store = store.clone();
+        let requested = std::thread::spawn(move || requested_store.request_refresh());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while store.refresh_generation() == previous_generation {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refresh request should advance its generation before waiting on refresh state"
+            );
+            std::thread::yield_now();
+        }
+        drop(refresh_state);
+        requested
+            .join()
+            .expect("refresh request thread should join");
+    }
 }

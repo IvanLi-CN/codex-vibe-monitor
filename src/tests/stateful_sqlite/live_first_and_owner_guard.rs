@@ -9651,6 +9651,35 @@ async fn pool_no_candidate_bulkhead_does_not_limit_healthy_parallel_resolutions(
 }
 
 #[tokio::test]
+async fn cold_routing_snapshot_fails_closed_without_candidate_sql() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state.pool_routing_snapshot.invalidate();
+    state.pool.close().await;
+
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        false,
+        &mut wait_deadline,
+        None,
+    )
+    .await
+    .expect("cold snapshot must fail closed without querying the closed database");
+
+    assert!(matches!(
+        resolution,
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(_))
+    ));
+}
+
+#[tokio::test]
 async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
