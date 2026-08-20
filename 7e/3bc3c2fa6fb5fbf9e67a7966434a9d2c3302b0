@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.65.1",
+  "base_stable_version": "2.65.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-20T03:06:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.65.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "64b2e6bb78b6c8e0daca13738c92df7b148d24af",
+  "pr_number": 822,
+  "pr_title": "fix(archive): bound activity coverage selection",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.65.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.65.1",
+  "target_sha": "7e3bc3c2fa6fb5fbf9e67a7966434a9d2c3302b0",
+  "type_label": "type:patch"
+}
