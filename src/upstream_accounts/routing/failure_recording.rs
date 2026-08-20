@@ -29,6 +29,20 @@ struct PoolRouteSuccessOutcome {
     availability_increased: bool,
 }
 
+fn apply_committed_pool_route_failure(state: &AppState, account_id: i64) {
+    if !state
+        .pool_routing_snapshot
+        .apply_committed_failure_fence(account_id)
+    {
+        // A concurrent settings or account mutation has already fenced the
+        // snapshot. Retain that fail-closed path instead of reviving a stale
+        // candidate view for this failure event.
+        state
+            .pool_routing_snapshot
+            .request_refresh_and_defer_availability_wake();
+    }
+}
+
 fn route_failure_precedes_request(
     stored_failure_at: &str,
     request_started_at_utc: DateTime<Utc>,
@@ -1432,9 +1446,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
         attempt_id,
     )
     .await?;
-    state
-        .pool_routing_snapshot
-        .request_refresh_and_defer_availability_wake();
+    apply_committed_pool_route_failure(state, account_id);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1458,9 +1470,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_and_broadcas
         attempt_id,
     )
     .await?;
-    state
-        .pool_routing_snapshot
-        .request_refresh_and_defer_availability_wake();
+    apply_committed_pool_route_failure(state, account_id);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1503,9 +1513,7 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_and
         attempt_id,
     )
     .await?;
-    state
-        .pool_routing_snapshot
-        .request_refresh_and_defer_availability_wake();
+    apply_committed_pool_route_failure(state, account_id);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1648,9 +1656,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
-    state
-        .pool_routing_snapshot
-        .request_refresh_and_defer_availability_wake();
+    apply_committed_pool_route_failure(state, account_id);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1674,9 +1680,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_model_and_broadcast(
         model,
     )
     .await?;
-    state
-        .pool_routing_snapshot
-        .request_refresh_and_defer_availability_wake();
+    apply_committed_pool_route_failure(state, account_id);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);

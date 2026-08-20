@@ -2610,7 +2610,7 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
-async fn guarded_broadcast_failure_wakes_waiters_after_the_refreshed_fence_installs() {
+async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_installs() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2659,19 +2659,17 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_refreshed_fence_insta
             .expect("persist and broadcast the failure fence");
     }
 
-    assert_eq!(
-        *availability.borrow(),
-        initial_generation,
-        "the guard release must wait for the updated snapshot before waking waiters"
-    );
-    refresh_pool_routing_snapshot(state.as_ref())
-        .await
-        .expect("install routing snapshot after broadcast failure");
     assert_ne!(
         *availability.borrow(),
         initial_generation,
-        "the installed failure fence must wake NoCandidate waiters"
+        "the committed in-memory failure fence must wake NoCandidate waiters"
     );
+    assert!(matches!(
+        resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve from the in-memory failure fence"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
 }
 
 #[tokio::test]

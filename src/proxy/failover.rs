@@ -2224,6 +2224,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }
@@ -2750,6 +2751,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 );
                                 return Err(final_error);
                             }
+                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -3006,6 +3008,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 );
                                 return Err(final_error);
                             }
+                            release_pool_routing_reservation(state.as_ref(), &reservation_key);
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -4029,6 +4032,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                     return Err(final_error);
                 }
+                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 if should_timeout_route_failover {
                     excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -4262,6 +4266,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         exhausted_accounts_all_rate_limited = false;
                         if should_timeout_route_failover {
                             excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -4464,6 +4469,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         exhausted_accounts_all_rate_limited = false;
                         overload_required_upstream_route_key = Some(upstream_route_key.clone());
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
@@ -4563,6 +4569,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
                         );
+                        release_pool_routing_reservation(state.as_ref(), &reservation_key);
                         exhausted_accounts_all_rate_limited = false;
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         continue 'account_loop;

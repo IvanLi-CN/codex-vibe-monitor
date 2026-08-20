@@ -1885,13 +1885,30 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
-            // The failure fence is committed before this event. Refresh first,
-            // then wake NoCandidate waiters from the installed snapshot so a
-            // released slot cannot be retried through an unfenced route.
-            state
-                .pool_routing_snapshot
-                .request_refresh_and_defer_availability_wake();
-            release_pool_routing_reservation_without_availability(state, reservation_key);
+            let account_id = state
+                .pool_routing_reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned")
+                .get(reservation_key)
+                .map(|reservation| reservation.account_id);
+            let failure_fence_installed = account_id.is_some_and(|account_id| {
+                state
+                    .pool_routing_snapshot
+                    .apply_committed_failure_fence(account_id)
+            });
+            if !failure_fence_installed {
+                // No current snapshot can be patched safely. Preserve the
+                // ordinary cold fence and keep the release silent until its
+                // replacement is installed.
+                state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+            }
+            release_pool_routing_reservation_with_availability(
+                state,
+                reservation_key,
+                failure_fence_installed,
+            );
             Ok(value)
         }
         Err(err) => {

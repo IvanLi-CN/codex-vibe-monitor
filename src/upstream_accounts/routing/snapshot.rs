@@ -28,6 +28,27 @@ struct PoolRoutingModelRouteSnapshot {
 }
 
 impl PoolRoutingSnapshot {
+    fn without_failed_account(&self, account_id: i64) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.candidates.remove(&account_id);
+        snapshot
+            .candidate_order
+            .retain(|candidate_id| *candidate_id != account_id);
+        // Sticky routing consults the account table before it considers the
+        // candidate set. Removing both prevents a just-failed account from
+        // bypassing the event fence through sticky reuse.
+        snapshot.accounts.remove(&account_id);
+        snapshot.effective_rules.remove(&account_id);
+        snapshot
+            .model_routes
+            .retain(|(candidate_id, _), _| *candidate_id != account_id);
+        snapshot
+    }
+
+    fn contains_account(&self, account_id: i64) -> bool {
+        self.accounts.contains_key(&account_id)
+    }
+
     pub(crate) fn candidate(&self, account_id: i64) -> Option<&AccountRoutingCandidateRow> {
         self.candidates.get(&account_id)
     }
@@ -362,6 +383,60 @@ impl PoolRoutingSnapshotStore {
 
     pub(crate) fn request_refresh_and_defer_availability_wake(&self) {
         self.request_refresh_inner(true);
+    }
+
+    /// Applies a committed upstream failure immediately to the in-memory
+    /// routing view. The periodic reconciler later restores the database's
+    /// precise model-health state, but the request that observed the failure
+    /// can immediately fail over without reopening a candidate SQL path.
+    ///
+    /// Returns false when there is no current view to safely patch. Callers
+    /// must then retain the normal fail-closed refresh fence.
+    pub(crate) fn apply_committed_failure_fence(&self, account_id: i64) -> bool {
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .expect("pool routing snapshot lock poisoned");
+
+        loop {
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT) != 0 {
+                return false;
+            }
+            let Some(current) = snapshot.as_ref() else {
+                return false;
+            };
+            if !current.contains_account(account_id) {
+                return true;
+            }
+
+            let next_generation =
+                (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
+            let next_epoch = next_generation
+                | (epoch
+                    & (REFRESH_RECONCILING_BIT
+                        | REFRESH_COALESCED_SUCCESSOR_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT));
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    epoch,
+                    next_epoch,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                // The write lock remains held across the epoch transition.
+                // Readers that sampled the prior generation either see this
+                // replacement or reject on their second epoch read.
+                *snapshot = Some(Arc::new(current.without_failed_account(account_id)));
+                return true;
+            }
+        }
     }
 
     fn request_refresh_inner(&self, wake_waiters: bool) {
