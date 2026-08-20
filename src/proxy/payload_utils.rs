@@ -1004,6 +1004,7 @@ pub(crate) fn should_upgrade_to_upstream_response_failed(
             | Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
             | Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT)
             | Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED)
+            | Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
     ) {
         return false;
     }

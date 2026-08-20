@@ -1976,7 +1976,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let attempted_requested_service_tier = None;
     let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
     let mut deferred_early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
-    let mut live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
+    let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
     let (
         response,
         mut oauth_responses_debug,
@@ -2753,7 +2753,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     }
 
     let first_byte_started = Instant::now();
-    let (response, mut first_chunk, mut first_chunk_received_at) =
+    let (response, first_chunk, first_chunk_received_at) =
         match read_pool_upstream_first_chunk_with_timeout(
             response,
             attempt_pre_first_byte_timeout,
@@ -2924,26 +2924,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
         state.upstream_accounts.crypto_key.as_ref(),
     )
     .await;
-    if first_chunk.is_none() {
-        finalize_tracked_live_first_pool_attempt(
-            state.as_ref(),
-            pending_attempt_record.as_ref(),
-            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-            Some(status),
-            None,
-            None,
-            Some(connect_latency_ms),
-            Some(first_byte_latency_ms),
-            None,
-        )
-        .await;
-        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_early_phase_cleanup_guard);
-        pending_attempt_record = None;
-        deferred_early_phase_cleanup_guard = None;
-        live_attempt_activity_lease = None;
-        first_chunk = None;
-        first_chunk_received_at = None;
-    }
+    // The caller owns the provisional response and must settle the attempt only after the
+    // local request-body pipeline has completed. An upstream can respond before it consumes
+    // the final body bytes, including bytes that prove the JSON is invalid.
     Ok(PoolUpstreamResponse {
         account,
         response,

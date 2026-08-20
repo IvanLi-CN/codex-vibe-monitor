@@ -831,6 +831,7 @@ pub(crate) fn classify_invocation_failure_with_kind(
         // Upstream rate limiting is retryable and should be surfaced as service-impacting.
         FailureClass::ServiceFailure
     } else if failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_INVALID_JSON
         || err_lower.contains("invalid api key format")
         || err_lower.contains("api key format is invalid")
         || err_lower.contains("incorrect api key provided")

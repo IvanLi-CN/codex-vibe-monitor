@@ -206,6 +206,7 @@ services:
 1. **看失败分型（30 分钟窗口）**
    - `request_body_read_timeout`：客户端上传过慢或代理前置链路阻塞（对应 `408`）。
    - `request_body_stream_error_client_closed`：客户端在上传阶段断开（对应 `400`）。
+   - `request_body_invalid_json`：实时请求体在上传完成前被判定为非法 JSON（对应 `400`）。
    - `failed_contact_upstream`：代理到上游连接失败（对应 `502`）。
    - `upstream_handshake_timeout`：上游握手超时（对应 `502`）。
    - `upstream_stream_error`：上游流式响应中途失败（通常表现为下游读流报错）。

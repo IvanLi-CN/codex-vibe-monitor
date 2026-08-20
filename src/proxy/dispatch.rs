@@ -742,6 +742,40 @@ async fn wait_for_live_request_body_finalization(finalization_rx: &mut watch::Re
     let _ = finalization_rx.changed().await;
 }
 
+async fn reject_live_first_provisional_response_after_body_failure(
+    state: &AppState,
+    response: &mut PoolUpstreamResponse,
+    request_body_error: &RequestBodyReadError,
+) {
+    let upstream_status = response.response.status();
+    let upstream_request_id = response
+        .response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    finalize_tracked_pool_attempt(
+        state,
+        response.pending_attempt_record.as_ref(),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(upstream_status),
+        Some(request_body_error.status),
+        Some(request_body_error.failure_kind),
+        None,
+        Some(request_body_error.message.as_str()),
+        Some(response.connect_latency_ms),
+        Some(response.first_byte_latency_ms),
+        None,
+        upstream_request_id,
+        "live-first request body failed after provisional response",
+    )
+    .await;
+    complete_deferred_pool_early_phase_cleanup_guard(
+        &mut response.deferred_early_phase_cleanup_guard,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_capture_request_body(
     state: Arc<AppState>,
@@ -1100,7 +1134,7 @@ async fn prepare_capture_request_body(
                     )
                     .await
                     {
-                        Ok(response) => {
+                        Ok(mut response) => {
                             // An upstream is allowed to respond before it has
                             // consumed the complete HTTP request body. Do not
                             // accept that provisional response until the local
@@ -1110,7 +1144,23 @@ async fn prepare_capture_request_body(
                                 &mut live_request_body_finalization_rx,
                             )
                             .await;
-                            if *live_route_metadata_changed_rx.borrow() {
+                            let request_body_error =
+                                { live_request_body_error_rx.borrow().clone() };
+                            if let Some(request_body_error) = request_body_error {
+                                live_first_attempt_failed = true;
+                                warn!(
+                                    proxy_request_id,
+                                    status = %request_body_error.status,
+                                    failure_kind = request_body_error.failure_kind,
+                                    "live-first request body validation cancelled a provisional upstream response"
+                                );
+                                reject_live_first_provisional_response_after_body_failure(
+                                    state.as_ref(),
+                                    &mut response,
+                                    &request_body_error,
+                                )
+                                .await;
+                            } else if *live_route_metadata_changed_rx.borrow() {
                                 live_first_attempt_failed = true;
                                 warn!(
                                     proxy_request_id,
@@ -1151,37 +1201,58 @@ async fn prepare_capture_request_body(
 
     drop(live_pipeline);
 
-    PreparedCaptureRequestBody {
-        request_body_snapshot_result: {
-            let snapshot_result = wait_for_replay_body_snapshot(
-                state.as_ref(),
-                original_uri,
-                &Method::POST,
-                &replay_status_rx,
-                &replay_cancel,
-                runtime_timeouts.request_read_timeout,
-                response_timeout.map(|_| req_read_started),
-            )
-            .await
-            .map_err(|(status, message)| RequestBodyReadError {
-                status,
-                message,
-                failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
-                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
-                } else {
-                    PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
-                },
-                partial_body: Vec::new(),
-            });
-            if snapshot_result.is_ok() {
-                wait_for_live_request_body_finalization(&mut live_request_body_finalization_rx)
-                    .await;
-            }
-            live_request_body_error_rx
+    let request_body_snapshot_result = {
+        let snapshot_result = wait_for_replay_body_snapshot(
+            state.as_ref(),
+            original_uri,
+            &Method::POST,
+            &replay_status_rx,
+            &replay_cancel,
+            runtime_timeouts.request_read_timeout,
+            response_timeout.map(|_| req_read_started),
+        )
+        .await
+        .map_err(|(status, message)| RequestBodyReadError {
+            status,
+            message,
+            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
+                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
+            } else {
+                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+            },
+            partial_body: Vec::new(),
+        });
+        if snapshot_result.is_ok() || live_first_pool_response.is_some() {
+            wait_for_live_request_body_finalization(&mut live_request_body_finalization_rx).await;
+        }
+        match snapshot_result {
+            Err(error) => Err(error),
+            Ok(snapshot) => live_request_body_error_rx
                 .borrow()
                 .clone()
-                .map_or(snapshot_result, Err)
-        },
+                .map_or(Ok(snapshot), Err),
+        }
+    };
+    if let Err(request_body_error) = &request_body_snapshot_result
+        && let Some(mut response) = live_first_pool_response.take()
+    {
+        live_first_attempt_failed = true;
+        warn!(
+            proxy_request_id,
+            status = %request_body_error.status,
+            failure_kind = request_body_error.failure_kind,
+            "live-first request body failure cancelled a provisional upstream response"
+        );
+        reject_live_first_provisional_response_after_body_failure(
+            state.as_ref(),
+            &mut response,
+            request_body_error,
+        )
+        .await;
+    }
+
+    PreparedCaptureRequestBody {
+        request_body_snapshot_result,
         live_first_pool_response,
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
@@ -1451,7 +1522,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }),
                     &capture_failure_decision,
                     &LiveRequestStreamingMeasurement {
+                        first_attempt_failed: live_first_attempt_failed,
+                        fallback_or_retry: false,
                         capture_failed: true,
+                        ambiguous_upstream_delivery: live_first_attempt_failed,
                         experiment_account_group: live_first_experiment_group.clone(),
                         ..LiveRequestStreamingMeasurement::default()
                     },
