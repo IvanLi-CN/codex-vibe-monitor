@@ -144,7 +144,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 }
 
 #[tokio::test]
-async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
+async fn reserve_pool_routing_account_tracks_model_less_sticky_reuse_generation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -163,9 +163,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         routing_selection_audit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
-        forward_proxy_scope: ForwardProxyRouteScope::PinnedProxyKey(
-            FORWARD_PROXY_DIRECT_KEY.to_string(),
-        ),
+        forward_proxy_scope: ForwardProxyRouteScope::Automatic,
         single_account_rotation_enabled: false,
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
@@ -189,11 +187,24 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         .expect("pool routing reservations mutex poisoned");
     let reservation = reservations
         .get("sticky-reservation")
-        .expect("sticky reuse reservation should be recorded");
+        .expect("model-less sticky reuse reservation should be recorded");
     assert_eq!(reservation.account_id, account_id);
-    assert_eq!(
-        reservation.proxy_key.as_deref(),
-        Some(FORWARD_PROXY_DIRECT_KEY)
+    assert!(reservation.model.is_none());
+    assert!(reservation.proxy_key.is_none());
+    assert!(
+        reservation.snapshot_generation.is_some(),
+        "a model-less sticky request must retain its selection generation"
+    );
+    drop(reservations);
+
+    assert!(
+        pool_routing_reservation_generation_is_current(state.as_ref(), "sticky-reservation"),
+        "the fresh sticky reservation should be admitted by its source snapshot"
+    );
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        !pool_routing_reservation_generation_is_current(state.as_ref(), "sticky-reservation"),
+        "a mutation fence must invalidate a model-less sticky reservation"
     );
 }
 
