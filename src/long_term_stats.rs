@@ -8943,7 +8943,7 @@ mod tests {
             Duration::from_secs(30),
         )
         .await;
-        let mut external_writer = pool
+        let external_writer = pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .expect("hold the external SQLite writer lock");
@@ -8980,7 +8980,7 @@ mod tests {
             Duration::from_secs(30),
         )
         .await;
-        let mut external_writer = pool
+        let external_writer = pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .expect("hold the external SQLite writer lock");
