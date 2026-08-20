@@ -1909,6 +1909,12 @@ fn long_term_projection_canonical_query(select: &str) -> String {
     )
 }
 
+fn long_term_projection_crossing_text_query(select: &str) -> String {
+    format!(
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') = 0 AND inv.occurred_at < ?1 AND inv.id IN (SELECT state.invocation_row_id FROM long_term_projection_interval_state state WHERE state.interval_end_ms > ?2 AND state.interval_start_ms < ?3 UNION SELECT legacy.invocation_row_id FROM long_term_projection_intervals legacy WHERE legacy.bucket_date = ?4)"
+    )
+}
+
 async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.interval_index.clear();
@@ -2629,12 +2635,13 @@ async fn load_long_term_projection_rows_for_date(
         .bind(&end_text)
         .fetch_all(pool)
         .await?;
-    let crossing_text_query = format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') = 0 AND inv.occurred_at < ?1 AND inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 >= julianday(?1)"
-    );
+    let crossing_text_query = long_term_projection_crossing_text_query(&select);
     rows.extend(
         sqlx::query_as::<_, LongTermInvocationRow>(&crossing_text_query)
             .bind(&start_text)
+            .bind(start.timestamp_millis())
+            .bind(end.timestamp_millis())
+            .bind(date.to_string())
             .fetch_all(pool)
             .await?,
     );
@@ -3138,6 +3145,7 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
             next_cursor,
             clear_dirty_buckets,
             mark_ready,
+            true,
             control,
         )
         .await;
@@ -3166,6 +3174,7 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
             last_chunk.then_some(next_cursor).flatten(),
             &chunk_dirty,
             last_chunk && mark_ready,
+            last_chunk,
             control,
         )
         .await?;
@@ -3179,6 +3188,7 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     next_cursor: Option<i64>,
     clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
     mark_ready: bool,
+    publish_state: bool,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     debug_assert!(rebuilds.len() <= LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES);
@@ -3381,10 +3391,11 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
         .await?;
     }
     sqlx::query(
-        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 OR (?2 AND status = ?3) THEN ?4 ELSE status END, statistics_start_date = CASE WHEN ?5 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?5 < statistics_start_date THEN ?5 ELSE statistics_start_date END, last_error = CASE WHEN ?1 OR (?2 AND status = ?3) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?6",
+        "UPDATE long_term_stats_state SET status = CASE WHEN ?1 OR (?2 AND ?3 AND status = ?4) THEN ?5 ELSE status END, statistics_start_date = CASE WHEN ?6 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?6 < statistics_start_date THEN ?6 ELSE statistics_start_date END, last_error = CASE WHEN ?1 OR (?2 AND ?3 AND status = ?4) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?7",
     )
     .bind(mark_ready)
     .bind(repaired_nonempty)
+    .bind(publish_state)
     .bind(LONG_TERM_STATUS_EMPTY)
     .bind(LONG_TERM_STATUS_READY)
     .bind(repaired_start_date)
@@ -7340,6 +7351,12 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure long-term projection canonical interval range index")?;
     sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_end_range ON long_term_projection_interval_state (interval_end_ms, interval_start_ms)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection canonical interval end range index")?;
+    sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS long_term_projection_interval_suppressions (
             invocation_row_id INTEGER NOT NULL,
@@ -10868,6 +10885,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chunked_date_rebuild_keeps_empty_state_until_final_publication() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_EMPTY)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("empty projection state");
+
+        let first_date = NaiveDate::from_ymd_opt(2025, 1, 1).expect("first projection date");
+        let mut rebuilds = Vec::with_capacity(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES + 1);
+        let mut dirty = Vec::with_capacity(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES + 1);
+        for offset in 0..=LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES {
+            let date = first_date
+                .checked_add_signed(ChronoDuration::days(offset as i64))
+                .expect("projection date");
+            let date_text = date.to_string();
+            let (start_epoch, end_epoch) =
+                long_term_day_epoch_bounds(date).expect("projection bounds");
+            let mut daily = HashMap::new();
+            if offset == 0 {
+                daily.insert(
+                    (
+                        date_text.clone(),
+                        "model".to_string(),
+                        "model:chunked".to_string(),
+                    ),
+                    LongTermBucket {
+                        bucket_start_epoch: start_epoch,
+                        dimension: "model".to_string(),
+                        series_key: "model:chunked".to_string(),
+                        display_name: "chunked".to_string(),
+                        reasoning_effort: String::new(),
+                        stats_date: Some(date_text.clone()),
+                        accumulator: LongTermAccumulator {
+                            calls: 1,
+                            ..LongTermAccumulator::default()
+                        },
+                    },
+                );
+            }
+            sqlx::query(
+                "INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, 'chunked_test')",
+            )
+            .bind(&date_text)
+            .execute(&pool)
+            .await
+            .expect("dirty projection date");
+            rebuilds.push(LongTermProjectionDateRebuild {
+                bucket_date: date_text.clone(),
+                start_epoch,
+                end_epoch,
+                hourly: HashMap::new(),
+                daily,
+                interval_segments: Vec::new(),
+                source_row_count: 0,
+            });
+            dirty.push(LongTermProjectionDirtyBucket {
+                bucket_date: date_text,
+                generation: 1,
+            });
+        }
+
+        // Each empty date commits six bounded staging transactions. The first date has one
+        // additional daily-row transaction, followed by one first-chunk publication transaction.
+        let commits_before_second_chunk = LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES * 6 + 2;
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let committed_batches = AtomicUsize::new(0);
+        let interrupted = LongTermProjectionWriteControl::stopping_after(
+            &shutdown,
+            &gate,
+            &committed_batches,
+            commits_before_second_chunk,
+        );
+        commit_long_term_projection_date_rebuilds_with_control(
+            &pool,
+            &rebuilds,
+            Some(321),
+            &dirty,
+            false,
+            &interrupted,
+        )
+        .await
+        .expect_err("second chunk must not start after cancellation");
+
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("state before final publication");
+        assert_eq!(status, LONG_TERM_STATUS_EMPTY);
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("cursor remains before final publication"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_dirty_buckets",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("remaining dirty chunk"),
+            1
+        );
+
+        let unrestricted = LongTermProjectionWriteControl::unrestricted();
+        commit_long_term_projection_date_rebuilds_with_control(
+            &pool,
+            &rebuilds,
+            Some(321),
+            &dirty,
+            false,
+            &unrestricted,
+        )
+        .await
+        .expect("resume final publication");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("state after final publication");
+        assert_eq!(status, LONG_TERM_STATUS_READY);
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("cursor after final publication"),
+            321
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_dirty_buckets",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("cleared dirty chunks"),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn projection_date_rebuild_standard_timestamp_branch_uses_occurred_at_seek() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -10875,6 +11046,9 @@ mod tests {
             .await
             .expect("memory pool");
         create_long_term_test_invocations(&pool).await;
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
         sqlx::query(
             "CREATE INDEX idx_codex_invocations_occurred_at ON codex_invocations (occurred_at)",
         )
@@ -11873,6 +12047,33 @@ mod tests {
             )
             .single()
             .expect("Shanghai day end");
+        sqlx::query(
+            "INSERT INTO long_term_projection_interval_state (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms) VALUES (4, 'model:legacy', 'other', ?1, ?2)",
+        )
+        .bind(start.timestamp_millis() - 1_000)
+        .bind(start.timestamp_millis() + 1_000)
+        .execute(&pool)
+        .await
+        .expect("canonical legacy crossing interval");
+        let crossing_query =
+            long_term_projection_crossing_text_query("SELECT inv.id FROM codex_invocations inv");
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+            "EXPLAIN QUERY PLAN {crossing_query}"
+        ))
+        .bind(start.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(start.timestamp_millis())
+        .bind(end.timestamp_millis())
+        .bind(date.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("crossing query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_long_term_projection_interval_state_end_range")
+        }));
+        assert!(
+            plan.iter()
+                .any(|(_, _, _, detail)| detail.contains("SEARCH inv USING INTEGER PRIMARY KEY"))
+        );
 
         let rows = load_long_term_projection_rows_for_date(&pool, date, start, end)
             .await
