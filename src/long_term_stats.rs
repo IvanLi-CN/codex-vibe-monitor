@@ -3608,7 +3608,7 @@ async fn release_long_term_projection_date_publication(
         )
         .await?;
     }
-    Ok(())
+    prune_long_term_projection_publications(pool, control).await
 }
 
 async fn release_long_term_projection_publication_member(
@@ -3697,7 +3697,40 @@ async fn finish_long_term_projection_publication_cleanup(
         )
         .await?;
     }
-    Ok(())
+    prune_long_term_projection_publications(pool, control).await
+}
+
+async fn prune_long_term_projection_publications(
+    pool: &Pool<Sqlite>,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    loop {
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let deleted = sqlx::query(
+            r#"
+            DELETE FROM long_term_projection_date_publications
+            WHERE rowid IN (
+                SELECT publication.rowid
+                FROM long_term_projection_date_publications publication
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM long_term_projection_bucket_state state
+                    WHERE state.publication_token = publication.publication_token
+                )
+                ORDER BY publication.updated_at ASC, publication.publication_token ASC
+                LIMIT ?1
+            )
+            "#,
+        )
+        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        control.commit(transaction, permit).await?;
+        if deleted == 0 {
+            return Ok(());
+        }
+    }
 }
 
 async fn rebuild_long_term_projection_date(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
@@ -4385,7 +4418,9 @@ fn remove_long_term_candidate_dates(
 async fn enqueue_long_term_integrity_mismatch(
     pool: &Pool<Sqlite>,
     mismatch: &LongTermIntegrityMismatch,
+    control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
         r#"
         INSERT INTO long_term_stats_repair_queue (
@@ -4417,9 +4452,9 @@ async fn enqueue_long_term_integrity_mismatch(
     .bind(mismatch.observed.token_total)
     .bind(mismatch.observed.cost_total)
     .bind(&mismatch.reason)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(())
+    control.commit(transaction, permit).await
 }
 
 async fn load_long_term_reconciliation_mismatches(
@@ -4552,14 +4587,18 @@ async fn long_term_integrity_audit_due(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(due != 0)
 }
 
-async fn mark_long_term_integrity_audit(pool: &Pool<Sqlite>) -> Result<()> {
+async fn mark_long_term_integrity_audit(
+    pool: &Pool<Sqlite>,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
         "UPDATE long_term_stats_state SET last_integrity_audit_at = datetime('now') WHERE id = ?1",
     )
     .bind(LONG_TERM_STATE_ID)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(())
+    control.commit(transaction, permit).await
 }
 
 async fn audit_long_term_integrity(
@@ -4981,6 +5020,24 @@ async fn refresh_long_term_stats_with_control(
         .await
 }
 
+async fn persist_long_term_refresh_progress(
+    pool: &Pool<Sqlite>,
+    processed_rows: i64,
+    total_rows: i64,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    sqlx::query(
+        "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
+    )
+    .bind(processed_rows)
+    .bind(total_rows)
+    .bind(LONG_TERM_STATE_ID)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await
+}
+
 async fn run_long_term_refresh_with_retry<T, Operation, OperationFuture>(
     operation: Operation,
 ) -> Result<T>
@@ -5326,17 +5383,10 @@ async fn refresh_long_term_stats_inner(
                 processed_rows_count += 1;
             }
             if processed_rows_count % 256 == 0 {
-                sqlx::query(
-                    "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
-                )
-                .bind(processed_rows_count)
                 // The archive workload has not been enumerated yet during a full rebuild, so
                 // keep the total explicitly unknown instead of presenting a false completion
                 // ratio to the preparation UI.
-                .bind(0_i64)
-                .bind(LONG_TERM_STATE_ID)
-                .execute(pool)
-                .await?;
+                persist_long_term_refresh_progress(pool, processed_rows_count, 0, control).await?;
             }
         }
     }
@@ -5591,27 +5641,15 @@ async fn refresh_long_term_stats_inner(
     }
     let total_rows = rows.len() as i64;
     if ready_state {
-        sqlx::query(
-            "UPDATE long_term_stats_state SET processed_rows = 0, total_rows = ?1, updated_at = datetime('now') WHERE id = ?2",
-        )
-        .bind(total_rows)
-        .bind(LONG_TERM_STATE_ID)
-        .execute(pool)
-        .await?;
+        persist_long_term_refresh_progress(pool, 0, total_rows, control).await?;
     }
     for (index, row) in rows.iter().enumerate() {
         let mut row = row.clone();
         hydrate_long_term_account_identity(&mut row, &account_identities);
         accumulate_long_term_invocation(&row, &mut hourly, &mut daily, &mut statistics_start_date);
         if ready_state && ((index + 1) % 256 == 0 || index + 1 == rows.len()) {
-            sqlx::query(
-                "UPDATE long_term_stats_state SET processed_rows = ?1, total_rows = ?2, updated_at = datetime('now') WHERE id = ?3",
-            )
-            .bind((index + 1) as i64)
-            .bind(total_rows)
-            .bind(LONG_TERM_STATE_ID)
-            .execute(pool)
-            .await?;
+            persist_long_term_refresh_progress(pool, (index + 1) as i64, total_rows, control)
+                .await?;
         }
     }
 
@@ -5637,7 +5675,7 @@ async fn refresh_long_term_stats_inner(
             reason = %mismatch.reason,
             "canonical terminal proof reconciliation mismatch queued for long-term repair"
         );
-        enqueue_long_term_integrity_mismatch(pool, &mismatch).await?;
+        enqueue_long_term_integrity_mismatch(pool, &mismatch, control).await?;
     }
     if ready_state
         && integrity_audit_due
@@ -5649,9 +5687,9 @@ async fn refresh_long_term_stats_inner(
                 reason = %mismatch.reason,
                 "long-term stats integrity mismatch detected"
             );
-            enqueue_long_term_integrity_mismatch(pool, &mismatch).await?;
+            enqueue_long_term_integrity_mismatch(pool, &mismatch, control).await?;
         }
-        mark_long_term_integrity_audit(pool).await?;
+        mark_long_term_integrity_audit(pool, control).await?;
     }
     let scheduled_repair_date = next_due_long_term_repair_date(pool, reconstructable_start).await?;
 
@@ -8329,6 +8367,93 @@ mod tests {
                 .await
                 .expect("fresh verification is not due")
         );
+    }
+
+    #[tokio::test]
+    async fn initial_materialization_control_rejects_progress_and_integrity_writes() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let mismatch = LongTermIntegrityMismatch {
+            date: NaiveDate::from_ymd_opt(2026, 8, 20).expect("repair date"),
+            expected: LongTermIntegrityTotals {
+                calls: 2,
+                ..LongTermIntegrityTotals::default()
+            },
+            observed: LongTermIntegrityTotals {
+                calls: 1,
+                ..LongTermIntegrityTotals::default()
+            },
+            reason: "controlled write test".to_string(),
+        };
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let held = gate
+            .try_begin_background("test-initial-materialization-pressure")
+            .expect("hold background admission");
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+
+        for error in [
+            persist_long_term_refresh_progress(&pool, 256, 512, &control)
+                .await
+                .expect_err("pressure rejects progress write"),
+            enqueue_long_term_integrity_mismatch(&pool, &mismatch, &control)
+                .await
+                .expect_err("pressure rejects repair queue write"),
+            mark_long_term_integrity_audit(&pool, &control)
+                .await
+                .expect_err("pressure rejects audit marker write"),
+        ] {
+            assert!(long_term_projection_write_is_deferred(&error));
+        }
+        assert_eq!(
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT processed_rows, total_rows FROM long_term_stats_state WHERE id = ?1",
+            )
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_one(&pool)
+            .await
+            .expect("unchanged progress"),
+            (0, 0)
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_stats_repair_queue")
+                .fetch_one(&pool)
+                .await
+                .expect("empty repair queue"),
+            0
+        );
+        assert!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT last_integrity_audit_at FROM long_term_stats_state WHERE id = ?1",
+            )
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_one(&pool)
+            .await
+            .expect("missing audit marker")
+            .is_none()
+        );
+
+        drop(held);
+        shutdown.cancel();
+        for error in [
+            persist_long_term_refresh_progress(&pool, 256, 512, &control)
+                .await
+                .expect_err("shutdown rejects progress write"),
+            enqueue_long_term_integrity_mismatch(&pool, &mismatch, &control)
+                .await
+                .expect_err("shutdown rejects repair queue write"),
+            mark_long_term_integrity_audit(&pool, &control)
+                .await
+                .expect_err("shutdown rejects audit marker write"),
+        ] {
+            assert!(long_term_projection_write_is_deferred(&error));
+        }
     }
 
     #[tokio::test]
@@ -11387,6 +11512,15 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("cleared dirty chunks"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_date_publications",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("completed publication metadata is pruned"),
             0
         );
         let published_rows =
