@@ -1,5 +1,7 @@
 # Dashboard 工作区卡片双视图与上游账号活动聚合 演进历史（#z6ysw）
 
+- active coverage priority 的 archive selection 改为 normalized epoch range + partial index，并在 SQLite selection 本身安装 progress deadline；这保留 legacy month fallback，同时避免 168 个 bucket 对 archive manifest 做带日期函数的 correlated scan。
+
 - 2026-07-28：线上 `v2.50.8` 复查确认 v2 coverage 长期缺失仍令活跃 Dashboard 窗口持续 exact fallback。修复边界改为 owner 活跃窗口优先的 `2 buckets / 2s` repair，并把历史无进展扫描收敛到封顶 15 分钟的指数退避；永久 blocked target 与 actionable backlog 分开判责。
 - 2026-07-25：针对持续 terminal 流量下每 5 秒 `dashboard_full` 重建的线上压力，Dashboard/account open-range 读侧改为共享内存累计 baseline。终态 write-side fan-out 不依赖可能滞后的 subscription mutation listener；缓存最长 60 秒后 reconcile，失败保留 last-good 快照。
 

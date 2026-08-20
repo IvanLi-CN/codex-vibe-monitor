@@ -1813,6 +1813,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             superseded_by INTEGER,
             coverage_start_at TEXT,
             coverage_end_at TEXT,
+            coverage_start_epoch INTEGER,
+            coverage_end_epoch INTEGER,
             archive_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(dataset, month_key, file_path)
@@ -1835,6 +1837,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("superseded_by", "INTEGER"),
         ("coverage_start_at", "TEXT"),
         ("coverage_end_at", "TEXT"),
+        ("coverage_start_epoch", "INTEGER"),
+        ("coverage_end_epoch", "INTEGER"),
         ("archive_expires_at", "TEXT"),
         ("upstream_activity_manifest_refreshed_at", "TEXT"),
         ("historical_rollups_materialized_at", "TEXT"),
@@ -1847,6 +1851,88 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .with_context(|| format!("failed to add archive_batches column {column}"))?;
         }
     }
+
+    // Archive writers retain the established text bounds for compatibility, while read-side
+    // coverage planners use these normalized epochs for indexed range lookups.
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET
+            coverage_start_epoch = CASE
+                WHEN coverage_start_at IS NULL THEN NULL
+                WHEN instr(coverage_start_at, 'T') > 0
+                    THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+            END,
+            coverage_end_epoch = CASE
+                WHEN coverage_end_at IS NULL THEN NULL
+                WHEN instr(coverage_end_at, 'T') > 0
+                    THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+            END
+        WHERE (coverage_start_at IS NULL AND coverage_start_epoch IS NOT NULL)
+           OR (coverage_start_at IS NOT NULL AND coverage_start_epoch IS NULL)
+           OR (coverage_end_at IS NULL AND coverage_end_epoch IS NOT NULL)
+           OR (coverage_end_at IS NOT NULL AND coverage_end_epoch IS NULL)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill normalized archive coverage epochs")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_archive_batches_coverage_epoch_insert
+        AFTER INSERT ON archive_batches
+        BEGIN
+            UPDATE archive_batches
+            SET
+                coverage_start_epoch = CASE
+                    WHEN coverage_start_at IS NULL THEN NULL
+                    WHEN instr(coverage_start_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+                END,
+                coverage_end_epoch = CASE
+                    WHEN coverage_end_at IS NULL THEN NULL
+                    WHEN instr(coverage_end_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+                END
+            WHERE id = NEW.id;
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive coverage epoch insert trigger")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_archive_batches_coverage_epoch_update
+        AFTER UPDATE OF coverage_start_at, coverage_end_at ON archive_batches
+        BEGIN
+            UPDATE archive_batches
+            SET
+                coverage_start_epoch = CASE
+                    WHEN coverage_start_at IS NULL THEN NULL
+                    WHEN instr(coverage_start_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+                END,
+                coverage_end_epoch = CASE
+                    WHEN coverage_end_at IS NULL THEN NULL
+                    WHEN instr(coverage_end_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+                END
+            WHERE id = NEW.id;
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive coverage epoch update trigger")?;
 
     sqlx::query(
         r#"
@@ -1887,6 +1973,33 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_rollup_materialization")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_invocation_coverage_epoch
+        ON archive_batches (coverage_end_epoch, coverage_start_epoch)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND coverage_start_epoch IS NOT NULL
+          AND coverage_end_epoch IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation archive coverage epoch index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_invocation_legacy_coverage_month
+        ON archive_batches (month_key)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND (coverage_start_at IS NULL OR coverage_end_at IS NULL)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation archive legacy coverage month index")?;
 
     sqlx::query(
         r#"

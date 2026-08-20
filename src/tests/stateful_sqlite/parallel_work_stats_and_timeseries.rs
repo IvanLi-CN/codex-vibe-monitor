@@ -17386,6 +17386,47 @@ async fn account_activity_v2_priority_repair_skips_archive_overlapping_live_hour
 }
 
 #[tokio::test]
+async fn account_activity_v2_priority_selection_skips_interrupted_sqlite_round() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, payload, raw_response
+        )
+        VALUES ('v2-interrupted-selection', ?1, ?2, 'success', 1, ?3, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert selection interruption fixture");
+
+    let progress_probe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started_at = std::time::Instant::now();
+    let outcome = crate::select_active_account_activity_v2_priority_buckets_with_deadline(
+        &state.pool,
+        current_hour_epoch,
+        started_at,
+        started_at + std::time::Duration::from_secs(1),
+        Some(progress_probe.clone()),
+        1,
+        true,
+    )
+    .await
+    .expect("handle interrupted selection round");
+    assert!(outcome.is_none());
+    assert!(progress_probe.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[tokio::test]
 async fn account_activity_v2_priority_repair_preserves_unknown_archive_coverage() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -17484,6 +17525,178 @@ async fn account_activity_v2_priority_repair_preserves_unknown_archive_coverage(
     .await
     .expect("load unknown-coverage marker");
     assert_eq!(covered, 0);
+}
+
+#[tokio::test]
+async fn account_activity_v2_priority_repair_uses_indexed_archive_epoch_coverage_within_budget() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_hour_epoch = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+    let oldest_hour_epoch = current_hour_epoch - 7 * 24 * 3_600;
+    let oldest_occurred_at = Utc
+        .timestamp_opt(oldest_hour_epoch + 60, 0)
+        .single()
+        .expect("oldest active window timestamp");
+
+    sqlx::query(
+        "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+         VALUES (?1, 1, datetime('now'))",
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, detail_level,
+            total_tokens, cost, payload, raw_response
+        )
+        VALUES ('v2-priority-window-floor', ?1, ?2, 'success', ?3, 1, 0.01, ?4, '{}')
+        "#,
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(r#"{"upstreamAccountId":42}"#)
+    .execute(&state.pool)
+    .await
+    .expect("insert active-window floor invocation");
+    sqlx::query(
+        r#"
+        WITH RECURSIVE
+            hundreds(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM hundreds WHERE value < 199
+            ),
+            units(value) AS (
+                VALUES(0)
+                UNION ALL
+                SELECT value + 1 FROM units WHERE value < 99
+            )
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at
+        )
+        SELECT
+            'codex_invocations',
+            ?1,
+            '/tmp/v2-priority-coverage-' || (hundreds.value * 100 + units.value) || '.sqlite.gz',
+            'fixture-sha',
+            1,
+            'completed',
+            ?2,
+            ?3
+        FROM hundreds CROSS JOIN units
+        "#,
+    )
+    .bind(
+        oldest_occurred_at
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        (oldest_occurred_at + ChronoDuration::seconds(3_599))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("seed archive coverage fixture");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at
+        )
+        VALUES
+            ('forward_proxy_attempts', ?1, '/tmp/v2-priority-other-dataset.sqlite.gz', 'other-sha', 1, 'completed', ?2, ?3),
+            ('codex_invocations', ?1, '/tmp/v2-priority-pending.sqlite.gz', 'pending-sha', 1, 'pending', ?2, ?3)
+        "#,
+    )
+    .bind(
+        oldest_occurred_at
+            .with_timezone(&Shanghai)
+            .format("%Y-%m")
+            .to_string(),
+    )
+    .bind(format_naive(
+        oldest_occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        (oldest_occurred_at + ChronoDuration::seconds(3_599))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("seed archive coverage filter controls");
+    let matching_archive_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed' AND coverage_start_epoch IS NOT NULL AND coverage_end_epoch IS NOT NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count matching archive coverage fixture rows");
+    assert_eq!(matching_archive_rows, 20_000);
+
+    let mut explain_query = build_active_account_activity_v2_archive_epoch_coverage_query(
+        "EXPLAIN QUERY PLAN ",
+        oldest_hour_epoch,
+        current_hour_epoch,
+    );
+    assert!(explain_query.sql().contains("coverage_start_epoch <"));
+    let explain = explain_query
+        .build_query_as::<(i64, i64, i64, String)>()
+        .fetch_all(&state.pool)
+        .await
+        .expect("explain indexed archive epoch coverage query");
+    let explain_details = explain
+        .iter()
+        .map(|(_, _, _, detail)| detail.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        explain_details.iter().any(|detail| {
+            detail.contains(
+                "SEARCH archive_batches USING INDEX idx_archive_batches_invocation_coverage_epoch",
+            ) && detail.contains("coverage_end_epoch")
+        }),
+        "unexpected archive epoch coverage plan: {explain_details:?}"
+    );
+
+    let selection_started_at = std::time::Instant::now();
+    let selected = crate::select_active_account_activity_v2_priority_buckets_with_deadline(
+        &state.pool,
+        current_hour_epoch,
+        selection_started_at,
+        selection_started_at + Duration::from_secs(2),
+        None,
+        1_000,
+        false,
+    )
+    .await
+    .expect("select priority coverage against archive fixture")
+    .expect("priority selection should finish within budget");
+    assert_eq!(selected.len(), 2);
+    assert!(
+        selection_started_at.elapsed() < Duration::from_secs(2),
+        "priority coverage selection exceeded its two-second budget: {:?}",
+        selection_started_at.elapsed()
+    );
+
+    let outcome = repair_active_account_activity_v2_coverage(&state.pool)
+        .await
+        .expect("repair active coverage against archive fixture");
+    assert_eq!(outcome.priority_bucket_count, 2);
+    assert_eq!(outcome.repaired_bucket_count, 2);
 }
 
 #[tokio::test]
