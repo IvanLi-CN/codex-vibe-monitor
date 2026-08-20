@@ -10766,7 +10766,7 @@ mod tests {
         };
         commit_long_term_projection_date_rebuilds_with_control(
             &pool,
-            &[rebuild],
+            std::slice::from_ref(&rebuild),
             Some(321),
             &[LongTermProjectionDirtyBucket {
                 bucket_date: date_text.clone(),
@@ -10815,7 +10815,7 @@ mod tests {
         let unrestricted = LongTermProjectionWriteControl::unrestricted();
         commit_long_term_projection_date_rebuilds_with_control(
             &pool,
-            &[rebuild],
+            std::slice::from_ref(&rebuild),
             Some(321),
             &[LongTermProjectionDirtyBucket {
                 bucket_date: date_text.clone(),
