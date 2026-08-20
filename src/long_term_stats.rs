@@ -560,7 +560,7 @@ async fn long_term_archive_invocation_query_for_range(pool: &Pool<Sqlite>) -> Re
     long_term_archive_invocation_query_with_range(pool, true).await
 }
 
-fn long_term_rfc3339_epoch_seconds_sql(value: &str) -> String {
+fn long_term_rfc3339_whole_second_sql(value: &str) -> String {
     // SQLite normalizes RFC3339 fractions to milliseconds before evaluating `strftime` or
     // `julianday`. Strip the fraction before finding the whole second, then retain its original
     // digits so both exact boundaries and sub-millisecond values preserve their true ordering.
@@ -571,8 +571,43 @@ fn long_term_rfc3339_epoch_seconds_sql(value: &str) -> String {
     let whole_second = format!(
         "CASE WHEN substr({value}, 20, 1) = '.' THEN substr({value}, 1, 19) || substr({value}, 21 + ({fraction_end})) ELSE {value} END"
     );
+    whole_second
+}
+
+fn long_term_rfc3339_fraction_seconds_sql(value: &str) -> String {
+    let fraction_tail = format!("substr({value}, 21)");
+    let fraction_end = format!(
+        "CASE WHEN instr({fraction_tail}, 'Z') > 0 THEN instr({fraction_tail}, 'Z') - 1 WHEN instr({fraction_tail}, '+') > 0 THEN instr({fraction_tail}, '+') - 1 WHEN instr({fraction_tail}, '-') > 0 THEN instr({fraction_tail}, '-') - 1 ELSE length({value}) - 20 END"
+    );
     format!(
-        "(CAST(strftime('%s', {whole_second}) AS REAL) + CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, {fraction_end}) AS REAL) ELSE 0.0 END)"
+        "CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, {fraction_end}) AS REAL) ELSE 0.0 END"
+    )
+}
+
+fn long_term_rfc3339_epoch_seconds_sql(value: &str) -> String {
+    let whole_second = long_term_rfc3339_whole_second_sql(value);
+    let fraction = long_term_rfc3339_fraction_seconds_sql(value);
+    format!("(CAST(strftime('%s', {whole_second}) AS REAL) + {fraction})")
+}
+
+fn long_term_rfc3339_shanghai_date_sql(value: &str, duration_ms: Option<&str>) -> String {
+    // `date(..., 'unixepoch')` normalizes fractional seconds to milliseconds. Keep the raw
+    // fractional tail outside date arithmetic, and carry it into the next exact second only
+    // when a positive duration crosses that second.
+    let whole_epoch = format!(
+        "CAST(strftime('%s', {}) AS INTEGER)",
+        long_term_rfc3339_whole_second_sql(value)
+    );
+    let fraction = long_term_rfc3339_fraction_seconds_sql(value);
+    let elapsed_seconds = duration_ms
+        .map(|duration| format!("MAX(COALESCE({duration}, 0), 0) / 1000.0"))
+        .unwrap_or_else(|| "0.0".to_string());
+    let elapsed_whole_seconds = format!("CAST(({elapsed_seconds}) AS INTEGER)");
+    let fractional_carry = format!(
+        "CASE WHEN ({fraction}) + (({elapsed_seconds}) - ({elapsed_whole_seconds})) >= 1.0 THEN 1 ELSE 0 END"
+    );
+    format!(
+        "date(({whole_epoch}) + ({elapsed_whole_seconds}) + ({fractional_carry}), 'unixepoch', '+8 hours')"
     )
 }
 
@@ -1427,8 +1462,16 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
     sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_invocation_correction")
         .execute(pool)
         .await?;
-    let old_epoch = long_term_rfc3339_epoch_seconds_sql("OLD.occurred_at");
-    let new_epoch = long_term_rfc3339_epoch_seconds_sql("NEW.occurred_at");
+    let old_start_date = long_term_rfc3339_shanghai_date_sql("OLD.occurred_at", None);
+    let old_end_date = long_term_rfc3339_shanghai_date_sql(
+        "OLD.occurred_at",
+        Some("MAX(COALESCE(OLD.t_total_ms, 0), 0)"),
+    );
+    let new_start_date = long_term_rfc3339_shanghai_date_sql("NEW.occurred_at", None);
+    let new_end_date = long_term_rfc3339_shanghai_date_sql(
+        "NEW.occurred_at",
+        Some("MAX(COALESCE(NEW.t_total_ms, 0), 0)"),
+    );
     sqlx::query(&format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS long_term_projection_invocation_correction
@@ -1461,19 +1504,19 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
             SELECT
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date({old_epoch}, 'unixepoch', '+8 hours')
+                THEN {old_start_date}
                 ELSE date(OLD.occurred_at) END,
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date({old_epoch} + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN {old_end_date}
                 ELSE date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0) END
             WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
             UNION ALL
             SELECT
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date({new_epoch}, 'unixepoch', '+8 hours')
+                THEN {new_start_date}
                 ELSE date(NEW.occurred_at) END,
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date({new_epoch} + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN {new_end_date}
                 ELSE date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0) END
             WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
             UNION ALL
@@ -1519,7 +1562,14 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
         .execute(pool)
         .await?;
 
-    sqlx::query(
+    let new_coverage_start_date =
+        long_term_rfc3339_shanghai_date_sql("NEW.coverage_start_at", None);
+    let new_coverage_end_date = long_term_rfc3339_shanghai_date_sql("NEW.coverage_end_at", None);
+    let old_coverage_start_date =
+        long_term_rfc3339_shanghai_date_sql("OLD.coverage_start_at", None);
+    let old_coverage_end_date = long_term_rfc3339_shanghai_date_sql("OLD.coverage_end_at", None);
+
+    sqlx::query(&format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS long_term_projection_archive_insert
         AFTER INSERT ON archive_batches
@@ -1529,8 +1579,8 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE covered_dates(bucket_date, end_date) AS (
             SELECT
-              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
-              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
+              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN {new_coverage_start_date} ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
+              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN {new_coverage_end_date} ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
             UNION ALL
             SELECT date(bucket_date, '+1 day'), end_date
             FROM covered_dates
@@ -1546,12 +1596,12 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
             updated_at = datetime('now');
         END
         "#,
-    )
+    ))
     .execute(pool)
     .await
     .context("failed to ensure long-term projection archive insert trigger")?;
 
-    sqlx::query(
+    sqlx::query(&format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS long_term_projection_archive_update
         AFTER UPDATE OF dataset, status, file_path, sha256, coverage_start_at, coverage_end_at, historical_rollups_materialized_at ON archive_batches
@@ -1567,14 +1617,14 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
           INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason)
           WITH RECURSIVE coverage_ranges(start_date, end_date) AS (
             SELECT
-              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
-              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN date(strftime('%s', NEW.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
+              COALESCE(CASE WHEN instr(NEW.coverage_start_at, 'T') > 0 THEN {new_coverage_start_date} ELSE date(NEW.coverage_start_at) END, date(NEW.month_key || '-01')),
+              COALESCE(CASE WHEN instr(NEW.coverage_end_at, 'T') > 0 THEN {new_coverage_end_date} ELSE date(NEW.coverage_end_at) END, date(NEW.month_key || '-01', '+1 month', '-1 day'))
             WHERE NEW.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND NEW.status = 'completed'
             UNION ALL
             SELECT
-              COALESCE(CASE WHEN instr(OLD.coverage_start_at, 'T') > 0 THEN date(strftime('%s', OLD.coverage_start_at), 'unixepoch', '+8 hours') ELSE date(OLD.coverage_start_at) END, date(OLD.month_key || '-01')),
-              COALESCE(CASE WHEN instr(OLD.coverage_end_at, 'T') > 0 THEN date(strftime('%s', OLD.coverage_end_at), 'unixepoch', '+8 hours') ELSE date(OLD.coverage_end_at) END, date(OLD.month_key || '-01', '+1 month', '-1 day'))
+              COALESCE(CASE WHEN instr(OLD.coverage_start_at, 'T') > 0 THEN {old_coverage_start_date} ELSE date(OLD.coverage_start_at) END, date(OLD.month_key || '-01')),
+              COALESCE(CASE WHEN instr(OLD.coverage_end_at, 'T') > 0 THEN {old_coverage_end_date} ELSE date(OLD.coverage_end_at) END, date(OLD.month_key || '-01', '+1 month', '-1 day'))
             WHERE OLD.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
               AND OLD.status = 'completed'
           ), covered_dates(bucket_date, end_date) AS (
@@ -1594,7 +1644,7 @@ async fn ensure_long_term_projection_archive_trigger(pool: &Pool<Sqlite>) -> Res
             updated_at = datetime('now');
         END
         "#,
-    )
+    ))
     .execute(pool)
     .await
     .context("failed to ensure long-term projection archive update trigger")?;
@@ -1622,7 +1672,15 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
             "OLD.id",
         ),
     ] {
-        let occurred_at_epoch = long_term_rfc3339_epoch_seconds_sql("inv.occurred_at");
+        let occurred_at_start_date = long_term_rfc3339_shanghai_date_sql("inv.occurred_at", None);
+        let occurred_at_end_date = long_term_rfc3339_shanghai_date_sql(
+            "inv.occurred_at",
+            Some("MAX(COALESCE(inv.t_total_ms, 0), 0)"),
+        );
+        let archive_coverage_start_date =
+            long_term_rfc3339_shanghai_date_sql("archive.coverage_start_at", None);
+        let archive_coverage_end_date =
+            long_term_rfc3339_shanghai_date_sql("archive.coverage_end_at", None);
         let statement = format!(
             r#"
             CREATE TRIGGER IF NOT EXISTS {trigger}
@@ -1632,10 +1690,10 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
               WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
                 SELECT
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date({occurred_at_epoch}, 'unixepoch', '+8 hours')
+                    THEN {occurred_at_start_date}
                     ELSE date(inv.occurred_at) END,
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date({occurred_at_epoch} + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                    THEN {occurred_at_end_date}
                     ELSE date(julianday(inv.occurred_at) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 86400000.0) END
                 FROM codex_invocations inv
                 WHERE (CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END) = {account_id}
@@ -1648,10 +1706,10 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
                 UNION ALL
                 SELECT
                   COALESCE(CASE WHEN instr(archive.coverage_start_at, 'T') > 0
-                    THEN date(strftime('%s', archive.coverage_start_at), 'unixepoch', '+8 hours')
+                    THEN {archive_coverage_start_date}
                     ELSE date(archive.coverage_start_at) END, date(archive.month_key || '-01')),
                   COALESCE(CASE WHEN instr(archive.coverage_end_at, 'T') > 0
-                    THEN date(strftime('%s', archive.coverage_end_at), 'unixepoch', '+8 hours')
+                    THEN {archive_coverage_end_date}
                     ELSE date(archive.coverage_end_at) END, date(archive.month_key || '-01', '+1 month', '-1 day'))
                 FROM archive_batches archive
                 WHERE archive.dataset IN ('codex_invocations', 'pool_upstream_request_attempts')
@@ -5500,11 +5558,18 @@ async fn refresh_long_term_stats_once(
     .bind(LONG_TERM_STATE_ID)
     .fetch_optional(pool)
     .await?;
-    let was_ready = state_snapshot.as_ref().is_some_and(|(status, _, _)| {
-        status
-            .as_deref()
-            .is_some_and(|status| matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY))
-    });
+    let was_ready = state_snapshot
+        .as_ref()
+        .is_some_and(|(status, statistics_start_date, _)| {
+            status.as_deref().is_some_and(|status| {
+                matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY)
+                    // An error after the final publication still has a durable baseline. Keep
+                    // its replacement incremental so a deferred repair retains its retry
+                    // backoff; a partial initial refresh has no published start date and stays
+                    // on the initial-materialization path.
+                    || (status == LONG_TERM_STATUS_ERROR && statistics_start_date.is_some())
+            })
+        });
     let today = Utc::now().with_timezone(&Shanghai).date_naive();
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let reconstructable_start = long_term_reconstructable_start(
@@ -5639,7 +5704,7 @@ async fn refresh_long_term_stats_inner(
     // A source-availability failure is retryable as soon as the next refresh runs. Waiting for
     // the hourly audit after a restored archive would leave an otherwise recoverable view in
     // error for up to an hour.
-    if !ready_state || integrity_audit_due || terminal_proof_reconciliation_incomplete {
+    if ready_state || integrity_audit_due || terminal_proof_reconciliation_incomplete {
         match backfill_invocation_rollup_hourly_from_sources(pool).await {
             Ok(reconciliation) => {
                 terminal_proof_reconciliation_incomplete = !reconciliation.source_complete;
@@ -13777,6 +13842,28 @@ mod tests {
         .await
         .expect("sub-millisecond pre-start correction dates");
         assert_eq!(dirty_dates, vec!["2026-07-25"]);
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets")
+            .execute(&pool)
+            .await
+            .expect("clear cross-day correction markers");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model, t_total_ms) VALUES (4, '2026-07-25T15:59:59.9999Z', 'success', 'before', 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 sub-millisecond cross-day invocation");
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 4")
+            .execute(&pool)
+            .await
+            .expect("RFC3339 sub-millisecond cross-day correction");
+        let dirty_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("cross-day correction dates");
+        assert_eq!(dirty_dates, vec!["2026-07-25", "2026-07-26"]);
     }
 
     #[tokio::test]
@@ -14082,6 +14169,24 @@ mod tests {
         assert_eq!(dates.len(), 31);
         assert_eq!(dates.first().map(String::as_str), Some("2026-07-01"));
         assert_eq!(dates.last().map(String::as_str), Some("2026-07-31"));
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets")
+            .execute(&pool)
+            .await
+            .expect("clear month fallback markers");
+        sqlx::query(
+            "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, status, coverage_start_at, coverage_end_at) VALUES (2, 'codex_invocations', '2026-07', 'fractional.db', 'fractional-sha', 'completed', '2026-07-25T15:59:59.9999Z', '2026-07-25T16:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("fractional RFC3339 archive coverage");
+        let dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("fractional archive dirty dates");
+        assert_eq!(dates, vec!["2026-07-25", "2026-07-26"]);
     }
 
     #[tokio::test]
