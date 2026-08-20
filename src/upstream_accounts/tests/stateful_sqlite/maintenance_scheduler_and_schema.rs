@@ -6923,6 +6923,7 @@ async fn benchmark_sticky_key_recent_preview_on_three_hundred_thousand_rows() {
         .bind("sticky-00")
         .bind("sticky-02")
         .bind("sticky-04")
+        .bind(5_i64)
         .fetch_all(&pool)
         .await
         .expect("load 300k sticky preview explain plan")
