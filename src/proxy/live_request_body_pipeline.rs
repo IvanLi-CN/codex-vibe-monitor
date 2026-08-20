@@ -191,6 +191,9 @@ async fn run_live_responses_request_body_pipeline(
             next = read_non_whitespace(&mut reader)
                 .await?
                 .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
+            if next == b'}' {
+                return Err(invalid_live_json("request object has a trailing ','"));
+            }
         }
         if next == b'}' {
             if selected_writer.is_none() {
@@ -1061,6 +1064,9 @@ where
                 next = read_non_whitespace(reader)
                     .await?
                     .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
+                if next == b'}' {
+                    return Err(invalid_live_json("request object has a trailing ','"));
+                }
             }
             b'}' => return writer.write_raw(&[delimiter]).await,
             _ => {
@@ -1238,6 +1244,9 @@ where
                 next = read_non_whitespace(reader)
                     .await?
                     .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
+                if next == b'}' {
+                    return Err(invalid_live_json("request object has a trailing ','"));
+                }
             }
             b'}' => return writer.write_raw(&[delimiter]).await,
             _ => {
@@ -2076,6 +2085,94 @@ mod tests {
         let _error = loop {
             let Some(chunk) = stream.next().await else {
                 panic!("extra array delimiter must stop the live body");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_trailing_comma_after_input_array() {
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5.6","input":[{}],}"#)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let mut stream = pipeline.body.into_data_stream();
+        let _error = loop {
+            let Some(chunk) = stream.next().await else {
+                panic!("trailing object comma must stop the live body");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_trailing_comma_inside_input_object() {
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(
+                br#"{"model":"gpt-5.6","input":[{"content":{"text":"hello",}}]}"#,
+            )),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let mut stream = pipeline.body.into_data_stream();
+        let _error = loop {
+            let Some(chunk) = stream.next().await else {
+                panic!("trailing nested object comma must stop the live body");
             };
             if let Err(error) = chunk {
                 break error;
