@@ -1491,7 +1491,7 @@ where
     R: AsyncRead + Unpin,
 {
     match read_non_whitespace(reader).await? {
-        Some(byte @ (b',' | b'}')) => Ok(byte),
+        Some(byte @ (b',' | b'}' | b']')) => Ok(byte),
         Some(_) => Err(invalid_live_json("request value has an invalid delimiter")),
         None => Err(invalid_live_json("request value is missing a delimiter")),
     }
@@ -1584,6 +1584,88 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
             serde_json::json!({"model":"gpt-5.6","input":"delayed tail"})
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_objects_inside_input_arrays() {
+        let source = br#"{"model":"gpt-5.6","input":[{}]}"#;
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(source)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::from_slice::<Value>(source).expect("decode source JSON")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_nested_input_arrays_across_chunks() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":[{"role":"user","content":["#,
+        )))
+        .await
+        .expect("send nested input prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        tx.send(Ok(Bytes::from_static(
+            br#"{"type":"input_text","text":"hello"}]}]}"#,
+        )))
+        .await
+        .expect("send nested input tail");
+        drop(tx);
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::json!({
+                "model": "gpt-5.6",
+                "input": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                }],
+            })
         );
     }
 
