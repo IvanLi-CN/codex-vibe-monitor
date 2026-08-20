@@ -561,10 +561,18 @@ async fn long_term_archive_invocation_query_for_range(pool: &Pool<Sqlite>) -> Re
 }
 
 fn long_term_rfc3339_epoch_seconds_sql(value: &str) -> String {
-    // `julianday` drifts on exact Unix-second boundaries. `strftime('%s')` yields the whole
-    // second, while this branch retains every fractional digit from the RFC3339 source value.
+    // SQLite normalizes RFC3339 fractions to milliseconds before evaluating `strftime` or
+    // `julianday`. Strip the fraction before finding the whole second, then retain its original
+    // digits so both exact boundaries and sub-millisecond values preserve their true ordering.
+    let fraction_tail = format!("substr({value}, 21)");
+    let fraction_end = format!(
+        "CASE WHEN instr({fraction_tail}, 'Z') > 0 THEN instr({fraction_tail}, 'Z') - 1 WHEN instr({fraction_tail}, '+') > 0 THEN instr({fraction_tail}, '+') - 1 WHEN instr({fraction_tail}, '-') > 0 THEN instr({fraction_tail}, '-') - 1 ELSE length({value}) - 20 END"
+    );
+    let whole_second = format!(
+        "CASE WHEN substr({value}, 20, 1) = '.' THEN substr({value}, 1, 19) || substr({value}, 21 + ({fraction_end})) ELSE {value} END"
+    );
     format!(
-        "(CAST(strftime('%s', {value}) AS REAL) + CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, CASE WHEN instr(substr({value}, 21), 'Z') > 0 THEN instr(substr({value}, 21), 'Z') - 1 WHEN instr(substr({value}, 21), '+') > 0 THEN instr(substr({value}, 21), '+') - 1 WHEN instr(substr({value}, 21), '-') > 0 THEN instr(substr({value}, 21), '-') - 1 ELSE length({value}) - 20 END) AS REAL) ELSE 0.0 END)"
+        "(CAST(strftime('%s', {whole_second}) AS REAL) + CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, {fraction_end}) AS REAL) ELSE 0.0 END)"
     )
 }
 
