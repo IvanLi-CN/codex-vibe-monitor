@@ -3963,25 +3963,6 @@ async fn next_due_long_term_repair_date(
     Ok(date.and_then(|value| NaiveDate::parse_from_str(&value, "%Y-%m-%d").ok()))
 }
 
-async fn long_term_has_persisted_integrity_damage(
-    pool: &Pool<Sqlite>,
-    reconstructable_start: NaiveDate,
-) -> Result<bool> {
-    let has_pending_repairs = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM long_term_stats_repair_queue WHERE stats_date >= ?1)",
-    )
-    .bind(reconstructable_start.to_string())
-    .fetch_one(pool)
-    .await?
-        != 0;
-    let status =
-        sqlx::query_scalar::<_, String>("SELECT status FROM long_term_stats_state WHERE id = ?1")
-            .bind(LONG_TERM_STATE_ID)
-            .fetch_optional(pool)
-            .await?;
-    Ok(has_pending_repairs || status.as_deref() == Some(LONG_TERM_STATUS_ERROR))
-}
-
 async fn queued_long_term_repair_mismatch(
     pool: &Pool<Sqlite>,
     date: NaiveDate,
@@ -4501,7 +4482,9 @@ fn long_term_refresh_start_state(
     } else if !was_ready {
         (LONG_TERM_STATUS_RUNNING, true)
     } else {
-        (LONG_TERM_STATUS_READY, true)
+        // A refresh replacement now commits in bounded batches. Hide the public read model
+        // until the final state commit so a caller cannot observe a partially replaced day.
+        (LONG_TERM_STATUS_PREPARING, true)
     }
 }
 
@@ -4580,31 +4563,13 @@ async fn refresh_long_term_stats_once(
     )
     .await;
     if let Err(err) = &result {
-        let source_attribution_is_unavailable = err
-            .to_string()
-            .contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR);
-        let persisted_integrity_damage =
-            long_term_has_persisted_integrity_damage(pool, reconstructable_start)
-                .await
-                .unwrap_or(false);
         if let Ok((mut transaction, permit)) = control.begin(pool).await {
             let _ = sqlx::query(
-                "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3 AND NOT (status = ?4 AND datetime(updated_at) > datetime(?5))",
+                "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
             )
-            .bind(if was_ready
-                && !has_pending_integrity_repairs
-                && !preserves_prior_error
-                && !persisted_integrity_damage
-                && !source_attribution_is_unavailable
-            {
-                LONG_TERM_STATUS_READY
-            } else {
-                LONG_TERM_STATUS_ERROR
-            })
+            .bind(LONG_TERM_STATUS_ERROR)
             .bind(err.to_string())
             .bind(LONG_TERM_STATE_ID)
-            .bind(LONG_TERM_STATUS_PREPARING)
-            .bind(&refresh_started_at)
             .execute(&mut *transaction)
             .await;
             let _ = control.commit(transaction, permit).await;
@@ -8369,7 +8334,7 @@ mod tests {
         );
         assert_eq!(
             long_term_refresh_start_state(true, false),
-            (LONG_TERM_STATUS_READY, true)
+            (LONG_TERM_STATUS_PREPARING, true)
         );
         assert_eq!(
             long_term_refresh_start_state(false, false),
