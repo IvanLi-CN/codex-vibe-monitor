@@ -1136,7 +1136,13 @@ async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
 
 pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut cadence = tokio::time::interval(Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS));
+        // Startup has already completed the first durable hydration before this producer is
+        // spawned. Schedule the next scan at the TTL boundary rather than accepting interval's
+        // immediate first tick and duplicating SQLite/archive file work at readiness.
+        let mut cadence = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+            Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+        );
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {

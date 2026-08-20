@@ -8064,6 +8064,7 @@ fn summary_projection_archive_exact_ranges(
         archive_has_materialized_rollups,
         None,
         None,
+        None,
         exact_range,
         protected_boundary_buckets,
         hourly_rollup_totals,
@@ -8074,6 +8075,7 @@ fn summary_projection_archive_exact_ranges(
 
 fn summary_projection_archive_exact_ranges_with_coverage(
     archive_has_materialized_rollups: bool,
+    overall_rollup_archive_replayed: Option<bool>,
     account_rollup_archive_replayed: Option<bool>,
     usage_rollup_archive_replayed: Option<bool>,
     exact_range: ExactUtcRange,
@@ -8096,12 +8098,13 @@ fn summary_projection_archive_exact_ranges_with_coverage(
         let is_full_bucket =
             bucket >= first_full_bucket && bucket_end <= exact_range.end.timestamp();
         if is_full_bucket && !exact_buckets.contains(&bucket) {
-            let global_covered = hourly_rollup_totals.contains_key(&(bucket, None));
+            let global_covered = hourly_rollup_totals.contains_key(&(bucket, None))
+                && overall_rollup_archive_replayed.is_none_or(|replayed| replayed);
             let global_usage_covered = hourly_rollup_usage.contains_key(&(bucket, None));
-            // A durable archive replay marker proves that the account/usage target consumed
-            // this entire archive. Without it, a present rollup key is not enough: the key may
-            // be stale or partial, and requiring every durable account would also turn inactive
-            // accounts into a full-archive exact read on every refresh.
+            // Durable archive replay markers prove each response dimension consumed this whole
+            // archive. Without them, a present rollup key is not enough: it may be stale or
+            // partial, and requiring every durable account would also turn inactive accounts
+            // into a full-archive exact read on every refresh.
             let accounts_covered = match (
                 account_rollup_archive_replayed,
                 usage_rollup_archive_replayed,
@@ -8171,6 +8174,7 @@ async fn merge_summary_projection_archive_records(
         archive_has_materialized_rollups,
         None,
         None,
+        None,
         exact_range,
         protected_boundary_buckets,
         usage_rollup_cursor,
@@ -8189,6 +8193,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
     hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
     archive_has_materialized_rollups: bool,
+    overall_rollup_archive_replayed: Option<bool>,
     account_rollup_archive_replayed: Option<bool>,
     usage_rollup_archive_replayed: Option<bool>,
     exact_range: ExactUtcRange,
@@ -8291,6 +8296,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
     );
     let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
         archive_has_materialized_rollups,
+        overall_rollup_archive_replayed,
         account_rollup_archive_replayed,
         usage_rollup_archive_replayed,
         exact_range,
@@ -9191,6 +9197,7 @@ async fn build_summary_projection(
             .unwrap_or_default();
         let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
+            Some(replay_coverage.overall),
             Some(replay_coverage.account_stats),
             Some(replay_coverage.usage_breakdown),
             archive_range,
@@ -9232,6 +9239,7 @@ async fn build_summary_projection(
             &hourly_rollup_totals,
             &hourly_rollup_usage,
             archive.has_materialized_historical_rollups(),
+            Some(replay_coverage.overall),
             Some(replay_coverage.account_stats),
             Some(replay_coverage.usage_breakdown),
             archive_range,
@@ -9724,13 +9732,21 @@ async fn build_summary_projection(
     Ok(projection)
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SummarySnapshotTrigger {
+    Cadence,
+    Mutation,
+}
+
+fn summary_snapshot_trigger_marks_dirty(trigger: SummarySnapshotTrigger) -> bool {
+    matches!(
+        trigger,
+        SummarySnapshotTrigger::Mutation | SummarySnapshotTrigger::Cadence
+    )
+}
+
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
-        enum Trigger {
-            Cadence,
-            Mutation,
-        }
-
         let mut receiver = state.broadcaster.subscribe();
         let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
@@ -9753,7 +9769,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                                         .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
                             })
                         });
-                    needs_attention.then_some(Trigger::Cadence)
+                    needs_attention.then_some(SummarySnapshotTrigger::Cadence)
                 },
                 payload = receiver.recv() => matches!(
                     payload,
@@ -9761,14 +9777,18 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                         | Ok(BroadcastPayload::DashboardTerminalSlice { .. })
                         | Ok(BroadcastPayload::DashboardActivityLive { .. })
                         | Err(broadcast::error::RecvError::Lagged(_))
-                ).then_some(Trigger::Mutation),
+                ).then_some(SummarySnapshotTrigger::Mutation),
                 mutation = mutation_receiver.recv() => summary_snapshot_runtime_mutation_is_dirty(mutation)
-                    .then_some(Trigger::Mutation),
+                    .then_some(SummarySnapshotTrigger::Mutation),
             };
             let Some(trigger) = trigger_refresh else {
                 continue;
             };
-            dirty |= matches!(trigger, Trigger::Mutation);
+            // Both mutation and due-cadence triggers represent work that must be reflected in
+            // the next bounded build. A cadence trigger is emitted only after the projection
+            // approaches its serving deadline, so leaving it clean would let an idle owner
+            // expire without ever refreshing.
+            dirty |= summary_snapshot_trigger_marks_dirty(trigger);
             if !state.subscription_hub.has_summary_owner().await {
                 // Do not fabricate freshness while the projection has no active consumer.
                 // Once the last successful build approaches the hard serving budget, promote
@@ -24766,6 +24786,7 @@ mod request_compression_query_tests {
             true,
             Some(true),
             Some(true),
+            Some(true),
             exact_range,
             &HashSet::new(),
             &totals,
@@ -24773,6 +24794,28 @@ mod request_compression_query_tests {
             &known_accounts,
         );
         assert!(replayed_ranges.is_empty());
+
+        let missing_global_replay_ranges = summary_projection_archive_exact_ranges_with_coverage(
+            true,
+            Some(false),
+            Some(true),
+            Some(true),
+            exact_range,
+            &HashSet::new(),
+            &totals,
+            &usage_totals,
+            &known_accounts,
+        );
+        assert!(
+            missing_global_replay_ranges.iter().any(|range| {
+                range.start <= Utc.timestamp_opt(missing_account_bucket, 0).unwrap()
+                    && range.end
+                        >= Utc
+                            .timestamp_opt(missing_account_bucket + 3_600, 0)
+                            .unwrap()
+            }),
+            "a partial global rollup cannot suppress archive exact rows without overall replay"
+        );
 
         // An empty account set is not proof that the archive has no account rows: an
         // archive-only account may have been deleted from the live catalog and may not yet have
@@ -25096,6 +25139,16 @@ mod request_compression_query_tests {
         assert!(!summary_snapshot_runtime_mutation_is_dirty(Err(
             broadcast::error::RecvError::Closed
         )));
+    }
+
+    #[test]
+    fn summary_snapshot_marks_due_cadence_dirty() {
+        assert!(summary_snapshot_trigger_marks_dirty(
+            SummarySnapshotTrigger::Cadence
+        ));
+        assert!(summary_snapshot_trigger_marks_dirty(
+            SummarySnapshotTrigger::Mutation
+        ));
     }
 
     #[test]
@@ -25952,6 +26005,7 @@ mod request_compression_query_tests {
             &HashMap::new(),
             &HashMap::new(),
             false,
+            None,
             None,
             None,
             archive_range,
