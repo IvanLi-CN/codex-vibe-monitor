@@ -7151,6 +7151,10 @@ pub(crate) struct SummaryProjectionRecord {
     usage_global_rollup_covered: bool,
     usage_account_rollup_covered: bool,
     is_persisted_live_record: bool,
+    // Unmaterialized archive rows are folded by the bounded account archive aggregate. Keep
+    // them out of the exact-record repair pass so all-time account totals are not doubled.
+    is_archive_record: bool,
+    archive_has_materialized_rollups: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7999,6 +8003,8 @@ async fn merge_summary_projection_archive_records(
             usage_global_rollup_covered,
             usage_account_rollup_covered,
             is_persisted_live_record: false,
+            is_archive_record: true,
+            archive_has_materialized_rollups,
             row: UpstreamAccountInvocationPreviewRow {
                 upstream_account_id: row.upstream_account_id,
                 id: row.id,
@@ -8491,6 +8497,8 @@ async fn build_summary_projection(
                     usage_global_rollup_covered,
                     usage_account_rollup_covered,
                     is_persisted_live_record: true,
+                    is_archive_record: false,
+                    archive_has_materialized_rollups: false,
                     row,
                     occurred_at,
                 },
@@ -8741,6 +8749,8 @@ async fn build_summary_projection(
                 usage_global_rollup_covered: false,
                 usage_account_rollup_covered: false,
                 is_persisted_live_record: false,
+                is_archive_record: false,
+                archive_has_materialized_rollups: false,
             },
         );
     }
@@ -8899,7 +8909,9 @@ async fn build_summary_projection(
             let Some(account_id) = record.row.upstream_account_id.filter(|id| *id > 0) else {
                 continue;
             };
-            if record.account_rollup_covered {
+            if record.account_rollup_covered
+                || (record.is_archive_record && !record.archive_has_materialized_rollups)
+            {
                 continue;
             }
             let classification = resolve_failure_classification(
