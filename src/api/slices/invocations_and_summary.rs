@@ -7,6 +7,7 @@ use crate::{
 };
 use anyhow::anyhow;
 use chrono::Timelike;
+use chrono_tz::TZ_VARIANTS;
 use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -7072,15 +7073,25 @@ fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
     }
     add_bucket(end);
 
-    // Calendar boundaries depend on the request timezone.  A local midnight can be at most
-    // fifteen hours from UTC (including half-hour/quarter-hour zones), so offset variants around
-    // the UTC boundary cover every valid IANA timezone without retaining every archive bucket.
-    for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
-        if let Ok(range) = resolve_range_window(spec, chrono_tz::UTC) {
-            for boundary in [range.start, range.end] {
-                for offset_minutes in (-15 * 60..=15 * 60).step_by(30) {
-                    add_bucket(boundary + ChronoDuration::minutes(offset_minutes));
+    // Calendar boundaries belong to the request timezone, not an approximate UTC offset.  The
+    // projection can serve for fifteen seconds, so cover the finite set of IANA timezone
+    // boundaries at build time and again at the far edge of that serving interval.  This keeps
+    // non-whole-hour zones, the date line, DST, and a just-crossed local day/week/month exact
+    // without adding a per-request archive read.
+    for boundary_now in [
+        end,
+        end + ChronoDuration::seconds(SUMMARY_SNAPSHOT_MAX_STALE.as_secs() as i64),
+    ] {
+        for timezone in TZ_VARIANTS {
+            for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
+                if let Some((start, end)) = named_range_bounds(spec, boundary_now, timezone) {
+                    add_bucket(start);
+                    add_bucket(end);
                 }
+            }
+            if let Some((start, end)) = previous_full_days_range_bounds(7, boundary_now, timezone) {
+                add_bucket(start);
+                add_bucket(end);
             }
         }
     }
@@ -7173,6 +7184,75 @@ struct SummaryProjectionArchiveReplayCoverage {
 }
 
 #[derive(Debug, Clone, Default)]
+struct SummaryProjectionFreshness {
+    rolling_confirmed_at: Arc<StdMutex<Option<Instant>>>,
+    all_time_confirmed_at: Arc<StdMutex<Option<Instant>>>,
+    all_time_account_confirmed_at: Arc<StdMutex<HashMap<i64, Instant>>>,
+    global_all_time_eligible: bool,
+    account_all_time_eligible: HashSet<i64>,
+}
+
+impl SummaryProjectionFreshness {
+    fn rolling_at(&self, built_at: Option<Instant>) -> Option<Instant> {
+        let confirmed_at = *self
+            .rolling_confirmed_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match (built_at, confirmed_at) {
+            (Some(built_at), Some(confirmed_at)) => Some(built_at.max(confirmed_at)),
+            (Some(built_at), None) => Some(built_at),
+            (None, Some(confirmed_at)) => Some(confirmed_at),
+            (None, None) => None,
+        }
+    }
+
+    fn all_time_at(&self, built_at: Option<Instant>, account_id: Option<i64>) -> Option<Instant> {
+        let confirmed_at = match account_id {
+            None if self.global_all_time_eligible => *self
+                .all_time_confirmed_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some(account_id) if self.account_all_time_eligible.contains(&account_id) => self
+                .all_time_account_confirmed_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&account_id)
+                .copied(),
+            _ => None,
+        };
+        match (built_at, confirmed_at) {
+            (Some(built_at), Some(confirmed_at)) => Some(built_at.max(confirmed_at)),
+            (Some(built_at), None) => Some(built_at),
+            (None, Some(confirmed_at)) => Some(confirmed_at),
+            (None, None) => None,
+        }
+    }
+
+    fn confirm_unchanged(&self) {
+        let now = Instant::now();
+        *self
+            .rolling_confirmed_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
+        if self.global_all_time_eligible {
+            *self
+                .all_time_confirmed_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
+        }
+        if !self.account_all_time_eligible.is_empty() {
+            let mut confirmed_at = self
+                .all_time_account_confirmed_at
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for account_id in &self.account_all_time_eligible {
+                confirmed_at.insert(*account_id, now);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SummaryProjection {
     records: Vec<SummaryProjectionRecord>,
     // Buckets are an index over canonical records, not a second source of truth.  They bound
@@ -7220,6 +7300,7 @@ pub(crate) struct SummaryProjection {
     in_progress_by_account: HashMap<Option<i64>, InProgressSummarySnapshot>,
     maintenance: Option<StatsMaintenanceResponse>,
     refreshed_at: Option<Instant>,
+    freshness: SummaryProjectionFreshness,
     revision: u64,
 }
 
@@ -7230,9 +7311,9 @@ impl SummaryProjection {
         default_limit: i64,
     ) -> Result<StatsResponse, ApiError> {
         validate_summary_projection_window(params, default_limit)?;
-        let last_good_age_ms = self
-            .refreshed_at
-            .map(|refreshed_at| refreshed_at.elapsed().as_millis() as u64);
+        let rolling_refreshed_at = self.freshness.rolling_at(self.refreshed_at);
+        let last_good_age_ms =
+            rolling_refreshed_at.map(|refreshed_at| refreshed_at.elapsed().as_millis() as u64);
         debug!(
             ?last_good_age_ms,
             revision = self.revision,
@@ -7261,7 +7342,8 @@ impl SummaryProjection {
             )));
         }
         if self
-            .refreshed_at
+            .freshness
+            .rolling_at(self.refreshed_at)
             .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
         {
             return Err(ApiError::unavailable(anyhow!(
@@ -7272,10 +7354,15 @@ impl SummaryProjection {
             return Ok(response.clone());
         }
         if matches!(window, SummaryWindow::All) {
-            let all_time_refreshed_at = match upstream_account_id {
-                None => self.all_time_refreshed_at,
-                Some(account_id) => self.all_time_account_refreshed_at.get(&account_id).copied(),
-            };
+            let all_time_refreshed_at = self.freshness.all_time_at(
+                match upstream_account_id {
+                    None => self.all_time_refreshed_at,
+                    Some(account_id) => {
+                        self.all_time_account_refreshed_at.get(&account_id).copied()
+                    }
+                },
+                upstream_account_id,
+            );
             if all_time_refreshed_at
                 .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
             {
@@ -8116,6 +8203,7 @@ async fn merge_summary_projection_archive_records(
     let mut exact_record_bytes = 0usize;
     merge_summary_projection_archive_records_with_coverage(
         pool,
+        pool,
         persisted_live_ids,
         hourly_rollup_totals,
         hourly_rollup_usage,
@@ -8134,7 +8222,8 @@ async fn merge_summary_projection_archive_records(
 }
 
 async fn merge_summary_projection_archive_records_with_coverage(
-    pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    live_pool: &Pool<Sqlite>,
     persisted_live_ids: &HashSet<String>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
     hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
@@ -8172,7 +8261,8 @@ async fn merge_summary_projection_archive_records_with_coverage(
     ] {
         columns.insert(
             column,
-            crate::stats::sqlite_table_has_column(pool, "codex_invocations", column).await?,
+            crate::stats::sqlite_table_has_column(archive_pool, "codex_invocations", column)
+                .await?,
         );
     }
     let has = |column| columns.get(column).copied().unwrap_or(false);
@@ -8274,10 +8364,25 @@ async fn merge_summary_projection_archive_records_with_coverage(
             .bind(db_occurred_at_lower_bound(range.start))
             .bind(db_occurred_at_upper_bound(range.end));
     }
-    let mut rows = archive_query.bind(archive_read_limit).fetch(pool);
-    let mut rows_seen = 0usize;
-    while let Some(row) = rows.try_next().await? {
-        rows_seen = rows_seen.saturating_add(1);
+    let rows = archive_query
+        .bind(archive_read_limit)
+        .fetch_all(archive_pool)
+        .await?;
+    let rows_seen = rows.len();
+    if !archive_has_materialized_rollups && rows_seen > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        return Err(anyhow!(
+            "summary projection unmaterialized archive exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded"
+        ));
+    }
+    let archive_row_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    let persisted_live_row_ids = query_live_upstream_account_activity_existing_invocation_ids(
+        live_pool,
+        InvocationSourceScope::All,
+        &archive_row_ids,
+    )
+    .await
+    .map_err(|error| anyhow!("summary projection persisted live-id lookup failed: {error:?}"))?;
+    for row in rows {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
@@ -8285,7 +8390,8 @@ async fn merge_summary_projection_archive_records_with_coverage(
         // Persisted/live rows are the richer, authoritative copy. A materialized archive is
         // covered globally, but account coverage is independent: account rollups can lag the
         // global target and must retain this exact archive copy for account-scoped reads.
-        if persisted_live_ids.contains(&row.invoke_id)
+        if persisted_live_row_ids.contains(&row.id)
+            || persisted_live_ids.contains(&row.invoke_id)
             || records_by_invoke_id.contains_key(&row.invoke_id)
         {
             continue;
@@ -8400,11 +8506,6 @@ async fn merge_summary_projection_archive_records_with_coverage(
             },
         };
         records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
-    }
-    if !archive_has_materialized_rollups && rows_seen > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
-        return Err(anyhow!(
-            "summary projection unmaterialized archive exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded"
-        ));
     }
     Ok(())
 }
@@ -9149,6 +9250,7 @@ async fn build_summary_projection(
         };
         merge_summary_projection_archive_records_with_coverage(
             &archive_pool,
+            &state.pool,
             &persisted_live_ids,
             &hourly_rollup_totals,
             &hourly_rollup_usage,
@@ -9326,14 +9428,10 @@ async fn build_summary_projection(
         // refresh path without defeating the rebuild deadline.
         let (all_time_rollup_totals, _) =
             load_summary_projection_rollup_totals(&state.pool).await?;
-        // Archives without coverage bounds have long used the durable global rollup aggregate
-        // as their all-time fallback. Preserve that wire contract when such a baseline exists;
-        // without any durable global baseline, a first read must remain unavailable rather than
-        // publishing the zero aggregate assembled after a failed raw replay.
-        global_all_time_source_unavailable = !unavailable_unmaterialized_archive_ranges.is_empty()
-            && !all_time_rollup_totals
-                .keys()
-                .any(|(_, account_id)| account_id.is_none());
+        // A global rollup in another hour does not cover an unreadable unmaterialized archive.
+        // Keep an exact prior all-time result only while its own freshness budget permits it;
+        // otherwise `all` must use the endpoint unavailable contract instead of a partial sum.
+        global_all_time_source_unavailable = !unavailable_unmaterialized_archive_ranges.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -9387,7 +9485,7 @@ async fn build_summary_projection(
                 })?,
             );
         }
-        global_totals = global_totals.add(
+        let unmaterialized_archive_totals =
             crate::stats::query_unmaterialized_invocation_archive_totals_bounded(
                 &state.pool,
                 InvocationSourceScope::All,
@@ -9395,15 +9493,25 @@ async fn build_summary_projection(
                 Some(&live_tail_ids),
                 SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
             )
-            .await
-            .map_err(|error| {
-                anyhow!("summary projection global archive hydration failed: {error:?}")
-            })?,
-        );
+            .await;
+        match unmaterialized_archive_totals {
+            Ok(totals) => global_totals = global_totals.add(totals),
+            Err(error)
+                if error
+                    .to_string()
+                    .starts_with("summary archive is unavailable:") =>
+            {
+                global_all_time_source_unavailable = true;
+            }
+            Err(error) => {
+                return Err(anyhow!(
+                    "summary projection global archive hydration failed: {error:?}"
+                ));
+            }
+        }
         if global_all_time_source_unavailable {
-            // A missing unmaterialized archive without a durable global rollup cannot produce
-            // an exact first read. Retain only an exact prior aggregate, whose independent age
-            // still gates serving, rather than publishing a zero or partial `all` response.
+            // Retain only an exact prior aggregate, whose independent age still gates serving,
+            // rather than publishing a zero or partial `all` response.
             if let Some(previous_global) = previous_all_time_by_account.get(&None) {
                 all_time_by_account.insert(None, previous_global.clone());
             } else {
@@ -9570,6 +9678,20 @@ async fn build_summary_projection(
         .next_summary_projection_revision()
         .await;
     let refreshed_at = Some(Instant::now());
+    let freshness = SummaryProjectionFreshness {
+        global_all_time_eligible: all_time_was_fully_rebuilt
+            && !global_all_time_source_unavailable
+            && all_time_by_account.contains_key(&None),
+        account_all_time_eligible: if all_time_was_fully_rebuilt && !account_all_time_unavailable {
+            all_time_by_account
+                .keys()
+                .filter_map(|account_id| *account_id)
+                .collect()
+        } else {
+            HashSet::new()
+        },
+        ..SummaryProjectionFreshness::default()
+    };
     let mut projection = SummaryProjection {
         records,
         hourly_buckets,
@@ -9592,6 +9714,7 @@ async fn build_summary_projection(
         in_progress_by_account,
         maintenance: Some(maintenance),
         refreshed_at,
+        freshness,
         revision,
     };
     // Closed windows use the same canonical records and coverage model as rolling windows. This
@@ -9621,26 +9744,33 @@ async fn build_summary_projection(
 
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
+        enum Trigger {
+            Cadence,
+            Mutation,
+        }
+
         let mut receiver = state.broadcaster.subscribe();
         let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut last_refresh_attempt = None;
+        let mut dirty = false;
         loop {
             let trigger_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {
-                    state
+                    let needs_attention = state
                         .subscription_hub
                         .summary_projection()
                         .await
                         .is_none_or(|projection| {
-                            projection.refreshed_at.is_none_or(|refreshed_at| {
+                            projection.freshness.rolling_at(projection.refreshed_at).is_none_or(|refreshed_at| {
                                 refreshed_at.elapsed()
                                     >= SUMMARY_SNAPSHOT_MAX_STALE
                                         .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
                             })
-                        })
+                        });
+                    needs_attention.then_some(Trigger::Cadence)
                 },
                 payload = receiver.recv() => matches!(
                     payload,
@@ -9648,7 +9778,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                         | Ok(BroadcastPayload::DashboardTerminalSlice { .. })
                         | Ok(BroadcastPayload::DashboardActivityLive { .. })
                         | Err(broadcast::error::RecvError::Lagged(_))
-                ),
+                ).then_some(Trigger::Mutation),
                 mutation = mutation_receiver.recv() => matches!(
                     mutation,
                     Ok(event) if matches!(
@@ -9656,14 +9786,28 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                         RuntimeMutation::Invocation(_)
                             | RuntimeMutation::AttemptChanged { .. }
                     )
-                ),
+                ).then_some(Trigger::Mutation),
             };
-            if !trigger_refresh {
+            let Some(trigger) = trigger_refresh else {
+                continue;
+            };
+            dirty |= matches!(trigger, Trigger::Mutation);
+            if !state.subscription_hub.has_summary_owner().await {
+                // A typed ingress silence proves the canonical projection has not changed.
+                // Renew only its in-memory confirmation so an idle first request is not made
+                // unavailable solely because no consumer kept a SQL producer alive. A dirty
+                // projection is never renewed this way and remains unavailable past 15s.
+                if !dirty
+                    && let Some(projection) = state.subscription_hub.summary_projection().await
+                {
+                    projection.freshness.confirm_unchanged();
+                }
                 continue;
             }
-            if !state.subscription_hub.has_summary_owner().await {
-                // Startup hydration provides the HTTP baseline. With no SSE or recent HTTP
-                // summary owner, retain dirty state and defer expensive reconciliation.
+            if !dirty {
+                if let Some(projection) = state.subscription_hub.summary_projection().await {
+                    projection.freshness.confirm_unchanged();
+                }
                 continue;
             }
             let now = Instant::now();
@@ -9678,11 +9822,14 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             while receiver.try_recv().is_ok() {}
             while mutation_receiver.try_recv().is_ok() {}
             last_refresh_attempt = Some(Instant::now());
-            if let Err(error) = refresh_summary_snapshots(state.as_ref()).await {
-                warn!(
-                    ?error,
-                    "summary snapshot maintenance failed; retaining last-good responses"
-                );
+            match refresh_summary_snapshots(state.as_ref()).await {
+                Ok(()) => dirty = false,
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "summary snapshot maintenance failed; retaining last-good responses"
+                    );
+                }
             }
         }
     });
@@ -24890,6 +25037,40 @@ mod request_compression_query_tests {
         }
     }
 
+    #[test]
+    fn summary_projection_boundary_buckets_cover_closed_windows_for_every_timezone() {
+        let end = Utc
+            .with_ymd_and_hms(2026, 8, 31, 23, 59, 55)
+            .single()
+            .expect("valid deterministic projection boundary time");
+        let buckets = summary_projection_boundary_buckets(end);
+
+        for boundary_now in [
+            end,
+            end + ChronoDuration::seconds(SUMMARY_SNAPSHOT_MAX_STALE.as_secs() as i64),
+        ] {
+            for timezone in [
+                "Asia/Kathmandu"
+                    .parse::<Tz>()
+                    .expect("valid Kathmandu timezone"),
+                "Pacific/Kiritimati"
+                    .parse::<Tz>()
+                    .expect("valid Kiritimati timezone"),
+            ] {
+                for spec in ["today", "yesterday", "thisWeek", "thisMonth"] {
+                    let (start, end) = named_range_bounds(spec, boundary_now, timezone)
+                        .expect("supported closed summary window");
+                    assert!(buckets.contains(&align_bucket_epoch(start.timestamp(), 3_600, 0)));
+                    assert!(buckets.contains(&align_bucket_epoch(end.timestamp(), 3_600, 0)));
+                }
+                let (start, end) = previous_full_days_range_bounds(7, boundary_now, timezone)
+                    .expect("previous7d range");
+                assert!(buckets.contains(&align_bucket_epoch(start.timestamp(), 3_600, 0)));
+                assert!(buckets.contains(&align_bucket_epoch(end.timestamp(), 3_600, 0)));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn summary_projection_uses_scope_coverage_for_persisted_live_rows() {
         let state = crate::tests::test_state_with_openai_base(
@@ -25159,6 +25340,47 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_handler_serves_an_idle_projection_after_memory_confirmation() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        let mut projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        Arc::make_mut(&mut projection).refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state
+            .subscription_hub
+            .store_summary_projection(Arc::unwrap_or_clone(projection))
+            .await;
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("stored projection");
+        projection.freshness.confirm_unchanged();
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("idle projection remains an exact memory-only response");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
     async fn summary_projection_uses_materialized_hourly_rollup_when_archive_is_unavailable() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -25291,6 +25513,21 @@ mod request_compression_query_tests {
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        // An unrelated durable rollup must not mask an unreadable unmaterialized archive in
+        // the all-time view.
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 3, 3, 0, 30, 3.0, 0.0)",
+        )
+        .bind(align_bucket_epoch(
+            (Utc::now() - ChronoDuration::days(8)).timestamp(),
+            3_600,
+            0,
+        ))
+        .execute(&state.pool)
+        .await
+        .expect("insert unrelated durable global rollup");
         let start = Utc::now() - ChronoDuration::hours(2);
         let end = start + ChronoDuration::hours(1);
         sqlx::query(
@@ -25494,6 +25731,81 @@ mod request_compression_query_tests {
             "in-horizon overflow must fail closed with an explicit bound: {error:#}"
         );
         assert!(state.subscription_hub.summary_projection().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_archive_merge_prefers_persisted_live_id() {
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory archive pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+             id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
+             source TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, \
+             cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, \
+             cost_input REAL, cost_cache_write REAL, cost_cache_read REAL, cost_output REAL, \
+             cost_reasoning REAL, status TEXT, error_message TEXT, failure_kind TEXT, \
+             failure_class TEXT)",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive fixture table");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
+             VALUES (7, 'archive-replay-copy', datetime('now', '-1 minute'), 'proxy', '{}', 9, 1.0, 'success')",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("insert archive replay copy");
+
+        let live_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory live pool");
+        sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
+            .execute(&live_pool)
+            .await
+            .expect("create live fixture table");
+        sqlx::query("INSERT INTO codex_invocations (id) VALUES (7)")
+            .execute(&live_pool)
+            .await
+            .expect("insert richer persisted live id");
+
+        let now = Utc::now();
+        let archive_range = ExactUtcRange {
+            start: now - ChronoDuration::hours(9),
+            end: now - ChronoDuration::hours(7),
+        };
+        let mut records = HashMap::new();
+        let mut budget = 0;
+        let mut bytes = 0;
+        merge_summary_projection_archive_records_with_coverage(
+            &archive_pool,
+            &live_pool,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            false,
+            None,
+            None,
+            archive_range,
+            &HashSet::new(),
+            None,
+            &HashSet::new(),
+            &mut records,
+            &mut budget,
+            &mut bytes,
+        )
+        .await
+        .expect("bounded persisted-id lookup");
+        assert!(
+            records.is_empty(),
+            "the richer persisted live row must suppress an archive replay with the same id"
+        );
     }
 
     #[tokio::test]

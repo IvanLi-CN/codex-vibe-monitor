@@ -23,7 +23,7 @@
 
 ## Quality Gates
 
-- `cargo test`
+- `bash .github/scripts/run-backend-tests.sh`
 - `cd web && bun run test`
 - `cd web && bun run build`
 - `cd web && bun run build-storybook`

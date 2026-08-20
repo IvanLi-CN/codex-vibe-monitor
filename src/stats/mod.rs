@@ -3308,6 +3308,14 @@ pub(crate) async fn load_pending_invocation_archive_hourly_rollup_deltas(
                 pending_state
                     .unreadable_materialized_bucket_start_epochs
                     .extend(archive_bucket_start_epochs_for_row(&archive_row)?);
+            } else {
+                // There is no durable hourly baseline for this archive. Returning the rollup
+                // prefix without its raw delta would silently turn an exact summary into a
+                // partial one; callers retain an exact last-good response or fail unavailable.
+                return Err(anyhow!(
+                    "summary archive is unavailable: {}",
+                    archive_row.file_path
+                ));
             }
             continue;
         };
