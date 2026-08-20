@@ -574,13 +574,13 @@ fn long_term_rfc3339_whole_second_sql(value: &str) -> String {
     whole_second
 }
 
-fn long_term_rfc3339_fraction_seconds_sql(value: &str) -> String {
+fn long_term_rfc3339_fraction_nanos_sql(value: &str) -> String {
     let fraction_tail = format!("substr({value}, 21)");
     let fraction_end = format!(
         "CASE WHEN instr({fraction_tail}, 'Z') > 0 THEN instr({fraction_tail}, 'Z') - 1 WHEN instr({fraction_tail}, '+') > 0 THEN instr({fraction_tail}, '+') - 1 WHEN instr({fraction_tail}, '-') > 0 THEN instr({fraction_tail}, '-') - 1 ELSE length({value}) - 20 END"
     );
     format!(
-        "CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, {fraction_end}) AS REAL) ELSE 0.0 END"
+        "CASE WHEN substr({value}, 20, 1) = '.' THEN CAST(substr(substr({value}, 21, {fraction_end}) || '000000000', 1, 9) AS INTEGER) ELSE 0 END"
     )
 }
 
@@ -591,23 +591,28 @@ fn long_term_rfc3339_whole_epoch_seconds_sql(value: &str) -> String {
     )
 }
 
-fn long_term_rfc3339_elapsed_seconds_sql(duration_ms: &str) -> String {
-    format!("MAX(COALESCE({duration_ms}, 0), 0) / 1000.0")
+fn long_term_rfc3339_elapsed_nanos_sql(duration_ms: &str) -> String {
+    // Timestamps retain the first nine fractional digits as nanoseconds. The elapsed value is a
+    // persisted SQLite REAL, so normalize only that bounded duration before comparing it with the
+    // exact timestamp digits; never turn the RFC3339 fraction itself into a REAL.
+    format!("CAST(ROUND(MAX(COALESCE({duration_ms}, 0), 0) * 1000000.0) AS INTEGER)")
 }
 
 fn long_term_rfc3339_fractional_carry_sql(value: &str, duration_ms: &str) -> String {
-    let fraction = long_term_rfc3339_fraction_seconds_sql(value);
-    let elapsed_seconds = long_term_rfc3339_elapsed_seconds_sql(duration_ms);
-    let elapsed_whole_seconds = format!("CAST(({elapsed_seconds}) AS INTEGER)");
+    let fraction_nanos = long_term_rfc3339_fraction_nanos_sql(value);
+    let elapsed_nanos = long_term_rfc3339_elapsed_nanos_sql(duration_ms);
+    let elapsed_whole_seconds = format!("CAST(({elapsed_nanos}) / 1000000000 AS INTEGER)");
+    let elapsed_fraction_nanos =
+        format!("(({elapsed_nanos}) - ({elapsed_whole_seconds}) * 1000000000)");
     format!(
-        "CASE WHEN ({fraction}) + (({elapsed_seconds}) - ({elapsed_whole_seconds})) >= 1.0 THEN 1 ELSE 0 END"
+        "CASE WHEN ({fraction_nanos}) + ({elapsed_fraction_nanos}) >= 1000000000 THEN 1 ELSE 0 END"
     )
 }
 
 fn long_term_rfc3339_reaches_epoch_sql(value: &str, duration_ms: &str, epoch: &str) -> String {
     let whole_epoch = long_term_rfc3339_whole_epoch_seconds_sql(value);
-    let elapsed_seconds = long_term_rfc3339_elapsed_seconds_sql(duration_ms);
-    let elapsed_whole_seconds = format!("CAST(({elapsed_seconds}) AS INTEGER)");
+    let elapsed_nanos = long_term_rfc3339_elapsed_nanos_sql(duration_ms);
+    let elapsed_whole_seconds = format!("CAST(({elapsed_nanos}) / 1000000000 AS INTEGER)");
     let fractional_carry = long_term_rfc3339_fractional_carry_sql(value, duration_ms);
     format!("(({whole_epoch}) + ({elapsed_whole_seconds}) + ({fractional_carry}) >= {epoch})")
 }
@@ -618,10 +623,8 @@ fn long_term_rfc3339_shanghai_date_sql(value: &str, duration_ms: Option<&str>) -
     // when a positive duration crosses that second.
     let whole_epoch = long_term_rfc3339_whole_epoch_seconds_sql(value);
     let elapsed_seconds = duration_ms.unwrap_or("0");
-    let elapsed_whole_seconds = format!(
-        "CAST(({}) AS INTEGER)",
-        long_term_rfc3339_elapsed_seconds_sql(elapsed_seconds)
-    );
+    let elapsed_nanos = long_term_rfc3339_elapsed_nanos_sql(elapsed_seconds);
+    let elapsed_whole_seconds = format!("CAST(({elapsed_nanos}) / 1000000000 AS INTEGER)");
     let fractional_carry = long_term_rfc3339_fractional_carry_sql(value, elapsed_seconds);
     format!(
         "date(({whole_epoch}) + ({elapsed_whole_seconds}) + ({fractional_carry}), 'unixepoch', '+8 hours')"
@@ -1134,9 +1137,11 @@ const LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH: i64 = 2_000;
 const LONG_TERM_PROJECTION_WRITE_BATCH_ROWS: usize = 512;
 const LONG_TERM_PROJECTION_ADMISSION_WAIT: Duration = Duration::from_millis(250);
 const LONG_TERM_PROJECTION_TRANSACTION_WAIT: Duration = Duration::from_millis(250);
-// The incremental rollup commit also persists the cursor and projection status.
-const LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS: usize =
-    LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2;
+// An incremental publication persists canonical interval state, rollups, its cursor, and status
+// atomically. Keep every mutation in that one short transaction below the shared write limit.
+const LONG_TERM_PROJECTION_INCREMENTAL_METADATA_ROWS: usize = 2;
+const LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS: usize =
+    LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - LONG_TERM_PROJECTION_INCREMENTAL_METADATA_ROWS;
 // A rebuild segment updates canonical state, membership, and a suppression row. Its first
 // transaction also updates the bucket marker, so leave one row of headroom.
 const LONG_TERM_PROJECTION_REBUILD_SEGMENT_ROWS: usize =
@@ -2506,10 +2511,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                 repair_event = Some(event);
                 break;
             }
-            let event_rollup_rows = event.hourly.len() + event.daily.len();
-            if event_rollup_rows > LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS {
-                // A single event cannot fit beside the cursor and state updates. Rebuild all
-                // affected dates exactly instead of widening an additive rollup transaction.
+            let event_mutation_rows = event.hourly.len() + event.daily.len() + event.segments.len();
+            if event_mutation_rows > LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS {
+                // A single event cannot fit beside its canonical interval, cursor, and state
+                // updates. Rebuild all affected dates exactly instead of widening a write lock.
                 repair_event = Some(event);
                 break;
             }
@@ -2524,8 +2529,12 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                     .filter(|key| !daily.contains_key(*key))
                     .count();
             if batch_event_count > 0
-                && hourly.len() + daily.len() + additional_rollup_rows
-                    > LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS
+                && hourly.len()
+                    + daily.len()
+                    + additional_rollup_rows
+                    + segments.len()
+                    + event.segments.len()
+                    > LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS
             {
                 apply_long_term_projection_incremental_with_runtime_and_control(
                     &state.pool,
@@ -2552,26 +2561,6 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             merge_long_term_projection_buckets(&mut hourly, event.hourly);
             merge_long_term_projection_buckets(&mut daily, event.daily);
             segments.extend(event.segments);
-            if batch_event_count == LONG_TERM_PROJECTION_WRITE_BATCH_ROWS {
-                apply_long_term_projection_incremental_with_runtime_and_control(
-                    &state.pool,
-                    &state.long_term_projection_runtime,
-                    LongTermProjectionIncrementalBatch {
-                        hourly: &hourly,
-                        daily: &daily,
-                        segments: &segments,
-                    },
-                    direct_cursor,
-                    batch_event_count,
-                    &control,
-                )
-                .await?;
-                cursor = direct_cursor;
-                hourly.clear();
-                daily.clear();
-                segments.clear();
-                batch_event_count = 0;
-            }
         }
         if batch_event_count > 0 {
             apply_long_term_projection_incremental_with_runtime_and_control(
@@ -5688,7 +5677,7 @@ async fn refresh_long_term_stats_once(
 async fn refresh_long_term_stats_inner(
     pool: &Pool<Sqlite>,
     retention_days: u64,
-    was_ready: bool,
+    was_ready_before_refresh: bool,
     refresh_started_at: &str,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
@@ -5720,7 +5709,7 @@ async fn refresh_long_term_stats_inner(
     .fetch_one(pool)
     .await?
         != 0;
-    let ready_state = was_ready && !legacy_model_keys;
+    let ready_state = was_ready_before_refresh && !legacy_model_keys;
     let retention_start = today - ChronoDuration::days(retention_days.max(366) as i64 - 1);
     let integrity_audit_due = ready_state && long_term_integrity_audit_due(pool).await?;
     let mut terminal_proof_reconciliation_incomplete =
@@ -6809,7 +6798,7 @@ async fn apply_long_term_refresh_rollups_with_control(
     } else {
         LONG_TERM_STATUS_READY
     };
-    let last_error = if status == LONG_TERM_STATUS_ERROR && !was_ready {
+    let last_error = if status == LONG_TERM_STATUS_ERROR && !was_ready_before_refresh {
         Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR.to_string())
     } else if terminal_proof_reconciliation_incomplete {
         Some(LONG_TERM_TERMINAL_PROOF_UNAVAILABLE_ERROR.to_string())
@@ -7158,9 +7147,10 @@ fn accumulate_long_term_invocation(
     daily: &mut HashMap<(String, String, String), LongTermBucket>,
     statistics_start_date: &mut Option<String>,
 ) {
-    let Some(start_ms) = parse_long_term_timestamp_ms(&row.occurred_at) else {
+    let Some(start) = parse_long_term_timestamp(&row.occurred_at) else {
         return;
     };
+    let start_ms = start.epoch_ms;
     let Some(local_date) = Shanghai
         .timestamp_millis_opt(start_ms)
         .single()
@@ -7196,7 +7186,7 @@ fn accumulate_long_term_invocation(
     let interval_end_ms = row
         .t_total_ms
         .filter(|value| value.is_finite() && *value > 0.0)
-        .map(|value| start_ms + value.round() as i64);
+        .and_then(|value| long_term_interval_end_ms(start, value));
     for (dimension, series_key, display_name, reasoning_effort) in dimensions {
         let interval = if is_success_status(row.status.as_deref(), row.error_message.as_deref()) {
             interval_end_ms.map(|end_ms| (start_ms, end_ms))
@@ -7721,21 +7711,53 @@ async fn upsert_long_term_projection_interval_segments(
 ) -> Result<()> {
     for batch in segments.chunks(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS) {
         let (mut transaction, permit) = control.begin(pool).await?;
-        for segment in batch {
-            sqlx::query(
-                "INSERT INTO long_term_projection_interval_state (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(invocation_row_id) DO UPDATE SET model_series_key = excluded.model_series_key, upstream_series_key = excluded.upstream_series_key, interval_start_ms = excluded.interval_start_ms, interval_end_ms = excluded.interval_end_ms",
-            )
-            .bind(segment.invocation_row_id)
-            .bind(&segment.model_series_key)
-            .bind(&segment.upstream_series_key)
-            .bind(segment.interval_start_ms)
-            .bind(segment.interval_end_ms)
-            .execute(&mut *transaction)
+        upsert_long_term_projection_interval_segments_in_transaction(&mut transaction, batch)
             .await?;
-        }
         control.commit(transaction, permit).await?;
     }
     Ok(())
+}
+
+async fn upsert_long_term_projection_interval_segments_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    segments: &[LongTermProjectionIntervalSegment],
+) -> Result<()> {
+    for segment in segments {
+        sqlx::query(
+            "INSERT INTO long_term_projection_interval_state (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(invocation_row_id) DO UPDATE SET model_series_key = excluded.model_series_key, upstream_series_key = excluded.upstream_series_key, interval_start_ms = excluded.interval_start_ms, interval_end_ms = excluded.interval_end_ms",
+        )
+        .bind(segment.invocation_row_id)
+        .bind(&segment.model_series_key)
+        .bind(&segment.upstream_series_key)
+        .bind(segment.interval_start_ms)
+        .bind(segment.interval_end_ms)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn load_long_term_projection_interval_state_ids(
+    pool: &Pool<Sqlite>,
+    segments: &[LongTermProjectionIntervalSegment],
+) -> Result<HashSet<i64>> {
+    if segments.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT invocation_row_id FROM long_term_projection_interval_state WHERE invocation_row_id IN (",
+    );
+    let mut ids = builder.separated(", ");
+    for segment in segments {
+        ids.push_bind(segment.invocation_row_id);
+    }
+    ids.push_unseparated(")");
+    Ok(builder
+        .build_query_scalar::<i64>()
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .collect())
 }
 
 async fn migrate_long_term_projection_legacy_interval_state(
@@ -7919,9 +7941,10 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     let rollup_rows = batch.hourly.len() + batch.daily.len();
-    if rollup_rows > LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS {
+    let mutation_rows = rollup_rows + batch.segments.len();
+    if mutation_rows > LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS {
         bail!(
-            "long-term projection incremental batch has {rollup_rows} rollups; maximum is {LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS}"
+            "long-term projection incremental batch has {mutation_rows} writes; maximum is {LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS}"
         );
     }
     let mut dates = HashSet::new();
@@ -7940,12 +7963,32 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
             runtime.loaded_interval_dates.clone(),
         )
     };
-    upsert_long_term_projection_interval_segments(pool, batch.segments, control).await?;
     interval_index.retain(|key, _| !long_term_projection_interval_key_is_for_dates(key, &dates));
     interval_index.extend(load_long_term_projection_interval_index(pool, &dates).await?);
+    let persisted_segment_ids =
+        load_long_term_projection_interval_state_ids(pool, batch.segments).await?;
+    for segment in batch
+        .segments
+        .iter()
+        .filter(|segment| !persisted_segment_ids.contains(&segment.invocation_row_id))
+    {
+        let state = LongTermProjectionIntervalStateRow {
+            invocation_row_id: segment.invocation_row_id,
+            model_series_key: segment.model_series_key.clone(),
+            upstream_series_key: segment.upstream_series_key.clone(),
+            interval_start_ms: segment.interval_start_ms,
+            interval_end_ms: segment.interval_end_ms,
+        };
+        for date in &dates {
+            if let Ok(date) = NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+                add_long_term_projection_interval_state_for_date(&mut interval_index, date, &state);
+            }
+        }
+    }
     loaded_dates.extend(dates.iter().cloned());
 
     let (mut tx, permit) = control.begin(pool).await?;
+    upsert_long_term_projection_interval_segments_in_transaction(&mut tx, batch.segments).await?;
     for bucket in batch.hourly.values() {
         let key = projection_interval_key(
             "hourly",
@@ -8723,9 +8766,18 @@ fn is_success_status(status: Option<&str>, error_message: Option<&str>) -> bool 
         )
 }
 
-fn parse_long_term_timestamp_ms(raw: &str) -> Option<i64> {
+#[derive(Debug, Clone, Copy)]
+struct LongTermTimestamp {
+    epoch_ms: i64,
+    sub_millisecond_nanos: u32,
+}
+
+fn parse_long_term_timestamp(raw: &str) -> Option<LongTermTimestamp> {
     if let Ok(value) = DateTime::parse_from_rfc3339(raw) {
-        return Some(value.timestamp_millis());
+        return Some(LongTermTimestamp {
+            epoch_ms: value.timestamp_millis(),
+            sub_millisecond_nanos: value.timestamp_subsec_nanos() % 1_000_000,
+        });
     }
     let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S"))
@@ -8733,7 +8785,27 @@ fn parse_long_term_timestamp_ms(raw: &str) -> Option<i64> {
     Shanghai
         .from_local_datetime(&naive)
         .single()
-        .map(|value| value.timestamp_millis())
+        .map(|value| LongTermTimestamp {
+            epoch_ms: value.timestamp_millis(),
+            sub_millisecond_nanos: value.timestamp_subsec_nanos() % 1_000_000,
+        })
+}
+
+fn parse_long_term_timestamp_ms(raw: &str) -> Option<i64> {
+    parse_long_term_timestamp(raw).map(|timestamp| timestamp.epoch_ms)
+}
+
+fn long_term_interval_end_ms(start: LongTermTimestamp, duration_ms: f64) -> Option<i64> {
+    let elapsed_nanos = duration_ms * 1_000_000.0;
+    if !elapsed_nanos.is_finite() || elapsed_nanos <= 0.0 {
+        return None;
+    }
+    // Interval state is stored in milliseconds. Round its exclusive end up so a positive
+    // sub-millisecond tail that crosses a date or hour boundary remains materialized there.
+    let elapsed_millis = ((start.sub_millisecond_nanos as f64 + elapsed_nanos) / 1_000_000.0)
+        .ceil()
+        .clamp(1.0, i64::MAX as f64) as i64;
+    start.epoch_ms.checked_add(elapsed_millis)
 }
 
 fn union_interval_duration(intervals: &[(i64, i64)]) -> i64 {
@@ -12242,6 +12314,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incremental_projection_defers_before_interval_and_rollup_publication() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let event = build_long_term_projection_event(&LongTermInvocationRow {
+            id: 1,
+            invoke_id: Some("atomic-pressure".to_string()),
+            occurred_at: "2026-07-26 10:00:00".to_string(),
+            status: Some("success".to_string()),
+            model: Some("gpt-5".to_string()),
+            request_model: None,
+            response_model: None,
+            reasoning_effort: None,
+            upstream_account_id: None,
+            upstream_account_kind: None,
+            upstream_account_name: None,
+            total_tokens: Some(100),
+            output_tokens: None,
+            cost: None,
+            t_total_ms: Some(1_000.0),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            t_upstream_stream_ms: None,
+            error_message: None,
+        });
+        let runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let held = gate
+            .try_begin_background("test-holder")
+            .expect("hold background admission");
+        let pressure_control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let deferred = apply_long_term_projection_incremental_with_runtime_and_control(
+            &pool,
+            &runtime,
+            LongTermProjectionIncrementalBatch {
+                hourly: &event.hourly,
+                daily: &event.daily,
+                segments: &event.segments,
+            },
+            event.row_id,
+            1,
+            &pressure_control,
+        )
+        .await
+        .expect_err("pressure rejects the atomic incremental publication");
+        assert!(long_term_projection_write_is_deferred(&deferred));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_interval_state"
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("no canonical interval before publication"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_usage_daily")
+                .fetch_one(&pool)
+                .await
+                .expect("no rollup before publication"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COALESCE((SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1), 0)",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_one(&pool)
+            .await
+            .expect("projection cursor"),
+            0
+        );
+
+        drop(held);
+        let control = LongTermProjectionWriteControl::unrestricted();
+        apply_long_term_projection_incremental_with_runtime_and_control(
+            &pool,
+            &runtime,
+            LongTermProjectionIncrementalBatch {
+                hourly: &event.hourly,
+                daily: &event.daily,
+                segments: &event.segments,
+            },
+            event.row_id,
+            1,
+            &control,
+        )
+        .await
+        .expect("retry publishes the entire event once");
+        let daily = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT calls, token_total FROM long_term_usage_daily WHERE stats_date = '2026-07-26' AND dimension = 'overall' AND series_key = 'overall'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("daily projection");
+        assert_eq!(daily, (1, 100));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_interval_state"
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("canonical interval after retry"),
+            1
+        );
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("advanced projection cursor"),
+            event.row_id
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_projection_intervals_migrate_without_losing_the_canonical_interval() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -14049,6 +14243,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("RFC3339 sub-microsecond pre-end invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, t_total_ms) VALUES (12, 'rfc3339-nanos-crossing', '2026-07-25T15:59:59.9999999Z', 'success', 100, 0.001)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 nanosecond crossing invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (13, 'rfc3339-high-precision-before-start', '2026-07-25T15:59:59.99999999999999999999Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("high-precision RFC3339 pre-start invocation");
         let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("fixed date");
         let start = Shanghai
             .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
@@ -14081,7 +14287,7 @@ mod tests {
             .await
             .expect("projection rows");
 
-        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.len(), 8);
         let ids = rows
             .iter()
             .filter_map(|row| row.invoke_id.as_deref())
@@ -14096,8 +14302,26 @@ mod tests {
                 "rfc3339-day-start",
                 "rfc3339-before-next-day-start",
                 "rfc3339-submicro-before-next-day-start",
+                "rfc3339-nanos-crossing",
             ])
         );
+
+        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26")
+            .await
+            .expect("projection rebuild retains the nanosecond crossing");
+        assert!(
+            rebuild
+                .daily
+                .keys()
+                .any(|(bucket_date, dimension, series_key)| {
+                    bucket_date == "2026-07-26" && dimension == "overall" && series_key == "overall"
+                }),
+            "a selected positive crossing interval must materialize the target date"
+        );
+        assert!(rebuild.interval_segments.iter().any(|segment| {
+            segment.invocation_row_id == 12
+                && long_term_projection_interval_dates(segment).contains("2026-07-26")
+        }));
     }
 
     #[tokio::test]
@@ -14260,6 +14484,28 @@ mod tests {
         .await
         .expect("sub-microsecond pre-start correction dates");
         assert_eq!(dirty_dates, vec!["2026-07-25"]);
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets")
+            .execute(&pool)
+            .await
+            .expect("clear high-precision correction markers");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (6, '2026-07-25T15:59:59.99999999999999999999Z', 'success', 'before')",
+        )
+        .execute(&pool)
+        .await
+        .expect("high-precision pre-start invocation");
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 6")
+            .execute(&pool)
+            .await
+            .expect("high-precision pre-start correction");
+        let dirty_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("high-precision correction dates");
+        assert_eq!(dirty_dates, vec!["2026-07-25"]);
     }
 
     #[tokio::test]
@@ -14317,6 +14563,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("archive RFC3339 sub-microsecond pre-end row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (8, '2026-07-25T15:59:59.9999999Z', 'success', 0.001)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 nanosecond crossing row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (9, '2026-07-25T15:59:59.99999999999999999999Z', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive high-precision RFC3339 pre-start row");
         let query = long_term_archive_invocation_query_for_range(&pool)
             .await
             .expect("archive range query");
@@ -14341,7 +14599,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .expect("archive range rows");
-        assert_eq!(rows, vec![(1,), (2,), (5,), (7,)]);
+        assert_eq!(rows, vec![(1,), (2,), (5,), (7,), (8,)]);
     }
 
     #[tokio::test]
