@@ -1308,6 +1308,9 @@ export interface LiveRequestStreamingCohortStats {
   successSampleCount: number;
   invocationCount: number;
   sufficientSamples: boolean;
+  firstResponseByteSampleCount?: number;
+  firstTokenSampleCount?: number;
+  requestUpstreamOverlapSampleCount?: number;
   firstResponseByteTotalMs?: LiveRequestStreamingPercentiles | null;
   firstTokenMs?: LiveRequestStreamingPercentiles | null;
   requestUpstreamOverlapMs?: LiveRequestStreamingPercentiles | null;
@@ -3463,6 +3466,10 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
     payload.cacheHitProtection && typeof payload.cacheHitProtection === "object"
       ? (payload.cacheHitProtection as Record<string, unknown>)
       : null;
+  const liveRequestStreamingRaw =
+    payload.liveRequestStreaming && typeof payload.liveRequestStreaming === "object"
+      ? (payload.liveRequestStreaming as Record<string, unknown>)
+      : null;
   const normalized: PoolRoutingSettings = {
     writesEnabled: typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
@@ -3499,6 +3506,14 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
           : 10,
       overflowMode: cacheHitProtectionRaw?.overflowMode === "reroute" ? "reroute" : "queue",
       minimumInputTokens: normalizeFiniteNumber(cacheHitProtectionRaw?.minimumInputTokens) ?? 3840,
+    },
+    liveRequestStreaming: {
+      enabled: liveRequestStreamingRaw?.enabled === true,
+      treatmentPercent:
+        typeof liveRequestStreamingRaw?.treatmentPercent === "number" &&
+        Number.isFinite(liveRequestStreamingRaw.treatmentPercent)
+          ? Math.min(100, Math.max(0, Math.trunc(liveRequestStreamingRaw.treatmentPercent)))
+          : 50,
     },
   };
   if (Array.isArray(payload.availableModels)) {

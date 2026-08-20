@@ -6090,6 +6090,73 @@ async fn live_request_streaming_perf_uses_the_filtered_cohort_as_its_coverage_de
 }
 
 #[tokio::test]
+async fn live_request_streaming_perf_requires_each_benefit_metric_to_have_enough_samples() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    for index in 0..LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES {
+        let payload = json!({
+            "endpoint": "/v1/responses",
+            "upstreamAccountGroup": "canary",
+            "requestBodyTransportMode": "live_first",
+            "liveFirstRevision": LIVE_REQUEST_STREAMING_REVISION,
+            "liveFirstExperimentVariant": "treatment",
+            "firstResponseByteTotalMs": 140.0,
+            "requestUpstreamOverlapMs": 80.0,
+        });
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, payload, raw_response, detail_level
+            ) VALUES (?1, ?2, ?3, 'success', ?4, '{}', ?5)
+            "#,
+        )
+        .bind(format!("live-missing-token-{index}"))
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(payload.to_string())
+        .bind(DETAIL_LEVEL_FULL)
+        .execute(&state.pool)
+        .await
+        .expect("insert live request streaming invocation without a first token");
+    }
+
+    let Json(perf_stats) = fetch_perf_stats(
+        State(state),
+        Query(PerfQuery {
+            range: "24h".to_string(),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            endpoint: Some("/v1/responses".to_string()),
+            group_name: Some("canary".to_string()),
+            live_first_revision: Some(LIVE_REQUEST_STREAMING_REVISION.to_string()),
+            cohort: Some("treatment".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch live request streaming performance");
+
+    let treatment = perf_stats
+        .live_request_streaming
+        .cohorts
+        .into_iter()
+        .next()
+        .expect("treatment cohort");
+    assert_eq!(
+        treatment.success_sample_count,
+        LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+    );
+    assert_eq!(
+        treatment.first_response_byte_sample_count,
+        LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+    );
+    assert_eq!(treatment.first_token_sample_count, 0);
+    assert_eq!(
+        treatment.request_upstream_overlap_sample_count,
+        LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+    );
+    assert!(!treatment.sufficient_samples);
+}
+
+#[tokio::test]
 async fn historical_perf_stats_fill_missing_samples_from_partially_materialized_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
