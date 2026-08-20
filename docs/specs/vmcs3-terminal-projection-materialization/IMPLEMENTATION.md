@@ -12,7 +12,7 @@
 
 - terminal ingress 先写 Dashboard 紧凑 delta 并注册 projection event；enqueue 失败会同时撤销这两个 speculative 状态。
 - P1 ACK 后长期统计最多等待一个 60 秒固定窗口，然后按新的 `rowId` hydrate terminal、更新内存 interval 并集，并在同一受限 P2 flow 内提交 rollup 与 durable cursor。正常终态若 cursor 尚未跨越其 `rowId` 走增量；若乱序完成导致 cursor 已跨越该行，write-side trigger 改为标记目标自然日 repair。interval baseline 缺失或其他修正同样标记 repair；repair 读取 live、目标日期相关的 archive rows 与关联 attempt source，使用 last-good backup 把桶替换、cursor 推进与 repair marker 消费收口为原子可见发布。任一 archive source 不可读时保留 last-good，并将该桶延后五分钟，不阻塞其余脏桶。
-- 日期 rebuild 使用持久 daily backup 维持 last-good 可见性：cursor/state 提交后，以同一短事务清除该日期 dirty generation 并切换 backup pointer，最后分批清理私有 backup；取消或 pressure defer 保留该 recovery state。
+- 日期 rebuild 与已有 ready rollup 的 bounded refresh 均使用持久 daily backup 维持 last-good 可见性：cursor/state 提交后，以同一短事务清除该日期 dirty generation 并切换 backup pointer，最后分批清理私有 backup；取消或 pressure defer 保留该 recovery state。首次 materialization 的 incomplete marker 阻止 cursor worker 将部分日汇总提升为 ready，并在重启后驱动专用 refresher 重试。
 - 压力门关闭时 flush 被明确延期；已有 API/页面继续读取 last-good durable rollup，下一次有资格的窗口恢复。
 - Projection schema、trigger 与兼容迁移只在启动初始化执行；60 秒 P2 flush 和每日验证只读写投影数据，不执行 DDL。
 - Hourly rollup retention remains enforced by the incremental P2 path: it removes expired hourly rollups and their hourly interval segments in the same low-priority maintenance window while preserving permanent daily history.

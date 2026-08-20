@@ -8,6 +8,8 @@ const LONG_TERM_STATUS_RUNNING: &str = "running";
 const LONG_TERM_STATUS_READY: &str = "ready";
 const LONG_TERM_STATUS_EMPTY: &str = "empty";
 const LONG_TERM_STATUS_ERROR: &str = "error";
+const LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR: &str =
+    "long-term initial materialization is incomplete";
 const LONG_TERM_TERMINAL_PROOF_UNAVAILABLE_ERROR: &str =
     "terminal integrity proof reconciliation is incomplete";
 const LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR: &str =
@@ -1633,7 +1635,7 @@ async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Err
     ));
 }
 
-async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<()> {
+async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<String> {
     let today = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
     let control = LongTermProjectionWriteControl::background(
         &state.shutdown,
@@ -1646,7 +1648,7 @@ async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<()>
         &control,
     )
     .await?;
-    Ok(())
+    Ok(today)
 }
 
 async fn long_term_projection_daily_verify_due(pool: &Pool<Sqlite>) -> Result<bool> {
@@ -1965,21 +1967,25 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     let mut cursor = load_long_term_projection_cursor_with_control(&state.pool, &control).await?;
     let daily_verify_requested =
         trigger == "daily_verify" || long_term_projection_daily_verify_due(&state.pool).await?;
-    if daily_verify_requested {
-        queue_long_term_projection_daily_verify(state).await?;
-    }
+    let daily_verify_date = if daily_verify_requested {
+        Some(queue_long_term_projection_daily_verify(state).await?)
+    } else {
+        None
+    };
     let state_row = load_long_term_state(&state.pool).await?;
     migrate_long_term_projection_legacy_interval_state(&state.pool, &control).await?;
     let mut baseline_cursor = None;
+    let rollups_exist = long_term_rollups_exist(&state.pool).await?;
     if long_term_initial_materialization_needed(
         &state_row.status,
-        long_term_rollups_exist(&state.pool).await?,
+        state_row.last_error.as_deref(),
+        rollups_exist,
     ) {
         // The dedicated refresher owns the first full materialization. Running it from this
         // P2 cursor worker bypasses pressure admission and can hold a competing writer lock.
         control.check()?;
         return Ok(0);
-    } else if long_term_rollups_exist(&state.pool).await?
+    } else if rollups_exist
         && (cursor == 0
             || matches!(
                 state_row.status.as_str(),
@@ -2281,15 +2287,14 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             (0, 0)
         };
 
-    if daily_verify_requested {
-        let (mut transaction, permit) = control.begin(&state.pool).await?;
-        sqlx::query(
-            "UPDATE long_term_projection_state SET last_daily_verify_at = datetime('now'), updated_at = datetime('now') WHERE consumer = ?1",
+    if let Some(daily_verify_date) = daily_verify_date {
+        complete_long_term_projection_daily_verify_with_control(
+            &state.pool,
+            &daily_verify_date,
+            &repaired,
+            &control,
         )
-        .bind(LONG_TERM_PROJECTION_CONSUMER)
-        .execute(&mut *transaction)
         .await?;
-        control.commit(transaction, permit).await?;
     }
 
     let dirty_bucket_count =
@@ -2386,9 +2391,33 @@ async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {
     )
 }
 
-fn long_term_initial_materialization_needed(status: &str, rollups_exist: bool) -> bool {
+fn long_term_initial_materialization_needed(
+    status: &str,
+    last_error: Option<&str>,
+    rollups_exist: bool,
+) -> bool {
     status == LONG_TERM_STATUS_ERROR
+        || last_error == Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
         || (!matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY) && !rollups_exist)
+}
+
+async fn complete_long_term_projection_daily_verify_with_control(
+    pool: &Pool<Sqlite>,
+    daily_verify_date: &str,
+    repaired: &[String],
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    if !repaired.iter().any(|date| date == daily_verify_date) {
+        return Ok(());
+    }
+    let (mut transaction, permit) = control.begin(pool).await?;
+    sqlx::query(
+        "UPDATE long_term_projection_state SET last_daily_verify_at = datetime('now'), updated_at = datetime('now') WHERE consumer = ?1",
+    )
+    .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await
 }
 
 fn long_term_projection_hourly_retention_start_date(retention_days: u64) -> NaiveDate {
@@ -2788,6 +2817,16 @@ async fn clear_long_term_projection_daily_backup(
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     loop {
+        let has_backup = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM long_term_projection_daily_backups WHERE rebuild_token = ?1)",
+        )
+        .bind(rebuild_token)
+        .fetch_one(pool)
+        .await?
+            != 0;
+        if !has_backup {
+            return Ok(());
+        }
         let (mut transaction, permit) = control.begin(pool).await?;
         let deleted = sqlx::query(
             "DELETE FROM long_term_projection_daily_backups WHERE rowid IN (SELECT rowid FROM long_term_projection_daily_backups WHERE rebuild_token = ?1 LIMIT ?2)",
@@ -2804,16 +2843,58 @@ async fn clear_long_term_projection_daily_backup(
     }
 }
 
+async fn release_long_term_projection_daily_backups(
+    pool: &Pool<Sqlite>,
+    backups: &[(String, String)],
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    for batch in backups.chunks(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS) {
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
+        );
+        let mut dates = query.separated(" OR ");
+        for (bucket_date, rebuild_token) in batch {
+            dates
+                .push("(bucket_date = ")
+                .push_bind(bucket_date)
+                .push(" AND active_daily_backup_token = ")
+                .push_bind(rebuild_token)
+                .push(")");
+        }
+        query.build().execute(&mut *transaction).await?;
+        control.commit(transaction, permit).await?;
+    }
+    Ok(())
+}
+
 async fn ensure_long_term_projection_daily_backup(
     pool: &Pool<Sqlite>,
     rebuild: &LongTermProjectionDateRebuild,
     rebuild_token: &str,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    ensure_long_term_projection_daily_backup_for_date(
+        pool,
+        &rebuild.bucket_date,
+        rebuild_token,
+        true,
+        control,
+    )
+    .await
+}
+
+async fn ensure_long_term_projection_daily_backup_for_date(
+    pool: &Pool<Sqlite>,
+    bucket_date: &str,
+    rebuild_token: &str,
+    reset_interval_baseline: bool,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
     let active = sqlx::query_scalar::<_, Option<String>>(
         "SELECT active_daily_backup_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
     )
-    .bind(&rebuild.bucket_date)
+    .bind(bucket_date)
     .fetch_optional(pool)
     .await?
     .flatten();
@@ -2823,13 +2904,19 @@ async fn ensure_long_term_projection_daily_backup(
         }
         bail!(
             "long-term projection daily backup for {} is owned by {active}",
-            rebuild.bucket_date
+            bucket_date
         );
     }
 
     clear_long_term_projection_daily_backup(pool, rebuild_token, control).await?;
+    let daily_row_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM long_term_usage_daily WHERE stats_date = ?1",
+    )
+    .bind(bucket_date)
+    .fetch_one(pool)
+    .await?;
     let mut offset = 0_i64;
-    loop {
+    while offset < daily_row_count {
         let (mut transaction, permit) = control.begin(pool).await?;
         let copied = sqlx::query(
             r#"
@@ -2852,27 +2939,34 @@ async fn ensure_long_term_projection_daily_backup(
             "#,
         )
         .bind(rebuild_token)
-        .bind(&rebuild.bucket_date)
+        .bind(bucket_date)
         .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
         .bind(offset)
         .execute(&mut *transaction)
         .await?
         .rows_affected() as i64;
         control.commit(transaction, permit).await?;
-        if copied < LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64 {
-            break;
-        }
         offset += copied;
     }
 
     let (mut transaction, permit) = control.begin(pool).await?;
-    sqlx::query(
-        "INSERT INTO long_term_projection_bucket_state (bucket_date, interval_baseline_ready, active_daily_backup_token) VALUES (?1, 0, ?2) ON CONFLICT(bucket_date) DO UPDATE SET interval_baseline_ready = 0, active_daily_backup_token = excluded.active_daily_backup_token, updated_at = datetime('now')",
-    )
-    .bind(&rebuild.bucket_date)
-    .bind(rebuild_token)
-    .execute(&mut *transaction)
-    .await?;
+    if reset_interval_baseline {
+        sqlx::query(
+            "INSERT INTO long_term_projection_bucket_state (bucket_date, interval_baseline_ready, active_daily_backup_token) VALUES (?1, 0, ?2) ON CONFLICT(bucket_date) DO UPDATE SET interval_baseline_ready = 0, active_daily_backup_token = excluded.active_daily_backup_token, updated_at = datetime('now')",
+        )
+        .bind(bucket_date)
+        .bind(rebuild_token)
+        .execute(&mut *transaction)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO long_term_projection_bucket_state (bucket_date, active_daily_backup_token) VALUES (?1, ?2) ON CONFLICT(bucket_date) DO UPDATE SET active_daily_backup_token = excluded.active_daily_backup_token, updated_at = datetime('now')",
+        )
+        .bind(bucket_date)
+        .bind(rebuild_token)
+        .execute(&mut *transaction)
+        .await?;
+    }
     control.commit(transaction, permit).await
 }
 
@@ -3108,7 +3202,7 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     }
 
     for token in &rebuild_tokens {
-        clear_long_term_projection_rebuild_members(pool, &token, control).await?;
+        clear_long_term_projection_rebuild_members(pool, token, control).await?;
     }
 
     let (mut transaction, permit) = control.begin(pool).await?;
@@ -4386,7 +4480,11 @@ pub(crate) fn spawn_long_term_stats_backfill(
                     continue;
                 }
             };
-            if !long_term_initial_materialization_needed(&state.status, rollups_exist) {
+            if !long_term_initial_materialization_needed(
+                &state.status,
+                state.last_error.as_deref(),
+                rollups_exist,
+            ) {
                 break;
             }
             let control = LongTermProjectionWriteControl::background(
@@ -4482,10 +4580,18 @@ fn long_term_refresh_start_state(
     } else if !was_ready {
         (LONG_TERM_STATUS_RUNNING, true)
     } else {
-        // A refresh replacement now commits in bounded batches. Hide the public read model
-        // until the final state commit so a caller cannot observe a partially replaced day.
-        (LONG_TERM_STATUS_PREPARING, true)
+        // Durable daily backups keep the ready read model on the prior complete date until its
+        // bounded replacement is fully written and published.
+        (LONG_TERM_STATUS_READY, true)
     }
+}
+
+fn long_term_refresh_pending_marker(
+    was_ready: bool,
+    starting_status: &str,
+) -> Option<&'static str> {
+    (!was_ready && starting_status != LONG_TERM_STATUS_ERROR)
+        .then_some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
 }
 
 async fn refresh_long_term_stats_once(
@@ -4532,8 +4638,21 @@ async fn refresh_long_term_stats_once(
         was_ready,
         has_pending_integrity_repairs || preserves_prior_error,
     );
+    let pending_marker = long_term_refresh_pending_marker(was_ready, starting_status);
     let (mut transaction, permit) = control.begin(pool).await?;
-    if clear_last_error {
+    if let Some(pending_marker) = pending_marker {
+        // A bounded replacement may be interrupted after committing only one batch. Persist a
+        // distinct marker before those writes so startup and the P2 cursor never mistake a
+        // partial durable prefix for a complete baseline.
+        sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
+        )
+        .bind(starting_status)
+        .bind(pending_marker)
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&mut *transaction)
+        .await?;
+    } else if clear_last_error {
         sqlx::query(
             "UPDATE long_term_stats_state SET status = ?1, last_error = NULL, updated_at = datetime('now') WHERE id = ?2",
         )
@@ -4562,18 +4681,18 @@ async fn refresh_long_term_stats_once(
         control,
     )
     .await;
-    if let Err(err) = &result {
-        if let Ok((mut transaction, permit)) = control.begin(pool).await {
-            let _ = sqlx::query(
-                "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
-            )
-            .bind(LONG_TERM_STATUS_ERROR)
-            .bind(err.to_string())
-            .bind(LONG_TERM_STATE_ID)
-            .execute(&mut *transaction)
-            .await;
-            let _ = control.commit(transaction, permit).await;
-        }
+    if let Err(err) = &result
+        && let Ok((mut transaction, permit)) = control.begin(pool).await
+    {
+        let _ = sqlx::query(
+            "UPDATE long_term_stats_state SET status = ?1, last_error = ?2, updated_at = datetime('now') WHERE id = ?3",
+        )
+        .bind(LONG_TERM_STATUS_ERROR)
+        .bind(err.to_string())
+        .bind(LONG_TERM_STATE_ID)
+        .execute(&mut *transaction)
+        .await;
+        let _ = control.commit(transaction, permit).await;
     }
     result
 }
@@ -4809,7 +4928,7 @@ async fn refresh_long_term_stats_inner(
     if let Err(error) = stale_marker_cleanup
         && !error.to_string().contains("no such table")
     {
-        return Err(error.into());
+        return Err(error);
     }
     let replayed_archive_files = if !ready_state {
         HashSet::new()
@@ -5465,27 +5584,29 @@ async fn refresh_long_term_stats_inner(
 
     apply_long_term_refresh_rollups_with_control(
         pool,
-        &hourly,
-        &daily,
-        &recomputed_dates,
-        retention_start,
-        &integrity_repair_failures,
-        &completed_integrity_repairs,
-        reconstructable_start,
-        statistics_start_date.as_deref(),
-        if ready_state {
-            rows.len() as i64
-        } else {
-            processed_rows_count
+        LongTermRefreshRollupInput {
+            hourly: &hourly,
+            daily: &daily,
+            recomputed_dates: &recomputed_dates,
+            retention_start,
+            integrity_repair_failures: &integrity_repair_failures,
+            completed_integrity_repairs: &completed_integrity_repairs,
+            reconstructable_start,
+            statistics_start_date: statistics_start_date.as_deref(),
+            processed_rows_count: if ready_state {
+                rows.len() as i64
+            } else {
+                processed_rows_count
+            },
+            source_rows_empty: rows.is_empty(),
+            archive_read_failed,
+            terminal_proof_reconciliation_incomplete,
+            archive_markers: &archive_markers,
+            failed_archive_paths: &failed_archive_paths,
+            clear_all_attempt_markers,
+            failed_archive_ranges: &failed_archive_ranges,
+            attempt_archive_markers: &attempt_archive_markers,
         },
-        rows.is_empty(),
-        archive_read_failed,
-        terminal_proof_reconciliation_incomplete,
-        &archive_markers,
-        &failed_archive_paths,
-        clear_all_attempt_markers,
-        &failed_archive_ranges,
-        &attempt_archive_markers,
         control,
     )
     .await
@@ -5526,32 +5647,81 @@ async fn delete_initial_long_term_rollups_for_date(
     Ok(())
 }
 
-async fn apply_long_term_refresh_rollups_with_control(
-    pool: &Pool<Sqlite>,
-    hourly: &HashMap<(i64, String, String), LongTermBucket>,
-    daily: &HashMap<(String, String, String), LongTermBucket>,
-    recomputed_dates: &HashSet<NaiveDate>,
+struct LongTermRefreshRollupInput<'a> {
+    hourly: &'a HashMap<(i64, String, String), LongTermBucket>,
+    daily: &'a HashMap<(String, String, String), LongTermBucket>,
+    recomputed_dates: &'a HashSet<NaiveDate>,
     retention_start: NaiveDate,
-    integrity_repair_failures: &[LongTermIntegrityMismatch],
-    completed_integrity_repairs: &HashSet<NaiveDate>,
+    integrity_repair_failures: &'a [LongTermIntegrityMismatch],
+    completed_integrity_repairs: &'a HashSet<NaiveDate>,
     reconstructable_start: NaiveDate,
-    statistics_start_date: Option<&str>,
+    statistics_start_date: Option<&'a str>,
     processed_rows_count: i64,
     source_rows_empty: bool,
     archive_read_failed: bool,
     terminal_proof_reconciliation_incomplete: bool,
-    archive_markers: &[String],
-    failed_archive_paths: &HashSet<String>,
+    archive_markers: &'a [String],
+    failed_archive_paths: &'a HashSet<String>,
     clear_all_attempt_markers: bool,
-    failed_archive_ranges: &[(String, String)],
-    attempt_archive_markers: &HashSet<(String, String)>,
+    failed_archive_ranges: &'a [(String, String)],
+    attempt_archive_markers: &'a HashSet<(String, String)>,
+}
+
+struct LongTermRefreshArchiveMarkers<'a> {
+    archive_markers: &'a [String],
+    archive_read_failed: bool,
+    failed_archive_paths: &'a HashSet<String>,
+    clear_all_attempt_markers: bool,
+    failed_archive_ranges: &'a [(String, String)],
+    attempt_archive_markers: &'a HashSet<(String, String)>,
+}
+
+async fn apply_long_term_refresh_rollups_with_control(
+    pool: &Pool<Sqlite>,
+    input: LongTermRefreshRollupInput<'_>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    let LongTermRefreshRollupInput {
+        hourly,
+        daily,
+        recomputed_dates,
+        retention_start,
+        integrity_repair_failures,
+        completed_integrity_repairs,
+        reconstructable_start,
+        statistics_start_date,
+        processed_rows_count,
+        source_rows_empty,
+        archive_read_failed,
+        terminal_proof_reconciliation_incomplete,
+        archive_markers,
+        failed_archive_paths,
+        clear_all_attempt_markers,
+        failed_archive_ranges,
+        attempt_archive_markers,
+    } = input;
     let has_persisted_daily_rows =
         sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM long_term_usage_daily LIMIT 1)")
             .fetch_one(pool)
             .await?
             != 0;
+    let mut refresh_backups = Vec::with_capacity(recomputed_dates.len());
+    for date in recomputed_dates {
+        let bucket_date = date.to_string();
+        let rebuild_token = format!("long-term-refresh:{bucket_date}");
+        // The full refresher also writes in bounded transactions. Keep the same durable daily
+        // snapshot used by a P2 date rebuild so pressure or shutdown cannot leave a deleted
+        // prefix as the only recoverable state.
+        ensure_long_term_projection_daily_backup_for_date(
+            pool,
+            &bucket_date,
+            &rebuild_token,
+            false,
+            control,
+        )
+        .await?;
+        refresh_backups.push((bucket_date, rebuild_token));
+    }
     if recomputed_dates.is_empty() && !has_persisted_daily_rows {
         for table in ["long_term_usage_hourly", "long_term_usage_daily"] {
             loop {
@@ -5620,7 +5790,11 @@ async fn apply_long_term_refresh_rollups_with_control(
         }
         control.commit(transaction, permit).await?;
     }
-    for mismatch in integrity_repair_failures {
+    let mut retry_dates = HashSet::new();
+    for mismatch in integrity_repair_failures
+        .iter()
+        .filter(|mismatch| retry_dates.insert(mismatch.date))
+    {
         let (mut transaction, permit) = control.begin(pool).await?;
         schedule_long_term_repair_retry(&mut transaction, mismatch).await?;
         control.commit(transaction, permit).await?;
@@ -5637,12 +5811,14 @@ async fn apply_long_term_refresh_rollups_with_control(
 
     persist_long_term_refresh_archive_markers_with_control(
         pool,
-        archive_markers,
-        archive_read_failed,
-        failed_archive_paths,
-        clear_all_attempt_markers,
-        failed_archive_ranges,
-        attempt_archive_markers,
+        LongTermRefreshArchiveMarkers {
+            archive_markers,
+            archive_read_failed,
+            failed_archive_paths,
+            clear_all_attempt_markers,
+            failed_archive_ranges,
+            attempt_archive_markers,
+        },
         control,
     )
     .await?;
@@ -5673,6 +5849,9 @@ async fn apply_long_term_refresh_rollups_with_control(
         archive_read_failed
             .then_some("one or more invocation archives could not be materialized".to_string())
     };
+    // Every affected date now contains its full replacement. Releasing one date at a time is
+    // safe because readers select either its complete backup or its complete live rows.
+    release_long_term_projection_daily_backups(pool, &refresh_backups, control).await?;
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
         "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5",
@@ -5684,19 +5863,26 @@ async fn apply_long_term_refresh_rollups_with_control(
     .bind(LONG_TERM_STATE_ID)
     .execute(&mut *transaction)
     .await?;
-    control.commit(transaction, permit).await
+    control.commit(transaction, permit).await?;
+    for (_, rebuild_token) in refresh_backups {
+        clear_long_term_projection_daily_backup(pool, &rebuild_token, control).await?;
+    }
+    Ok(())
 }
 
 async fn persist_long_term_refresh_archive_markers_with_control(
     pool: &Pool<Sqlite>,
-    archive_markers: &[String],
-    archive_read_failed: bool,
-    failed_archive_paths: &HashSet<String>,
-    clear_all_attempt_markers: bool,
-    failed_archive_ranges: &[(String, String)],
-    attempt_archive_markers: &HashSet<(String, String)>,
+    markers: LongTermRefreshArchiveMarkers<'_>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    let LongTermRefreshArchiveMarkers {
+        archive_markers,
+        archive_read_failed,
+        failed_archive_paths,
+        clear_all_attempt_markers,
+        failed_archive_ranges,
+        attempt_archive_markers,
+    } = markers;
     for file_path in archive_markers {
         let archive_sha256 = sqlx::query_scalar::<_, String>(
             "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1 LIMIT 1",
@@ -7500,22 +7686,32 @@ mod tests {
     fn initial_materializer_only_runs_before_a_durable_long_term_baseline() {
         assert!(long_term_initial_materialization_needed(
             LONG_TERM_STATUS_PREPARING,
+            None,
             false,
         ));
         assert!(long_term_initial_materialization_needed(
             LONG_TERM_STATUS_RUNNING,
+            None,
             false,
         ));
         assert!(!long_term_initial_materialization_needed(
             LONG_TERM_STATUS_READY,
+            None,
             false,
         ));
         assert!(!long_term_initial_materialization_needed(
             LONG_TERM_STATUS_PREPARING,
+            None,
             true,
         ));
         assert!(long_term_initial_materialization_needed(
             LONG_TERM_STATUS_ERROR,
+            None,
+            true,
+        ));
+        assert!(long_term_initial_materialization_needed(
+            LONG_TERM_STATUS_RUNNING,
+            Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR),
             true,
         ));
     }
@@ -7613,7 +7809,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initial_materialization_recovers_after_a_bounded_write_is_cancelled() {
+    async fn daily_verify_stays_due_until_its_queued_bucket_is_rebuilt() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 0)",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .execute(&pool)
+        .await
+        .expect("seed projection state");
+        let today = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+        let control = LongTermProjectionWriteControl::unrestricted();
+
+        complete_long_term_projection_daily_verify_with_control(
+            &pool,
+            &today,
+            &["2000-01-01".to_string()],
+            &control,
+        )
+        .await
+        .expect("unrelated repaired bucket");
+        assert!(
+            long_term_projection_daily_verify_due(&pool)
+                .await
+                .expect("unrepaired verification remains due")
+        );
+
+        complete_long_term_projection_daily_verify_with_control(
+            &pool,
+            &today,
+            &[today.clone()],
+            &control,
+        )
+        .await
+        .expect("verified today bucket");
+        assert!(
+            !long_term_projection_daily_verify_due(&pool)
+                .await
+                .expect("completed verification is fresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_ready_refresh_keeps_last_good_rows_after_a_cancelled_write() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -7653,11 +7898,11 @@ mod tests {
         }
         seeded.commit().await.expect("commit prior daily rows");
         sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
-            .bind(LONG_TERM_STATUS_ERROR)
+            .bind(LONG_TERM_STATUS_READY)
             .bind(LONG_TERM_STATE_ID)
             .execute(&pool)
             .await
-            .expect("seed retryable initial materialization failure");
+            .expect("seed ready long-term state");
 
         let shutdown = CancellationToken::new();
         let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
@@ -7666,34 +7911,36 @@ mod tests {
             &shutdown,
             &gate,
             &committed_batches,
-            6,
+            8,
         );
         let recomputed_dates = HashSet::from([date]);
         apply_long_term_refresh_rollups_with_control(
             &pool,
-            &HashMap::new(),
-            &daily,
-            &recomputed_dates,
-            date,
-            &[],
-            &HashSet::new(),
-            date,
-            Some(&date_text),
-            daily.len() as i64,
-            false,
-            false,
-            false,
-            &[],
-            &HashSet::new(),
-            false,
-            &[],
-            &HashSet::new(),
+            LongTermRefreshRollupInput {
+                hourly: &HashMap::new(),
+                daily: &daily,
+                recomputed_dates: &recomputed_dates,
+                retention_start: date,
+                integrity_repair_failures: &[],
+                completed_integrity_repairs: &HashSet::new(),
+                reconstructable_start: date,
+                statistics_start_date: Some(&date_text),
+                processed_rows_count: daily.len() as i64,
+                source_rows_empty: false,
+                archive_read_failed: false,
+                terminal_proof_reconciliation_incomplete: false,
+                archive_markers: &[],
+                failed_archive_paths: &HashSet::new(),
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &[],
+                attempt_archive_markers: &HashSet::new(),
+            },
             &cancelling_control,
         )
         .await
         .expect_err("cancellation after a 512-row replacement batch");
         assert!(shutdown.is_cancelled());
-        assert_eq!(committed_batches.load(Ordering::Acquire), 6);
+        assert_eq!(committed_batches.load(Ordering::Acquire), 8);
         let interrupted_status = sqlx::query_scalar::<_, String>(
             "SELECT status FROM long_term_stats_state WHERE id = ?1",
         )
@@ -7701,28 +7948,35 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("interrupted status");
-        assert_eq!(interrupted_status, LONG_TERM_STATUS_ERROR);
+        assert_eq!(interrupted_status, LONG_TERM_STATUS_READY);
+        let public_rows = load_long_term_daily_rows(&pool, "model", None, &date_text, &date_text)
+            .await
+            .expect("last-good daily rows remain readable after cancellation");
+        assert_eq!(public_rows.len(), 1);
+        assert_eq!(public_rows[0].series_key, "model:previous-0");
 
         let recovery_control = LongTermProjectionWriteControl::unrestricted();
         apply_long_term_refresh_rollups_with_control(
             &pool,
-            &HashMap::new(),
-            &daily,
-            &recomputed_dates,
-            date,
-            &[],
-            &HashSet::new(),
-            date,
-            Some(&date_text),
-            daily.len() as i64,
-            false,
-            false,
-            false,
-            &[],
-            &HashSet::new(),
-            false,
-            &[],
-            &HashSet::new(),
+            LongTermRefreshRollupInput {
+                hourly: &HashMap::new(),
+                daily: &daily,
+                recomputed_dates: &recomputed_dates,
+                retention_start: date,
+                integrity_repair_failures: &[],
+                completed_integrity_repairs: &HashSet::new(),
+                reconstructable_start: date,
+                statistics_start_date: Some(&date_text),
+                processed_rows_count: daily.len() as i64,
+                source_rows_empty: false,
+                archive_read_failed: false,
+                terminal_proof_reconciliation_incomplete: false,
+                archive_markers: &[],
+                failed_archive_paths: &HashSet::new(),
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &[],
+                attempt_archive_markers: &HashSet::new(),
+            },
             &recovery_control,
         )
         .await
@@ -7746,6 +8000,57 @@ mod tests {
         .await
         .expect("recovered status");
         assert_eq!(recovered_status, LONG_TERM_STATUS_READY);
+    }
+
+    #[tokio::test]
+    async fn interrupted_initial_refresh_keeps_partial_rollups_retryable() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name) VALUES (?1, 'overall', 'overall', 'last good')",
+        )
+        .bind(&date)
+        .execute(&pool)
+        .await
+        .expect("seed partial durable row");
+
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let committed_batches = AtomicUsize::new(0);
+        let control = LongTermProjectionWriteControl::cancelling_after(
+            &shutdown,
+            &gate,
+            &committed_batches,
+            1,
+        );
+        refresh_long_term_stats_once(&pool, 400, &control)
+            .await
+            .expect_err("cancelled initial refresh");
+        assert!(shutdown.is_cancelled());
+
+        let state: (String, Option<String>) =
+            sqlx::query_as("SELECT status, last_error FROM long_term_stats_state WHERE id = ?1")
+                .bind(LONG_TERM_STATE_ID)
+                .fetch_one(&pool)
+                .await
+                .expect("interrupted initial state");
+        assert_eq!(state.0, LONG_TERM_STATUS_RUNNING);
+        assert_eq!(
+            state.1.as_deref(),
+            Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
+        );
+        assert!(long_term_initial_materialization_needed(
+            &state.0,
+            state.1.as_deref(),
+            true,
+        ));
     }
 
     #[test]
@@ -8334,7 +8639,7 @@ mod tests {
         );
         assert_eq!(
             long_term_refresh_start_state(true, false),
-            (LONG_TERM_STATUS_PREPARING, true)
+            (LONG_TERM_STATUS_READY, true)
         );
         assert_eq!(
             long_term_refresh_start_state(false, false),
@@ -8343,6 +8648,14 @@ mod tests {
         assert_eq!(
             long_term_refresh_start_state(false, true),
             (LONG_TERM_STATUS_ERROR, false)
+        );
+        assert_eq!(
+            long_term_refresh_pending_marker(true, LONG_TERM_STATUS_READY),
+            None
+        );
+        assert_eq!(
+            long_term_refresh_pending_marker(false, LONG_TERM_STATUS_RUNNING),
+            Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
         );
     }
 
