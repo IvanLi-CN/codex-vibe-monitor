@@ -565,7 +565,7 @@ struct LongTermArchiveInvocationRangeQueries {
     canonical: String,
     crossing_text: String,
     rfc3339: String,
-    compatibility: String,
+    parts: LongTermArchiveInvocationQueryParts,
 }
 
 #[derive(Debug)]
@@ -573,6 +573,12 @@ struct LongTermArchiveInvocationQueryParts {
     select: String,
     terminal_filter: String,
     t_total_ms_column: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LongTermArchiveCompatibility {
+    has_legacy_crossing: bool,
+    has_rfc3339: bool,
 }
 
 async fn long_term_archive_invocation_query_for_range(
@@ -604,29 +610,121 @@ async fn long_term_archive_invocation_query_for_range(
         query.t_total_ms_column,
         rfc3339_reaches_range_start,
     );
-    let compatibility = format!(
-        "SELECT COALESCE(MAX(CASE WHEN instr(occurred_at, 'T') = 0 AND occurred_at < ?1 AND CASE WHEN {} IS NOT NULL AND {} > 0 THEN julianday(occurred_at) + {} / 86400000.0 END >= julianday(?1) THEN 1 ELSE 0 END), 0), COALESCE(MAX(CASE WHEN instr(occurred_at, 'T') > 0 AND {} < ?3 AND ({} >= ?2 OR ({} IS NOT NULL AND {} > 0 AND {})) THEN 1 ELSE 0 END), 0) FROM codex_invocations WHERE {}",
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        rfc3339_epoch,
-        rfc3339_epoch,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        rfc3339_reaches_range_start,
-        query.terminal_filter,
-    );
     Ok(LongTermArchiveInvocationRangeQueries {
         canonical,
         crossing_text,
         rfc3339,
-        compatibility,
+        parts: query,
     })
+}
+
+async fn inspect_long_term_archive_compatibility(
+    pool: &Pool<Sqlite>,
+    query: &LongTermArchiveInvocationQueryParts,
+) -> Result<LongTermArchiveCompatibility> {
+    let (has_legacy_crossing, has_rfc3339) = sqlx::query_as::<_, (i64, i64)>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0), EXISTS(SELECT 1 FROM codex_invocations WHERE {} AND instr(occurred_at, 'T') > 0)",
+        query.terminal_filter,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        query.terminal_filter,
+    ))
+    .fetch_one(pool)
+    .await?;
+    Ok(LongTermArchiveCompatibility {
+        has_legacy_crossing: has_legacy_crossing != 0,
+        has_rfc3339: has_rfc3339 != 0,
+    })
+}
+
+async fn load_long_term_archive_compatibility(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    archive_sha256: &str,
+) -> Result<Option<LongTermArchiveCompatibility>> {
+    let row = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT has_legacy_crossing, has_rfc3339 FROM long_term_projection_archive_compatibility WHERE file_path = ?1 AND archive_sha256 = ?2",
+    )
+    .bind(file_path)
+    .bind(archive_sha256)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(
+        |(has_legacy_crossing, has_rfc3339)| LongTermArchiveCompatibility {
+            has_legacy_crossing: has_legacy_crossing != 0,
+            has_rfc3339: has_rfc3339 != 0,
+        },
+    ))
+}
+
+async fn load_long_term_archive_sha256(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+) -> Result<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path = ?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(file_path)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn persist_long_term_archive_compatibility(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    archive_sha256: &str,
+    compatibility: LongTermArchiveCompatibility,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    sqlx::query(
+        "INSERT INTO long_term_projection_archive_compatibility (file_path, archive_sha256, has_legacy_crossing, has_rfc3339) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(file_path) DO UPDATE SET archive_sha256 = excluded.archive_sha256, has_legacy_crossing = excluded.has_legacy_crossing, has_rfc3339 = excluded.has_rfc3339, updated_at = datetime('now')",
+    )
+    .bind(file_path)
+    .bind(archive_sha256)
+    .bind(compatibility.has_legacy_crossing)
+    .bind(compatibility.has_rfc3339)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await
+}
+
+async fn load_or_inspect_long_term_archive_compatibility(
+    pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    file_path: &str,
+    query: &LongTermArchiveInvocationQueryParts,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<LongTermArchiveCompatibility> {
+    let archive_sha256 = load_long_term_archive_sha256(pool, file_path).await?;
+    if let Some(archive_sha256) = archive_sha256.as_deref()
+        && let Some(compatibility) =
+            load_long_term_archive_compatibility(pool, file_path, archive_sha256).await?
+    {
+        return Ok(compatibility);
+    }
+
+    // Old archives can contain legacy or RFC3339 timestamps. Inspect once, then retain the
+    // immutable archive's capability by checksum so ordinary canonical repairs stay range-seeked.
+    let compatibility = inspect_long_term_archive_compatibility(archive_pool, query).await?;
+    if let Some(archive_sha256) = archive_sha256.as_deref() {
+        persist_long_term_archive_compatibility(
+            pool,
+            file_path,
+            archive_sha256,
+            compatibility,
+            control,
+        )
+        .await?;
+    }
+    Ok(compatibility)
 }
 
 async fn load_long_term_archive_invocation_rows_for_range(
     pool: &Pool<Sqlite>,
     queries: &LongTermArchiveInvocationRangeQueries,
+    compatibility: LongTermArchiveCompatibility,
     start: chrono::DateTime<chrono_tz::Tz>,
     end: chrono::DateTime<chrono_tz::Tz>,
 ) -> Result<Vec<LongTermInvocationRow>> {
@@ -637,13 +735,7 @@ async fn load_long_term_archive_invocation_rows_for_range(
         .bind(&end_text)
         .fetch_all(pool)
         .await?;
-    let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
-        .bind(&start_text)
-        .bind(start.timestamp())
-        .bind(end.timestamp())
-        .fetch_one(pool)
-        .await?;
-    if compatibility.0 != 0 {
+    if compatibility.has_legacy_crossing {
         rows.extend(
             sqlx::query_as::<_, LongTermInvocationRow>(&queries.crossing_text)
                 .bind(&start_text)
@@ -651,7 +743,7 @@ async fn load_long_term_archive_invocation_rows_for_range(
                 .await?,
         );
     }
-    if compatibility.1 != 0 {
+    if compatibility.has_rfc3339 {
         rows.extend(
             sqlx::query_as::<_, LongTermInvocationRow>(&queries.rfc3339)
                 .bind(start.timestamp())
@@ -2558,7 +2650,8 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             load_long_term_projection_dirty_buckets(&state.pool, &baseline_dates).await?;
         let mut rebuilds = Vec::with_capacity(baseline_dates.len());
         for date in &baseline_dates {
-            let rebuild = build_long_term_projection_date_rebuild(&state.pool, date).await?;
+            let rebuild =
+                build_long_term_projection_date_rebuild(&state.pool, date, &control).await?;
             loaded_row_count = loaded_row_count.saturating_add(rebuild.source_row_count);
             rebuilds.push(rebuild);
         }
@@ -2625,7 +2718,7 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                     + event.segments.len()
                     > LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS
             {
-                apply_long_term_projection_incremental_with_runtime_and_control(
+                let outcome = apply_long_term_projection_incremental_with_runtime_and_control(
                     &state.pool,
                     &state.long_term_projection_runtime,
                     LongTermProjectionIncrementalBatch {
@@ -2638,6 +2731,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                     &control,
                 )
                 .await?;
+                if outcome == LongTermProjectionIncrementalOutcome::RebuildRequired {
+                    defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
+                    return Ok(0);
+                }
                 cursor = direct_cursor;
                 hourly.clear();
                 daily.clear();
@@ -2652,7 +2749,7 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             segments.extend(event.segments);
         }
         if batch_event_count > 0 {
-            apply_long_term_projection_incremental_with_runtime_and_control(
+            let outcome = apply_long_term_projection_incremental_with_runtime_and_control(
                 &state.pool,
                 &state.long_term_projection_runtime,
                 LongTermProjectionIncrementalBatch {
@@ -2665,6 +2762,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                 &control,
             )
             .await?;
+            if outcome == LongTermProjectionIncrementalOutcome::RebuildRequired {
+                defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
+                return Ok(0);
+            }
             cursor = direct_cursor;
         }
         if let Some(event) = repair_event {
@@ -2706,7 +2807,9 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                     let mut rebuilds = Vec::with_capacity(repair_dates.len());
                     let mut rebuild_error = None;
                     for date in &repair_dates {
-                        match build_long_term_projection_date_rebuild(&state.pool, date).await {
+                        match build_long_term_projection_date_rebuild(&state.pool, date, &control)
+                            .await
+                        {
                             Ok(rebuild) => {
                                 loaded_row_count =
                                     loaded_row_count.saturating_add(rebuild.source_row_count);
@@ -2771,25 +2874,26 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         if repaired.contains(&date) {
             continue;
         }
-        let rebuild = match build_long_term_projection_date_rebuild(&state.pool, &date).await {
-            Ok(rebuild) => {
-                loaded_row_count = loaded_row_count.saturating_add(rebuild.source_row_count);
-                rebuild
-            }
-            Err(error) => {
-                defer_long_term_projection_repair_with_control(&state.pool, &date, &control)
-                    .await?;
-                deferred_repair_count = deferred_repair_count.saturating_add(1);
-                warn!(
-                    error = %error,
-                    projection = "long_term",
-                    repair_scope = %date,
-                    retry_after_ms = 300_000_u64,
-                    "long-term projection repair deferred after an unavailable source"
-                );
-                continue;
-            }
-        };
+        let rebuild =
+            match build_long_term_projection_date_rebuild(&state.pool, &date, &control).await {
+                Ok(rebuild) => {
+                    loaded_row_count = loaded_row_count.saturating_add(rebuild.source_row_count);
+                    rebuild
+                }
+                Err(error) => {
+                    defer_long_term_projection_repair_with_control(&state.pool, &date, &control)
+                        .await?;
+                    deferred_repair_count = deferred_repair_count.saturating_add(1);
+                    warn!(
+                        error = %error,
+                        projection = "long_term",
+                        repair_scope = %date,
+                        retry_after_ms = 300_000_u64,
+                        "long-term projection repair deferred after an unavailable source"
+                    );
+                    continue;
+                }
+            };
         commit_long_term_projection_date_rebuilds_with_control(
             &state.pool,
             &[rebuild],
@@ -3138,6 +3242,7 @@ async fn load_long_term_projection_rows_for_date(
     date: NaiveDate,
     start: chrono::DateTime<chrono_tz::Tz>,
     end: chrono::DateTime<chrono_tz::Tz>,
+    control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<Vec<LongTermInvocationRow>> {
     let has_attempt_table = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pool_upstream_request_attempts')",
@@ -3237,17 +3342,29 @@ async fn load_long_term_projection_rows_for_date(
                 archive_path.file_path()
             );
         };
-        let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
-        let archive_rows = load_long_term_archive_invocation_rows_for_range(
-            &archive_pool,
-            &archive_query,
-            start,
-            end,
-        )
+        let archive_rows = async {
+            let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
+            let compatibility = load_or_inspect_long_term_archive_compatibility(
+                pool,
+                &archive_pool,
+                archive_path.file_path(),
+                &archive_query.parts,
+                control,
+            )
+            .await?;
+            load_long_term_archive_invocation_rows_for_range(
+                &archive_pool,
+                &archive_query,
+                compatibility,
+                start,
+                end,
+            )
+            .await
+        }
         .await;
         archive_pool.close().await;
         drop(cleanup);
-        let mut archive_rows = archive_rows?;
+        let archive_rows = archive_rows?;
         for mut row in archive_rows {
             if row.upstream_account_id.is_none()
                 && let Some(invoke_id) = row.invoke_id.as_ref()
@@ -3275,6 +3392,7 @@ async fn load_long_term_projection_rows_for_date(
 async fn build_long_term_projection_date_rebuild(
     pool: &Pool<Sqlite>,
     bucket_date: &str,
+    control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<LongTermProjectionDateRebuild> {
     let date = NaiveDate::parse_from_str(bucket_date, "%Y-%m-%d")?;
     let start = date
@@ -3286,7 +3404,7 @@ async fn build_long_term_projection_date_rebuild(
         .and_then(|next| next.and_hms_opt(0, 0, 0))
         .and_then(|value| Shanghai.from_local_datetime(&value).single())
         .context("invalid long-term projection day end")?;
-    let mut rows = load_long_term_projection_rows_for_date(pool, date, start, end).await?;
+    let mut rows = load_long_term_projection_rows_for_date(pool, date, start, end, control).await?;
     let identities = load_long_term_account_identities(pool).await?;
     let mut hourly = HashMap::new();
     let mut daily = HashMap::new();
@@ -4263,7 +4381,8 @@ async fn prune_long_term_projection_publications(
 }
 
 async fn rebuild_long_term_projection_date(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
-    let rebuild = build_long_term_projection_date_rebuild(pool, bucket_date).await?;
+    let control = LongTermProjectionWriteControl::unrestricted();
+    let rebuild = build_long_term_projection_date_rebuild(pool, bucket_date, &control).await?;
     commit_long_term_projection_date_rebuilds(pool, &[rebuild], None, &[], false).await
 }
 
@@ -6654,6 +6773,7 @@ async fn refresh_long_term_stats_inner(
             completed_integrity_repairs: &completed_integrity_repairs,
             reconstructable_start,
             statistics_start_date: statistics_start_date.as_deref(),
+            initial_materialization,
             processed_rows_count: if ready_state {
                 rows.len() as i64
             } else {
@@ -6717,6 +6837,7 @@ struct LongTermRefreshRollupInput<'a> {
     completed_integrity_repairs: &'a HashSet<NaiveDate>,
     reconstructable_start: NaiveDate,
     statistics_start_date: Option<&'a str>,
+    initial_materialization: bool,
     processed_rows_count: i64,
     source_rows_empty: bool,
     archive_read_failed: bool,
@@ -6751,6 +6872,7 @@ async fn apply_long_term_refresh_rollups_with_control(
         completed_integrity_repairs,
         reconstructable_start,
         statistics_start_date,
+        initial_materialization,
         processed_rows_count,
         source_rows_empty,
         archive_read_failed,
@@ -7977,7 +8099,7 @@ async fn apply_long_term_projection_incremental(
         &state.shutdown,
         crate::db_pressure::global_db_pressure_gate(),
     );
-    apply_long_term_projection_incremental_with_runtime_and_control(
+    let _ = apply_long_term_projection_incremental_with_runtime_and_control(
         &state.pool,
         &state.long_term_projection_runtime,
         LongTermProjectionIncrementalBatch {
@@ -7989,7 +8111,8 @@ async fn apply_long_term_projection_incremental(
         event_count,
         &control,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 async fn apply_long_term_projection_incremental_with_runtime(
@@ -8002,7 +8125,7 @@ async fn apply_long_term_projection_incremental_with_runtime(
     event_count: usize,
 ) -> Result<()> {
     let control = LongTermProjectionWriteControl::unrestricted();
-    apply_long_term_projection_incremental_with_runtime_and_control(
+    let _ = apply_long_term_projection_incremental_with_runtime_and_control(
         pool,
         runtime,
         LongTermProjectionIncrementalBatch {
@@ -8014,13 +8137,44 @@ async fn apply_long_term_projection_incremental_with_runtime(
         event_count,
         &control,
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 struct LongTermProjectionIncrementalBatch<'a> {
     hourly: &'a HashMap<(i64, String, String), LongTermBucket>,
     daily: &'a HashMap<(String, String, String), LongTermBucket>,
     segments: &'a [LongTermProjectionIntervalSegment],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LongTermProjectionIncrementalOutcome {
+    Published,
+    RebuildRequired,
+}
+
+async fn long_term_projection_incremental_dates_are_dirty(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    dates: &HashSet<String>,
+) -> Result<bool> {
+    if dates.is_empty() {
+        return Ok(false);
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for date in dates {
+            separated.push_bind(date);
+        }
+    }
+    query.push("))");
+    Ok(query
+        .build_query_scalar::<i64>()
+        .fetch_one(&mut **transaction)
+        .await?
+        != 0)
 }
 
 async fn apply_long_term_projection_incremental_with_runtime_and_control(
@@ -8030,7 +8184,7 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
     next_cursor: i64,
     event_count: usize,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
+) -> Result<LongTermProjectionIncrementalOutcome> {
     let rollup_rows = batch.hourly.len() + batch.daily.len();
     let mutation_rows = rollup_rows + batch.segments.len();
     if mutation_rows > LONG_TERM_PROJECTION_INCREMENTAL_MUTATION_ROWS {
@@ -8079,6 +8233,11 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
     loaded_dates.extend(dates.iter().cloned());
 
     let (mut tx, permit) = control.begin(pool).await?;
+    if long_term_projection_incremental_dates_are_dirty(&mut tx, &dates).await? {
+        drop(tx);
+        drop(permit);
+        return Ok(LongTermProjectionIncrementalOutcome::RebuildRequired);
+    }
     upsert_long_term_projection_interval_segments_in_transaction(&mut tx, batch.segments).await?;
     for bucket in batch.hourly.values() {
         let key = projection_interval_key(
@@ -8144,7 +8303,7 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
     let mut runtime = runtime.lock().await;
     runtime.interval_index = interval_index;
     runtime.loaded_interval_dates = loaded_dates;
-    Ok(())
+    Ok(LongTermProjectionIncrementalOutcome::Published)
 }
 
 fn long_term_projection_interval_key_is_for_dates(
@@ -8312,6 +8471,20 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure long-term projection date publication table")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_archive_compatibility (
+            file_path TEXT PRIMARY KEY,
+            archive_sha256 TEXT NOT NULL,
+            has_legacy_crossing INTEGER NOT NULL,
+            has_rfc3339 INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection archive compatibility table")?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_long_term_projection_daily_backups_token_date ON long_term_projection_daily_backups (rebuild_token, stats_date)",
     )
@@ -9431,6 +9604,7 @@ mod tests {
                 completed_integrity_repairs: &HashSet::new(),
                 reconstructable_start: date,
                 statistics_start_date: Some(&date_text),
+                initial_materialization: true,
                 processed_rows_count: daily.len() as i64,
                 source_rows_empty: false,
                 archive_read_failed: false,
@@ -9481,6 +9655,7 @@ mod tests {
                 completed_integrity_repairs: &HashSet::new(),
                 reconstructable_start: date,
                 statistics_start_date: Some(&date_text),
+                initial_materialization: true,
                 processed_rows_count: daily.len() as i64,
                 source_rows_empty: false,
                 archive_read_failed: false,
@@ -9582,6 +9757,7 @@ mod tests {
                 completed_integrity_repairs: &HashSet::new(),
                 reconstructable_start: date,
                 statistics_start_date: Some(&date_text),
+                initial_materialization: true,
                 processed_rows_count: 1,
                 source_rows_empty: false,
                 archive_read_failed: false,
@@ -12527,6 +12703,114 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incremental_projection_rebuilds_when_a_dirty_marker_arrives_after_ready_read() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let event = build_long_term_projection_event(&LongTermInvocationRow {
+            id: 1,
+            invoke_id: Some("dirty-race".to_string()),
+            occurred_at: "2026-07-26 10:00:00".to_string(),
+            status: Some("success".to_string()),
+            model: Some("gpt-5".to_string()),
+            request_model: None,
+            response_model: None,
+            reasoning_effort: None,
+            upstream_account_id: None,
+            upstream_account_kind: None,
+            upstream_account_name: None,
+            total_tokens: Some(100),
+            output_tokens: None,
+            cost: None,
+            t_total_ms: Some(1_000.0),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            t_upstream_stream_ms: None,
+            error_message: None,
+        });
+        let date = "2026-07-26";
+        sqlx::query(
+            "INSERT INTO long_term_projection_bucket_state (bucket_date, interval_baseline_ready) VALUES (?1, 1)",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("seed ready bucket");
+        let ready_dates = load_long_term_projection_ready_dates(&pool, &event.bucket_dates)
+            .await
+            .expect("ready snapshot");
+        assert!(event.bucket_dates.is_subset(&ready_dates));
+
+        // A correction can land after the ready read and before the incremental transaction.
+        sqlx::query(
+            "INSERT INTO long_term_projection_dirty_buckets (bucket_date, repair_reason) VALUES (?1, 'test-race')",
+        )
+        .bind(date)
+        .execute(&pool)
+        .await
+        .expect("queue correction after ready read");
+        let runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let outcome = apply_long_term_projection_incremental_with_runtime_and_control(
+            &pool,
+            &runtime,
+            LongTermProjectionIncrementalBatch {
+                hourly: &event.hourly,
+                daily: &event.daily,
+                segments: &event.segments,
+            },
+            event.row_id,
+            1,
+            &control,
+        )
+        .await
+        .expect("dirty revalidation");
+        assert_eq!(
+            outcome,
+            LongTermProjectionIncrementalOutcome::RebuildRequired
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_interval_state"
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("no canonical interval publication"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_usage_daily")
+                .fetch_one(&pool)
+                .await
+                .expect("no mixed daily publication"),
+            0
+        );
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("unadvanced cursor"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1",
+            )
+            .bind(date)
+            .fetch_one(&pool)
+            .await
+            .expect("durable dirty marker"),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_projection_intervals_migrate_without_losing_the_canonical_interval() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -14374,7 +14658,8 @@ mod tests {
             detail.contains("idx_codex_invocations_long_term_projection_text_end")
         }));
 
-        let rows = load_long_term_projection_rows_for_date(&pool, date, start, end)
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let rows = load_long_term_projection_rows_for_date(&pool, date, start, end, &control)
             .await
             .expect("projection rows");
 
@@ -14397,7 +14682,7 @@ mod tests {
             ])
         );
 
-        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26")
+        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26", &control)
             .await
             .expect("projection rebuild retains the nanosecond crossing");
         assert!(
@@ -14600,6 +14885,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_compatibility_cache_is_checksum_scoped() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_projection_schema(&pool)
+            .await
+            .expect("projection schema");
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let original = LongTermArchiveCompatibility {
+            has_legacy_crossing: true,
+            has_rfc3339: false,
+        };
+        persist_long_term_archive_compatibility(
+            &pool,
+            "archive.sqlite.gz",
+            "archive-sha-one",
+            original,
+            &control,
+        )
+        .await
+        .expect("persist archive capability");
+        assert_eq!(
+            load_long_term_archive_compatibility(&pool, "archive.sqlite.gz", "archive-sha-one")
+                .await
+                .expect("load matching capability"),
+            Some(original)
+        );
+        assert_eq!(
+            load_long_term_archive_compatibility(&pool, "archive.sqlite.gz", "archive-sha-two")
+                .await
+                .expect("reject stale capability"),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn archive_range_query_keeps_fractional_rfc3339_cross_day_rows() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -14706,23 +15029,31 @@ mod tests {
                 && detail.contains("occurred_at>? AND occurred_at<?")
         }));
 
-        let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
-            .bind(&start_text)
-            .bind(start.timestamp())
-            .bind(end.timestamp())
-            .fetch_one(&pool)
+        let compatibility = inspect_long_term_archive_compatibility(&pool, &queries.parts)
             .await
             .expect("archive compatibility probe");
-        assert_eq!(compatibility, (0, 1));
-        let rows = load_long_term_archive_invocation_rows_for_range(&pool, &queries, start, end)
-            .await
-            .expect("archive range rows");
+        assert_eq!(
+            compatibility,
+            LongTermArchiveCompatibility {
+                has_legacy_crossing: false,
+                has_rfc3339: true,
+            }
+        );
+        let rows = load_long_term_archive_invocation_rows_for_range(
+            &pool,
+            &queries,
+            compatibility,
+            start,
+            end,
+        )
+        .await
+        .expect("archive range rows");
         let ids = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
         assert_eq!(ids, vec![1, 2, 5, 7, 8]);
     }
 
     #[tokio::test]
-    async fn archive_range_skips_compatibility_result_queries_for_standard_timestamps() {
+    async fn archive_range_uses_cached_canonical_capability_without_a_scan() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -14765,17 +15096,32 @@ mod tests {
             .single()
             .expect("Shanghai next day start");
         let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
-        let compatibility = sqlx::query_as::<_, (i64, i64)>(&queries.compatibility)
-            .bind(&start_text)
-            .bind(start.timestamp())
-            .bind(end.timestamp())
-            .fetch_one(&pool)
-            .await
-            .expect("archive compatibility probe");
-        assert_eq!(compatibility, (0, 0));
-        let rows = load_long_term_archive_invocation_rows_for_range(&pool, &queries, start, end)
-            .await
-            .expect("standard archive range rows");
+        let end_text = end.format("%Y-%m-%d %H:%M:%S").to_string();
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            queries.canonical
+        ))
+        .bind(&start_text)
+        .bind(&end_text)
+        .fetch_all(&pool)
+        .await
+        .expect("canonical archive query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_standard_occurred_at")
+                && detail.contains("occurred_at>? AND occurred_at<?")
+        }));
+        let rows = load_long_term_archive_invocation_rows_for_range(
+            &pool,
+            &queries,
+            LongTermArchiveCompatibility {
+                has_legacy_crossing: false,
+                has_rfc3339: false,
+            },
+            start,
+            end,
+        )
+        .await
+        .expect("standard archive range rows");
         assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![1]);
     }
 
@@ -15225,7 +15571,8 @@ mod tests {
         .await
         .expect("first repaired invocation");
 
-        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26")
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let rebuild = build_long_term_projection_date_rebuild(&pool, "2026-07-26", &control)
             .await
             .expect("date rebuild");
         commit_long_term_projection_date_rebuilds(&pool, &[rebuild], Some(1), &[], false)
