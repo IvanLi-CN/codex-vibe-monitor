@@ -150,6 +150,17 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_api_key_account(&state, "Fenced", "upstream-fenced").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("publish initial live-first routing snapshot");
@@ -1156,6 +1167,17 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("install the candidate snapshot before exercising live-first cancellation");
@@ -4455,6 +4477,9 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
     )
     .await
     .expect("seed sticky route toward secondary");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket owner and sticky routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -4808,6 +4833,9 @@ async fn websocket_response_create_turns_persist_usage_per_terminal() {
         Some(&format!("http://{upstream_addr}")),
     )
     .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket multi-turn routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -5356,6 +5384,9 @@ async fn websocket_handshake_failure_retries_next_candidate_with_retained_first_
     )
     .await
     .expect("seed sticky route toward failing account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket failover routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -6505,7 +6536,9 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     .expect("wait hook worker should join");
     set_test_account_status(&state.pool, delayed_id, "active").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
-    state.pool_routing_snapshot.request_refresh();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install recovered routing snapshot before waking the waiter");
     state.pool_routing_availability.publish();
 
     let response = request_task

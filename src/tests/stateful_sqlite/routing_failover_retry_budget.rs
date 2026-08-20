@@ -2623,6 +2623,9 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_insta
     .await;
     let reservation_key = "guarded-broadcast-failure-reservation";
     let model = "gpt-guarded-broadcast-failure";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed guarded broadcast model route");
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("install initial routing snapshot");
@@ -2665,9 +2668,15 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_insta
         "the committed in-memory failure fence must wake NoCandidate waiters"
     );
     assert!(matches!(
-        resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
-            .await
-            .expect("resolve from the in-memory failure fence"),
+        crate::upstream_accounts::resolve_pool_account_for_request(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve from the in-memory failure fence"),
         PoolAccountResolution::NoCandidate(_)
     ));
 }
