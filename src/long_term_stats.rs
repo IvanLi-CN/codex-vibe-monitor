@@ -1647,7 +1647,7 @@ async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<Str
     );
     queue_long_term_projection_repairs_with_control(
         &state.pool,
-        &[today],
+        &[today.clone()],
         "daily_verify",
         &control,
     )
@@ -2145,7 +2145,8 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             cursor = direct_cursor;
         }
         if let Some(event) = repair_event {
-            let repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
+            let mut repair_dates = event.bucket_dates.into_iter().collect::<Vec<_>>();
+            repair_dates.sort();
             if !long_term_projection_allows_expensive_repair(trigger) {
                 deferred_repair_count = deferred_repair_count.saturating_add(repair_dates.len());
                 deferred_repair_backoff_count =
@@ -3124,10 +3125,35 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     if rebuilds.len() > LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES {
-        bail!(
-            "long-term projection rebuild publication has {} dates; maximum is {LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES}",
-            rebuilds.len()
-        );
+        for (index, rebuild_chunk) in rebuilds
+            .chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES)
+            .enumerate()
+        {
+            let last_chunk =
+                (index + 1) * LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES >= rebuilds.len();
+            let chunk_dates = rebuild_chunk
+                .iter()
+                .map(|rebuild| rebuild.bucket_date.as_str())
+                .collect::<HashSet<_>>();
+            let chunk_dirty = clear_dirty_buckets
+                .iter()
+                .filter(|dirty| chunk_dates.contains(dirty.bucket_date.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            // Older chunks publish a complete replacement but retain the cursor. If the
+            // process stops before the final chunk, the terminal event is retried rather than
+            // skipped; only the final bounded publication advances it.
+            commit_long_term_projection_date_rebuilds_with_control(
+                pool,
+                rebuild_chunk,
+                last_chunk.then_some(next_cursor).flatten(),
+                &chunk_dirty,
+                last_chunk && mark_ready,
+                control,
+            )
+            .await?;
+        }
+        return Ok(());
     }
     let repaired_start_date = rebuilds
         .iter()
@@ -3139,10 +3165,7 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
 
     let mut rebuild_tokens = Vec::with_capacity(rebuilds.len());
     for rebuild in rebuilds {
-        let token = format!(
-            "{}:{}:{}",
-            rebuild.bucket_date, rebuild.start_epoch, rebuild.end_epoch
-        );
+        let token = format!("long-term-date:{}", rebuild.bucket_date);
         ensure_long_term_projection_daily_backup(pool, rebuild, &token, control).await?;
         clear_long_term_projection_rebuild_members(pool, &token, control).await?;
         rebuild_tokens.push(token.clone());
@@ -3257,6 +3280,20 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     // cursor are one publication boundary. A cancelled worker therefore leaves either the
     // last-good snapshot and old cursor, or a fully published replacement and new cursor.
     let (mut transaction, permit) = control.begin(pool).await?;
+    if mark_ready {
+        let initial_marker = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .flatten();
+        if initial_marker.as_deref() == Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR) {
+            bail!(
+                "long-term projection baseline cannot publish over an incomplete initial materialization"
+            );
+        }
+    }
     let published_dirty = clear_dirty_buckets
         .iter()
         .filter(|dirty| {
@@ -5788,7 +5825,10 @@ async fn apply_long_term_refresh_rollups_with_control(
     let mut refresh_backups = Vec::with_capacity(recomputed_dates.len());
     for date in recomputed_dates {
         let bucket_date = date.to_string();
-        let rebuild_token = format!("long-term-refresh:{bucket_date}");
+        // P2 and the initial refresher intentionally share the durable owner for a date. If a
+        // P2 snapshot won the race just before the initial marker was persisted, the refresher
+        // can finish and release that same last-good backup instead of being stranded by it.
+        let rebuild_token = format!("long-term-date:{bucket_date}");
         // The full refresher also writes in bounded transactions. Keep the same durable daily
         // snapshot used by a P2 date rebuild so pressure or shutdown cannot leave a deleted
         // prefix as the only recoverable state.
@@ -5889,20 +5929,6 @@ async fn apply_long_term_refresh_rollups_with_control(
         info!(stats_date = %date, "long-term stats integrity repair completed");
     }
 
-    persist_long_term_refresh_archive_markers_with_control(
-        pool,
-        LongTermRefreshArchiveMarkers {
-            archive_markers,
-            archive_read_failed,
-            failed_archive_paths,
-            clear_all_attempt_markers,
-            failed_archive_ranges,
-            attempt_archive_markers,
-        },
-        control,
-    )
-    .await?;
-
     let pending_integrity_repairs = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date >= ?1",
     )
@@ -5944,6 +5970,21 @@ async fn apply_long_term_refresh_rollups_with_control(
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await?;
+    // A retry may safely rebuild an already-published date. It cannot safely skip an archive
+    // while its replay marker exists but the replacement is still behind a backup pointer.
+    persist_long_term_refresh_archive_markers_with_control(
+        pool,
+        LongTermRefreshArchiveMarkers {
+            archive_markers,
+            archive_read_failed,
+            failed_archive_paths,
+            clear_all_attempt_markers,
+            failed_archive_ranges,
+            attempt_archive_markers,
+        },
+        control,
+    )
+    .await?;
     for (_, rebuild_token) in refresh_backups {
         clear_long_term_projection_daily_backup(pool, &rebuild_token, control).await?;
     }
@@ -10551,6 +10592,71 @@ mod tests {
         .await
         .expect("released claim");
         assert_eq!(claims, 0);
+    }
+
+    #[tokio::test]
+    async fn initial_marker_blocks_a_stale_baseline_from_publishing_ready() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1, last_error = ?2 WHERE id = ?3")
+            .bind(LONG_TERM_STATUS_RUNNING)
+            .bind(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("persist incomplete initial marker");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let (start_epoch, end_epoch) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let rebuild = LongTermProjectionDateRebuild {
+            bucket_date: date.to_string(),
+            start_epoch,
+            end_epoch,
+            hourly: HashMap::new(),
+            daily: HashMap::new(),
+            interval_segments: Vec::new(),
+            source_row_count: 0,
+        };
+        let control = LongTermProjectionWriteControl::unrestricted();
+
+        let error = commit_long_term_projection_date_rebuilds_with_control(
+            &pool,
+            &[rebuild],
+            Some(321),
+            &[],
+            true,
+            &control,
+        )
+        .await
+        .expect_err("stale P2 baseline must not publish over the initial marker");
+        assert!(
+            error
+                .to_string()
+                .contains("incomplete initial materialization")
+        );
+        let state = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("initial state remains retryable");
+        assert_eq!(state.0, LONG_TERM_STATUS_RUNNING);
+        assert_eq!(
+            state.1.as_deref(),
+            Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR)
+        );
+        assert_eq!(
+            load_long_term_projection_cursor(&pool)
+                .await
+                .expect("cursor remains before rejected publication"),
+            0
+        );
     }
 
     #[tokio::test]
