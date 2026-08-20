@@ -3400,6 +3400,112 @@ async fn committed_model_failure_fence_keeps_another_model_on_the_same_account_s
 }
 
 #[tokio::test]
+async fn stale_explicit_model_failure_does_not_fence_newer_successful_snapshot_route() {
+    async fn insert_attempt(
+        state: &AppState,
+        account_id: i64,
+        model: &str,
+        invoke_id: &str,
+        started_at: &str,
+        status: &str,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, ?5, ?6)",
+        )
+        .bind(invoke_id)
+        .bind(format_utc_iso(Utc::now()))
+        .bind(model)
+        .bind(account_id)
+        .bind(started_at)
+        .bind(status)
+        .execute(&state.pool)
+        .await
+        .expect("insert model route attempt")
+        .last_insert_rowid()
+    }
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Stale Explicit Model Failure",
+        "stale-explicit-model-failure-key",
+    )
+    .await;
+    let model = "gpt-stale-explicit-model-failure";
+    let now = Utc::now();
+    let old_started_at = format_utc_iso(now - ChronoDuration::seconds(5));
+    let newer_started_at = format_utc_iso(now - ChronoDuration::seconds(1));
+    let old_attempt = insert_attempt(
+        &state,
+        account_id,
+        model,
+        "stale-explicit-model-old",
+        &old_started_at,
+        "failed",
+    )
+    .await;
+    let newer_attempt = insert_attempt(
+        &state,
+        account_id,
+        model,
+        "stale-explicit-model-newer",
+        &newer_started_at,
+        "pending",
+    )
+    .await;
+
+    record_model_route_success_from_attempt(
+        &state.pool,
+        account_id,
+        newer_attempt,
+        Some(&newer_started_at),
+    )
+    .await
+    .expect("record newer successful model attempt");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot after newer model success");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::BAD_REQUEST,
+        "model unavailable",
+        Some("stale-explicit-model-old"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(old_attempt),
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record stale explicit model failure without replacing newer success");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve newer-successful model from the in-memory snapshot");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
 async fn committed_oauth_failure_fence_excludes_every_model_on_that_account() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

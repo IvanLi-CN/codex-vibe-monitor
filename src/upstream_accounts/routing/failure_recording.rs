@@ -1065,24 +1065,33 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     {
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
     }
-    if !api_key_temporary_http_failure && let Some(attempt_id) = attempt_id {
-        record_model_route_failure_from_attempt(
-            pool,
-            account_id,
-            attempt_id,
-            status,
-            Some(error_message),
-            Some(classification.failure_kind),
-        )
-        .await?;
-    }
+    let model_failure_recorded = if !api_key_temporary_http_failure {
+        if let Some(attempt_id) = attempt_id {
+            record_model_route_failure_from_attempt(
+                pool,
+                account_id,
+                attempt_id,
+                status,
+                Some(error_message),
+                Some(classification.failure_kind),
+            )
+            .await?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && explicit_model_failure
         && !api_key_temporary_http_failure
     {
         return Ok(PoolRouteFailureOutcome {
             sticky_route_cleared: false,
-            scope: PoolRouteFailureScope::ExactModel,
+            scope: committed_failure_scope(
+                model_failure_recorded,
+                PoolRouteFailureScope::ExactModel,
+            ),
         });
     }
 

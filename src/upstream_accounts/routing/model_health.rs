@@ -1604,7 +1604,7 @@ pub(crate) async fn record_model_route_failure_from_attempt(
     status: StatusCode,
     error_message: Option<&str>,
     failure_kind: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     record_model_route_failure_from_attempt_with_start(
         pool,
         account_id,
@@ -1698,7 +1698,7 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
     error_message: Option<&str>,
     failure_kind: Option<&str>,
     request_started_at: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     record_model_route_failure_from_attempt_inner(
         pool,
         account_id,
@@ -1711,7 +1711,6 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
         None,
     )
     .await
-    .map(|_| ())
 }
 
 #[expect(
