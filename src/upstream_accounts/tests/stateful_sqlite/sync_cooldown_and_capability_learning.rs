@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 #[test]
 fn explicit_model_failure_recognizes_standard_not_found_and_rate_limit_shapes() {
@@ -345,6 +346,138 @@ async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
     assert_ne!(first_page.items[0].id, third_page.items[0].id);
     assert_ne!(second_page.items[0].id, third_page.items[0].id);
     assert!(third_page.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn model_routing_live_query_stays_bounded_for_dense_recent_timeline() {
+    const TIMELINE_ROWS: usize = 4_000;
+    const INSERT_BATCH_SIZE: usize = 250;
+    const ATTEMPT_ID_BASE: i64 = 10_000_000;
+    const LINKED_EVENT_ID_BASE: i64 = 20_000_000;
+    const STANDALONE_EVENT_ID_BASE: i64 = 40_000_000;
+
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline load account",
+        "timeline-load-api-key",
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-timeline-load";
+    let now = Utc::now();
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .expect("begin dense timeline fixture transaction");
+
+    for batch_start in (0..TIMELINE_ROWS).step_by(INSERT_BATCH_SIZE) {
+        let batch_end = (batch_start + INSERT_BATCH_SIZE).min(TIMELINE_ROWS);
+        let mut attempts = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, status) ",
+        );
+        attempts.push_values(batch_start..batch_end, |mut row, index| {
+            let occurred_at = format_utc_iso(now - ChronoDuration::seconds((index % 720) as i64));
+            row.push_bind(ATTEMPT_ID_BASE + index as i64)
+                .push_bind(format!("timeline-load-attempt-{index}"))
+                .push_bind(occurred_at)
+                .push_bind("/v1/responses")
+                .push_bind("pool")
+                .push_bind(model)
+                .push_bind(account_id)
+                .push_bind("timeline-load")
+                .push_bind(1_i64)
+                .push_bind(1_i64)
+                .push_bind(0_i64)
+                .push_bind("success");
+        });
+        attempts
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense timeline attempts");
+
+        let mut linked_events = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_account_events (id, account_id, occurred_at, action, source, attempt_id, model, model_route_state_before, model_route_state_after, created_at) ",
+        );
+        linked_events.push_values(
+            (batch_start..batch_end).flat_map(|attempt_index| {
+                (0..3).map(move |event_index| (attempt_index, event_index))
+            }),
+            |mut row, (attempt_index, event_index)| {
+                let occurred_at =
+                    format_utc_iso(now - ChronoDuration::seconds((attempt_index % 720) as i64));
+                row.push_bind(LINKED_EVENT_ID_BASE + (attempt_index * 3 + event_index) as i64)
+                    .push_bind(account_id)
+                    .push_bind(occurred_at.clone())
+                    .push_bind("model_route_state_changed")
+                    .push_bind("call")
+                    .push_bind(ATTEMPT_ID_BASE + attempt_index as i64)
+                    .push_bind(model)
+                    .push_bind("available")
+                    .push_bind(if event_index == 2 {
+                        "degraded"
+                    } else {
+                        "available"
+                    })
+                    .push_bind(occurred_at);
+            },
+        );
+        linked_events
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense linked timeline events");
+
+        let mut standalone_events = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_account_events (id, account_id, occurred_at, action, source, attempt_id, model, model_route_state_before, model_route_state_after, created_at) ",
+        );
+        standalone_events.push_values(batch_start..batch_end, |mut row, index| {
+            let occurred_at = format_utc_iso(now - ChronoDuration::seconds((index % 720) as i64));
+            row.push_bind(STANDALONE_EVENT_ID_BASE + index as i64)
+                .push_bind(account_id)
+                .push_bind(occurred_at.clone())
+                .push_bind("model_route_state_changed")
+                .push_bind("call")
+                .push_bind(Option::<i64>::None)
+                .push_bind(model)
+                .push_bind("available")
+                .push_bind("degraded")
+                .push_bind(occurred_at);
+        });
+        standalone_events
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense standalone timeline events");
+    }
+    transaction
+        .commit()
+        .await
+        .expect("commit dense timeline fixture");
+
+    let started = Instant::now();
+    let Json(live) = get_model_routing_live(
+        State(state),
+        Query(ModelRoutingLiveQuery {
+            window: Some("15m".to_string()),
+            model: None,
+            state: None,
+            limit: Some(1),
+        }),
+    )
+    .await
+    .expect("load the production dense 15-minute timeline");
+    let elapsed = started.elapsed();
+
+    assert_eq!(live.records.len(), 1);
+    assert_eq!(live.records[0].kind, "attempt");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the dense production timeline request must remain bounded; elapsed={elapsed:?}"
+    );
 }
 
 #[tokio::test]
