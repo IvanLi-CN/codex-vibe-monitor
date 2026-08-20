@@ -7372,12 +7372,8 @@ impl SummaryProjection {
             if let Some(response) = self.all_time_by_account.get(&upstream_account_id) {
                 return Ok(response.clone());
             }
-            if upstream_account_id.is_some() {
-                if !account_has_projection_data
-                    && !self
-                        .known_account_ids
-                        .contains(&upstream_account_id.expect("account branch has an account id"))
-                {
+            if let Some(account_id) = upstream_account_id {
+                if !account_has_projection_data && !self.known_account_ids.contains(&account_id) {
                     return Ok(self.empty_all_time_account_response(upstream_account_id));
                 }
                 return Err(ApiError::unavailable(anyhow!(
