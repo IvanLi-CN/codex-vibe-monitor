@@ -1262,7 +1262,15 @@ async fn prepare_capture_request_body(
                             live_first_attempt_failed = true;
                             live_first_request_body_first_byte_at =
                                 *first_upstream_body_poll_at_rx.borrow();
-                            live_first_failed_account_id = Some(initial_account_id);
+                            // Local model-cap rejection never reached this account, and the
+                            // response timeout policy must retain its same-route retry. Only a
+                            // completed non-timeout upstream attempt is excluded from replay.
+                            live_first_failed_account_id = (error.account.is_some()
+                                && !pool_failure_is_timeout_shaped(
+                                    error.failure_kind,
+                                    &error.message,
+                                ))
+                            .then_some(initial_account_id);
                             warn!(
                                 proxy_request_id,
                                 error = %error.message,

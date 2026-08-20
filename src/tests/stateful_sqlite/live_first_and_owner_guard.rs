@@ -1048,6 +1048,9 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the candidate snapshot before exercising live-first cancellation");
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
         .expect("resolve pool runtime timeouts before blocking model mapping");

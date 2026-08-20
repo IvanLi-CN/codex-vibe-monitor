@@ -252,8 +252,13 @@ struct PoolRoutingSnapshotRefreshState {
 const REFRESH_PENDING_BIT: u64 = 1 << 63;
 const REFRESH_PUBLISHING_BIT: u64 = 1 << 62;
 const REFRESH_RECONCILING_BIT: u64 = 1 << 61;
-const REFRESH_GENERATION_MASK: u64 =
-    !(REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT);
+// A stale normal build permits one successor to install, then leaves later
+// mutations for the low-frequency reconciler instead of rebuilding forever.
+const REFRESH_COALESCED_SUCCESSOR_BIT: u64 = 1 << 60;
+const REFRESH_GENERATION_MASK: u64 = !(REFRESH_PENDING_BIT
+    | REFRESH_PUBLISHING_BIT
+    | REFRESH_RECONCILING_BIT
+    | REFRESH_COALESCED_SUCCESSOR_BIT);
 
 impl Default for PoolRoutingSnapshotStore {
     fn default() -> Self {
@@ -324,11 +329,12 @@ impl PoolRoutingSnapshotStore {
                 return None;
             }
             let refresh_generation = refresh_epoch & REFRESH_GENERATION_MASK;
+            let successor = refresh_epoch & REFRESH_COALESCED_SUCCESSOR_BIT;
             if self
                 .refresh_epoch
                 .compare_exchange(
                     refresh_epoch,
-                    refresh_generation | REFRESH_RECONCILING_BIT,
+                    refresh_generation | REFRESH_RECONCILING_BIT | successor,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -357,21 +363,29 @@ impl PoolRoutingSnapshotStore {
             || refresh_epoch & REFRESH_GENERATION_MASK != refresh_generation
         {
             drop(refresh_state);
-            self.abandon_refresh();
+            self.abandon_refresh(Some(refresh_generation));
             return false;
         }
+        let deferred_reconcile = refresh_epoch & REFRESH_COALESCED_SUCCESSOR_BIT != 0
+            && refresh_epoch & REFRESH_PENDING_BIT != 0;
         if self
             .refresh_epoch
             .compare_exchange(
                 refresh_epoch,
-                refresh_generation | REFRESH_PUBLISHING_BIT,
+                refresh_generation
+                    | REFRESH_PUBLISHING_BIT
+                    | if deferred_reconcile {
+                        REFRESH_PENDING_BIT
+                    } else {
+                        0
+                    },
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
             )
             .is_err()
         {
             drop(refresh_state);
-            self.abandon_refresh();
+            self.abandon_refresh(Some(refresh_generation));
             return false;
         }
         // A mutation cannot advance the epoch while this publishing lease is
@@ -381,15 +395,27 @@ impl PoolRoutingSnapshotStore {
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
-        let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
-        refresh_state.pending = false;
-        self.refresh_epoch
-            .store(refresh_generation, std::sync::atomic::Ordering::Release);
+        let wake_waiters = if deferred_reconcile {
+            false
+        } else {
+            std::mem::take(&mut refresh_state.wake_waiters)
+        };
+        refresh_state.pending = deferred_reconcile;
+        self.refresh_epoch.store(
+            refresh_generation
+                | if deferred_reconcile {
+                    REFRESH_PENDING_BIT
+                } else {
+                    0
+                },
+            std::sync::atomic::Ordering::Release,
+        );
         drop(refresh_state);
-        if wake_waiters
-            || self
-                .deferred_availability_wake
-                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        if !deferred_reconcile
+            && (wake_waiters
+                || self
+                    .deferred_availability_wake
+                    .swap(false, std::sync::atomic::Ordering::AcqRel))
         {
             self.publish_availability_if_ready(publish_availability);
         }
@@ -415,7 +441,10 @@ impl PoolRoutingSnapshotStore {
         if self
             .refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire)
-            & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT)
+            & (REFRESH_PENDING_BIT
+                | REFRESH_PUBLISHING_BIT
+                | REFRESH_RECONCILING_BIT
+                | REFRESH_COALESCED_SUCCESSOR_BIT)
             != 0
         {
             return true;
@@ -437,7 +466,12 @@ impl PoolRoutingSnapshotStore {
             let epoch = self
                 .refresh_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
-            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT | REFRESH_RECONCILING_BIT) != 0
+            if epoch
+                & (REFRESH_PENDING_BIT
+                    | REFRESH_PUBLISHING_BIT
+                    | REFRESH_RECONCILING_BIT
+                    | REFRESH_COALESCED_SUCCESSOR_BIT)
+                != 0
             {
                 // A release during a snapshot rebuild must wake only after its
                 // fenced snapshot is current. Retain the wake across both the
@@ -479,7 +513,7 @@ impl PoolRoutingSnapshotStore {
         }
     }
 
-    fn abandon_refresh(&self) {
+    fn abandon_refresh(&self, expected_generation: Option<u64>) {
         loop {
             let epoch = self
                 .refresh_epoch
@@ -487,11 +521,18 @@ impl PoolRoutingSnapshotStore {
             if epoch & REFRESH_RECONCILING_BIT == 0 {
                 return;
             }
+            let stale_generation = expected_generation
+                .is_some_and(|generation| epoch & REFRESH_GENERATION_MASK != generation);
+            let successor = if stale_generation && epoch & REFRESH_PENDING_BIT != 0 {
+                REFRESH_COALESCED_SUCCESSOR_BIT
+            } else {
+                0
+            };
             if self
                 .refresh_epoch
                 .compare_exchange(
                     epoch,
-                    epoch & !REFRESH_RECONCILING_BIT,
+                    (epoch & !REFRESH_RECONCILING_BIT) | successor,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -514,6 +555,24 @@ impl PoolRoutingSnapshotStore {
             if epoch & REFRESH_PENDING_BIT != 0 {
                 return false;
             }
+            if epoch & REFRESH_COALESCED_SUCCESSOR_BIT != 0 {
+                if self
+                    .refresh_epoch
+                    .compare_exchange(
+                        epoch,
+                        epoch | REFRESH_PENDING_BIT,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    // The successor is allowed to publish the current
+                    // snapshot. This event is picked up by the 60-second
+                    // reconciliation rather than creating another hot loop.
+                    return false;
+                }
+                continue;
+            }
             let next_generation =
                 (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
             if self
@@ -532,9 +591,9 @@ impl PoolRoutingSnapshotStore {
     }
 }
 
-pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()> {
+async fn try_refresh_pool_routing_snapshot(state: &AppState) -> Result<bool> {
     let Some(refresh_generation) = state.pool_routing_snapshot.begin_refresh() else {
-        return Ok(());
+        return Ok(false);
     };
     let snapshot = async {
     let candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
@@ -658,15 +717,30 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
     let snapshot = match snapshot {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            state.pool_routing_snapshot.abandon_refresh();
+            state.pool_routing_snapshot.abandon_refresh(None);
             return Err(error);
         }
     };
-    state
+    Ok(state
         .pool_routing_snapshot
         .complete_refresh(refresh_generation, snapshot, || {
             state.pool_routing_availability.publish()
-        });
+        }))
+}
+
+pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()> {
+    loop {
+        if try_refresh_pool_routing_snapshot(state).await? {
+            return Ok(());
+        }
+        // An explicit refresh is a completion barrier for startup and mutation
+        // callers. The background reconciler uses the one-shot form below.
+        tokio::task::yield_now().await;
+    }
+}
+
+pub(crate) async fn reconcile_pool_routing_snapshot(state: &AppState) -> Result<()> {
+    let _ = try_refresh_pool_routing_snapshot(state).await?;
     Ok(())
 }
 
@@ -746,7 +820,7 @@ mod snapshot_store_tests {
     }
 
     #[test]
-    fn events_during_reconciliation_coalesce_into_one_successor_refresh() {
+    fn sustained_events_install_one_successor_then_defer_reconciliation() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
         let first_generation = store
@@ -770,11 +844,27 @@ mod snapshot_store_tests {
             .begin_refresh()
             .expect("one successor should remain after the stale build exits");
         assert_eq!(successor, successor_generation);
+        store.request_refresh_and_wake_waiters();
+        assert_eq!(
+            store.refresh_generation(),
+            successor_generation,
+            "an event during the successor must not invalidate it into another hot rebuild"
+        );
         assert!(store.complete_refresh(successor, empty_snapshot(), || {}));
         assert!(store.current().is_some());
         assert!(
+            store.refresh_pending(),
+            "later events remain queued for the low-frequency reconciliation"
+        );
+
+        let deferred_generation = store
+            .begin_refresh()
+            .expect("the deferred reconciliation should claim the queued generation");
+        assert_eq!(deferred_generation, successor_generation);
+        assert!(store.complete_refresh(deferred_generation, empty_snapshot(), || {}));
+        assert!(
             !store.refresh_pending(),
-            "the coalesced successor should restore a current snapshot"
+            "a quiet deferred reconciliation should restore the ready state"
         );
     }
 
