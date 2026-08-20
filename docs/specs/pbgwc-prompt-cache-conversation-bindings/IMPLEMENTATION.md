@@ -5,6 +5,10 @@
 - Status: implemented
 - Canonical spec: `docs/specs/pbgwc-prompt-cache-conversation-bindings/SPEC.md`
 
+## Sticky Preview Query Plan
+
+- Account-scoped Sticky invocation previews retain the exact JSON compatibility semantics for `upstreamAccountId` and `stickyKey` with `promptCacheKey` fallback. Startup schema maintenance creates a matching composite expression index ending in `occurred_at DESC, id DESC`, so the per-key recent window avoids a SQLite temporary sort; response ordering remains deterministic in the route layer.
+
 ## Calls card projection
 
 The shared conversation Calls view uses `InvocationCardList` (the compatibility export remains `InvocationTable`) so Live and conversation drawers consume the same card projection. The projection is presentation-only: terminal timing still comes from the persisted invocation fields, while one shared one-second clock supplies elapsed values only for in-flight rows. Virtual rows retain stable invocation keys and mount the existing `InvocationWorkflowDetailPanel` in the expanded card region.
