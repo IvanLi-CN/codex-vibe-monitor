@@ -2276,8 +2276,27 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         ForwardProxyRouteResultKind::NetworkFailure,
                     )
                     .await;
-                    release_pool_routing_reservation(state.as_ref(), &reservation_key);
                     let message = err.message;
+                    if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
+                        state.as_ref(),
+                        &reservation_key,
+                        Some(&mut reservation_guard),
+                        record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                            state.as_ref(),
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                            trace_context.map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                        ),
+                    )
+                    .await
+                    {
+                        warn!(account_id = account.account_id, error = %route_err, "failed to record live-first pool transport failure");
+                    }
                     finalize_tracked_live_first_pool_attempt(
                         state.as_ref(),
                         pending_attempt_record.as_ref(),
@@ -2325,11 +2344,30 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         ForwardProxyRouteResultKind::NetworkFailure,
                     )
                     .await;
-                    release_pool_routing_reservation(state.as_ref(), &reservation_key);
                     let message = proxy_request_send_timeout_message(
                         capture_target_for_request(original_uri.path(), &method),
                         attempt_send_timeout,
                     );
+                    if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
+                        state.as_ref(),
+                        &reservation_key,
+                        Some(&mut reservation_guard),
+                        record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                            state.as_ref(),
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                            trace_context.map(|trace| trace.invoke_id.as_str()),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                        ),
+                    )
+                    .await
+                    {
+                        warn!(account_id = account.account_id, error = %route_err, "failed to record live-first pool handshake timeout");
+                    }
                     finalize_tracked_live_first_pool_attempt(
                         state.as_ref(),
                         pending_attempt_record.as_ref(),
@@ -2726,7 +2764,12 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 "failed to record compact support observation"
             );
         }
-        let route_failure_result = if oauth_transport_failure_kind.is_some() {
+        let route_failure_result = persist_pool_route_failure_then_release_with_guard(
+            state.as_ref(),
+            &reservation_key,
+            Some(&mut reservation_guard),
+            async {
+                if oauth_transport_failure_kind.is_some() {
             record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                 state.as_ref(),
                 account.account_id,
@@ -2739,7 +2782,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .and_then(|pending| pending.attempt_id),
             )
             .await
-        } else {
+                } else {
             // Live-first records the initial failure before the replay/failover path can spend
             // the group 429 retry budget. Keep sticky intact until failover records the final 429.
             record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
@@ -2761,7 +2804,10 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 prompt_cache_key.or(sticky_event_prompt_cache_key),
             )
             .await
-        };
+                }
+            },
+        )
+        .await;
         if let Err(route_err) = route_failure_result {
             warn!(
                 account_id = account.account_id,
@@ -2769,7 +2815,6 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 "failed to record pool live-attempt failure"
             );
         }
-        release_pool_routing_reservation(state.as_ref(), &reservation_key);
         finalize_tracked_live_first_pool_attempt(
             state.as_ref(),
             pending_attempt_record.as_ref(),
@@ -2844,7 +2889,10 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .await;
                 }
                 let message = format!("upstream stream error before first chunk: {err}");
-                if let Err(route_err) =
+                if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
+                    state.as_ref(),
+                    &reservation_key,
+                    Some(&mut reservation_guard),
                     record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                         state.as_ref(),
                         account.account_id,
@@ -2855,8 +2903,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
                     warn!(
                         account_id = account.account_id,
@@ -2864,7 +2913,6 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         "failed to record pool live-attempt first-chunk failure"
                     );
                 }
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
                 finalize_tracked_live_first_pool_attempt(
                     state.as_ref(),
                     pending_attempt_record.as_ref(),
@@ -4756,6 +4804,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     upstream.deferred_early_phase_cleanup_guard;
                                 let live_pool_attempt_activity_lease =
                                     upstream.live_attempt_activity_lease;
+                                let mut reservation_guard = upstream.reservation_guard;
                                 let upstream_response = upstream.response;
                                 let transport_bytes_live_counted =
                                     upstream.transport_bytes_live_counted;
@@ -4851,12 +4900,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         &mut deferred_pool_early_phase_cleanup_guard,
                                     );
                                     if pool_route_success {
-                                        consume_pool_routing_reservation(
-                                            state.as_ref(),
-                                            &pool_routing_reservation_key,
-                                        );
                                         if let Err(route_err) =
-                                            record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                                            persist_pool_route_success_then_release(
+                                                state.as_ref(),
+                                                &pool_routing_reservation_key,
+                                                record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
                                                 state.as_ref(),
                                                 account.account_id,
                                                 upstream_attempt_started_at_utc,
@@ -4870,18 +4918,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
                                                 account.sticky_affinity_generation,
+                                                ),
                                             )
                                             .await
                                         {
                                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
                                         }
                                     } else {
-                                        release_pool_routing_reservation(
+                                        if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
                                             state.as_ref(),
                                             &pool_routing_reservation_key,
-                                        );
-                                        if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                                            reservation_guard.as_mut(),
+                                            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
                                             state.as_ref(),
                                             account.account_id,
                                             &account.kind,
@@ -4903,6 +4951,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             live_prompt_cache_key
                                                 .as_deref()
                                                 .or(live_body_sticky_key.as_deref()),
+                                            ),
                                         )
                                         .await
                                     {
@@ -4943,7 +4992,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 let proxy_request_permit_for_task = proxy_request_permit;
                                 let runtime_snapshot_cleanup_guard_for_task =
                                     runtime_snapshot_cleanup_guard.take();
+                                let reservation_guard_for_task = reservation_guard;
                                 tokio::spawn(async move {
+                                    let mut reservation_guard = reservation_guard_for_task;
                                     let _runtime_snapshot_cleanup_guard_for_task =
                                         runtime_snapshot_cleanup_guard_for_task;
                                     let mut deferred_pool_early_phase_cleanup_guard_for_task =
@@ -5073,11 +5124,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         response_info.contains_encrypted_content;
 
                                     if let Some(message) = stream_error_message.as_deref() {
-                                        release_pool_routing_reservation(
+                                        if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
                                             state_for_record.as_ref(),
                                             &reservation_key_for_record,
-                                        );
-                                        if let Err(route_err) =
+                                            reservation_guard.as_mut(),
                                             record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                                                 state_for_record.as_ref(),
                                                 account.account_id,
@@ -5088,7 +5138,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
-                                            )
+                                            ),
+                                        )
                                             .await
                                         {
                                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
@@ -5096,12 +5147,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     } else if pool_route_response_status_is_success(upstream_status)
                                         && !had_logical_stream_failure
                                     {
-                                        consume_pool_routing_reservation(
-                                            state_for_record.as_ref(),
-                                            &reservation_key_for_record,
-                                        );
                                         if let Err(route_err) =
-                                            record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                                            persist_pool_route_success_then_release(
+                                                state_for_record.as_ref(),
+                                                &reservation_key_for_record,
+                                                record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
                                                 state_for_record.as_ref(),
                                                 account.account_id,
                                                 upstream_attempt_started_at_utc_for_record,
@@ -5115,6 +5165,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
                                                 account.sticky_affinity_generation,
+                                                ),
                                             )
                                             .await
                                         {
@@ -5170,12 +5221,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                     )
                                                 },
                                             );
-                                        release_pool_routing_reservation(
+                                        if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
                                             state_for_record.as_ref(),
                                             &reservation_key_for_record,
-                                        );
-                                        if let Err(route_err) =
-                                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                                            reservation_guard.as_mut(),
+                                            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
                                             state_for_record.as_ref(),
                                             account.account_id,
                                             &account.kind,
@@ -5195,6 +5245,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             prompt_cache_key_for_record
                                                 .as_deref()
                                                 .or(sticky_key_for_record.as_deref()),
+                                            ),
                                         )
                                         .await
                                     {
@@ -5501,6 +5552,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let mut deferred_pool_early_phase_cleanup_guard =
             upstream.deferred_early_phase_cleanup_guard;
         let live_pool_attempt_activity_lease = upstream.live_attempt_activity_lease;
+        let mut reservation_guard = upstream.reservation_guard;
         let upstream_response = upstream.response;
         let transport_bytes_live_counted = upstream.transport_bytes_live_counted;
         let rewritten_location = normalize_proxy_location_header(
@@ -5584,9 +5636,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                 &mut deferred_pool_early_phase_cleanup_guard,
             );
             if pool_route_success {
-                consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                    persist_pool_route_success_then_release(
+                        state.as_ref(),
+                        &pool_routing_reservation_key,
+                        record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
                         state.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc,
@@ -5600,6 +5654,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
+                        ),
                     )
                     .await
                 {
@@ -5644,9 +5699,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     }
                 }
             } else {
-                release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    persist_pool_route_failure_then_release_with_guard(
+                        state.as_ref(),
+                        &pool_routing_reservation_key,
+                        reservation_guard.as_mut(),
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
                         state.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -5665,6 +5723,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.as_deref(),
+                        ),
                     )
                     .await
                 {
@@ -5699,7 +5758,9 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let codex_imagegen_rewrite_for_record = codex_imagegen_rewrite.clone();
         let proxy_request_permit_for_task = proxy_request_permit;
         let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();
+        let reservation_guard_for_task = reservation_guard;
         tokio::spawn(async move {
+            let mut reservation_guard = reservation_guard_for_task;
             let _runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard_for_task;
             let mut deferred_pool_early_phase_cleanup_guard_for_task =
                 deferred_pool_early_phase_cleanup_guard;
@@ -5806,11 +5867,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
             let response_contains_encrypted_content = response_info.contains_encrypted_content;
 
             if let Some(message) = stream_error_message.as_deref() {
-                release_pool_routing_reservation(
+                if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
-                );
-                if let Err(route_err) =
+                    reservation_guard.as_mut(),
                     record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                         state_for_record.as_ref(),
                         account.account_id,
@@ -5821,21 +5881,21 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
                 }
             } else if pool_route_response_status_is_success(upstream_status)
                 && !had_logical_stream_failure
             {
-                consume_pool_routing_reservation(
-                    state_for_record.as_ref(),
-                    &reservation_key_for_record,
-                );
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                    persist_pool_route_success_then_release(
                         state_for_record.as_ref(),
+                        &reservation_key_for_record,
+                        record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                    state_for_record.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc_for_record,
                         sticky_key_for_record.as_deref(),
@@ -5847,7 +5907,8 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                    account.sticky_affinity_generation,
+                        ),
                     )
                     .await
                 {
@@ -5897,13 +5958,12 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     logical_stream_failure_message.clone().unwrap_or_else(|| {
                         format!("pool upstream responded with {}", upstream_status.as_u16())
                     });
-                release_pool_routing_reservation(
+                if let Err(route_err) = persist_pool_route_failure_then_release_with_guard(
                     state_for_record.as_ref(),
                     &reservation_key_for_record,
-                );
-                if let Err(route_err) =
+                    reservation_guard.as_mut(),
                     record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
-                        state_for_record.as_ref(),
+                    state_for_record.as_ref(),
                         account.account_id,
                         &account.kind,
                         account.single_account_rotation_enabled
@@ -5917,9 +5977,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
-                        prompt_cache_key_for_record.as_deref(),
-                    )
+                    account.sticky_affinity_generation,
+                    prompt_cache_key_for_record.as_deref(),
+                    ),
+                )
                     .await
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");

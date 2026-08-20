@@ -238,7 +238,7 @@ impl PoolRoutingModelRouteSnapshot {
 pub(crate) struct PoolRoutingSnapshotStore {
     snapshot: std::sync::RwLock<Option<Arc<PoolRoutingSnapshot>>>,
     refresh_tx: tokio::sync::watch::Sender<u64>,
-    refresh_generation: std::sync::atomic::AtomicU64,
+    refresh_epoch: std::sync::atomic::AtomicU64,
     refresh_state: std::sync::Mutex<PoolRoutingSnapshotRefreshState>,
 }
 
@@ -247,6 +247,10 @@ struct PoolRoutingSnapshotRefreshState {
     pending: bool,
     wake_waiters: bool,
 }
+
+const REFRESH_PENDING_BIT: u64 = 1 << 63;
+const REFRESH_PUBLISHING_BIT: u64 = 1 << 62;
+const REFRESH_GENERATION_MASK: u64 = !(REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT);
 
 impl Default for PoolRoutingSnapshotStore {
     fn default() -> Self {
@@ -260,7 +264,7 @@ impl PoolRoutingSnapshotStore {
         Self {
             snapshot: std::sync::RwLock::new(None),
             refresh_tx,
-            refresh_generation: std::sync::atomic::AtomicU64::new(0),
+            refresh_epoch: std::sync::atomic::AtomicU64::new(0),
             refresh_state: std::sync::Mutex::new(PoolRoutingSnapshotRefreshState::default()),
         }
     }
@@ -281,11 +285,10 @@ impl PoolRoutingSnapshotStore {
     }
 
     fn request_refresh_inner(&self, wake_waiters: bool) {
-        // Advance before waiting for refresh_state. A reconciler that already
-        // loaded an older database view must not publish it while this mutation
-        // is waiting to record its event.
-        self.refresh_generation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        // Atomically fence an older reconciler and make the pending state
+        // visible before waiting for refresh_state. This blocks stale capacity
+        // wakeups while a mutation is queued behind a completing refresh.
+        self.advance_refresh_epoch();
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -318,22 +321,38 @@ impl PoolRoutingSnapshotStore {
         if self.refresh_generation() != refresh_generation {
             return false;
         }
+        if self
+            .refresh_epoch
+            .compare_exchange(
+                refresh_generation | REFRESH_PENDING_BIT,
+                refresh_generation | REFRESH_PUBLISHING_BIT,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        // A mutation cannot advance the epoch while this publishing lease is
+        // held, so the snapshot built for this generation cannot be installed
+        // after a newer mutation becomes visible.
         *self
             .snapshot
             .write()
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
         let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
-        drop(refresh_state);
-        if wake_waiters && self.refresh_generation() == refresh_generation {
+        if wake_waiters {
             publish_availability();
         }
+        self.refresh_epoch
+            .store(refresh_generation, std::sync::atomic::Ordering::Release);
+        drop(refresh_state);
         true
     }
 
     pub(crate) fn invalidate(&self) {
-        self.refresh_generation
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.advance_refresh_epoch();
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -348,6 +367,14 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn refresh_pending(&self) -> bool {
+        if self
+            .refresh_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+            & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT)
+            != 0
+        {
+            return true;
+        }
         self.refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned")
@@ -355,18 +382,60 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn refresh_generation(&self) -> u64 {
-        self.refresh_generation
+        self.refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire)
+            & REFRESH_GENERATION_MASK
     }
 
     pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl FnOnce()) {
-        if !self
-            .refresh_state
-            .lock()
-            .expect("pool routing snapshot refresh lock poisoned")
-            .pending
-        {
-            publish_availability();
+        loop {
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT) != 0 {
+                return;
+            }
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    epoch,
+                    epoch | REFRESH_PUBLISHING_BIT,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                publish_availability();
+                self.refresh_epoch
+                    .store(epoch, std::sync::atomic::Ordering::Release);
+                return;
+            }
+        }
+    }
+
+    fn advance_refresh_epoch(&self) {
+        loop {
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & REFRESH_PUBLISHING_BIT != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let next_generation =
+                (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    epoch,
+                    next_generation | REFRESH_PENDING_BIT,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return;
+            }
         }
     }
 }
@@ -500,6 +569,29 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
 mod snapshot_store_tests {
     use super::*;
 
+    fn empty_snapshot() -> PoolRoutingSnapshot {
+        PoolRoutingSnapshot {
+            candidates: HashMap::new(),
+            candidate_order: Vec::new(),
+            accounts: HashMap::new(),
+            effective_rules: HashMap::new(),
+            node_shunt_assignments: UpstreamAccountNodeShuntAssignments::default(),
+            model_routes: HashMap::new(),
+            route_binding_failure_penalties: HashMap::new(),
+            transport_decode_sticky_escape_states: HashMap::new(),
+            group_metadata: HashMap::new(),
+            sticky_routes: HashMap::new(),
+            sticky_model_routes: HashMap::new(),
+            sticky_generations: HashMap::new(),
+            sticky_model_generations: HashMap::new(),
+            cache_hit_protection: CacheHitProtectionSettings {
+                enabled: false,
+                low_hit_rate_threshold_percent: 10,
+                overflow_mode: CacheHitOverflowMode::Queue,
+            },
+        }
+    }
+
     #[test]
     fn refresh_request_advances_generation_before_waiting_for_refresh_state() {
         let store = Arc::new(PoolRoutingSnapshotStore::new());
@@ -519,9 +611,30 @@ mod snapshot_store_tests {
             );
             std::thread::yield_now();
         }
+        assert!(
+            store.refresh_pending(),
+            "refresh request should mark pending before waiting on refresh state"
+        );
         drop(refresh_state);
         requested
             .join()
             .expect("refresh request thread should join");
+    }
+
+    #[test]
+    fn stale_refresh_cannot_install_after_a_newer_mutation() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh();
+        let stale_generation = store.refresh_generation();
+        store.request_refresh();
+
+        assert!(
+            !store.complete_refresh(stale_generation, empty_snapshot(), || {
+                panic!("stale refresh must not wake waiters")
+            }),
+            "a snapshot loaded before a newer mutation must not install"
+        );
+        assert!(store.current().is_none());
+        assert!(store.refresh_pending());
     }
 }

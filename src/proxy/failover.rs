@@ -1062,7 +1062,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
     let request_connection_scoped = connection_scoped_header_names(headers);
     let codex_imagegen_request = codex_imagegen_protocol_from_headers(headers).is_some();
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    let reservation_guard =
+    let mut reservation_guard =
         PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
     let direct_image_request = matches!(
         capture_target_for_request(original_uri.path(), &method),
@@ -2143,14 +2143,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
                     Ok(selection) => selection,
                     Err(message) => {
-                        if let Err(route_err) =
-                            record_pool_route_transport_failure_for_model_and_broadcast(
-                                state.as_ref(),
-                                account.account_id,
-                                sticky_key,
-                                &message,
-                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                requested_model,
+                        if let Err(route_err) = reservation_guard
+                            .fence_failure(
+                                record_pool_route_transport_failure_for_model_and_broadcast(
+                                    state.as_ref(),
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    requested_model,
+                                ),
                             )
                             .await
                         {
@@ -2180,10 +2182,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     .clone(),
                             },
                             attempted_codex_imagegen_rewrite.as_ref(),
-                        );
-                        release_pool_routing_reservation_without_availability(
-                            state.as_ref(),
-                            &reservation_key,
                         );
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
@@ -2647,7 +2645,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) =
+                            if let Err(route_err) = reservation_guard.fence_failure(
                                 record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                                     state.as_ref(),
                                     account.account_id,
@@ -2658,14 +2656,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
-                                )
-                                .await
+                                ),
+                            )
+                            .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
-                                release_pool_routing_reservation_without_availability(
-                                    state.as_ref(),
-                                    &reservation_key,
-                                );
                             }
                             store_pool_failover_error(
                                 &mut last_error,
@@ -2900,7 +2895,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 sleep(retry_delay).await;
                                 continue;
                             }
-                            if let Err(route_err) =
+                            if let Err(route_err) = reservation_guard.fence_failure(
                                 record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                                     state.as_ref(),
                                     account.account_id,
@@ -2911,14 +2906,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
-                                )
-                                .await
+                                ),
+                            )
+                            .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
-                                release_pool_routing_reservation_without_availability(
-                                    state.as_ref(),
-                                    &reservation_key,
-                                );
                             }
                             store_pool_failover_error(
                                 &mut last_error,
@@ -3884,19 +3876,23 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 let route_failure_result = if codex_imagegen_upstream_incompatible {
                     Ok(())
                 } else if oauth_transport_failure_kind.is_some() {
-                    record_pool_route_transport_failure_for_attempt_and_broadcast(
-                        state.as_ref(),
-                        account.account_id,
-                        sticky_key,
-                        normalized_failure.canonical_error_message.as_str(),
-                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                    )
-                    .await
+                    reservation_guard
+                        .fence_failure(
+                            record_pool_route_transport_failure_for_attempt_and_broadcast(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                normalized_failure.canonical_error_message.as_str(),
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                            ),
+                        )
+                        .await
                 } else {
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    reservation_guard.fence_failure(
+                        record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
                         state.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -3912,6 +3908,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.or(sticky_event_prompt_cache_key),
+                        ),
                     )
                     .await
                 };
@@ -3920,10 +3917,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         account_id = account.account_id,
                         error = %route_err,
                         "failed to record pool live-attempt failure"
-                    );
-                    release_pool_routing_reservation_without_availability(
-                        state.as_ref(),
-                        &reservation_key,
                     );
                 }
                 if let Some(observation) = compact_support_observation.as_ref()
@@ -4176,7 +4169,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             sleep(retry_delay).await;
                             continue;
                         }
-                        if let Err(route_err) =
+                        if let Err(route_err) = reservation_guard.fence_failure(
                             record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                                 state.as_ref(),
                                 account.account_id,
@@ -4187,14 +4180,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
-                            )
-                            .await
+                            ),
+                        )
+                        .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
-                            release_pool_routing_reservation_without_availability(
-                                state.as_ref(),
-                                &reservation_key,
-                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
@@ -4382,7 +4372,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             continue;
                         }
 
-                        if let Err(route_err) =
+                        if let Err(route_err) = reservation_guard.fence_failure(
                             record_pool_route_retryable_overload_failure_for_attempt_and_broadcast(
                                 state.as_ref(),
                                 account.account_id,
@@ -4392,14 +4382,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
-                            )
-                            .await
+                            ),
+                        )
+                        .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
-                            release_pool_routing_reservation_without_availability(
-                                state.as_ref(),
-                                &reservation_key,
-                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
@@ -4483,7 +4470,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to broadcast first-event gate failure snapshot"
                             );
                         }
-                        if let Err(route_err) =
+                        if let Err(route_err) = reservation_guard.fence_failure(
                             record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
                                 state.as_ref(),
                                 account.account_id,
@@ -4494,14 +4481,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
-                            )
-                            .await
+                            ),
+                        )
+                        .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
-                            release_pool_routing_reservation_without_availability(
-                                state.as_ref(),
-                                &reservation_key,
-                            );
                         }
                         store_pool_failover_error(
                             &mut last_error,
