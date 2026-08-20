@@ -2626,6 +2626,13 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_insta
     observe_model_route_seen(&state.pool, account_id, Some(model))
         .await
         .expect("seed guarded broadcast model route");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_transport_failure = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable transport-failure model health mutation");
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("install initial routing snapshot");

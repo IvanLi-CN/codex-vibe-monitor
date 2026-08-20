@@ -1890,12 +1890,8 @@ fn try_reserve_pool_routing_account_for_model_inner(
     }) {
         return false;
     }
-    if account.routing_source == PoolRoutingSelectionSource::StickyReuse
-        && proxy_key.is_none()
-        && model.is_none()
-    {
-        return true;
-    }
+    // A model-less sticky route is still an active request. It needs a tracked
+    // generation so cancellation and pre-send fences can invalidate it.
     if let (Some(limit), Some(model)) = (model_concurrency_limit, model.as_deref()) {
         let active = reservations
             .iter()
