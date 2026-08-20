@@ -1110,6 +1110,8 @@ struct LongTermProjectionWriteControl<'a> {
     stop_after_rebuild_chunk: Option<&'a CancellationToken>,
     #[cfg(test)]
     stop_after_refresh_publication: Option<&'a CancellationToken>,
+    #[cfg(test)]
+    stop_after_backup_cleanup_marker: Option<&'a CancellationToken>,
 }
 
 impl<'a> LongTermProjectionWriteControl<'a> {
@@ -1125,6 +1127,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             #[cfg(test)]
             stop_after_refresh_publication: None,
+            #[cfg(test)]
+            stop_after_backup_cleanup_marker: None,
         }
     }
 
@@ -1143,6 +1147,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             #[cfg(test)]
             stop_after_refresh_publication: None,
+            #[cfg(test)]
+            stop_after_backup_cleanup_marker: None,
         }
     }
 
@@ -1160,6 +1166,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_backup_cleanup_marker: None,
         }
     }
 
@@ -1177,6 +1184,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: Some((shutdown, committed_batches, limit)),
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_backup_cleanup_marker: None,
         }
     }
 
@@ -1192,6 +1200,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: Some(shutdown),
             stop_after_refresh_publication: None,
+            stop_after_backup_cleanup_marker: None,
         }
     }
 
@@ -1207,6 +1216,23 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: Some(shutdown),
+            stop_after_backup_cleanup_marker: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn stopping_after_backup_cleanup_marker(
+        shutdown: &'a CancellationToken,
+        gate: &'a crate::db_pressure::DbPressureGate,
+    ) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            gate: Some(gate),
+            committed_batches: None,
+            cancel_after_commit: None,
+            stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: None,
+            stop_after_backup_cleanup_marker: Some(shutdown),
         }
     }
 
@@ -1220,6 +1246,13 @@ impl<'a> LongTermProjectionWriteControl<'a> {
     fn complete_refresh_publication(&self) {
         #[cfg(test)]
         if let Some(shutdown) = self.stop_after_refresh_publication {
+            shutdown.cancel();
+        }
+    }
+
+    fn complete_backup_cleanup_marker(&self) {
+        #[cfg(test)]
+        if let Some(shutdown) = self.stop_after_backup_cleanup_marker {
             shutdown.cancel();
         }
     }
@@ -3210,6 +3243,74 @@ async fn clear_long_term_projection_daily_backup(
     }
 }
 
+async fn finish_long_term_projection_backup_cleanup(
+    pool: &Pool<Sqlite>,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    loop {
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let deleted = sqlx::query(
+            r#"
+            DELETE FROM long_term_projection_daily_backups
+            WHERE rowid IN (
+                SELECT backup.rowid
+                FROM long_term_projection_daily_backups backup
+                JOIN long_term_projection_bucket_state state
+                  ON state.bucket_date = backup.stats_date
+                 AND state.active_daily_backup_token IS NULL
+                 AND state.publication_token = 'cleanup:' || backup.rebuild_token
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM long_term_projection_daily_backup_claims claim
+                    WHERE claim.bucket_date = state.bucket_date
+                      AND claim.rebuild_token = backup.rebuild_token
+                )
+                ORDER BY backup.rowid
+                LIMIT ?1
+            )
+            "#,
+        )
+        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        control.commit(transaction, permit).await?;
+        if deleted == 0 {
+            break;
+        }
+    }
+    loop {
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let cleared = sqlx::query(
+            r#"
+            UPDATE long_term_projection_bucket_state
+            SET publication_token = NULL, updated_at = datetime('now')
+            WHERE rowid IN (
+                SELECT state.rowid
+                FROM long_term_projection_bucket_state state
+                WHERE state.active_daily_backup_token IS NULL
+                  AND state.publication_token LIKE 'cleanup:%'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM long_term_projection_daily_backups backup
+                    WHERE backup.rebuild_token = substr(state.publication_token, 9)
+                  )
+                ORDER BY state.rowid
+                LIMIT ?1
+            )
+            "#,
+        )
+        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        control.commit(transaction, permit).await?;
+        if cleared == 0 {
+            return Ok(());
+        }
+    }
+}
+
 async fn release_long_term_projection_daily_backups(
     pool: &Pool<Sqlite>,
     backups: &[(String, String)],
@@ -3218,7 +3319,7 @@ async fn release_long_term_projection_daily_backups(
     for batch in backups.chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES) {
         let (mut transaction, permit) = control.begin(pool).await?;
         let mut query = QueryBuilder::<Sqlite>::new(
-            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
+            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = 'cleanup:' || active_daily_backup_token, publication_generation = NULL, updated_at = datetime('now') WHERE ",
         );
         for (index, (bucket_date, rebuild_token)) in batch.iter().enumerate() {
             if index > 0 {
@@ -3249,7 +3350,7 @@ async fn release_long_term_projection_daily_backups(
         query.build().execute(&mut *transaction).await?;
         control.commit(transaction, permit).await?;
     }
-    Ok(())
+    finish_long_term_projection_backup_cleanup(pool, control).await
 }
 
 async fn ensure_long_term_projection_daily_backup(
@@ -3792,7 +3893,7 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     }
     if publication.publication_token.is_none() && !rebuild_tokens.is_empty() {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
+            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = 'cleanup:' || active_daily_backup_token, publication_generation = NULL, updated_at = datetime('now') WHERE ",
         );
         for (index, (rebuild, token)) in rebuilds.iter().zip(&rebuild_tokens).enumerate() {
             if index > 0 {
@@ -3845,9 +3946,7 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     .await?;
     control.commit(transaction, permit).await?;
     if publication.publication_token.is_none() {
-        for token in rebuild_tokens {
-            clear_long_term_projection_daily_backup(pool, &token, control).await?;
-        }
+        finish_long_term_projection_backup_cleanup(pool, control).await?;
     }
     Ok(())
 }
@@ -3919,7 +4018,7 @@ async fn release_long_term_projection_publication_member(
         .await?;
     }
     let released = sqlx::query(
-        "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = NULL, publication_generation = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2 AND publication_token = ?3",
+        "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = 'cleanup:' || active_daily_backup_token, publication_generation = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2 AND publication_token = ?3",
     )
     .bind(bucket_date)
     .bind(rebuild_token)
@@ -3938,7 +4037,9 @@ async fn release_long_term_projection_publication_member(
     }
     control.commit(transaction, permit).await?;
     if released != 0 {
-        clear_long_term_projection_daily_backup(pool, rebuild_token, control).await?;
+        control.complete_backup_cleanup_marker();
+        control.check()?;
+        finish_long_term_projection_backup_cleanup(pool, control).await?;
     }
     Ok(released != 0)
 }
@@ -3947,6 +4048,7 @@ async fn finish_long_term_projection_publication_cleanup(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
+    finish_long_term_projection_backup_cleanup(pool, control).await?;
     let members = sqlx::query_as::<_, LongTermProjectionPublicationMember>(
         "SELECT state.bucket_date, state.active_daily_backup_token AS rebuild_token, state.publication_token, state.publication_generation FROM long_term_projection_bucket_state state JOIN long_term_projection_date_publications publication ON publication.publication_token = state.publication_token WHERE publication.published = 1 AND state.active_daily_backup_token IS NOT NULL ORDER BY state.updated_at ASC, state.bucket_date ASC LIMIT ?1",
     )
@@ -9263,6 +9365,138 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("released cleanup pointer"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn published_backup_cleanup_recovers_after_pointer_release_cancellation() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let date_text = date.to_string();
+        let (start_epoch, _) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let bucket = LongTermBucket {
+            bucket_start_epoch: start_epoch,
+            dimension: "model".to_string(),
+            series_key: "model:previous".to_string(),
+            display_name: "previous".to_string(),
+            reasoning_effort: String::new(),
+            stats_date: Some(date_text.clone()),
+            accumulator: LongTermAccumulator {
+                calls: 1,
+                ..LongTermAccumulator::default()
+            },
+        };
+        let mut seeded = pool.begin().await.expect("seed transaction");
+        insert_long_term_daily(&mut seeded, &bucket)
+            .await
+            .expect("seed prior daily row");
+        seeded.commit().await.expect("commit prior daily row");
+
+        let rebuild_token = format!("long-term-date:{date_text}");
+        let publication_token = "test-post-release-cleanup";
+        let unrestricted = LongTermProjectionWriteControl::unrestricted();
+        ensure_long_term_projection_daily_backup_for_date(
+            &pool,
+            &date_text,
+            &rebuild_token,
+            false,
+            &unrestricted,
+        )
+        .await
+        .expect("create daily backup");
+        stage_long_term_projection_date_publication(
+            &pool,
+            &date_text,
+            &rebuild_token,
+            publication_token,
+            None,
+            &unrestricted,
+        )
+        .await
+        .expect("stage publication");
+        sqlx::query(
+            "INSERT INTO long_term_projection_date_publications (publication_token, published) VALUES (?1, 1)",
+        )
+        .bind(publication_token)
+        .execute(&pool)
+        .await
+        .expect("publish replacement");
+
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let cancelling =
+            LongTermProjectionWriteControl::stopping_after_backup_cleanup_marker(&shutdown, &gate);
+        let error = release_long_term_projection_publication_member(
+            &pool,
+            &date_text,
+            &rebuild_token,
+            None,
+            publication_token,
+            &cancelling,
+        )
+        .await
+        .expect_err("cancellation follows the durable cleanup marker");
+        assert!(long_term_projection_write_is_deferred(&error));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_bucket_state WHERE bucket_date = ?1 AND active_daily_backup_token IS NULL",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("released backup pointer"),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT publication_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("durable cleanup marker"),
+            Some(format!("cleanup:{rebuild_token}"))
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_daily_backups WHERE rebuild_token = ?1",
+            )
+            .bind(&rebuild_token)
+            .fetch_one(&pool)
+            .await
+            .expect("orphaned backup before recovery"),
+            1
+        );
+
+        finish_long_term_projection_publication_cleanup(&pool, &unrestricted)
+            .await
+            .expect("recover marked backup cleanup");
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT publication_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("cleared cleanup marker"),
+            None
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_daily_backups WHERE rebuild_token = ?1",
+            )
+            .bind(&rebuild_token)
+            .fetch_one(&pool)
+            .await
+            .expect("cleared orphaned backup"),
             0
         );
     }
