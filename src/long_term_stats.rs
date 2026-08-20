@@ -572,6 +572,7 @@ struct LongTermArchiveInvocationRangeQueries {
 struct LongTermArchiveInvocationQueryParts {
     select: String,
     terminal_filter: String,
+    status_column: String,
     t_total_ms_column: String,
 }
 
@@ -595,6 +596,7 @@ struct LongTermRfc3339Compatibility {
 struct LongTermArchiveCompatibilityRow {
     id: i64,
     occurred_at: String,
+    status: Option<String>,
     t_total_ms: Option<f64>,
 }
 
@@ -652,27 +654,45 @@ async fn inspect_long_term_archive_compatibility(
     query: &LongTermArchiveInvocationQueryParts,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<LongTermArchiveCompatibility> {
-    let compatibility_rows = format!(
-        "SELECT id, occurred_at, {} AS t_total_ms FROM codex_invocations WHERE id > ?1 AND {} ORDER BY id ASC LIMIT ?2",
-        query.t_total_ms_column, query.terminal_filter,
+    // Page by raw primary-key range rather than terminal rows. An archive can contain an
+    // arbitrarily long pending prefix, so filtering inside SQL would make one nominal 512-row
+    // page scan the full file before it can observe cancellation.
+    let first_compatibility_rows = format!(
+        "SELECT id, occurred_at, {} AS status, {} AS t_total_ms FROM codex_invocations ORDER BY id ASC LIMIT ?1",
+        query.status_column, query.t_total_ms_column,
     );
-    // SQLite permits caller-assigned non-positive rowids; start at the true lower bound so a
-    // compatibility probe cannot silently omit historical archive rows.
-    let mut cursor = i64::MIN;
+    let next_compatibility_rows = format!(
+        "SELECT id, occurred_at, {} AS status, {} AS t_total_ms FROM codex_invocations WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        query.status_column, query.t_total_ms_column,
+    );
+    let mut cursor = None;
     let mut legacy_max_duration_ms = None;
     let mut legacy_min_occurred_at = None;
     let mut rfc3339_max_duration_ms = None;
     let mut rfc3339_min_occurred_at = None;
     loop {
         control.check()?;
-        let rows = sqlx::query_as::<_, LongTermArchiveCompatibilityRow>(&compatibility_rows)
-            .bind(cursor)
-            .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-            .fetch_all(pool)
-            .await?;
+        let rows = if let Some(cursor) = cursor {
+            sqlx::query_as::<_, LongTermArchiveCompatibilityRow>(&next_compatibility_rows)
+                .bind(cursor)
+                .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+                .fetch_all(pool)
+                .await?
+        } else {
+            sqlx::query_as::<_, LongTermArchiveCompatibilityRow>(&first_compatibility_rows)
+                .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+                .fetch_all(pool)
+                .await?
+        };
         let row_count = rows.len();
         for row in rows {
-            cursor = row.id;
+            cursor = Some(row.id);
+            if row.status.as_deref().is_some_and(|status| {
+                let status = status.trim();
+                status.eq_ignore_ascii_case("running") || status.eq_ignore_ascii_case("pending")
+            }) {
+                continue;
+            }
             if row.occurred_at.contains('T') {
                 rfc3339_min_occurred_at = Some(
                     rfc3339_min_occurred_at.map_or(row.occurred_at.clone(), |current: String| {
@@ -830,14 +850,12 @@ async fn load_or_inspect_long_term_archive_compatibility(
 }
 
 fn long_term_archive_file_fingerprint(file_path: &str) -> Result<String> {
-    let metadata = fs::metadata(file_path)
-        .with_context(|| format!("failed to inspect long-term archive {file_path}"))?;
-    let modified = metadata
-        .modified()
-        .with_context(|| format!("failed to inspect long-term archive timestamp {file_path}"))?
-        .duration_since(std::time::UNIX_EPOCH)
-        .with_context(|| format!("long-term archive timestamp predates Unix epoch: {file_path}"))?;
-    Ok(format!("{}:{}", metadata.len(), modified.as_nanos()))
+    // Archive manifests are updated separately from file replacement. Hash the opened source
+    // bytes rather than its mutable metadata so a stale manifest cannot reuse old capability.
+    crate::maintenance::hourly_rollup_archive_support::sha256_hex_file(std::path::Path::new(
+        file_path,
+    ))
+    .with_context(|| format!("failed to fingerprint long-term archive {file_path}"))
 }
 
 fn long_term_archive_legacy_crossing_start(
@@ -861,15 +879,22 @@ fn long_term_rfc3339_text_bounds(
     end: chrono::DateTime<chrono_tz::Tz>,
     compatibility: &LongTermRfc3339Compatibility,
 ) -> (String, String) {
+    // RFC3339 input is accepted through -14:00 to +14:00. Relative to the +08:00 reporting
+    // zone, the raw text for an instant can therefore be twenty-two hours earlier than its local
+    // reporting time; leave one extra second for the exclusive lower boundary.
+    const LONG_TERM_RFC3339_TEXT_LOWER_OFFSET_SECONDS: i64 = 22 * 60 * 60 + 1;
     let lower = compatibility
         .max_duration_ms
         .filter(|duration_ms| duration_ms.is_finite() && *duration_ms > 0.0)
         .and_then(|duration_ms| {
             let seconds = (duration_ms / 1000.0).ceil();
-            (seconds <= (i64::MAX - 15 * 60 * 60 - 1) as f64).then_some(seconds as i64)
+            (seconds <= (i64::MAX - LONG_TERM_RFC3339_TEXT_LOWER_OFFSET_SECONDS) as f64)
+                .then_some(seconds as i64)
         })
         .and_then(|seconds| {
-            start.checked_sub_signed(ChronoDuration::seconds(seconds + 15 * 60 * 60 + 1))
+            start.checked_sub_signed(ChronoDuration::seconds(
+                seconds + LONG_TERM_RFC3339_TEXT_LOWER_OFFSET_SECONDS,
+            ))
         })
         .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string())
         .unwrap_or_else(|| compatibility.min_occurred_at.clone());
@@ -1094,6 +1119,7 @@ async fn long_term_archive_invocation_query_parts(
         terminal_filter: format!(
             "LOWER(TRIM(COALESCE({status_column}, ''))) NOT IN ('running', 'pending')"
         ),
+        status_column: status_column.to_string(),
         t_total_ms_column: t_total_ms_column.to_string(),
     })
 }
@@ -7183,6 +7209,13 @@ async fn apply_long_term_refresh_rollups_with_control(
             .fetch_one(pool)
             .await?
             != 0;
+    // A pending initial materialization has no publishable baseline. If its only partial prefix
+    // is retried against a successfully empty source, clear it before reporting `empty` rather
+    // than promoting stale rows to a completed initial snapshot.
+    let clears_pending_empty_initial_materialization = initial_materialization
+        && source_rows_empty
+        && !archive_read_failed
+        && !terminal_proof_reconciliation_incomplete;
     let mut refresh_backups = Vec::with_capacity(recomputed_dates.len());
     for date in recomputed_dates {
         let bucket_date = date.to_string();
@@ -7203,7 +7236,9 @@ async fn apply_long_term_refresh_rollups_with_control(
         .await?;
         refresh_backups.push((bucket_date, rebuild_token));
     }
-    if recomputed_dates.is_empty() && !has_persisted_daily_rows {
+    if recomputed_dates.is_empty()
+        && (!has_persisted_daily_rows || clears_pending_empty_initial_materialization)
+    {
         for table in ["long_term_usage_hourly", "long_term_usage_daily"] {
             loop {
                 let (mut transaction, permit) = control.begin(pool).await?;
@@ -7301,7 +7336,10 @@ async fn apply_long_term_refresh_rollups_with_control(
         || terminal_proof_reconciliation_incomplete
     {
         LONG_TERM_STATUS_ERROR
-    } else if source_rows_empty && daily.is_empty() && !has_persisted_daily_rows {
+    } else if source_rows_empty
+        && daily.is_empty()
+        && (!has_persisted_daily_rows || clears_pending_empty_initial_materialization)
+    {
         LONG_TERM_STATUS_EMPTY
     } else {
         LONG_TERM_STATUS_READY
@@ -10300,7 +10338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupted_initial_refresh_keeps_partial_rollups_retryable() {
+    async fn interrupted_initial_refresh_retries_empty_source_without_publishing_partial_rollups() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -10348,6 +10386,26 @@ mod tests {
             state.1.as_deref(),
             true,
         ));
+
+        let recovery_control = LongTermProjectionWriteControl::unrestricted();
+        refresh_long_term_stats_once(&pool, 400, &recovery_control)
+            .await
+            .expect("empty-source retry clears its interrupted initial prefix");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_usage_daily")
+                .fetch_one(&pool)
+                .await
+                .expect("empty-source retry daily rows"),
+            0
+        );
+        let recovered_state: (String, Option<String>) =
+            sqlx::query_as("SELECT status, last_error FROM long_term_stats_state WHERE id = ?1")
+                .bind(LONG_TERM_STATE_ID)
+                .fetch_one(&pool)
+                .await
+                .expect("empty-source recovery state");
+        assert_eq!(recovered_state.0, LONG_TERM_STATUS_EMPTY);
+        assert_eq!(recovered_state.1, None);
     }
 
     #[tokio::test]
@@ -13942,11 +14000,17 @@ mod tests {
         );
 
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (2, 'rfc3339', '2026-07-25T16:00:00Z', 'success', 100)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, t_total_ms) VALUES (2, 'rfc3339', '2026-07-25T16:00:00Z', 'success', 100, 2000)",
         )
         .execute(&pool)
         .await
         .expect("RFC3339 invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (3, 'rfc3339-negative-offset', '2026-07-25T02:00:01-14:00', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 negative-offset invocation");
         let rfc3339_compatibility = load_long_term_projection_live_rfc3339_compatibility(&pool)
             .await
             .expect("updated RFC3339 compatibility gate")
@@ -13976,7 +14040,7 @@ mod tests {
                 .iter()
                 .filter_map(|row| row.invoke_id.as_deref())
                 .collect::<HashSet<_>>(),
-            HashSet::from(["canonical", "rfc3339"])
+            HashSet::from(["canonical", "rfc3339", "rfc3339-negative-offset"])
         );
     }
 
@@ -15326,7 +15390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn archive_compatibility_cache_is_checksum_scoped() {
+    async fn archive_compatibility_cache_is_checksum_and_opened_bytes_scoped() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -15344,11 +15408,27 @@ mod tests {
             rfc3339_max_duration_ms: None,
             rfc3339_min_occurred_at: None,
         };
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-long-term-archive-fingerprint-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        std::fs::write(&archive_path, b"canonical")
+            .expect("write original same-sized archive bytes");
+        let original_metadata =
+            std::fs::metadata(&archive_path).expect("original archive metadata");
+        let original_mtime = original_metadata
+            .modified()
+            .expect("original archive mtime");
+        let original_fingerprint =
+            long_term_archive_file_fingerprint(archive_path.to_str().expect("UTF-8 archive path"))
+                .expect("fingerprint original archive bytes");
+        let archive_file_path = archive_path.to_string_lossy().to_string();
         persist_long_term_archive_compatibility(
             &pool,
-            "archive.sqlite.gz",
+            &archive_file_path,
             "archive-sha-one",
-            "archive-fingerprint-one",
+            &original_fingerprint,
             original.clone(),
             &control,
         )
@@ -15357,9 +15437,9 @@ mod tests {
         assert_eq!(
             load_long_term_archive_compatibility(
                 &pool,
-                "archive.sqlite.gz",
+                &archive_file_path,
                 "archive-sha-one",
-                "archive-fingerprint-one",
+                &original_fingerprint,
             )
             .await
             .expect("load matching capability"),
@@ -15368,25 +15448,43 @@ mod tests {
         assert_eq!(
             load_long_term_archive_compatibility(
                 &pool,
-                "archive.sqlite.gz",
+                &archive_file_path,
                 "archive-sha-two",
-                "archive-fingerprint-one",
+                &original_fingerprint,
             )
             .await
             .expect("reject stale capability"),
             None
         );
+        std::fs::write(&archive_path, b"rfc-3333!")
+            .expect("write replacement same-sized archive bytes");
+        filetime::set_file_mtime(
+            &archive_path,
+            filetime::FileTime::from_system_time(original_mtime),
+        )
+        .expect("restore replacement archive mtime");
+        assert_eq!(
+            std::fs::metadata(&archive_path)
+                .expect("replacement archive metadata")
+                .len(),
+            original_metadata.len()
+        );
+        let replacement_fingerprint =
+            long_term_archive_file_fingerprint(archive_path.to_str().expect("UTF-8 archive path"))
+                .expect("fingerprint replacement archive bytes");
+        assert_ne!(replacement_fingerprint, original_fingerprint);
         assert_eq!(
             load_long_term_archive_compatibility(
                 &pool,
-                "archive.sqlite.gz",
+                &archive_file_path,
                 "archive-sha-one",
-                "archive-fingerprint-two",
+                &replacement_fingerprint,
             )
             .await
             .expect("reject replaced archive capability"),
             None
         );
+        std::fs::remove_file(&archive_path).expect("remove temporary archive file");
     }
 
     #[tokio::test]
@@ -15410,7 +15508,11 @@ mod tests {
                 SELECT id + 1 FROM source WHERE id < 1025
             )
             INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms)
-            SELECT id, printf('2026-07-%02d 00:00:00', (id % 28) + 1), 'success', 1
+            SELECT
+                id,
+                printf('2026-07-%02d 00:00:00', (id % 28) + 1),
+                CASE WHEN id = 1025 THEN 'success' ELSE 'running' END,
+                1
             FROM source
             "#,
         )
@@ -15438,6 +15540,40 @@ mod tests {
                 .expect("a later attempt rescans and recovers compatibility");
         assert!(recovered.has_legacy_crossing);
         assert_eq!(recovered.legacy_max_duration_ms, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn archive_compatibility_inspection_includes_the_minimum_rowid() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, status TEXT, t_total_ms REAL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive invocation schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (?1, '2026-07-25T02:00:01-14:00', 'success')",
+        )
+        .bind(i64::MIN)
+        .execute(&pool)
+        .await
+        .expect("minimum rowid archive invocation");
+        let query = long_term_archive_invocation_query_for_range(&pool)
+            .await
+            .expect("archive range queries");
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let compatibility = inspect_long_term_archive_compatibility(&pool, &query.parts, &control)
+            .await
+            .expect("archive compatibility probe");
+        assert!(compatibility.has_rfc3339);
+        assert_eq!(
+            compatibility.rfc3339_min_occurred_at.as_deref(),
+            Some("2026-07-25T02:00:01-14:00")
+        );
     }
 
     #[tokio::test]
@@ -15513,6 +15649,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("archive high-precision RFC3339 pre-start row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (10, '2026-07-25T02:00:01-14:00', 'success', 2000)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 negative-offset row");
         let queries = long_term_archive_invocation_query_for_range(&pool)
             .await
             .expect("archive range queries");
@@ -15559,8 +15701,8 @@ mod tests {
                 legacy_max_duration_ms: None,
                 legacy_min_occurred_at: None,
                 has_rfc3339: true,
-                rfc3339_max_duration_ms: Some(600.0),
-                rfc3339_min_occurred_at: Some("2026-07-25T15:59:59.500Z".to_string()),
+                rfc3339_max_duration_ms: Some(2_000.0),
+                rfc3339_min_occurred_at: Some("2026-07-25T02:00:01-14:00".to_string()),
             }
         );
         let rfc3339_compatibility = LongTermRfc3339Compatibility {
@@ -15597,7 +15739,7 @@ mod tests {
         .await
         .expect("archive range rows");
         let ids = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
-        assert_eq!(ids, vec![1, 2, 5, 7, 8]);
+        assert_eq!(ids, vec![1, 2, 5, 7, 8, 10]);
     }
 
     #[tokio::test]
