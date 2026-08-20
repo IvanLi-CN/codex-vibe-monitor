@@ -2735,6 +2735,9 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
     )
     .await;
     let reservation_key = "guarded-failed-fence-reservation";
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before failed failure persistence");
     state
         .pool_routing_reservations
         .lock()
@@ -2776,6 +2779,10 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
         *availability.borrow(),
         initial_generation,
         "a failed failure fence must not wake waiters into an immediate retry"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "a persistence error must fail closed in case a health mutation committed before audit"
     );
 }
 

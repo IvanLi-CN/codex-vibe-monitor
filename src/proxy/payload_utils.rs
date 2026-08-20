@@ -1520,10 +1520,14 @@ impl PoolRoutingReservationDropGuard {
                 self.restore_availability_on_drop();
                 Ok(value)
             }
-            // A failed write never establishes a routing fence. Keep the eventual
-            // guard release silent so a waiter cannot immediately reselect it.
+            // An error can be returned after the durable health mutation but
+            // before its audit append. Fence the old snapshot before silently
+            // releasing capacity so either outcome remains fail closed.
             Err(err) => {
                 self.active = false;
+                self.state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
                 release_pool_routing_reservation_without_availability(
                     self.state.as_ref(),
                     &self.reservation_key,
