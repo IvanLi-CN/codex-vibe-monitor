@@ -1262,15 +1262,16 @@ async fn prepare_capture_request_body(
                             live_first_attempt_failed = true;
                             live_first_request_body_first_byte_at =
                                 *first_upstream_body_poll_at_rx.borrow();
-                            // Local model-cap rejection never reached this account, and the
-                            // response timeout policy must retain its same-route retry. Only a
-                            // completed non-timeout upstream attempt is excluded from replay.
-                            live_first_failed_account_id = (error.account.is_some()
-                                && !pool_failure_is_timeout_shaped(
-                                    error.failure_kind,
-                                    &error.message,
-                                ))
-                            .then_some(initial_account_id);
+                            // A selected account is not proof that a live-first request
+                            // reached its upstream. Local timeout/configuration failures carry
+                            // that account too; only a completed non-timeout attempt excludes
+                            // it from replay.
+                            live_first_failed_account_id = live_first_replay_exclusion(
+                                error.attempt_summary.pool_attempt_count,
+                                error.failure_kind,
+                                &error.message,
+                                initial_account_id,
+                            );
                             warn!(
                                 proxy_request_id,
                                 error = %error.message,
@@ -4834,6 +4835,16 @@ pub(crate) fn resolve_compaction_response_kind_for_payload(
     }
 }
 
+fn live_first_replay_exclusion(
+    pool_attempt_count: usize,
+    failure_kind: &str,
+    message: &str,
+    initial_account_id: i64,
+) -> Option<i64> {
+    (pool_attempt_count > 0 && !pool_failure_is_timeout_shaped(failure_kind, message))
+        .then_some(initial_account_id)
+}
+
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
@@ -5017,6 +5028,35 @@ mod dispatch_tests {
         assert!(downstream_closed);
         assert_eq!(downstream_write_error_kind, Some("body_dropped"));
         assert!(last_upstream_chunk_gap_ms.is_some());
+    }
+
+    #[test]
+    fn live_first_replay_exclusion_requires_a_real_non_timeout_attempt() {
+        assert_eq!(
+            live_first_replay_exclusion(0, PROXY_FAILURE_FAILED_CONTACT_UPSTREAM, "local error", 7),
+            None,
+            "a local preparation error must retain the selected route for replay"
+        );
+        assert_eq!(
+            live_first_replay_exclusion(
+                1,
+                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                "timed out",
+                7
+            ),
+            None,
+            "a timeout-shaped upstream failure retains its same-route retry"
+        );
+        assert_eq!(
+            live_first_replay_exclusion(
+                1,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                "upstream reset",
+                7
+            ),
+            Some(7),
+            "a completed non-timeout upstream attempt excludes its failed route"
+        );
     }
 
     #[test]

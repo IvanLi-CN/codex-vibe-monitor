@@ -2679,7 +2679,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
         config,
         true,
         PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(80),
+            timeout: Duration::from_secs(1),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2745,6 +2745,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
         upstream_base_url_host: None,
         request_model: Some(model.to_string()),
     };
+    let started = Instant::now();
     let result = prepare_upstream_websocket(
         state.clone(),
         5354,
@@ -2771,7 +2772,16 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     let Err(err) = result else {
         panic!("websocket capacity conflict should not connect upstream");
     };
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "an upgraded websocket must not wait in the HTTP NoCandidate bulkhead"
+    );
     assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        state.pool_no_candidate_waiters.available_permits(),
+        POOL_NO_CANDIDATE_WAITER_LIMIT,
+        "an upgraded websocket must not consume an HTTP NoCandidate waiter slot"
+    );
 
     let payload: String =
         sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
@@ -9806,22 +9816,46 @@ async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() 
     .await
     .expect("all thirty-two waiters should enter the bulkhead");
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(1),
-        get_model_routing_live(
-            State(state.clone()),
-            Query(ModelRoutingLiveQuery {
-                window: Some("1h".to_string()),
-                model: None,
-                state: None,
-                limit: Some(100),
-            }),
+    let refresh_state = state.clone();
+    let refresh_storm = tokio::spawn(async move {
+        for _ in 0..8 {
+            refresh_state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters();
+            reconcile_pool_routing_snapshot(refresh_state.as_ref())
+                .await
+                .expect("rebuild no-candidate routing snapshot");
+        }
+    });
+
+    let (response, status) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            get_model_routing_live(
+                State(state.clone()),
+                Query(ModelRoutingLiveQuery {
+                    window: Some("1h".to_string()),
+                    model: None,
+                    state: None,
+                    limit: Some(100),
+                }),
+            ),
         ),
-    )
-    .await
-    .expect("model-routing-live must not wait for NoCandidate routes")
-    .expect("model-routing-live should remain available");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch_system_status(State(state.clone()))
+        )
+    );
+    let response = response
+        .expect("model-routing-live must not wait for NoCandidate routes or snapshot rebuilds")
+        .expect("model-routing-live should remain available");
+    let _ = status
+        .expect("system status must not wait for NoCandidate routes or snapshot rebuilds")
+        .expect("system status should remain available");
     assert!(response.0.records.is_empty());
+    refresh_storm
+        .await
+        .expect("no-candidate snapshot rebuild storm should join");
 
     for waiter in waiters {
         waiter.abort();

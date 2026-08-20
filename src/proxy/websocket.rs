@@ -448,7 +448,10 @@ pub(crate) async fn prepare_upstream_websocket(
             None,
             binding_constraint.as_ref(),
             conversation_override.as_ref(),
-            true,
+            // The downstream WebSocket is already upgraded. It must not
+            // occupy the HTTP NoCandidate waiter bulkhead while awaiting an
+            // upstream route it can no longer reject with an HTTP response.
+            false,
             &mut no_available_wait_deadline,
             None,
             original_uri.path(),
@@ -688,10 +691,14 @@ pub(crate) async fn prepare_upstream_websocket(
                 });
             }
         };
+        // Selection reserves the account/model combination. Arm its cleanup
+        // before any capability or timeout lookup can await or be cancelled.
+        let mut reservation_guard =
+            PoolRoutingReservationGuard::new(state.clone(), reservation_key.clone());
         match account_supports_upstream_websocket(state.as_ref(), &account).await {
             Ok(true) => {}
             Ok(false) => {
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                reservation_guard.release();
                 excluded_account_ids.push(account.account_id);
                 last_failure = Some(WsAttemptFailure {
                     status: StatusCode::SERVICE_UNAVAILABLE,
@@ -705,7 +712,7 @@ pub(crate) async fn prepare_upstream_websocket(
                 continue;
             }
             Err(err) => {
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                reservation_guard.release();
                 return Err(WsPrepareError {
                     status: StatusCode::BAD_GATEWAY,
                     message: format!("failed to inspect websocket support tag: {err}"),
@@ -715,23 +722,30 @@ pub(crate) async fn prepare_upstream_websocket(
 
         match prepare_single_upstream_websocket_attempt(
             state.clone(),
-            proxy_request_id,
             original_uri,
             headers,
-            &load_effective_request_path_timeouts_for_account(
+            &match load_effective_request_path_timeouts_for_account(
                 &state.pool,
                 &state.config,
                 account.account_id,
                 prompt_cache_key,
             )
             .await
-            .map_err(|err| WsPrepareError {
-                status: StatusCode::BAD_GATEWAY,
-                message: format!("failed to resolve effective request-path timeouts: {err}"),
-            })?
-            .2,
+            {
+                Ok(timeouts) => timeouts.2,
+                Err(err) => {
+                    reservation_guard.release();
+                    return Err(WsPrepareError {
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!(
+                            "failed to resolve effective request-path timeouts: {err}"
+                        ),
+                    });
+                }
+            },
             trace,
             prompt_cache_key,
+            reservation_guard,
             account,
             ws_retry_account_ids.len() + 1,
             required_subprotocol,
@@ -795,34 +809,16 @@ pub(crate) async fn account_supports_upstream_websocket(
 
 pub(crate) async fn prepare_single_upstream_websocket_attempt(
     state: Arc<AppState>,
-    proxy_request_id: u64,
     original_uri: &Uri,
     headers: &HeaderMap,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     trace: &PoolUpstreamAttemptTraceContext,
     prompt_cache_key: Option<&str>,
+    mut reservation_guard: PoolRoutingReservationGuard,
     account: PoolResolvedAccount,
     attempt_index: usize,
     required_subprotocol: Option<&str>,
 ) -> Result<PreparedUpstreamWebSocket, WsAttemptFailure> {
-    let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    if !reserve_pool_routing_account_for_model(
-        state.as_ref(),
-        &reservation_key,
-        &account,
-        trace.request_model.as_deref(),
-    ) {
-        return Err(WsAttemptFailure {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            message: "selected upstream account has reached model concurrency capacity".to_string(),
-            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
-            retryable: true,
-            account_id: Some(account.account_id),
-            upstream_route_key: Some(account.upstream_route_key()),
-        });
-    }
-    let mut reservation_guard = PoolRoutingReservationGuard::new(state.clone(), reservation_key);
-
     let (forward_proxy_scope, selected_proxy, _client) =
         match select_pool_account_forward_proxy_client(state.as_ref(), &account).await {
             Ok(selection) => selection,
