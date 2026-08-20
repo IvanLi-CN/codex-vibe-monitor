@@ -360,6 +360,10 @@ impl PoolRoutingSnapshotStore {
         publish_availability();
     }
 
+    pub(crate) fn request_refresh_and_defer_availability_wake(&self) {
+        self.request_refresh_inner(true);
+    }
+
     fn request_refresh_inner(&self, wake_waiters: bool) {
         // Atomically fence an older reconciler and make the pending state
         // visible before waiting for refresh_state. This blocks stale capacity
@@ -1049,6 +1053,22 @@ mod snapshot_store_tests {
         let generation = store
             .begin_refresh()
             .expect("pending refresh should claim its reconciliation lease");
+        let published_availability = std::cell::Cell::new(false);
+
+        assert!(store.complete_refresh(generation, empty_snapshot(), || {
+            published_availability.set(true);
+        }));
+        assert!(published_availability.get());
+        assert!(!store.refresh_pending());
+    }
+
+    #[test]
+    fn failure_fence_defers_waiters_until_the_snapshot_installs() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh_and_defer_availability_wake();
+        let generation = store
+            .begin_refresh()
+            .expect("failure fence should claim its reconciliation lease");
         let published_availability = std::cell::Cell::new(false);
 
         assert!(store.complete_refresh(generation, empty_snapshot(), || {

@@ -2160,6 +2160,7 @@ pub(crate) async fn apply_forward_proxy_settings_without_bootstrap(
 }
 
 pub(crate) async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
+    spawn_test_pool_routing_snapshot_reconcile(state);
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
@@ -2170,6 +2171,23 @@ pub(crate) async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &s
     let _ = update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
         .expect("save pool routing api key");
+}
+
+fn spawn_test_pool_routing_snapshot_reconcile(state: &Arc<AppState>) {
+    let weak_state = Arc::downgrade(state);
+    let mut refreshes = state.pool_routing_snapshot.subscribe_refresh();
+    tokio::spawn(async move {
+        while refreshes.changed().await.is_ok() {
+            let Some(state) = weak_state.upgrade() else {
+                break;
+            };
+            if state.pool_routing_snapshot.refresh_pending() {
+                reconcile_pool_routing_snapshot(state.as_ref())
+                    .await
+                    .expect("reconcile test routing snapshot after a routing mutation");
+            }
+        }
+    });
 }
 
 pub(crate) fn test_required_group_name() -> &'static str {

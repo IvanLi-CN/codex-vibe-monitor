@@ -4615,6 +4615,9 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
     )
     .await
     .expect("proxy override binding should save");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after conversation proxy override");
 
     let conversation_override =
         load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
