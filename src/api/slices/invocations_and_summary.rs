@@ -10168,11 +10168,9 @@ enum SummarySnapshotTrigger {
     Mutation,
 }
 
-fn summary_snapshot_trigger_marks_dirty(trigger: SummarySnapshotTrigger) -> bool {
-    matches!(
-        trigger,
-        SummarySnapshotTrigger::Mutation | SummarySnapshotTrigger::Cadence
-    )
+fn summary_snapshot_trigger_marks_dirty(trigger: SummarySnapshotTrigger, has_owner: bool) -> bool {
+    matches!(trigger, SummarySnapshotTrigger::Mutation)
+        || (matches!(trigger, SummarySnapshotTrigger::Cadence) && has_owner)
 }
 
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
@@ -10188,6 +10186,9 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             let trigger_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {
+                    if !state.subscription_hub.has_summary_owner().await {
+                        None
+                    } else {
                     let needs_attention = state
                         .subscription_hub
                         .summary_projection()
@@ -10199,7 +10200,8 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                                         .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
                             })
                         });
-                    needs_attention.then_some(SummarySnapshotTrigger::Cadence)
+                        needs_attention.then_some(SummarySnapshotTrigger::Cadence)
+                    }
                 },
                 payload = receiver.recv() => matches!(
                     payload,
@@ -10214,35 +10216,13 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             let Some(trigger) = trigger_refresh else {
                 continue;
             };
-            // Both mutation and due-cadence triggers represent work that must be reflected in
-            // the next bounded build. A cadence trigger is emitted only after the projection
-            // approaches its serving deadline, so leaving it clean would let an idle owner
-            // expire without ever refreshing.
-            dirty |= summary_snapshot_trigger_marks_dirty(trigger);
-            if !state.subscription_hub.has_summary_owner().await {
-                // Do not fabricate freshness while the projection has no active consumer.
-                // Once the last successful build approaches the hard serving budget, promote
-                // the cadence tick into a bounded background refresh. Mutation bursts remain
-                // dirty signals and are coalesced by the same single-flight gate below.
-                if !dirty {
-                    let stale = state
-                        .subscription_hub
-                        .summary_projection()
-                        .await
-                        .is_none_or(|projection| {
-                            projection
-                                .freshness
-                                .rolling_at(projection.refreshed_at)
-                                .is_none_or(|refreshed_at| {
-                                    refreshed_at.elapsed()
-                                        >= SUMMARY_SNAPSHOT_MAX_STALE
-                                            .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
-                                })
-                        });
-                    if stale {
-                        dirty = true;
-                    }
-                }
+            let has_owner = state.subscription_hub.has_summary_owner().await;
+            // Mutations remain coalesced while idle so the next real consumer receives a
+            // bounded off-request rebuild. A due cadence is meaningful only for a live owner;
+            // otherwise it would renew a full SQLite/archive hydration indefinitely.
+            dirty |= summary_snapshot_trigger_marks_dirty(trigger, has_owner);
+            if !has_owner {
+                continue;
             }
             if !dirty {
                 continue;
@@ -25686,12 +25666,18 @@ mod request_compression_query_tests {
     }
 
     #[test]
-    fn summary_snapshot_marks_due_cadence_dirty() {
+    fn summary_snapshot_marks_cadence_dirty_only_for_active_owners() {
         assert!(summary_snapshot_trigger_marks_dirty(
-            SummarySnapshotTrigger::Cadence
+            SummarySnapshotTrigger::Cadence,
+            true,
+        ));
+        assert!(!summary_snapshot_trigger_marks_dirty(
+            SummarySnapshotTrigger::Cadence,
+            false,
         ));
         assert!(summary_snapshot_trigger_marks_dirty(
-            SummarySnapshotTrigger::Mutation
+            SummarySnapshotTrigger::Mutation,
+            false,
         ));
     }
 
