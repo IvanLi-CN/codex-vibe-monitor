@@ -7012,6 +7012,10 @@ const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // previous projection, rather than publishing a partial aggregate.
 const SUMMARY_PROJECTION_MAX_ACCOUNTS: usize = 50_000;
 const SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES: usize = 4_096;
+// Exact replacement is intentionally exceptional. Keeping this separately bounded prevents a
+// wide retention horizon with a compact-coverage gap from turning a background rebuild into an
+// uninterruptible hour-by-hour allocation and CPU sweep.
+const SUMMARY_PROJECTION_MAX_EXACT_BUCKETS: usize = 4_096;
 const SUMMARY_PROJECTION_MAX_CANONICAL_BYTES: usize = 64 * 1024 * 1024;
 // Rollup tables are compact but can still become unbounded when account/model cardinality
 // grows. Count and size-limit their background hydration before materializing rows in memory.
@@ -7629,6 +7633,28 @@ fn summary_projection_all_time_record_totals(record: &SummaryProjectionRecord) -
     // terminal writer failed. The all-time rollup contract treats those retained historical rows
     // as terminal; their normal failure classification still determines non-success totals.
     summary_projection_record_totals_with_archived_pending_terminal(record, true)
+}
+
+fn summary_projection_all_time_uses_global_exact_record(
+    record: &SummaryProjectionRecord,
+    rollup_live_cursor: i64,
+) -> bool {
+    (record.is_persisted_live_record || record.archive_has_materialized_rollups)
+        && !record.global_rollup_covered
+        // The bounded global live-tail aggregate already owns rows after its cursor.
+        && !(record.is_persisted_live_record && record.row.id > rollup_live_cursor)
+}
+
+fn summary_projection_all_time_uses_account_exact_record(
+    record: &SummaryProjectionRecord,
+    account_rollup_live_cursor: Option<i64>,
+) -> bool {
+    (record.is_persisted_live_record || record.archive_has_materialized_rollups)
+        && !record.account_rollup_covered
+        // The bounded account live-tail aggregate already owns rows after its cursor. An absent
+        // cursor deliberately leaves the exact retained record visible instead of undercounting.
+        && !(record.is_persisted_live_record
+            && account_rollup_live_cursor.is_some_and(|cursor| record.row.id > cursor))
 }
 
 fn summary_projection_record_totals_with_archived_pending_terminal(
@@ -8373,18 +8399,45 @@ fn summary_projection_exact_bucket_ranges(buckets: &HashSet<i64>) -> Vec<ExactUt
     )
 }
 
+fn summary_projection_ensure_exact_bucket_budget(buckets: &HashSet<i64>) -> Result<()> {
+    if buckets.len() > SUMMARY_PROJECTION_MAX_EXACT_BUCKETS {
+        return Err(anyhow!(
+            "summary projection exact bucket budget ({SUMMARY_PROJECTION_MAX_EXACT_BUCKETS}) exceeded"
+        ));
+    }
+    Ok(())
+}
+
+fn summary_projection_exact_range_fits_bucket_budget(range: ExactUtcRange) -> Result<()> {
+    let first_bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+    let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+    let bucket_count = last_bucket
+        .saturating_sub(first_bucket)
+        .saturating_div(3_600)
+        .saturating_add(1) as usize;
+    if bucket_count > SUMMARY_PROJECTION_MAX_EXACT_BUCKETS {
+        return Err(anyhow!(
+            "summary projection exact range bucket budget ({SUMMARY_PROJECTION_MAX_EXACT_BUCKETS}) exceeded"
+        ));
+    }
+    Ok(())
+}
+
 fn summary_projection_extend_exact_buckets_for_ranges(
     buckets: &mut HashSet<i64>,
     ranges: impl IntoIterator<Item = ExactUtcRange>,
-) {
+) -> Result<()> {
     for range in ranges {
+        summary_projection_exact_range_fits_bucket_budget(range)?;
         let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
         let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
         while bucket <= last_bucket {
             buckets.insert(bucket);
+            summary_projection_ensure_exact_bucket_budget(buckets)?;
             bucket = bucket.saturating_add(3_600);
         }
     }
+    Ok(())
 }
 
 fn summary_projection_mark_exact_replacement_buckets(
@@ -8396,9 +8449,9 @@ fn summary_projection_mark_exact_replacement_buckets(
     exact_account_total_rollup_buckets: &mut HashSet<i64>,
     exact_global_usage_rollup_buckets: &mut HashSet<i64>,
     exact_account_usage_rollup_buckets: &mut HashSet<i64>,
-) {
+) -> Result<()> {
     if !archive_has_materialized_rollups {
-        return;
+        return Ok(());
     }
     // All-time aggregation consumes whole compact buckets. Any archive which lacks durable
     // replay proof therefore replaces every bucket it intersects, including a partial archive
@@ -8406,20 +8459,26 @@ fn summary_projection_mark_exact_replacement_buckets(
     // before suppressing its compact aggregate.
     let first_bucket = align_bucket_epoch(exact_range.start.timestamp(), 3_600, 0);
     let last_bucket = align_bucket_epoch(exact_range.end.timestamp().saturating_sub(1), 3_600, 0);
+    summary_projection_exact_range_fits_bucket_budget(exact_range)?;
     let mut bucket = first_bucket;
     while bucket <= last_bucket {
         if !replay_coverage.overall {
             exact_global_total_rollup_buckets.insert(bucket);
+            summary_projection_ensure_exact_bucket_budget(exact_global_total_rollup_buckets)?;
         }
         if !replay_coverage.account_stats {
             exact_account_total_rollup_buckets.insert(bucket);
+            summary_projection_ensure_exact_bucket_budget(exact_account_total_rollup_buckets)?;
         }
         if !replay_coverage.usage_breakdown {
             exact_global_usage_rollup_buckets.insert(bucket);
             exact_account_usage_rollup_buckets.insert(bucket);
+            summary_projection_ensure_exact_bucket_budget(exact_global_usage_rollup_buckets)?;
+            summary_projection_ensure_exact_bucket_budget(exact_account_usage_rollup_buckets)?;
         }
         bucket = bucket.saturating_add(3_600);
     }
+    Ok(())
 }
 
 async fn merge_summary_projection_archive_records(
@@ -9683,7 +9742,7 @@ async fn build_summary_projection(
             &mut exact_account_total_rollup_buckets,
             &mut exact_global_usage_rollup_buckets,
             &mut exact_account_usage_rollup_buckets,
-        );
+        )?;
     }
     // When one archive has incomplete replay, every archive and persisted live row in its
     // compact bucket must be available as an exact replacement source. A fully replayed sibling
@@ -9693,6 +9752,7 @@ async fn build_summary_projection(
     exact_archive_buckets.extend(exact_account_total_rollup_buckets.iter().copied());
     exact_archive_buckets.extend(exact_global_usage_rollup_buckets.iter().copied());
     exact_archive_buckets.extend(exact_account_usage_rollup_buckets.iter().copied());
+    summary_projection_ensure_exact_bucket_budget(&exact_archive_buckets)?;
     // A materialized archive can be fully replayed yet still lack one scope's compact bucket.
     // Its raw fallback must also pull co-located persisted/live rows before archive/live ID
     // exclusion picks the richer live copy; otherwise both sources disappear for that scope.
@@ -9714,6 +9774,7 @@ async fn build_summary_projection(
                 .copied()
                 .unwrap_or_default(),
         );
+        summary_projection_exact_range_fits_bucket_budget(archive_range)?;
         let raw_fallback_ranges = summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
             Some(replay_coverage.overall),
@@ -9728,7 +9789,7 @@ async fn build_summary_projection(
         summary_projection_extend_exact_buckets_for_ranges(
             &mut exact_archive_buckets,
             raw_fallback_ranges,
-        );
+        )?;
     }
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
         .into_iter()
@@ -10199,17 +10260,12 @@ async fn build_summary_projection(
                 ));
             }
         }
-        // A materialized archive without a durable replay marker replaces its complete bucket
-        // in the all-time baseline too. The exact set contains the materialized archive rows
-        // plus every co-located persisted live row. Unmaterialized sibling archives remain
-        // owned by the bounded delta helper above; adding their retained range records here
-        // would double count the sibling after its durable overlap subtraction.
+        // Any materialized compact gap, including a missing rollup key with complete replay
+        // markers, is replaced by its exact canonical source. Unmaterialized sibling archives
+        // remain owned by the bounded delta helper above; adding their retained range records
+        // here would double count the sibling after its durable overlap subtraction.
         for record in &records {
-            let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
-            if exact_global_total_rollup_buckets.contains(&bucket)
-                && (record.is_persisted_live_record || record.archive_has_materialized_rollups)
-                && !(record.is_persisted_live_record && record.row.id > rollup_live_cursor)
-            {
+            if summary_projection_all_time_uses_global_exact_record(record, rollup_live_cursor) {
                 global_totals =
                     global_totals.add(summary_projection_all_time_record_totals(record));
             }
@@ -10289,9 +10345,9 @@ async fn build_summary_projection(
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
         }
-        // A global materialization marker does not prove account coverage. Boundary and
-        // account-lag archive/live rows remain in the exact canonical set; fold those rows into
-        // the all-time account aggregate once instead of silently constructing a zero response.
+        // A global materialization marker does not prove account coverage. Only canonical rows
+        // not represented by the account compact aggregate contribute here, so a global-only
+        // fallback does not double count an otherwise covered account bucket.
         for record in &records {
             // With no completed archives the live-table aggregate above is the complete
             // persisted history, regardless of rollup cursor lag. Only runtime overlay rows
@@ -10303,11 +10359,10 @@ async fn build_summary_projection(
             else {
                 continue;
             };
-            if record.is_persisted_live_record
-                && account_rollup_live_cursor.is_some_and(|cursor| record.row.id > cursor)
-            {
-                // The bounded account live-tail aggregate already owns this row. Exact bucket
-                // replacement only needs the compact-rollup prefix and archive contribution.
+            if !summary_projection_all_time_uses_account_exact_record(
+                record,
+                account_rollup_live_cursor,
+            ) {
                 continue;
             }
             let entry = batched_all_time_by_account.entry(account_id).or_default();
@@ -25494,7 +25549,8 @@ mod request_compression_query_tests {
         summary_projection_extend_exact_buckets_for_ranges(
             &mut live_replacement_buckets,
             ranges.clone(),
-        );
+        )
+        .expect("missing scope fallback remains within the exact bucket budget");
         assert!(
             live_replacement_buckets.contains(&missing_account_bucket),
             "a raw archive fallback bucket must also hydrate its persisted/live replacement"
@@ -25597,7 +25653,8 @@ mod request_compression_query_tests {
             &mut account_totals,
             &mut global_usage,
             &mut account_usage,
-        );
+        )
+        .expect("partial replay range remains within the exact bucket budget");
 
         assert!(global_totals.contains(&first_bucket));
         assert!(global_totals.contains(&last_bucket));
@@ -25606,6 +25663,21 @@ mod request_compression_query_tests {
         assert!(global_usage.contains(&last_bucket));
         assert!(account_usage.contains(&first_bucket));
         assert!(account_usage.contains(&last_bucket));
+    }
+
+    #[test]
+    fn summary_projection_rejects_wide_exact_fallback_before_bucket_expansion() {
+        let start = Utc
+            .timestamp_opt(1_800_000_000, 0)
+            .single()
+            .expect("valid exact range start");
+        let range = ExactUtcRange {
+            start,
+            end: start + ChronoDuration::hours(SUMMARY_PROJECTION_MAX_EXACT_BUCKETS as i64 + 1),
+        };
+        let error = summary_projection_exact_range_fits_bucket_budget(range)
+            .expect_err("one bucket beyond the budget must fail before expansion");
+        assert!(error.to_string().contains("exact range bucket budget"));
     }
 
     #[test]
@@ -27085,6 +27157,22 @@ mod request_compression_query_tests {
             .expect("missing overall replay keeps the exact archive row");
         assert!(!record.global_rollup_covered);
         assert_eq!(record.row.total_tokens, 9);
+        assert!(
+            summary_projection_all_time_uses_global_exact_record(record, 100),
+            "a materialized raw fallback contributes when its global compact bucket is absent"
+        );
+        let mut account_record = record.clone();
+        account_record.row.upstream_account_id = Some(42);
+        account_record.account_rollup_covered = false;
+        assert!(
+            summary_projection_all_time_uses_account_exact_record(&account_record, Some(100)),
+            "a missing account compact bucket retains the exact materialized source"
+        );
+        account_record.account_rollup_covered = true;
+        assert!(
+            !summary_projection_all_time_uses_account_exact_record(&account_record, Some(100)),
+            "a complete account compact bucket must not double count the raw fallback"
+        );
 
         // Replacing a partial compact aggregate requires every co-located live contribution,
         // not only the archive repair row. This models a retained terminal failure whose source
