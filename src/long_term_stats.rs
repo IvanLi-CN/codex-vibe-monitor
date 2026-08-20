@@ -601,13 +601,13 @@ async fn long_term_archive_invocation_query_with_range(
     let range_filter = bounded_to_target_date.then(|| {
         format!(
             r#"
-        AND CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) < ?1
+        AND (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 < ?1
         AND (
-            CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) >= ?2
+            (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 >= ?2
             OR (
                 {t_total_ms_column} IS NOT NULL
                 AND {t_total_ms_column} > 0
-                AND CAST(strftime('%s', CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) AS INTEGER) + {t_total_ms_column} / 1000.0 >= ?2
+                AND (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 + {t_total_ms_column} / 1000.0 >= ?2
             )
         )
             "#,
@@ -12875,6 +12875,52 @@ mod tests {
         .await
         .expect("dirty correction dates");
         assert_eq!(dirty_dates, vec!["2026-07-25", "2026-07-26"]);
+    }
+
+    #[tokio::test]
+    async fn archive_range_query_keeps_fractional_rfc3339_cross_day_rows() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, status TEXT, t_total_ms REAL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive invocation schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (1, '2026-07-25T15:59:59.500Z', 'success', 600)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive fractional RFC3339 row");
+        let query = long_term_archive_invocation_query_for_range(&pool)
+            .await
+            .expect("archive range query");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let start = Shanghai
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
+            .single()
+            .expect("Shanghai day start");
+        let end = Shanghai
+            .from_local_datetime(
+                &date
+                    .succ_opt()
+                    .expect("next date")
+                    .and_hms_opt(0, 0, 0)
+                    .expect("next day start"),
+            )
+            .single()
+            .expect("Shanghai next day start");
+        let rows = sqlx::query_as::<_, (i64,)>(&query)
+            .bind(end.timestamp())
+            .bind(start.timestamp())
+            .fetch_all(&pool)
+            .await
+            .expect("archive range rows");
+        assert_eq!(rows, vec![(1,)]);
     }
 
     #[tokio::test]
