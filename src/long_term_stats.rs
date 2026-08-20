@@ -868,6 +868,19 @@ fn long_term_archive_file_fingerprint(file_path: &str) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+async fn long_term_archive_pool_fingerprint(pool: &Pool<Sqlite>) -> Result<String> {
+    let databases = sqlx::query_as::<_, (i64, String, String)>("PRAGMA database_list")
+        .fetch_all(pool)
+        .await
+        .context("failed to resolve opened long-term archive database")?;
+    let file_path = databases
+        .into_iter()
+        .find_map(|(_, name, file_path)| (name == "main").then_some(file_path))
+        .filter(|file_path| !file_path.is_empty())
+        .context("opened long-term archive does not expose a main database path")?;
+    long_term_archive_file_fingerprint(&file_path)
+}
+
 fn long_term_archive_legacy_crossing_start(
     start: &chrono::DateTime<chrono_tz::Tz>,
     max_duration_ms: f64,
@@ -3659,8 +3672,6 @@ async fn load_long_term_projection_rows_for_date(
         if !overlaps {
             continue;
         }
-        let archive_fingerprint_before =
-            long_term_archive_file_fingerprint(archive_path.file_path())?;
         let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-projection-targeted-repair",
@@ -3672,30 +3683,21 @@ async fn load_long_term_projection_rows_for_date(
                 archive_path.file_path()
             );
         };
-        let archive_fingerprint_after =
-            match long_term_archive_file_fingerprint(archive_path.file_path()) {
-                Ok(fingerprint) => fingerprint,
-                Err(error) => {
-                    archive_pool.close().await;
-                    drop(cleanup);
-                    return Err(error);
-                }
-            };
-        if archive_fingerprint_before != archive_fingerprint_after {
-            archive_pool.close().await;
-            drop(cleanup);
-            anyhow::bail!(
-                "long-term projection source changed while opening archive {}",
-                archive_path.file_path()
-            );
-        }
+        let archive_fingerprint = match long_term_archive_pool_fingerprint(&archive_pool).await {
+            Ok(fingerprint) => fingerprint,
+            Err(error) => {
+                archive_pool.close().await;
+                drop(cleanup);
+                return Err(error);
+            }
+        };
         let archive_rows = async {
             let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
             let compatibility = load_or_inspect_long_term_archive_compatibility(
                 pool,
                 &archive_pool,
                 archive_path.file_path(),
-                &archive_fingerprint_after,
+                &archive_fingerprint,
                 &archive_query.parts,
                 control,
             )
@@ -15569,6 +15571,58 @@ mod tests {
             None
         );
         std::fs::remove_file(&archive_path).expect("remove temporary archive file");
+    }
+
+    #[tokio::test]
+    async fn archive_pool_fingerprint_uses_the_opened_database_bytes() {
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        );
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-long-term-fingerprint-source-{unique}.sqlite.gz"
+        ));
+        let opened_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-long-term-fingerprint-opened-{unique}.sqlite"
+        ));
+        std::fs::write(
+            &archive_path,
+            b"archive bytes that are not the opened database",
+        )
+        .expect("write archive source bytes");
+        fs::File::create(&opened_path).expect("create opened archive database");
+        let options = format!("sqlite://{}", opened_path.to_string_lossy())
+            .parse::<SqliteConnectOptions>()
+            .expect("parse opened archive database URL")
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open materialized archive database");
+        sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .expect("write materialized archive database");
+
+        let opened_fingerprint = long_term_archive_pool_fingerprint(&pool)
+            .await
+            .expect("fingerprint opened archive database");
+        assert_eq!(
+            opened_fingerprint,
+            long_term_archive_file_fingerprint(opened_path.to_str().expect("UTF-8 opened path"))
+                .expect("fingerprint opened archive path")
+        );
+        assert_ne!(
+            opened_fingerprint,
+            long_term_archive_file_fingerprint(archive_path.to_str().expect("UTF-8 archive path"))
+                .expect("fingerprint archive source path")
+        );
+
+        pool.close().await;
+        std::fs::remove_file(&archive_path).expect("remove archive source file");
+        std::fs::remove_file(&opened_path).expect("remove opened archive database");
     }
 
     #[tokio::test]
