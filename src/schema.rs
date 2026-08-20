@@ -3718,6 +3718,14 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             attempt_public_id TEXT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL,
             endpoint TEXT NOT NULL,
             route_mode TEXT NOT NULL,
             sticky_key TEXT,
@@ -3972,6 +3980,33 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         }
     }
 
+    let pool_attempt_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_xinfo('pool_upstream_request_attempts')")
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect pool_upstream_request_attempts schema")?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+    if !pool_attempt_columns.contains("occurred_epoch_ms") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_request_attempts
+            ADD COLUMN occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_request_attempts.occurred_epoch_ms")?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_weight_hourly (
@@ -4099,6 +4134,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_timeline_epoch
+        ON pool_upstream_request_attempts (occurred_epoch_ms DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_timeline_epoch")?;
 
     sqlx::query(
         r#"

@@ -48,7 +48,7 @@ struct ModelRoutingAttemptRow {
     attempt_id: String,
     invoke_id: String,
     occurred_at: String,
-    occurred_epoch_ms: f64,
+    occurred_epoch_ms: i64,
     routing_source: Option<String>,
     routing_selection_audit_json: Option<String>,
     account_id: i64,
@@ -74,7 +74,7 @@ struct ModelRoutingAttemptRow {
 struct ModelRoutingEventRow {
     id: i64,
     occurred_at: String,
-    occurred_epoch_ms: f64,
+    occurred_epoch_ms: i64,
     account_id: i64,
     model: String,
     action: String,
@@ -93,7 +93,7 @@ struct ModelRoutingEventRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ModelRoutingHistoryCursor {
+pub(crate) struct ModelRoutingHistoryCursor {
     occurred_epoch_ms: i64,
     kind_rank: i64,
     id: i64,
@@ -317,12 +317,6 @@ fn normalize_model_routing_page_size(value: Option<usize>) -> usize {
         .clamp(1, MODEL_ROUTING_MAX_PAGE_SIZE)
 }
 
-fn model_routing_timestamp_epoch_sql(column: &str) -> String {
-    format!(
-        "CAST(ROUND((julianday({column}, CASE WHEN instr({column}, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END) - 2440587.5) * 86400000.0) AS REAL)"
-    )
-}
-
 fn normalized_model_routing_timestamp(value: String) -> String {
     crate::stats::parse_to_utc_datetime(&value)
         .map(crate::stats::format_utc_iso)
@@ -382,7 +376,7 @@ fn model_routing_timeline_entry_from_attempt(
         model_route_cooldown_until: row.event_cooldown_until,
     };
     ModelRoutingTimelineEntry {
-        occurred_epoch_ms: row.occurred_epoch_ms.round() as i64,
+        occurred_epoch_ms: row.occurred_epoch_ms,
         kind_rank: 1,
         id: row.id,
         record,
@@ -430,7 +424,7 @@ fn model_routing_timeline_entry_from_event(row: ModelRoutingEventRow) -> ModelRo
         model_route_cooldown_until: row.model_route_cooldown_until,
     };
     ModelRoutingTimelineEntry {
-        occurred_epoch_ms: row.occurred_epoch_ms.round() as i64,
+        occurred_epoch_ms: row.occurred_epoch_ms,
         kind_rank: 0,
         id: row.id,
         record,
@@ -447,21 +441,74 @@ async fn load_model_routing_timeline_entries(
     route_keys: Option<&std::collections::BTreeSet<(i64, String)>>,
 ) -> Result<Vec<ModelRoutingTimelineEntry>> {
     let cutoff_epoch_ms =
-        (Utc::now() - ChronoDuration::minutes(window_minutes.max(1))).timestamp_millis() as f64;
+        (Utc::now() - ChronoDuration::minutes(window_minutes.max(1))).timestamp_millis();
+    let attempts = build_model_routing_attempt_timeline_query(
+        "",
+        account_id,
+        model,
+        cutoff_epoch_ms,
+        limit,
+        cursor,
+        route_keys,
+    )
+    .build_query_as::<ModelRoutingAttemptRow>()
+    .fetch_all(pool)
+    .await?;
+    let events = build_model_routing_event_timeline_query(
+        "",
+        account_id,
+        model,
+        cutoff_epoch_ms,
+        limit,
+        cursor,
+        route_keys,
+    )
+    .build_query_as::<ModelRoutingEventRow>()
+    .fetch_all(pool)
+    .await?;
+
+    let mut entries = attempts
+        .into_iter()
+        .map(model_routing_timeline_entry_from_attempt)
+        .chain(
+            events
+                .into_iter()
+                .map(model_routing_timeline_entry_from_event),
+        )
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .occurred_epoch_ms
+            .cmp(&left.occurred_epoch_ms)
+            .then_with(|| right.kind_rank.cmp(&left.kind_rank))
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+pub(crate) fn build_model_routing_attempt_timeline_query(
+    prefix: &str,
+    account_id: Option<i64>,
+    model: Option<&str>,
+    cutoff_epoch_ms: i64,
+    limit: usize,
+    cursor: Option<&ModelRoutingHistoryCursor>,
+    route_keys: Option<&std::collections::BTreeSet<(i64, String)>>,
+) -> QueryBuilder<'static, Sqlite> {
     // The attempt row captures the model selected for this individual retry. Fall back to the
     // invocation payload only for older rows that predate `request_model` persistence.
     let model_sql = format!(
         "COALESCE(NULLIF(TRIM(attempts.request_model), ''), {ACCOUNT_ATTEMPT_REQUEST_MODEL_SQL})"
     );
-    let attempt_epoch_sql = model_routing_timestamp_epoch_sql("attempts.occurred_at");
-    let event_epoch_sql = model_routing_timestamp_epoch_sql("event.occurred_at");
     let mut attempt_query = QueryBuilder::<Sqlite>::new(format!(
         r#"
+        {prefix}
         SELECT attempts.id,
                COALESCE(NULLIF(TRIM(attempts.attempt_public_id), ''), printf('legacy-attempt-%lld', attempts.id)) AS attempt_id,
                attempts.invoke_id,
                attempts.occurred_at,
-               {attempt_epoch_sql} AS occurred_epoch_ms,
+               attempts.occurred_epoch_ms,
                attempts.routing_source,
                attempts.routing_selection_audit_json,
                attempts.upstream_account_id AS account_id,
@@ -482,7 +529,7 @@ async fn load_model_routing_timeline_entries(
                event.model_route_failure_count AS event_failure_count,
                event.model_route_cooldown_until AS event_cooldown_until
           FROM pool_upstream_request_attempts AS attempts
-          JOIN pool_upstream_accounts AS accounts ON accounts.id = attempts.upstream_account_id
+          CROSS JOIN pool_upstream_accounts AS accounts
           LEFT JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id
               AND inv.occurred_at = attempts.occurred_at
           LEFT JOIN pool_upstream_account_events AS event ON event.id = (
@@ -495,16 +542,17 @@ async fn load_model_routing_timeline_entries(
                      OR latest.model_route_priority_before IS NOT NULL
                      OR latest.model_route_priority_after IS NOT NULL
                  )
-               ORDER BY latest.occurred_at DESC, latest.id DESC
+               ORDER BY latest.occurred_epoch_ms DESC, latest.id DESC
                LIMIT 1
           )
-         WHERE accounts.kind = "#,
+         WHERE accounts.id = attempts.upstream_account_id
+           AND accounts.kind = "#,
     ));
     attempt_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
     attempt_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     attempt_query
         .push(" AND ")
-        .push(&attempt_epoch_sql)
+        .push("attempts.occurred_epoch_ms")
         .push(" >= ");
     attempt_query.push_bind(cutoff_epoch_ms);
     attempt_query
@@ -517,7 +565,7 @@ async fn load_model_routing_timeline_entries(
     }
     if let Some(model) = model {
         attempt_query.push(" AND ").push(&model_sql).push(" = ");
-        attempt_query.push_bind(model);
+        attempt_query.push_bind(model.to_string());
     }
     append_model_routing_route_key_filter(
         &mut attempt_query,
@@ -528,14 +576,14 @@ async fn load_model_routing_timeline_entries(
     if let Some(cursor) = cursor {
         attempt_query
             .push(" AND (")
-            .push(&attempt_epoch_sql)
+            .push("attempts.occurred_epoch_ms")
             .push(" < ");
-        attempt_query.push_bind(cursor.occurred_epoch_ms as f64);
+        attempt_query.push_bind(cursor.occurred_epoch_ms);
         attempt_query
             .push(" OR (")
-            .push(&attempt_epoch_sql)
+            .push("attempts.occurred_epoch_ms")
             .push(" = ");
-        attempt_query.push_bind(cursor.occurred_epoch_ms as f64);
+        attempt_query.push_bind(cursor.occurred_epoch_ms);
         attempt_query.push(" AND (1 < ");
         attempt_query.push_bind(cursor.kind_rank);
         attempt_query.push(" OR (1 = ");
@@ -545,18 +593,26 @@ async fn load_model_routing_timeline_entries(
         attempt_query.push("))))");
     }
     attempt_query
-        .push(" ORDER BY occurred_epoch_ms DESC, attempts.id DESC LIMIT ")
+        .push(" ORDER BY attempts.occurred_epoch_ms DESC, attempts.id DESC LIMIT ")
         .push_bind(limit as i64);
-    let attempts = attempt_query
-        .build_query_as::<ModelRoutingAttemptRow>()
-        .fetch_all(pool)
-        .await?;
+    attempt_query
+}
 
+pub(crate) fn build_model_routing_event_timeline_query(
+    prefix: &str,
+    account_id: Option<i64>,
+    model: Option<&str>,
+    cutoff_epoch_ms: i64,
+    limit: usize,
+    cursor: Option<&ModelRoutingHistoryCursor>,
+    route_keys: Option<&std::collections::BTreeSet<(i64, String)>>,
+) -> QueryBuilder<'static, Sqlite> {
     let mut event_query = QueryBuilder::<Sqlite>::new(format!(
         r#"
+        {prefix}
         SELECT event.id,
                event.occurred_at,
-               {event_epoch_sql} AS occurred_epoch_ms,
+               event.occurred_epoch_ms,
                event.account_id,
                event.model,
                event.action,
@@ -572,15 +628,16 @@ async fn load_model_routing_timeline_entries(
                event.model_route_failure_count,
                event.model_route_cooldown_until
           FROM pool_upstream_account_events AS event
-          JOIN pool_upstream_accounts AS accounts ON accounts.id = event.account_id
-         WHERE accounts.kind = "#,
+          CROSS JOIN pool_upstream_accounts AS accounts
+         WHERE accounts.id = event.account_id
+           AND accounts.kind = "#,
     ));
     event_query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
     event_query.push(" AND COALESCE(accounts.deleted_at, '') = ''");
     event_query.push(" AND event.attempt_id IS NULL AND event.model IS NOT NULL");
     event_query
         .push(" AND ")
-        .push(&event_epoch_sql)
+        .push("event.occurred_epoch_ms")
         .push(" >= ");
     event_query.push_bind(cutoff_epoch_ms);
     if let Some(account_id) = account_id {
@@ -589,7 +646,7 @@ async fn load_model_routing_timeline_entries(
     }
     if let Some(model) = model {
         event_query.push(" AND event.model = ");
-        event_query.push_bind(model);
+        event_query.push_bind(model.to_string());
     }
     append_model_routing_route_key_filter(
         &mut event_query,
@@ -600,11 +657,14 @@ async fn load_model_routing_timeline_entries(
     if let Some(cursor) = cursor {
         event_query
             .push(" AND (")
-            .push(&event_epoch_sql)
+            .push("event.occurred_epoch_ms")
             .push(" < ");
-        event_query.push_bind(cursor.occurred_epoch_ms as f64);
-        event_query.push(" OR (").push(&event_epoch_sql).push(" = ");
-        event_query.push_bind(cursor.occurred_epoch_ms as f64);
+        event_query.push_bind(cursor.occurred_epoch_ms);
+        event_query
+            .push(" OR (")
+            .push("event.occurred_epoch_ms")
+            .push(" = ");
+        event_query.push_bind(cursor.occurred_epoch_ms);
         event_query.push(" AND (0 < ");
         event_query.push_bind(cursor.kind_rank);
         event_query.push(" OR (0 = ");
@@ -614,31 +674,9 @@ async fn load_model_routing_timeline_entries(
         event_query.push("))))");
     }
     event_query
-        .push(" ORDER BY occurred_epoch_ms DESC, event.id DESC LIMIT ")
+        .push(" ORDER BY event.occurred_epoch_ms DESC, event.id DESC LIMIT ")
         .push_bind(limit as i64);
-    let events = event_query
-        .build_query_as::<ModelRoutingEventRow>()
-        .fetch_all(pool)
-        .await?;
-
-    let mut entries = attempts
-        .into_iter()
-        .map(model_routing_timeline_entry_from_attempt)
-        .chain(
-            events
-                .into_iter()
-                .map(model_routing_timeline_entry_from_event),
-        )
-        .collect::<Vec<_>>();
-    entries.sort_by(|left, right| {
-        right
-            .occurred_epoch_ms
-            .cmp(&left.occurred_epoch_ms)
-            .then_with(|| right.kind_rank.cmp(&left.kind_rank))
-            .then_with(|| right.id.cmp(&left.id))
-    });
-    entries.truncate(limit);
-    Ok(entries)
+    event_query
 }
 
 fn append_model_routing_route_key_filter(
