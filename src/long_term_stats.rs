@@ -560,6 +560,14 @@ async fn long_term_archive_invocation_query_for_range(pool: &Pool<Sqlite>) -> Re
     long_term_archive_invocation_query_with_range(pool, true).await
 }
 
+fn long_term_rfc3339_epoch_seconds_sql(value: &str) -> String {
+    // `julianday` drifts on exact Unix-second boundaries. `strftime('%s')` yields the whole
+    // second, while this branch retains every fractional digit from the RFC3339 source value.
+    format!(
+        "(CAST(strftime('%s', {value}) AS REAL) + CASE WHEN substr({value}, 20, 1) = '.' THEN CAST('0.' || substr({value}, 21, CASE WHEN instr(substr({value}, 21), 'Z') > 0 THEN instr(substr({value}, 21), 'Z') - 1 WHEN instr(substr({value}, 21), '+') > 0 THEN instr(substr({value}, 21), '+') - 1 WHEN instr(substr({value}, 21), '-') > 0 THEN instr(substr({value}, 21), '-') - 1 ELSE length({value}) - 20 END) AS REAL) ELSE 0.0 END)"
+    )
+}
+
 async fn long_term_archive_invocation_query_with_range(
     pool: &Pool<Sqlite>,
     bounded_to_target_date: bool,
@@ -598,16 +606,19 @@ async fn long_term_archive_invocation_query_with_range(
     } else {
         "NULL"
     };
+    let occurred_at_epoch = long_term_rfc3339_epoch_seconds_sql(
+        "CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END",
+    );
     let range_filter = bounded_to_target_date.then(|| {
         format!(
             r#"
-        AND ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 < ?1
+        AND {occurred_at_epoch} < ?1
         AND (
-            ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 >= ?2
+            {occurred_at_epoch} >= ?2
             OR (
                 {t_total_ms_column} IS NOT NULL
                 AND {t_total_ms_column} > 0
-                AND ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 + {t_total_ms_column} / 1000.0 >= ?2
+                AND {occurred_at_epoch} + {t_total_ms_column} / 1000.0 >= ?2
             )
         )
             "#,
@@ -1375,7 +1386,9 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
     sqlx::query("DROP TRIGGER IF EXISTS long_term_projection_invocation_correction")
         .execute(pool)
         .await?;
-    sqlx::query(
+    let old_epoch = long_term_rfc3339_epoch_seconds_sql("OLD.occurred_at");
+    let new_epoch = long_term_rfc3339_epoch_seconds_sql("NEW.occurred_at");
+    sqlx::query(&format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS long_term_projection_invocation_correction
         AFTER UPDATE OF
@@ -1407,19 +1420,19 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
             SELECT
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date(ROUND((julianday(OLD.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date({old_epoch}, 'unixepoch', '+8 hours')
                 ELSE date(OLD.occurred_at) END,
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date(ROUND((julianday(OLD.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date({old_epoch} + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0) END
             WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
             UNION ALL
             SELECT
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date(ROUND((julianday(NEW.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date({new_epoch}, 'unixepoch', '+8 hours')
                 ELSE date(NEW.occurred_at) END,
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date(ROUND((julianday(NEW.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date({new_epoch} + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0) END
             WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
             UNION ALL
@@ -1437,7 +1450,7 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
             updated_at = datetime('now');
         END
         "#,
-    )
+    ))
     .execute(pool)
     .await
     .context("failed to ensure long-term projection correction trigger")?;
@@ -1568,6 +1581,7 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
             "OLD.id",
         ),
     ] {
+        let occurred_at_epoch = long_term_rfc3339_epoch_seconds_sql("inv.occurred_at");
         let statement = format!(
             r#"
             CREATE TRIGGER IF NOT EXISTS {trigger}
@@ -1577,10 +1591,10 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
               WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
                 SELECT
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date(ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
+                    THEN date({occurred_at_epoch}, 'unixepoch', '+8 hours')
                     ELSE date(inv.occurred_at) END,
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date(ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                    THEN date({occurred_at_epoch} + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                     ELSE date(julianday(inv.occurred_at) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 86400000.0) END
                 FROM codex_invocations inv
                 WHERE (CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END) = {account_id}
@@ -2969,8 +2983,9 @@ async fn load_long_term_projection_rows_for_date(
             .fetch_all(pool)
             .await?,
     );
+    let rfc3339_epoch = long_term_rfc3339_epoch_seconds_sql("inv.occurred_at");
     let rfc3339_query = format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 < ?2 AND (ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + inv.t_total_ms / 1000.0 >= ?1))"
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND {rfc3339_epoch} < ?2 AND ({rfc3339_epoch} >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND {rfc3339_epoch} + inv.t_total_ms / 1000.0 >= ?1))"
     );
     rows.extend(
         sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
@@ -13342,6 +13357,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("RFC3339 next-day-start invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (8, 'rfc3339-before-day-start', '2026-07-25T15:59:59.9999Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 sub-millisecond pre-start invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (9, 'rfc3339-before-next-day-start', '2026-07-26T15:59:59.9999Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 sub-millisecond pre-end invocation");
         let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("fixed date");
         let start = Shanghai
             .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
@@ -13374,7 +13401,7 @@ mod tests {
             .await
             .expect("projection rows");
 
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         let ids = rows
             .iter()
             .filter_map(|row| row.invoke_id.as_deref())
@@ -13387,6 +13414,7 @@ mod tests {
                 "rfc3339-crossing",
                 "legacy-crossing",
                 "rfc3339-day-start",
+                "rfc3339-before-next-day-start",
             ])
         );
     }
@@ -13485,6 +13513,28 @@ mod tests {
         .await
         .expect("day-start correction dates");
         assert_eq!(dirty_dates, vec!["2026-07-26"]);
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets")
+            .execute(&pool)
+            .await
+            .expect("clear day-start correction markers");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (3, '2026-07-25T15:59:59.9999Z', 'success', 'before')",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 sub-millisecond pre-start invocation");
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 3")
+            .execute(&pool)
+            .await
+            .expect("RFC3339 sub-millisecond pre-start correction");
+        let dirty_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("sub-millisecond pre-start correction dates");
+        assert_eq!(dirty_dates, vec!["2026-07-25"]);
     }
 
     #[tokio::test]
@@ -13518,6 +13568,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("archive RFC3339 next-day-start row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (4, '2026-07-25T15:59:59.9999Z', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 sub-millisecond pre-start row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (5, '2026-07-26T15:59:59.9999Z', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 sub-millisecond pre-end row");
         let query = long_term_archive_invocation_query_for_range(&pool)
             .await
             .expect("archive range query");
@@ -13542,7 +13604,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .expect("archive range rows");
-        assert_eq!(rows, vec![(1,), (2,)]);
+        assert_eq!(rows, vec![(1,), (2,), (5,)]);
     }
 
     #[tokio::test]
@@ -13957,23 +14019,27 @@ mod tests {
             .execute(&pool)
             .await
             .expect("archived coverage");
-        sqlx::query("INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, payload) VALUES (1, 'classified', '2026-07-26 10:00:00', 'success', 100, '{\"upstreamAccountId\":42}')")
+        sqlx::query("INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, payload) VALUES (1, 'classified-before-day-start', '2026-07-25T15:59:59.9999Z', 'success', 100, '{\"upstreamAccountId\":42}')")
             .execute(&pool)
             .await
-            .expect("classified invocation");
+            .expect("classified sub-millisecond pre-start invocation");
+        sqlx::query("INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, payload) VALUES (2, 'classified-before-next-day-start', '2026-07-26T15:59:59.9999Z', 'success', 100, '{\"upstreamAccountId\":42}')")
+            .execute(&pool)
+            .await
+            .expect("classified sub-millisecond pre-end invocation");
 
         sqlx::query("UPDATE pool_upstream_accounts SET kind = 'api_key' WHERE id = 42")
             .execute(&pool)
             .await
             .expect("classification update");
 
-        let reason = sqlx::query_scalar::<_, String>(
-            "SELECT repair_reason FROM long_term_projection_dirty_buckets WHERE bucket_date = '2026-07-26'",
+        let active_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE bucket_date LIKE '2026-07-%' ORDER BY bucket_date",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
-        .expect("affected date");
-        assert_eq!(reason, "account_classification_changed");
+        .expect("affected dates");
+        assert_eq!(active_dates, vec!["2026-07-25", "2026-07-26"]);
         let archived_dates = sqlx::query_scalar::<_, String>(
             "SELECT bucket_date FROM long_term_projection_dirty_buckets WHERE bucket_date LIKE '2026-06-%' ORDER BY bucket_date",
         )
