@@ -1801,7 +1801,12 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
-            state.pool_routing_snapshot.request_refresh();
+            // The failure fence is committed before this event. Refresh first,
+            // then wake NoCandidate waiters from the installed snapshot so a
+            // released slot cannot be retried through an unfenced route.
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters();
             release_pool_routing_reservation_without_availability(state, reservation_key);
             Ok(value)
         }

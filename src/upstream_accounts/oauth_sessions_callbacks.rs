@@ -190,7 +190,11 @@ pub(crate) async fn update_pool_routing_settings(
             .await;
         }
     }
-    state.pool_routing_snapshot.request_refresh();
+    // Routing settings can make an unavailable candidate eligible again, so
+    // waiting requests must be notified after the refreshed view lands.
+    state
+        .pool_routing_snapshot
+        .request_refresh_and_wake_waiters();
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
@@ -1402,7 +1406,10 @@ pub(crate) async fn create_api_key_account(
         ));
     }
     let detail = create_api_key_account_inner(state.clone(), payload).await?;
-    state.pool_routing_snapshot.request_refresh();
+    // A new account can immediately satisfy a NoCandidate waiter.
+    state
+        .pool_routing_snapshot
+        .request_refresh_and_wake_waiters();
     Ok(Json(detail))
 }
 
@@ -1644,7 +1651,11 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    state.pool_routing_snapshot.request_refresh();
+    // Replacing mappings can make a model routable again, so waiting
+    // NoCandidate requests must be notified after the refreshed view lands.
+    state
+        .pool_routing_snapshot
+        .request_refresh_and_wake_waiters();
     load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?
@@ -2419,7 +2430,9 @@ pub(crate) async fn update_upstream_account_inner(
     if !was_fresh_routable
         && is_account_selectable_for_fresh_assignment(&refreshed_row, false, Utc::now())
     {
-        state.pool_routing_snapshot.request_refresh();
+        state
+            .pool_routing_snapshot
+            .request_refresh_and_wake_waiters();
     }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)

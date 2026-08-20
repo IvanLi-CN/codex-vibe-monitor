@@ -598,6 +598,10 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     refresh_pool_routing_runtime_cache(state.as_ref())
         .await
         .expect("publish mapped target system deny");
+    state.pool_routing_snapshot.request_refresh();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after direct system deny mutation");
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         state.as_ref(),
         None,
