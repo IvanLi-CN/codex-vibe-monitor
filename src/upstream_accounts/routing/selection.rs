@@ -987,7 +987,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolution> {
-    let Some(routing_snapshot) = state.pool_routing_snapshot.current() else {
+    let Some((routing_snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
         // A routing request must never turn a cold snapshot into an on-demand
         // SQLite read. The background reconciler owns recovery. A refresh of
         // an existing snapshot intentionally keeps that last known view live
@@ -1968,12 +1970,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             if let Some(reservation_key) = reservation_key {
                 let concurrency_limit = routing_snapshot
                     .model_route_concurrency_limit(account.account_id, requested_model);
-                if !try_reserve_pool_routing_account_for_model(
+                if !try_reserve_pool_routing_account_for_model_at_snapshot_generation(
                     state,
                     reservation_key,
                     &account,
                     requested_model,
                     concurrency_limit,
+                    snapshot_generation,
                 ) {
                     reservation_conflict_count += 1;
                     let reason_code = if routing_snapshot
@@ -2167,18 +2170,23 @@ async fn reserve_sticky_model_route(
     let Some(reservation_key) = reservation_key else {
         return Ok(true);
     };
-    let Some(snapshot) = state.pool_routing_snapshot.current() else {
+    let Some((snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
         return Ok(false);
     };
     let concurrency_limit =
         snapshot.model_route_concurrency_limit(account.account_id, requested_model);
-    Ok(try_reserve_pool_routing_account_for_model(
-        state,
-        reservation_key,
-        account,
-        requested_model,
-        concurrency_limit,
-    ))
+    Ok(
+        try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+            state,
+            reservation_key,
+            account,
+            requested_model,
+            concurrency_limit,
+            snapshot_generation,
+        ),
+    )
 }
 
 pub(crate) fn request_capability_requirements_after_codex_imagegen_rewrite(

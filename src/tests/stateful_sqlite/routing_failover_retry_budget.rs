@@ -3211,6 +3211,35 @@ async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending()
     );
 
     release_pool_routing_reservation(&state, "fenced-model-holder");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("republish the snapshot before racing fresh selection");
+
+    let (snapshot, snapshot_generation) = state
+        .pool_routing_snapshot
+        .current_with_generation()
+        .expect("selection should capture a published snapshot before the race");
+    let concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, Some(model));
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        !try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+            state.as_ref(),
+            "fenced-model-fresh-selection",
+            &account,
+            Some(model),
+            concurrency_limit,
+            snapshot_generation,
+        ),
+        "a mutation after fresh selection but before reservation must fence the stale candidate"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key("fenced-model-fresh-selection"),
+        "the fenced fresh selection must not write a reservation"
+    );
 }
 
 #[tokio::test]

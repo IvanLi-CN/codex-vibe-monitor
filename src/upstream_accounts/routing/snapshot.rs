@@ -315,6 +315,11 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn current(&self) -> Option<Arc<PoolRoutingSnapshot>> {
+        self.current_with_generation()
+            .map(|(snapshot, _generation)| snapshot)
+    }
+
+    pub(crate) fn current_with_generation(&self) -> Option<(Arc<PoolRoutingSnapshot>, u64)> {
         let epoch_before = self
             .refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire);
@@ -336,7 +341,14 @@ impl PoolRoutingSnapshotStore {
         if epoch_before != epoch_after || epoch_after & REFRESH_PENDING_BIT != 0 {
             return None;
         }
-        current
+        current.map(|snapshot| (snapshot, epoch_after & REFRESH_GENERATION_MASK))
+    }
+
+    pub(crate) fn generation_is_current(&self, expected_generation: u64) -> bool {
+        let epoch = self
+            .refresh_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        epoch & REFRESH_PENDING_BIT == 0 && epoch & REFRESH_GENERATION_MASK == expected_generation
     }
 
     pub(crate) fn request_refresh(&self) {

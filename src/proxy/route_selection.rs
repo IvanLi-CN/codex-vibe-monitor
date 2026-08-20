@@ -2059,7 +2059,9 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     let mut reservation_guard = match reservation_guard {
         Some(guard) => guard,
         None => {
-            let Some(routing_snapshot) = state.pool_routing_snapshot.current() else {
+            let Some((routing_snapshot, snapshot_generation)) =
+                state.pool_routing_snapshot.current_with_generation()
+            else {
                 return Err(build_pool_no_available_account_error(
                     0,
                     1,
@@ -2069,12 +2071,13 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             };
             let concurrency_limit =
                 routing_snapshot.model_route_concurrency_limit(account.account_id, requested_model);
-            if !try_reserve_pool_routing_account_for_model(
+            if !try_reserve_pool_routing_account_for_model_at_snapshot_generation(
                 state.as_ref(),
                 &reservation_key,
                 &account,
                 requested_model,
                 concurrency_limit,
+                snapshot_generation,
             ) {
                 return Err(build_pool_no_available_account_error(
                     0,

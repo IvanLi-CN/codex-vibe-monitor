@@ -1674,16 +1674,19 @@ pub(crate) fn reserve_pool_routing_account_for_model(
     // This is also used after a live-first handoff. A mutation may have fenced
     // the snapshot since the account was selected, so a missing snapshot must
     // not turn a configured model limit into an unlimited reservation.
-    let Some(snapshot) = state.pool_routing_snapshot.current() else {
+    let Some((snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
         return false;
     };
     let model_concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, model);
-    try_reserve_pool_routing_account_for_model(
+    try_reserve_pool_routing_account_for_model_at_snapshot_generation(
         state,
         reservation_key,
         account,
         model,
         model_concurrency_limit,
+        snapshot_generation,
     )
 }
 
@@ -1700,6 +1703,44 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
     model: Option<&str>,
     model_concurrency_limit: Option<i64>,
 ) -> bool {
+    try_reserve_pool_routing_account_for_model_inner(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+        None,
+    )
+}
+
+/// Atomically verifies the snapshot generation, checks a model-route cap, and
+/// records the request reservation.
+pub(crate) fn try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+    snapshot_generation: u64,
+) -> bool {
+    try_reserve_pool_routing_account_for_model_inner(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+        Some(snapshot_generation),
+    )
+}
+
+fn try_reserve_pool_routing_account_for_model_inner(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+    snapshot_generation: Option<u64>,
+) -> bool {
     let proxy_key = match &account.forward_proxy_scope {
         ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
         _ => None,
@@ -1708,6 +1749,16 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
+    // Check after acquiring the same mutex used for capacity accounting. A
+    // mutation that has already fenced this generation rejects the stale
+    // selection; a later mutation linearizes after this in-flight reservation.
+    if snapshot_generation.is_some_and(|generation| {
+        !state
+            .pool_routing_snapshot
+            .generation_is_current(generation)
+    }) {
+        return false;
+    }
     let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
         reservations
             .get(reservation_key)
