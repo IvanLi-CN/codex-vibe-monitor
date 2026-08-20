@@ -1331,6 +1331,32 @@ mod snapshot_store_tests {
     }
 
     #[test]
+    fn recovery_during_an_active_refresh_fences_the_stale_build() {
+        let store = PoolRoutingSnapshotStore::new();
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
+        assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+
+        store.request_refresh();
+        let stale_generation = store
+            .begin_refresh()
+            .expect("the queued refresh should claim its reconciliation lease");
+        store.request_recovery_refresh_and_defer_availability_wake();
+
+        assert!(
+            store.current().is_none(),
+            "a recovery racing a refresh must fence the stale build rather than install its old view"
+        );
+        assert!(
+            !store.complete_refresh(stale_generation, empty_snapshot(), || {
+                panic!("a fenced stale refresh must not wake waiters")
+            }),
+            "the refresh that predated the recovery must not install"
+        );
+    }
+
+    #[test]
     fn availability_release_wakes_immediately_and_again_after_snapshot_install() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
