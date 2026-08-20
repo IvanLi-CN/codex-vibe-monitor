@@ -18,6 +18,43 @@ impl std::fmt::Display for InvalidLiveJsonError {
 
 impl std::error::Error for InvalidLiveJsonError {}
 
+#[derive(Debug)]
+struct LiveDecodedRequestBodyError(io::Error);
+
+impl std::fmt::Display for LiveDecodedRequestBodyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for LiveDecodedRequestBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+struct LiveDecodedRequestBodyReader<R> {
+    inner: R,
+}
+
+impl<R> AsyncRead for LiveDecodedRequestBodyReader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match std::pin::Pin::new(&mut self.inner).poll_read(context, buffer) {
+            std::task::Poll::Ready(Err(error)) => {
+                std::task::Poll::Ready(Err(live_decoded_request_body_error(error)))
+            }
+            other => other,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LiveOauthResponsesTransform {
     pub(crate) account_id: Option<i64>,
@@ -105,11 +142,11 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
                     PoolReplayBodyKeyProbe::default(),
                 ));
             }
-            if is_invalid_live_json_error(&err) {
+            if let Some(request_body_error) = live_request_body_pipeline_error(&err) {
                 let _ = request_body_error_tx.send(Some(RequestBodyReadError {
-                    status: StatusCode::BAD_REQUEST,
-                    message: format!("request body must be valid JSON: {err}"),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_INVALID_JSON,
+                    status: request_body_error.0,
+                    message: request_body_error.1,
+                    failure_kind: request_body_error.2,
                     partial_body: Vec::new(),
                 }));
             }
@@ -172,7 +209,10 @@ async fn run_live_responses_request_body_pipeline(
     request_stream_tx: watch::Sender<Option<bool>>,
     oauth_rewrite_tx: watch::Sender<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
 ) -> io::Result<()> {
-    let mut reader = live_decoded_request_reader(raw_body, downstream_content_encoding).await?;
+    let reader = live_decoded_request_reader(raw_body, downstream_content_encoding)
+        .await
+        .map_err(live_decoded_request_body_error)?;
+    let mut reader = LiveDecodedRequestBodyReader { inner: reader };
     let Some(first) = read_non_whitespace(&mut reader).await? else {
         let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
             PoolReplayBodyKeyProbe::default(),
@@ -913,10 +953,41 @@ where
         match reader.read_u8().await {
             Ok(byte) if byte.is_ascii_whitespace() => {}
             Ok(byte) => return Ok(Some(byte)),
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(err)
+                if err.kind() == io::ErrorKind::UnexpectedEof
+                    && !is_live_decoded_request_body_error(&err) =>
+            {
+                return Ok(None);
+            }
             Err(err) => return Err(err),
         }
     }
+}
+
+async fn read_json_string_byte<R>(reader: &mut R) -> io::Result<u8>
+where
+    R: AsyncRead + Unpin,
+{
+    match reader.read_u8().await {
+        Ok(byte) => Ok(byte),
+        Err(err)
+            if err.kind() == io::ErrorKind::UnexpectedEof
+                && !is_live_decoded_request_body_error(&err) =>
+        {
+            Err(invalid_live_json("request string ended before closing"))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn validate_json_string_utf8_byte(tail: &mut Vec<u8>, byte: u8) -> io::Result<()> {
+    tail.push(byte);
+    match std::str::from_utf8(tail) {
+        Ok(_) => tail.clear(),
+        Err(error) if error.error_len().is_none() => {}
+        Err(_) => return Err(invalid_live_json("request string is not valid UTF-8")),
+    }
+    Ok(())
 }
 
 async fn read_json_string<R>(reader: &mut R, first: u8, limit: usize) -> io::Result<Vec<u8>>
@@ -925,8 +996,9 @@ where
 {
     let mut value = vec![first];
     let mut escaped = false;
+    let mut utf8_tail = Vec::new();
     loop {
-        let byte = reader.read_u8().await?;
+        let byte = read_json_string_byte(reader).await?;
         value.push(byte);
         if value.len() > limit {
             return Err(invalid_live_json(
@@ -936,9 +1008,13 @@ where
         if escaped {
             escaped = false;
         } else if byte == b'\\' {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
             escaped = true;
         } else if byte == b'"' {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
             return Ok(value);
+        } else {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
         }
     }
 }
@@ -1148,8 +1224,9 @@ where
     let mut flushed_first_value_byte = false;
     let mut escaped = false;
     let mut unicode_digits_remaining = 0_u8;
+    let mut utf8_tail = Vec::new();
     loop {
-        let byte = reader.read_u8().await?;
+        let byte = read_json_string_byte(reader).await?;
         writer.write_raw(&[byte]).await?;
         if flush_after_first_value_byte && !flushed_first_value_byte {
             writer.flush().await?;
@@ -1182,6 +1259,7 @@ where
             }
             continue;
         }
+        validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
         match byte {
             b'"' => {
                 return Ok(capture
@@ -1311,8 +1389,9 @@ where
 {
     let mut escaped = false;
     let mut unicode_digits_remaining = 0_u8;
+    let mut utf8_tail = Vec::new();
     loop {
-        let byte = reader.read_u8().await?;
+        let byte = read_json_string_byte(reader).await?;
         writer.write_raw(&[byte]).await?;
         if unicode_digits_remaining > 0 {
             if !byte.is_ascii_hexdigit() {
@@ -1334,6 +1413,7 @@ where
             }
             continue;
         }
+        validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
         match byte {
             b'"' => return Ok(()),
             b'\\' => escaped = true,
@@ -1453,7 +1533,16 @@ where
             continue;
         }
 
-        let byte = reader.read_u8().await?;
+        let byte = match reader.read_u8().await {
+            Ok(byte) => byte,
+            Err(err)
+                if err.kind() == io::ErrorKind::UnexpectedEof
+                    && !is_live_decoded_request_body_error(&err) =>
+            {
+                return Err(invalid_live_json("request value ended before closing"));
+            }
+            Err(err) => return Err(err),
+        };
         bytes.push(byte);
         if in_string {
             if escaped {
@@ -1524,9 +1613,37 @@ fn invalid_live_json(message: &str) -> io::Error {
     )
 }
 
+fn live_decoded_request_body_error(error: io::Error) -> io::Error {
+    let kind = error.kind();
+    io::Error::new(kind, LiveDecodedRequestBodyError(error))
+}
+
 fn is_invalid_live_json_error(err: &io::Error) -> bool {
     err.get_ref()
         .is_some_and(|source| source.is::<InvalidLiveJsonError>())
+}
+
+fn is_live_decoded_request_body_error(err: &io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(|source| source.is::<LiveDecodedRequestBodyError>())
+}
+
+fn live_request_body_pipeline_error(err: &io::Error) -> Option<(StatusCode, String, &'static str)> {
+    if is_invalid_live_json_error(err) {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            format!("request body must be valid JSON: {err}"),
+            PROXY_FAILURE_REQUEST_BODY_INVALID_JSON,
+        ));
+    }
+    if is_live_decoded_request_body_error(err) {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            format!("failed to decode request body: {err}"),
+            PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+        ));
+    }
+    None
 }
 
 fn is_live_route_probe_budget_error(err: &io::Error) -> bool {
@@ -1726,6 +1843,48 @@ mod tests {
                     "content": [{"type": "input_text", "text": "hello"}],
                 }],
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_utf8_input_across_chunks() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(br#"{"model":"gpt-5.6","input":""#)))
+            .await
+            .expect("send UTF-8 request prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+        tx.send(Ok(Bytes::from_static(b"\xe4")))
+            .await
+            .expect("send UTF-8 leading byte");
+        tx.send(Ok(Bytes::from_static(b"\xbd\xa0\"}")))
+            .await
+            .expect("send UTF-8 trailing bytes");
+        drop(tx);
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live UTF-8 body"),
+            serde_json::json!({"model": "gpt-5.6", "input": "你"})
         );
     }
 
@@ -2054,6 +2213,54 @@ mod tests {
                 .map(|error| error.status),
             Some(StatusCode::BAD_REQUEST)
         );
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_truncated_or_non_utf8_strings() {
+        let mut non_utf8 = br#"{"model":"gpt-5.6","input":""#.to_vec();
+        non_utf8.push(0xff);
+        non_utf8.extend_from_slice(br#""}"#);
+        for source in [
+            Bytes::from_static(br#"{"model":"gpt-5.6","input":"unterminated"#),
+            Bytes::from(non_utf8),
+        ] {
+            let mut pipeline = spawn_live_responses_request_body_pipeline(Body::from(source), None);
+            let probe = wait_for_replay_body_sticky_key_probe(
+                &pipeline.routing_probe_rx,
+                Duration::from_secs(1),
+            )
+            .await;
+            assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+            assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+                target_encoding: RequestBodyContentEncoding::Identity,
+                compression_level: RequestCompressionLevelPreset::Balanced,
+                enforce_include_usage: false,
+                oauth: None,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+                image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+                codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+                codex_imagegen_protocol: None,
+                model_mapping_target: None,
+            }));
+            let mut stream = pipeline.body.into_data_stream();
+            let error = loop {
+                let Some(chunk) = stream.next().await else {
+                    panic!("invalid string must stop the live body");
+                };
+                if let Err(error) = chunk {
+                    break error;
+                }
+            };
+            assert!(error.to_string().contains("request string"));
+            assert_eq!(
+                pipeline
+                    .request_body_error_rx
+                    .borrow()
+                    .as_ref()
+                    .map(|error| error.failure_kind),
+                Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
+            );
+        }
     }
 
     #[tokio::test]
@@ -2429,7 +2636,20 @@ mod tests {
         })
         .await
         .expect("corrupt gzip pipeline should finalize");
-        assert!(pipeline.request_body_error_rx.borrow().is_none());
+        let request_body_error = pipeline
+            .request_body_error_rx
+            .borrow()
+            .clone()
+            .expect("corrupt gzip should be audited as a body decode failure");
+        assert_eq!(
+            request_body_error.failure_kind,
+            PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        );
+        assert!(
+            !request_body_error
+                .message
+                .contains("request body must be valid JSON")
+        );
     }
 
     #[tokio::test]
