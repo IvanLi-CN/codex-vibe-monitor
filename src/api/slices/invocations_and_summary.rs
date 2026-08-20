@@ -9486,7 +9486,7 @@ async fn build_summary_projection(
             );
         }
         let unmaterialized_archive_totals =
-            crate::stats::query_unmaterialized_invocation_archive_totals_bounded(
+            crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
                 &state.pool,
                 InvocationSourceScope::All,
                 None,

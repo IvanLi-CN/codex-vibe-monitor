@@ -2411,6 +2411,7 @@ pub(crate) struct PendingInvocationArchiveOverallState {
     unmaterialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
     materialized: BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
     unreadable_materialized_bucket_start_epochs: HashSet<i64>,
+    unreadable_unmaterialized_paths: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -3145,6 +3146,7 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
         range,
         exclude_invocation_ids,
         None,
+        false,
     )
     .await
 }
@@ -3162,6 +3164,25 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
         range,
         exclude_invocation_ids,
         Some(max_rows),
+        false,
+    )
+    .await
+}
+
+async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas_bounded_strict(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: usize,
+) -> Result<Vec<InvocationHourlyRollupRecord>> {
+    query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budget(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        Some(max_rows),
+        true,
     )
     .await
 }
@@ -3172,6 +3193,7 @@ async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budge
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
     max_rows: Option<usize>,
+    fail_on_unreadable_unmaterialized: bool,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
     let pending_state = load_pending_invocation_archive_hourly_rollup_deltas(
         pool,
@@ -3181,6 +3203,11 @@ async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budge
         max_rows,
     )
     .await?;
+    if fail_on_unreadable_unmaterialized
+        && let Some(path) = pending_state.unreadable_unmaterialized_paths.first()
+    {
+        return Err(anyhow!("summary archive is unavailable: {path}"));
+    }
     let mut pending_bucket_sources = pending_state
         .unmaterialized
         .keys()
@@ -3309,13 +3336,12 @@ pub(crate) async fn load_pending_invocation_archive_hourly_rollup_deltas(
                     .unreadable_materialized_bucket_start_epochs
                     .extend(archive_bucket_start_epochs_for_row(&archive_row)?);
             } else {
-                // There is no durable hourly baseline for this archive. Returning the rollup
-                // prefix without its raw delta would silently turn an exact summary into a
-                // partial one; callers retain an exact last-good response or fail unavailable.
-                return Err(anyhow!(
-                    "summary archive is unavailable: {}",
-                    archive_row.file_path
-                ));
+                // Historical read paths preserve their established best-effort behavior. The
+                // bounded SummaryProjection variant inspects this state and fails closed before
+                // publishing an inexact memory snapshot.
+                pending_state
+                    .unreadable_unmaterialized_paths
+                    .push(archive_row.file_path.clone());
             }
             continue;
         };
@@ -3856,6 +3882,33 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals_bounded(
 ) -> Result<StatsTotals> {
     let mut totals = StatsTotals::default();
     for row in query_unmaterialized_invocation_archive_hourly_rollup_deltas_bounded(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        max_rows,
+    )
+    .await?
+    {
+        totals.total_count += row.total_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_tokens += row.total_tokens;
+        totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
+    }
+    Ok(totals)
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_totals_bounded_strict(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: usize,
+) -> Result<StatsTotals> {
+    let mut totals = StatsTotals::default();
+    for row in query_unmaterialized_invocation_archive_hourly_rollup_deltas_bounded_strict(
         pool,
         source_scope,
         range,
