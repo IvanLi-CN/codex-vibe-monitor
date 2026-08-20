@@ -1772,6 +1772,72 @@ pub(crate) fn pool_routing_reservation_generation_is_current(
         .generation_is_current(snapshot_generation)
 }
 
+/// Revalidates an existing WebSocket reservation against the current in-memory
+/// snapshot before a `response.create` frame is forwarded upstream.
+///
+/// This deliberately never creates a reservation. An upgraded connection must
+/// retain the source generation established by selection; a missing or cold
+/// snapshot therefore fails closed rather than admitting a model without its
+/// configured cap.
+pub(crate) fn revalidate_pool_routing_reservation_for_model(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: &str,
+) -> bool {
+    let model = model.trim();
+    let mut reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let Some(existing) = reservations.get(reservation_key) else {
+        return false;
+    };
+    if existing.account_id != account.account_id || existing.snapshot_generation.is_none() {
+        return false;
+    }
+
+    // Keep the snapshot read and reservation update in one critical section.
+    // A completed failure fence removes the candidate or model route before a
+    // later response.create can renew this connection's admission generation.
+    let Some((snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        return false;
+    };
+    if snapshot.candidate(account.account_id).is_none()
+        || snapshot
+            .model_route_penalties(&[account.account_id], Some(model))
+            .get(&account.account_id)
+            .is_some_and(|penalty| *penalty == ModelRoutePenalty::Excluded)
+    {
+        return false;
+    }
+    if let Some(limit) = snapshot.model_route_concurrency_limit(account.account_id, Some(model)) {
+        let active = reservations
+            .iter()
+            .filter(|(key, reservation)| {
+                key.as_str() != reservation_key
+                    && reservation.account_id == account.account_id
+                    && reservation
+                        .model
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case(model))
+            })
+            .count() as i64;
+        if active >= limit.max(1) {
+            return false;
+        }
+    }
+
+    let reservation = reservations
+        .get_mut(reservation_key)
+        .expect("existing websocket reservation must remain present");
+    reservation.model = Some(model.to_string());
+    reservation.snapshot_generation = Some(snapshot_generation);
+    true
+}
+
 fn try_reserve_pool_routing_account_for_model_inner(
     state: &AppState,
     reservation_key: &str,

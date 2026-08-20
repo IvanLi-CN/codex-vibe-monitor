@@ -50,6 +50,55 @@ async fn wait_for_pool_websocket_pre_connect_hook(state: &AppState) {
 #[cfg(not(test))]
 async fn wait_for_pool_websocket_pre_connect_hook(_state: &AppState) {}
 
+#[cfg(test)]
+struct PoolWebSocketPreSendHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_websocket_pre_send_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreSendHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreSendHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_websocket_pre_send_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_websocket_pre_send_hooks()
+        .lock()
+        .expect("lock websocket pre-send hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolWebSocketPreSendHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_websocket_pre_send_hook(state: &AppState) {
+    let hook = pool_websocket_pre_send_hooks()
+        .lock()
+        .expect("lock websocket pre-send hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_websocket_pre_send_hook(_state: &AppState) {}
+
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -1432,7 +1481,8 @@ pub(crate) async fn proxy_websocket_tunnel(
                 received_at_rfc3339,
             } = timestamped_message;
             let close_seen = matches!(message, AxumWsMessage::Close(_));
-            if ws_message_starts_response_create_turn(&message) {
+            let starts_response_create_turn = ws_message_starts_response_create_turn(&message);
+            if starts_response_create_turn {
                 if active_turn_waiting_terminal {
                     usage_tracker
                         .persist_interrupted_turn(
@@ -1530,6 +1580,22 @@ pub(crate) async fn proxy_websocket_tunnel(
                 drain_upstream_after_downstream_close = true;
                 break;
             }
+            if starts_response_create_turn {
+                wait_for_pool_websocket_pre_send_hook(state.as_ref()).await;
+            }
+            if starts_response_create_turn && !reservation_guard.generation_is_current() {
+                failure_kind_override = Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
+                failure = Some(
+                    "websocket model route changed before upstream send; retry later".to_string(),
+                );
+                let _ = downstream_tx
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::AGAIN,
+                        reason: "model_route_unavailable; retry".into(),
+                    })))
+                    .await;
+                break;
+            }
             if let Some(message) = axum_to_tungstenite_message(message)
                 && let Err(err) = upstream_tx.send(message).await
             {
@@ -1551,7 +1617,9 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let timestamped_message = TimestampedWsDownstreamMessage::now(message);
                         let mut message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
-                        if ws_message_starts_response_create_turn(&message) {
+                        let starts_response_create_turn =
+                            ws_message_starts_response_create_turn(&message);
+                        if starts_response_create_turn {
                             if active_turn_waiting_terminal {
                                 usage_tracker
                                     .persist_interrupted_turn(
@@ -1661,6 +1729,25 @@ pub(crate) async fn proxy_websocket_tunnel(
                         }
                         if close_seen && active_turn_waiting_terminal {
                             drain_upstream_after_downstream_close = true;
+                            break;
+                        }
+                        if starts_response_create_turn {
+                            wait_for_pool_websocket_pre_send_hook(state.as_ref()).await;
+                        }
+                        if starts_response_create_turn && !reservation_guard.generation_is_current() {
+                            failure_kind_override = Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
+                            failure = Some(
+                                "websocket model route changed before upstream send; retry later"
+                                    .to_string(),
+                            );
+                            let _ = downstream_tx
+                                .send(AxumWsMessage::Close(Some(
+                                    axum::extract::ws::CloseFrame {
+                                        code: axum::extract::ws::close_code::AGAIN,
+                                        reason: "model_route_unavailable; retry".into(),
+                                    },
+                                )))
+                                .await;
                             break;
                         }
                         if let Some(message) = axum_to_tungstenite_message(message)
@@ -2855,41 +2942,15 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
                 .clone()
                 .or_else(|| usage_tracker.trace.request_model.clone());
             if let Some(model) = requested_model.as_deref() {
-                if !pool_routing_reservation_matches_model(
+                if !revalidate_pool_routing_reservation_for_model(
                     state,
                     reservation_key,
-                    usage_tracker.account.account_id,
-                    Some(model),
+                    &usage_tracker.account,
+                    model,
                 ) {
-                    if model_route_penalty(
-                        &state.pool,
-                        usage_tracker.account.account_id,
-                        Some(model),
-                    )
-                    .await?
-                        == ModelRoutePenalty::Excluded
-                    {
-                        return Err(anyhow!(
-                            "websocket model route is cooling down for {model}; retry after cooldown"
-                        ));
-                    }
-                    let concurrency_limit = model_route_concurrency_limit(
-                        &state.pool,
-                        usage_tracker.account.account_id,
-                        Some(model),
-                    )
-                    .await?;
-                    if !try_reserve_pool_routing_account_for_model(
-                        state,
-                        reservation_key,
-                        &usage_tracker.account,
-                        Some(model),
-                        concurrency_limit,
-                    ) {
-                        return Err(anyhow!(
-                            "websocket model route is at its concurrency limit for {model}; retry later"
-                        ));
-                    }
+                    return Err(anyhow!(
+                        "websocket model route is at its concurrency limit for {model}; retry later"
+                    ));
                 }
                 usage_tracker.trace.request_model = Some(model.to_string());
                 update_pool_upstream_request_attempt_model(

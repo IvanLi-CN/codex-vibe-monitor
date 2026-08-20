@@ -4918,6 +4918,147 @@ async fn websocket_response_create_turns_persist_usage_per_terminal() {
 }
 
 #[tokio::test]
+async fn websocket_response_create_fence_before_send_prevents_stale_dispatch() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tungstenite::Message as TungsteniteMessage;
+
+    async fn websocket_counting_upstream(
+        ws: WebSocketUpgrade,
+        State(frames): State<Arc<AtomicUsize>>,
+    ) -> Response {
+        ws.on_upgrade(move |mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
+                    frames.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        })
+        .into_response()
+    }
+
+    let frames = Arc::new(AtomicUsize::new(0));
+    let upstream_app = Router::new()
+        .route("/v1/responses", get(websocket_counting_upstream))
+        .with_state(frames.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket upstream");
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("websocket upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("websocket upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{upstream_addr}")).expect("valid websocket upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Pre-send Fence",
+        "upstream-websocket-pre-send-fence",
+        None,
+        None,
+        Some(&format!("http://{upstream_addr}")),
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket routing snapshot");
+    let (pre_send_rx, resume_pre_send) =
+        crate::proxy::register_pool_websocket_pre_send_hook(&state);
+
+    let proxy_app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .with_state(state.clone());
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket proxy server");
+    let proxy_addr = proxy_listener
+        .local_addr()
+        .expect("websocket proxy server addr");
+    let proxy_handle = tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy_app)
+            .await
+            .expect("websocket proxy server should run");
+    });
+
+    let mut request = format!("ws://{proxy_addr}/v1/responses")
+        .into_client_request()
+        .expect("websocket client request");
+    request.headers_mut().insert(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-live-key"),
+    );
+    let (mut client, response) = connect_async(request)
+        .await
+        .expect("connect websocket proxy");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    client
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type": "response.create",
+                "model": "gpt-5-realtime",
+                "input": []
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send websocket response.create");
+    tokio::task::spawn_blocking(move || {
+        pre_send_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("response.create should reach the pre-send fence")
+    })
+    .await
+    .expect("join websocket pre-send fence receiver");
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement websocket routing snapshot");
+    resume_pre_send.notify_one();
+
+    let close = client
+        .next()
+        .await
+        .expect("receive websocket close")
+        .expect("websocket close frame");
+    let TungsteniteMessage::Close(Some(frame)) = close else {
+        panic!("expected websocket close frame, got {close:?}");
+    };
+    assert!(frame.reason.contains("model_route_unavailable"));
+    assert_eq!(
+        frames.load(Ordering::SeqCst),
+        0,
+        "the stale response.create frame must not be dispatched upstream"
+    );
+
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_downstream_disconnect_drains_terminal_usage() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
