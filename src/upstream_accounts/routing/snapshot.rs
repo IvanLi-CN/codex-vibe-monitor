@@ -397,10 +397,35 @@ impl PoolRoutingSnapshotStore {
         self.request_refresh_inner(true);
     }
 
-    /// Records an observation for the normal low-frequency reconcile without
-    /// fencing a still-valid routing view. Success, affinity, and capability
-    /// observations use this path; failure mutations must use a fence.
-    pub(crate) fn request_low_frequency_reconcile(&self) {
+    /// Schedules one replacement after a persisted capacity recovery without
+    /// fencing an established route. Waiters are notified only after that
+    /// replacement is installed, so they cannot retry against the old view.
+    pub(crate) fn request_recovery_refresh_and_defer_availability_wake(&self) {
+        let mut refresh_state = self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned");
+        let epoch = self
+            .refresh_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        if epoch
+            & (REFRESH_PENDING_BIT
+                | REFRESH_PUBLISHING_BIT
+                | REFRESH_RECONCILING_BIT
+                | REFRESH_COALESCED_SUCCESSOR_BIT)
+            != 0
+        {
+            drop(refresh_state);
+            self.request_refresh_and_defer_availability_wake();
+            return;
+        }
+        if refresh_state.pending {
+            refresh_state.wake_waiters = true;
+            return;
+        }
+        refresh_state.pending = true;
+        refresh_state.wake_waiters = true;
+        drop(refresh_state);
         self.refresh_tx.send_modify(|generation| {
             *generation = generation.wrapping_add(1);
         });
@@ -546,6 +571,20 @@ impl PoolRoutingSnapshotStore {
                 .load(std::sync::atomic::Ordering::Acquire);
             if refresh_epoch & REFRESH_PUBLISHING_BIT != 0 {
                 std::hint::spin_loop();
+                continue;
+            }
+            // Coordinate with non-fencing recovery scheduling. A build that
+            // starts after it takes this lock observes the committed recovery;
+            // a recovery that arrives after this lease starts upgrades to the
+            // existing fenced successor path instead of installing stale data.
+            let _refresh_state = self
+                .refresh_state
+                .lock()
+                .expect("pool routing snapshot refresh lock poisoned");
+            let refresh_epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if refresh_epoch & REFRESH_PUBLISHING_BIT != 0 {
                 continue;
             }
             if refresh_epoch & REFRESH_RECONCILING_BIT != 0 {
@@ -1247,6 +1286,48 @@ mod snapshot_store_tests {
         }));
         assert!(published_availability.get());
         assert!(!store.refresh_pending());
+    }
+
+    #[test]
+    fn recovery_replaces_the_snapshot_before_waking_waiters() {
+        let store = PoolRoutingSnapshotStore::new();
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
+        assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+        let current_generation = store.refresh_generation();
+        let published_availability = std::cell::Cell::new(false);
+
+        store.request_recovery_refresh_and_defer_availability_wake();
+
+        assert!(
+            store.current().is_some(),
+            "a capacity recovery must preserve the established view until its replacement is ready"
+        );
+        assert_eq!(
+            store.refresh_generation(),
+            current_generation,
+            "a non-fencing recovery must not invalidate established reservation generations"
+        );
+        assert!(store.refresh_pending());
+        assert!(
+            !published_availability.get(),
+            "waiters must not wake against the pre-recovery snapshot"
+        );
+
+        let recovery_generation = store
+            .begin_refresh()
+            .expect("the scheduled recovery should claim one reconciliation lease");
+        assert_eq!(recovery_generation, current_generation);
+        assert!(
+            store.complete_refresh(recovery_generation, empty_snapshot(), || {
+                published_availability.set(true);
+            })
+        );
+        assert!(
+            published_availability.get(),
+            "the replacement installation must replay the deferred recovery wake"
+        );
     }
 
     #[test]

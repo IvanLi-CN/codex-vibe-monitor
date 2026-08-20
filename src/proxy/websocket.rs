@@ -3279,13 +3279,7 @@ pub(crate) async fn persist_ws_usage_event(
                 .await?;
             }
         }
-        if is_completed_terminal_event {
-            // Success only enriches model observations. Keep an established
-            // websocket lease valid until the bounded reconcile observes it.
-            state
-                .pool_routing_snapshot
-                .request_low_frequency_reconcile();
-        } else {
+        if !is_completed_terminal_event {
             state.pool_routing_snapshot.request_refresh();
         }
         state

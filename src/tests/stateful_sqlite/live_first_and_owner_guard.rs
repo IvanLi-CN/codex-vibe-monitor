@@ -3466,10 +3466,10 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     .await
     .expect("record healthy HTTP-style success");
     assert!(
-        snapshot_refreshes
+        !snapshot_refreshes
             .has_changed()
             .expect("snapshot refresh channel must remain open"),
-        "a newly observed endpoint capability must request a snapshot refresh"
+        "ordinary success observations must not create event-driven reconciliation work"
     );
     assert!(
         !state.pool_routing_snapshot.refresh_pending(),
@@ -3480,7 +3480,6 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
         initial_generation,
         "a pending snapshot refresh must not wake pool waiters before replacement"
     );
-    snapshot_refreshes.borrow_and_update();
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("reconcile routing snapshot after endpoint capability observation");
@@ -3499,6 +3498,9 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     .execute(&state.pool)
     .await
     .expect("mark account unavailable before websocket-style recovery");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unavailable snapshot before websocket-style recovery");
     record_pool_route_success_with_affinity_generation_and_broadcast(
         state.as_ref(),
         account_id,
@@ -3511,6 +3513,18 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record websocket-style account recovery");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "recovery must install a selectable snapshot before waking waiters"
+    );
+    assert!(
+        state
+            .pool_routing_snapshot
+            .current()
+            .is_none_or(|snapshot| snapshot.account(account_id).is_none()),
+        "the pre-recovery view must remain unavailable until its replacement installs"
+    );
     assert!(
         snapshot_refreshes
             .has_changed()
@@ -3540,6 +3554,9 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     .execute(&state.pool)
     .await
     .expect("mark account unavailable before HTTP-style recovery");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unavailable snapshot before HTTP-style recovery");
     record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
         state.as_ref(),
         account_id,
@@ -3555,6 +3572,18 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record HTTP-style account recovery");
+    assert_eq!(
+        *availability.borrow(),
+        websocket_recovery_generation,
+        "endpoint recovery must install a selectable snapshot before waking waiters"
+    );
+    assert!(
+        state
+            .pool_routing_snapshot
+            .current()
+            .is_none_or(|snapshot| snapshot.account(account_id).is_none()),
+        "the pre-recovery view must remain unavailable until its replacement installs"
+    );
     assert!(
         snapshot_refreshes
             .has_changed()
