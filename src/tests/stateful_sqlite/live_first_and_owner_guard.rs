@@ -171,13 +171,13 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
     let (pre_send_rx, resume_pre_send) =
         crate::proxy::register_pool_live_first_pre_send_hook(&state);
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    // Keep the body stream open until the pre-send generation fence is reached.
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","input":"pending"}"#,
+            br#"{"model":"gpt-5","input":"pending"#,
         )))
         .await
         .expect("send live-first request body");
-    drop(body_tx);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         proxy_openai_v1_via_pool(
@@ -1197,13 +1197,13 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     // reserved the account. Holding it makes the cancellation window exact.
     let runtime_cache_guard = state.pool_routing_runtime_cache.lock().await;
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    // Keep the body stream open until selection has reserved the route.
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","input":"pending"}"#,
+            br#"{"model":"gpt-5","input":"pending"#,
         )))
         .await
         .expect("send live-first request body");
-    drop(body_tx);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         let uri = "/v1/responses".parse().expect("valid responses uri");
