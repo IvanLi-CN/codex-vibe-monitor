@@ -6991,17 +6991,18 @@ pub(crate) async fn load_in_progress_conversation_count(
 
 pub(crate) const SUMMARY_SNAPSHOT_MAX_STALE: Duration = Duration::from_secs(15);
 pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
-// Owner checks are memory-only. Tick often enough that a legal 10-second build still begins
-// before its 15-second serving budget, while idle owners never schedule SQLite/archive work.
+// Owner checks are memory-only. Tick often enough to start the bounded refresh before the
+// 15-second serving budget ends, while idle owners never schedule SQLite/archive work.
 const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
 const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // Do not turn a locked or overloaded SQLite database into a continuous sequence of timed-out
 // full hydrations. Mutations remain coalesced as dirty while this bounded retry gate is active.
 const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
-// Reconcile before the 15-second serving budget expires; a timed-out build is discarded
-// atomically and cannot expose a partial projection to the request path.
-const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(10);
+// A cadence refresh begins after the 10-second floor and waits 250ms to coalesce events. Keep
+// its build deadline below the remaining 4.75 seconds so a successful rebuild never creates an
+// unavailable interval before the hard 15-second freshness ceiling.
+const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // Account and archive metadata are admission-controlled independently from exact invocation
 // rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
@@ -25957,6 +25958,16 @@ mod request_compression_query_tests {
             None,
             now,
         ));
+    }
+
+    #[test]
+    fn summary_snapshot_refresh_budget_completes_before_freshness_ceiling() {
+        assert!(
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
+                + SUMMARY_SNAPSHOT_EVENT_DEBOUNCE
+                + SUMMARY_PROJECTION_BUILD_DEADLINE
+                < SUMMARY_SNAPSHOT_MAX_STALE
+        );
     }
 
     #[tokio::test]

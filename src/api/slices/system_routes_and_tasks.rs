@@ -11,6 +11,10 @@ use std::{
 };
 
 pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 60;
+// Refresh before the public 60-second cache ceiling and bound the durable scan so a successful
+// maintenance pass cannot make the request-only memory snapshot temporarily unavailable.
+const SYSTEM_STATUS_SNAPSHOT_REFRESH_LEAD: Duration = Duration::from_secs(5);
+const SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE: Duration = Duration::from_secs(4);
 const SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE: i64 = 128;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -1134,13 +1138,19 @@ async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
     Ok(())
 }
 
+fn system_status_snapshot_refresh_delay() -> Duration {
+    Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+        .checked_sub(SYSTEM_STATUS_SNAPSHOT_REFRESH_LEAD)
+        .expect("system status refresh lead must be shorter than the cache TTL")
+}
+
 pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
         // Startup has already completed the first durable hydration before this producer is
-        // spawned. Schedule the next scan at the TTL boundary rather than accepting interval's
-        // immediate first tick and duplicating SQLite/archive file work at readiness.
+        // spawned. Schedule the next bounded scan before the TTL boundary rather than accepting
+        // interval's immediate first tick and duplicating SQLite/archive file work at readiness.
         let mut cadence = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+            tokio::time::Instant::now() + system_status_snapshot_refresh_delay(),
             Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
         );
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1149,7 +1159,14 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
-            if let Err(error) = refresh_system_status_snapshot(state.as_ref()).await {
+            if let Err(error) = tokio::time::timeout(
+                SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
+                refresh_system_status_snapshot(state.as_ref()),
+            )
+            .await
+            .map_err(|_| anyhow!("system status snapshot refresh exceeded its deadline"))
+            .and_then(|result| result)
+            {
                 warn!(
                     ?error,
                     "system status background refresh failed; retaining last-good snapshot"
@@ -1462,6 +1479,14 @@ mod runtime_pressure_health_tests {
         assert_eq!(runtime_pressure_state(false, true, false), "degraded");
         assert_eq!(runtime_pressure_state(false, false, true), "deferred");
         assert_eq!(runtime_pressure_state(false, false, false), "healthy");
+    }
+
+    #[test]
+    fn system_status_refresh_budget_completes_before_cache_ceiling() {
+        assert!(
+            system_status_snapshot_refresh_delay() + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
+                < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+        );
     }
 
     #[tokio::test]
