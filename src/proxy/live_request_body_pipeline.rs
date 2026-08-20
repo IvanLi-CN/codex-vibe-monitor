@@ -7,6 +7,17 @@ const LIVE_ROUTE_METADATA_CHANGED_MESSAGE: &str =
     "routing metadata changed after live forwarding started";
 const LIVE_TRANSFORM_REPLAY_MESSAGE: &str = "live request transform requires buffered replay";
 
+#[derive(Debug)]
+struct InvalidLiveJsonError(String);
+
+impl std::fmt::Display for InvalidLiveJsonError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidLiveJsonError {}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LiveOauthResponsesTransform {
     pub(crate) account_id: Option<i64>,
@@ -94,7 +105,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
                     PoolReplayBodyKeyProbe::default(),
                 ));
             }
-            if err.kind() == io::ErrorKind::InvalidData {
+            if is_invalid_live_json_error(&err) {
                 let _ = request_body_error_tx.send(Some(RequestBodyReadError {
                     status: StatusCode::BAD_REQUEST,
                     message: format!("request body must be valid JSON: {err}"),
@@ -1434,7 +1445,7 @@ where
             let Some(byte) = read_non_whitespace(reader).await? else {
                 return Err(invalid_live_json("request value is missing a delimiter"));
             };
-            if matches!(byte, b',' | b'}') {
+            if matches!(byte, b',' | b'}' | b']') {
                 append_live_value(&mut collected, &bytes, limit)?;
                 return Ok(byte);
             }
@@ -1507,7 +1518,15 @@ where
 }
 
 fn invalid_live_json(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        InvalidLiveJsonError(message.to_string()),
+    )
+}
+
+fn is_invalid_live_json_error(err: &io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(|source| source.is::<InvalidLiveJsonError>())
 }
 
 fn is_live_route_probe_budget_error(err: &io::Error) -> bool {
@@ -1599,6 +1618,38 @@ mod tests {
     #[tokio::test]
     async fn live_first_capture_responses_forwards_objects_inside_input_arrays() {
         let source = br#"{"model":"gpt-5.6","input":[{}]}"#;
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(source)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::from_slice::<Value>(source).expect("decode source JSON")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_scalar_input_arrays_before_model() {
+        let source = br#"{"input":[1],"model":"gpt-5.6"}"#;
         let mut pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(source)),
             None,
@@ -2353,6 +2404,32 @@ mod tests {
                 "{encoding}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn responses_streaming_transform_keeps_corrupt_content_encoding_out_of_json_failure() {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(b"not a gzip stream")),
+            Some("gzip".to_string()),
+        );
+        let mut upstream = pipeline.body.into_data_stream();
+        let _error = timeout(Duration::from_secs(1), upstream.next())
+            .await
+            .expect("corrupt gzip should resolve")
+            .expect("corrupt gzip should emit an upstream body error")
+            .expect_err("corrupt gzip must not produce a logical request body");
+        let mut finalization_rx = pipeline.finalization_rx.clone();
+        timeout(Duration::from_secs(1), async {
+            while !*finalization_rx.borrow() {
+                finalization_rx
+                    .changed()
+                    .await
+                    .expect("live pipeline finalization sender should remain available");
+            }
+        })
+        .await
+        .expect("corrupt gzip pipeline should finalize");
+        assert!(pipeline.request_body_error_rx.borrow().is_none());
     }
 
     #[tokio::test]

@@ -1502,7 +1502,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     &capture_failure_decision,
                     &LiveRequestStreamingMeasurement {
                         first_attempt_failed: live_first_attempt_failed,
-                        fallback_or_retry: live_first_attempt_failed,
+                        fallback_or_retry: false,
                         capture_failed: true,
                         ambiguous_upstream_delivery: live_first_attempt_failed,
                         experiment_account_group: live_first_experiment_group.clone(),

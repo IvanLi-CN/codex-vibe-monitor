@@ -640,6 +640,7 @@ async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_re
     )
     .expect("decode malformed live invocation payload");
     assert_eq!(invocation_payload["liveFirstAttemptFailed"], true);
+    assert_eq!(invocation_payload["liveFirstFallbackOrRetry"], false);
     assert_eq!(invocation_payload["liveFirstCaptureFailed"], true);
     assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
 
