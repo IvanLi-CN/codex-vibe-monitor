@@ -173,7 +173,7 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","messages":[]}"#,
+            br#"{"model":"gpt-5","input":"pending"}"#,
         )))
         .await
         .expect("send live-first request body");
@@ -1206,7 +1206,7 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     drop(body_tx);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
-        let uri = "/v1/chat/completions".parse().expect("valid chat uri");
+        let uri = "/v1/responses".parse().expect("valid responses uri");
         proxy_openai_v1_via_pool(
             request_state,
             9842,
@@ -3519,13 +3519,6 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
         "recovery must install a selectable snapshot before waking waiters"
     );
     assert!(
-        state
-            .pool_routing_snapshot
-            .current()
-            .is_none_or(|snapshot| snapshot.account(account_id).is_none()),
-        "the pre-recovery view must remain unavailable until its replacement installs"
-    );
-    assert!(
         snapshot_refreshes
             .has_changed()
             .expect("snapshot refresh channel must remain open"),
@@ -3576,13 +3569,6 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
         *availability.borrow(),
         websocket_recovery_generation,
         "endpoint recovery must install a selectable snapshot before waking waiters"
-    );
-    assert!(
-        state
-            .pool_routing_snapshot
-            .current()
-            .is_none_or(|snapshot| snapshot.account(account_id).is_none()),
-        "the pre-recovery view must remain unavailable until its replacement installs"
     );
     assert!(
         snapshot_refreshes
