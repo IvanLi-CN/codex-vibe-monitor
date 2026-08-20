@@ -9268,6 +9268,7 @@ async fn build_summary_projection(
             .filter(|account_id| *account_id > 0),
     );
     let mut batched_all_time_by_account = HashMap::<i64, StatsTotals>::new();
+    let mut account_all_time_unavailable = false;
     if all_time_was_fully_rebuilt {
         // All-time must use the same bounded projection inputs as rolling windows. The generic
         // stats query can open every unmaterialized archive and therefore cannot run in the
@@ -9362,7 +9363,7 @@ async fn build_summary_projection(
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
         }
-        for (account_id, totals) in
+        let account_archive_totals =
             crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
                 &state.pool,
                 HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -9370,11 +9371,28 @@ async fn build_summary_projection(
                 None,
                 Some(&live_tail_ids),
             )
-            .await
-            .map_err(|error| {
-                anyhow!("summary projection account archive hydration failed: {error:?}")
-            })?
-        {
+            .await;
+        let account_archive_totals = match account_archive_totals {
+            Ok(totals) => totals,
+            Err(error)
+                if error
+                    .to_string()
+                    .starts_with("summary account archive is unavailable:") =>
+            {
+                // Global rollups remain a valid read-only fallback for this refresh, but an
+                // account response would be an undercount without the missing archive. Leave
+                // account all-time entries absent so the HTTP path returns Unavailable instead
+                // of publishing a partial aggregate.
+                account_all_time_unavailable = true;
+                HashMap::new()
+            }
+            Err(error) => {
+                return Err(anyhow!(
+                    "summary projection account archive hydration failed: {error:?}"
+                ));
+            }
+        };
+        for (account_id, totals) in account_archive_totals {
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
         }
@@ -9382,6 +9400,12 @@ async fn build_summary_projection(
         // account-lag archive/live rows remain in the exact canonical set; fold those rows into
         // the all-time account aggregate once instead of silently constructing a zero response.
         for record in &records {
+            // With no completed archives the live-table aggregate above is the complete
+            // persisted history, regardless of rollup cursor lag. Only runtime overlay rows
+            // are absent from that aggregate and need an exact-record contribution here.
+            if !has_archives && record.is_persisted_live_record {
+                continue;
+            }
             let Some((account_id, totals)) = summary_projection_account_record_totals(record)
             else {
                 continue;
@@ -9392,6 +9416,9 @@ async fn build_summary_projection(
     }
     for upstream_account_id in std::iter::once(None).chain(account_ids.iter().copied().map(Some)) {
         if all_time_was_fully_rebuilt && let Some(account_id) = upstream_account_id {
+            if account_all_time_unavailable {
+                continue;
+            }
             let totals = match batched_all_time_by_account.get(&account_id).copied() {
                 Some(totals) => totals,
                 None if account_ids_with_projection_data.contains(&account_id) => {
@@ -24848,6 +24875,20 @@ mod request_compression_query_tests {
         assert_eq!(account_usage.models[0].model, "gpt-5");
         assert_eq!(account_usage.models[0].output_tokens, 14);
 
+        let Json(account_all_time_before) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve live-only account all-time projection");
+        assert_eq!(account_all_time_before.total_count, 1);
+        assert_eq!(account_all_time_before.total_tokens, 17);
+
         sqlx::query(
             "INSERT INTO upstream_account_stats_hourly (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
         )
@@ -25009,6 +25050,19 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert unavailable materialized archive manifest");
+        for target in [
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', '/definitely/missing/summary.sqlite.gz', 'summary-test')",
+            )
+            .bind(target)
+            .execute(&state.pool)
+            .await
+            .expect("mark unavailable archive account scope as replayed");
+        }
 
         hydrate_summary_snapshots(state.as_ref())
             .await

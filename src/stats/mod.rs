@@ -4243,7 +4243,10 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_acco
         let Some((archive_pool, temp_cleanup)) =
             open_invocation_archive_batch_pool(&archive_row, "summary-account-stats").await?
         else {
-            continue;
+            return Err(anyhow!(
+                "summary account archive is unavailable: {}",
+                archive_row.file_path
+            ));
         };
         let mut cursor_id = 0_i64;
         loop {
