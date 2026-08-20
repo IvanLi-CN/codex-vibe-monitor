@@ -15906,6 +15906,36 @@ mod tests {
             .await
             .expect("persist reentered working conversation history");
         }
+        // The hydration snapshot is captured after these writes. If CI crosses an hour
+        // boundary in between, account details read the materialized historical bucket
+        // rather than the prior-hour P1 rows, just as production does after rollup.
+        sqlx::query(
+            r#"
+            INSERT INTO prompt_cache_upstream_account_hourly (
+                bucket_start_epoch,
+                source,
+                prompt_cache_key,
+                upstream_account_key,
+                upstream_account_id,
+                upstream_account_name,
+                request_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost,
+                first_seen_at,
+                last_seen_at,
+                updated_at
+            )
+            VALUES (?1, 'proxy', 'reentered-key', 'id:42|name:Hydrated Account', 42,
+                    'Hydrated Account', 2, 2, 0, 42, 0.5, ?2, ?2, datetime('now'))
+            "#,
+        )
+        .bind(now.timestamp().div_euclid(3_600) * 3_600)
+        .bind(&occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("materialize reentered working conversation account history");
         sqlx::query(
             r#"
             INSERT INTO prompt_cache_conversation_bindings (
