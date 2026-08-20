@@ -1060,6 +1060,7 @@ const LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH: i64 = 1;
 const LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH: i64 = 2_000;
 const LONG_TERM_PROJECTION_WRITE_BATCH_ROWS: usize = 512;
 const LONG_TERM_PROJECTION_ADMISSION_WAIT: Duration = Duration::from_millis(250);
+const LONG_TERM_PROJECTION_TRANSACTION_WAIT: Duration = Duration::from_millis(250);
 // The incremental rollup commit also persists the cursor and projection status.
 const LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS: usize =
     LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2;
@@ -1088,6 +1089,8 @@ struct LongTermProjectionWriteControl<'a> {
     cancel_after_commit: Option<(&'a CancellationToken, &'a AtomicUsize, usize)>,
     #[cfg(test)]
     stop_after_rebuild_chunk: Option<&'a CancellationToken>,
+    #[cfg(test)]
+    stop_after_refresh_publication: Option<&'a CancellationToken>,
 }
 
 impl<'a> LongTermProjectionWriteControl<'a> {
@@ -1101,6 +1104,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             #[cfg(test)]
             stop_after_rebuild_chunk: None,
+            #[cfg(test)]
+            stop_after_refresh_publication: None,
         }
     }
 
@@ -1117,6 +1122,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             #[cfg(test)]
             stop_after_rebuild_chunk: None,
+            #[cfg(test)]
+            stop_after_refresh_publication: None,
         }
     }
 
@@ -1133,6 +1140,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             committed_batches: Some((committed_batches, limit)),
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: None,
         }
     }
 
@@ -1149,6 +1157,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             committed_batches: None,
             cancel_after_commit: Some((shutdown, committed_batches, limit)),
             stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: None,
         }
     }
 
@@ -1163,12 +1172,35 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             committed_batches: None,
             cancel_after_commit: None,
             stop_after_rebuild_chunk: Some(shutdown),
+            stop_after_refresh_publication: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn stopping_after_refresh_publication(
+        shutdown: &'a CancellationToken,
+        gate: &'a crate::db_pressure::DbPressureGate,
+    ) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            gate: Some(gate),
+            committed_batches: None,
+            cancel_after_commit: None,
+            stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: Some(shutdown),
         }
     }
 
     fn complete_rebuild_chunk(&self) {
         #[cfg(test)]
         if let Some(shutdown) = self.stop_after_rebuild_chunk {
+            shutdown.cancel();
+        }
+    }
+
+    fn complete_refresh_publication(&self) {
+        #[cfg(test)]
+        if let Some(shutdown) = self.stop_after_refresh_publication {
             shutdown.cancel();
         }
     }
@@ -1217,7 +1249,19 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         } else {
             None
         };
-        Ok((pool.begin().await?, permit))
+        let transaction = if let Some(shutdown) = self.shutdown {
+            tokio::select! {
+                _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                result = tokio::time::timeout(
+                    LONG_TERM_PROJECTION_TRANSACTION_WAIT,
+                    pool.begin_with("BEGIN IMMEDIATE"),
+                ) => result
+                    .map_err(|_| anyhow!("long-term projection write deferred by database pressure: transaction admission timed out"))??,
+            }
+        } else {
+            pool.begin().await?
+        };
+        Ok((transaction, permit))
     }
 
     async fn commit(
@@ -1225,7 +1269,15 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         transaction: sqlx::Transaction<'_, Sqlite>,
         permit: Option<crate::db_pressure::DbBackgroundPermit>,
     ) -> Result<()> {
-        transaction.commit().await?;
+        if let Some(shutdown) = self.shutdown {
+            tokio::select! {
+                _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                result = tokio::time::timeout(LONG_TERM_PROJECTION_TRANSACTION_WAIT, transaction.commit()) => result
+                    .map_err(|_| anyhow!("long-term projection write deferred by database pressure: transaction commit timed out"))??,
+            }
+        } else {
+            transaction.commit().await?;
+        }
         drop(permit);
         #[cfg(test)]
         if let Some((count, _)) = self.committed_batches {
@@ -1823,7 +1875,7 @@ async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<Str
     );
     queue_long_term_projection_repairs_with_control(
         &state.pool,
-        &[today.clone()],
+        std::slice::from_ref(&today),
         "daily_verify",
         &control,
     )
@@ -6494,10 +6546,32 @@ async fn apply_long_term_refresh_rollups_with_control(
         archive_read_failed
             .then_some("one or more invocation archives could not be materialized".to_string())
     };
-    // Every affected date now contains its full replacement. Releasing one date at a time is
-    // safe because readers select either its complete backup or its complete live rows.
-    release_long_term_projection_daily_backups(pool, &refresh_backups, control).await?;
+    // Stage every replacement behind one publication token. The final transaction below flips
+    // this token and the public state together, so cancellation cannot expose a mixed refresh.
+    let refresh_publication_token =
+        (!refresh_backups.is_empty()).then(next_long_term_projection_publication_token);
+    if let Some(publication_token) = refresh_publication_token.as_deref() {
+        for (bucket_date, rebuild_token) in &refresh_backups {
+            stage_long_term_projection_date_publication(
+                pool,
+                bucket_date,
+                rebuild_token,
+                publication_token,
+                None,
+                control,
+            )
+            .await?;
+        }
+    }
     let (mut transaction, permit) = control.begin(pool).await?;
+    if let Some(publication_token) = refresh_publication_token.as_deref() {
+        sqlx::query(
+            "INSERT INTO long_term_projection_date_publications (publication_token, published) VALUES (?1, 1) ON CONFLICT(publication_token) DO UPDATE SET published = 1, updated_at = datetime('now')",
+        )
+        .bind(publication_token)
+        .execute(&mut *transaction)
+        .await?;
+    }
     sqlx::query(
         "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5",
     )
@@ -6509,8 +6583,24 @@ async fn apply_long_term_refresh_rollups_with_control(
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await?;
+    control.complete_refresh_publication();
+    control.check()?;
+    if let Some(publication_token) = refresh_publication_token.as_deref() {
+        for (bucket_date, rebuild_token) in &refresh_backups {
+            let _released = release_long_term_projection_publication_member(
+                pool,
+                bucket_date,
+                rebuild_token,
+                None,
+                publication_token,
+                control,
+            )
+            .await?;
+        }
+        prune_long_term_projection_publications(pool, control).await?;
+    }
     // A retry may safely rebuild an already-published date. It cannot safely skip an archive
-    // while its replay marker exists but the replacement is still behind a backup pointer.
+    // while its replay marker exists but the replacement is still behind publication cleanup.
     persist_long_term_refresh_archive_markers_with_control(
         pool,
         LongTermRefreshArchiveMarkers {
@@ -6524,9 +6614,6 @@ async fn apply_long_term_refresh_rollups_with_control(
         control,
     )
     .await?;
-    for (_, rebuild_token) in refresh_backups {
-        clear_long_term_projection_daily_backup(pool, &rebuild_token, control).await?;
-    }
     Ok(())
 }
 
@@ -8683,6 +8770,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn controlled_transaction_cancels_while_an_external_writer_holds_sqlite() {
+        let (pool, _db_url, db_path) = long_term_file_backed_pool_with_busy_timeout(
+            "cancel-locked-write",
+            Duration::from_secs(30),
+        )
+        .await;
+        let mut external_writer = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold the external SQLite writer lock");
+        let shutdown = CancellationToken::new();
+        let cancellation = shutdown.clone();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+
+        let cancel = async move {
+            sleep(Duration::from_millis(20)).await;
+            cancellation.cancel();
+        };
+        let blocked_begin = tokio::time::timeout(Duration::from_millis(200), control.begin(&pool));
+        let (_, result) = tokio::join!(cancel, blocked_begin);
+        let error = result
+            .expect("shutdown cancels the blocked transaction before SQLite's busy timeout")
+            .expect_err("locked transaction admission is cancelled");
+        assert!(long_term_projection_write_is_deferred(&error));
+        let permit = gate
+            .try_begin_background("verify-cancelled-transaction-released-permit")
+            .expect("cancellation releases the P2 admission permit");
+        drop(permit);
+        external_writer
+            .rollback()
+            .await
+            .expect("release external SQLite writer lock");
+        cleanup_long_term_file_backed_pool(pool, db_path).await;
+    }
+
+    #[tokio::test]
     async fn daily_verify_stays_due_until_its_queued_bucket_is_rebuilt() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -8716,13 +8840,13 @@ mod tests {
                 .expect("unrepaired verification remains due")
         );
 
-        queue_long_term_projection_repairs(&pool, &[today.clone()], "newer_generation")
+        queue_long_term_projection_repairs(&pool, std::slice::from_ref(&today), "newer_generation")
             .await
             .expect("queue a newer daily repair");
         complete_long_term_projection_daily_verify_with_control(
             &pool,
             &today,
-            &[today.clone()],
+            std::slice::from_ref(&today),
             &control,
         )
         .await
@@ -8741,7 +8865,7 @@ mod tests {
         complete_long_term_projection_daily_verify_with_control(
             &pool,
             &today,
-            &[today.clone()],
+            std::slice::from_ref(&today),
             &control,
         )
         .await
@@ -8907,6 +9031,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_publication_commits_state_before_cleanup_can_cancel() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let date_text = date.to_string();
+        let (start_epoch, _) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let previous = LongTermBucket {
+            bucket_start_epoch: start_epoch,
+            dimension: "model".to_string(),
+            series_key: "model:previous".to_string(),
+            display_name: "previous".to_string(),
+            reasoning_effort: String::new(),
+            stats_date: Some(date_text.clone()),
+            accumulator: LongTermAccumulator {
+                calls: 1,
+                ..LongTermAccumulator::default()
+            },
+        };
+        let replacement = LongTermBucket {
+            series_key: "model:replacement".to_string(),
+            display_name: "replacement".to_string(),
+            ..previous.clone()
+        };
+        let mut seeded = pool.begin().await.expect("seed transaction");
+        insert_long_term_daily(&mut seeded, &previous)
+            .await
+            .expect("seed prior daily row");
+        seeded.commit().await.expect("commit prior daily row");
+        sqlx::query("UPDATE long_term_stats_state SET status = ?1 WHERE id = ?2")
+            .bind(LONG_TERM_STATUS_READY)
+            .bind(LONG_TERM_STATE_ID)
+            .execute(&pool)
+            .await
+            .expect("seed ready long-term state");
+
+        let daily = HashMap::from([(
+            (
+                date_text.clone(),
+                "model".to_string(),
+                replacement.series_key.clone(),
+            ),
+            replacement,
+        )]);
+        let recomputed_dates = HashSet::from([date]);
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let control =
+            LongTermProjectionWriteControl::stopping_after_refresh_publication(&shutdown, &gate);
+        let error = apply_long_term_refresh_rollups_with_control(
+            &pool,
+            LongTermRefreshRollupInput {
+                hourly: &HashMap::new(),
+                daily: &daily,
+                recomputed_dates: &recomputed_dates,
+                retention_start: date,
+                integrity_repair_failures: &[],
+                completed_integrity_repairs: &HashSet::new(),
+                reconstructable_start: date,
+                statistics_start_date: Some(&date_text),
+                processed_rows_count: 1,
+                source_rows_empty: false,
+                archive_read_failed: false,
+                terminal_proof_reconciliation_incomplete: false,
+                archive_markers: &[],
+                failed_archive_paths: &HashSet::new(),
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &[],
+                attempt_archive_markers: &HashSet::new(),
+            },
+            &control,
+        )
+        .await
+        .expect_err("test cancellation stops only publication cleanup");
+        assert!(long_term_projection_write_is_deferred(&error));
+        assert!(shutdown.is_cancelled());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM long_term_stats_state WHERE id = ?1",
+            )
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_one(&pool)
+            .await
+            .expect("published state"),
+            LONG_TERM_STATUS_READY
+        );
+        let published_rows =
+            load_long_term_daily_rows(&pool, "model", None, &date_text, &date_text)
+                .await
+                .expect("published replacement rows");
+        assert_eq!(published_rows.len(), 1);
+        assert_eq!(published_rows[0].series_key, "model:replacement");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_bucket_state WHERE bucket_date = ?1 AND active_daily_backup_token IS NOT NULL AND publication_token IS NOT NULL",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("deferred cleanup pointer"),
+            1
+        );
+
+        let recovery_control = LongTermProjectionWriteControl::unrestricted();
+        finish_long_term_projection_publication_cleanup(&pool, &recovery_control)
+            .await
+            .expect("recovery releases an already-published backup");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_bucket_state WHERE bucket_date = ?1 AND active_daily_backup_token IS NOT NULL",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("released cleanup pointer"),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn interrupted_initial_refresh_keeps_partial_rollups_retryable() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -8955,6 +9204,99 @@ mod tests {
             state.1.as_deref(),
             true,
         ));
+    }
+
+    #[tokio::test]
+    async fn initial_refresh_retries_after_missing_attempt_archive_recovers() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let date = Utc::now().with_timezone(&Shanghai).date_naive();
+        let occurred_at = format!("{date}T10:00:00+08:00");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, model, payload, raw_response, total_tokens, output_tokens, cost, created_at) VALUES (1, 'initial-missing-attempt-source', ?1, 'success', 'gpt-5', '{}', '{}', 100, 40, 0.1, datetime('now'))",
+        )
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert live invocation");
+        let missing_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-initial-missing-attempt-source-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        ));
+        let missing_path = missing_path.to_string_lossy().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset, month_key, file_path, sha256, row_count, status,
+                coverage_start_at, coverage_end_at, created_at
+            )
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'initial-missing-attempt-sha',
+                1, 'completed', ?3, ?3, datetime('now'))
+            "#,
+        )
+        .bind(date.format("%Y-%m").to_string())
+        .bind(&missing_path)
+        .bind(&occurred_at)
+        .execute(&pool)
+        .await
+        .expect("record missing attempt archive manifest");
+
+        let error = refresh_long_term_stats(&pool, 400)
+            .await
+            .expect_err("missing initial archive keeps materialization retryable");
+        assert!(
+            error
+                .to_string()
+                .contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR)
+        );
+        let initial_state = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("initial archive failure state");
+        assert_eq!(initial_state.0, LONG_TERM_STATUS_ERROR);
+        assert!(
+            initial_state.1.as_deref().is_some_and(
+                |message| message.contains(LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR)
+            )
+        );
+
+        sqlx::query("DELETE FROM archive_batches WHERE file_path = ?1")
+            .bind(&missing_path)
+            .execute(&pool)
+            .await
+            .expect("remove recovered archive manifest");
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("initial materialization retries after archive recovery");
+        let recovered_state = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("recovered initial state");
+        assert_eq!(recovered_state.0, LONG_TERM_STATUS_READY);
+        assert_eq!(recovered_state.1, None);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT calls FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+            )
+            .bind(date.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("recovered daily rollup"),
+            1
+        );
     }
 
     #[test]
@@ -9067,7 +9409,10 @@ mod tests {
         .expect("hourly integrity oracle schema");
     }
 
-    async fn long_term_file_backed_pool(prefix: &str) -> (Pool<Sqlite>, String, PathBuf) {
+    async fn long_term_file_backed_pool_with_busy_timeout(
+        prefix: &str,
+        busy_timeout: Duration,
+    ) -> (Pool<Sqlite>, String, PathBuf) {
         let db_path = std::env::temp_dir().join(format!(
             "codex-vibe-monitor-{prefix}-{}-{}.sqlite",
             std::process::id(),
@@ -9080,7 +9425,7 @@ mod tests {
             .expect("parse sqlite test url")
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(Duration::from_millis(50));
+            .busy_timeout(busy_timeout);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)
@@ -9090,6 +9435,10 @@ mod tests {
             .await
             .expect("long-term schema");
         (pool, db_url, db_path)
+    }
+
+    async fn long_term_file_backed_pool(prefix: &str) -> (Pool<Sqlite>, String, PathBuf) {
+        long_term_file_backed_pool_with_busy_timeout(prefix, Duration::from_millis(50)).await
     }
 
     async fn cleanup_long_term_file_backed_pool(pool: Pool<Sqlite>, db_path: PathBuf) {
