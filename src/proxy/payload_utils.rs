@@ -1537,6 +1537,14 @@ impl PoolRoutingReservationDropGuard {
 impl Drop for PoolRoutingReservationDropGuard {
     fn drop(&mut self) {
         if self.active {
+            if !self.publish_on_drop {
+                // A task can be cancelled after its durable failure mutation
+                // commits but before the caller installs the in-memory fence.
+                // Fence the old snapshot before silently releasing capacity.
+                self.state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+            }
             release_pool_routing_reservation_with_availability(
                 self.state.as_ref(),
                 &self.reservation_key,

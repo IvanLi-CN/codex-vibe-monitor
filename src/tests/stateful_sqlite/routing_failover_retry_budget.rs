@@ -2789,6 +2789,13 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
         insert_test_pool_api_key_account(&state, "Cancelled Failure Fence", "cancelled-fence-key")
             .await;
     let reservation_key = "cancelled-fence-reservation";
+    let model = "gpt-cancelled-fence";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed cancelled-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before durable failure cancellation");
     state
         .pool_routing_reservations
         .lock()
@@ -2797,7 +2804,7 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
             reservation_key.to_string(),
             PoolRoutingReservation {
                 account_id,
-                model: Some("gpt-cancelled-fence".to_string()),
+                model: Some(model.to_string()),
                 proxy_key: None,
                 snapshot_generation: None,
                 created_at: Instant::now(),
@@ -2809,10 +2816,21 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     let task_state = state.clone();
     let task = tokio::spawn(async move {
         let mut reservation_guard =
-            PoolRoutingReservationDropGuard::new(task_state, reservation_key.to_string());
-        let _ = fence_started_tx.send(());
+            PoolRoutingReservationDropGuard::new(task_state.clone(), reservation_key.to_string());
         let _ = reservation_guard
-            .fence_failure(async { std::future::pending::<Result<(), ()>>().await })
+            .fence_failure(async {
+                record_pool_route_transport_failure_for_model(
+                    &task_state.pool,
+                    account_id,
+                    None,
+                    "durable failure before cancellation",
+                    Some("cancelled-fence-invoke"),
+                    Some(model),
+                )
+                .await?;
+                let _ = fence_started_tx.send(());
+                std::future::pending::<Result<(), anyhow::Error>>().await
+            })
             .await;
     });
 
@@ -2837,6 +2855,28 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
         initial_generation,
         "cancellation before a failure fence commits must not wake waiters into an unfenced retry"
     );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "cancelling after a durable failure must fence the stale snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "the durable failure cancellation window must fail closed"
+    );
+    assert!(matches!(
+        resolve_pool_account_for_request_with_route_requirement(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+        )
+        .await
+        .expect("resolve while the cancellation fence is pending"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
 }
 
 #[tokio::test]
@@ -2968,6 +3008,9 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
     let invoke_id = "proxy-98765-orphan-failure-fence";
     let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id)
         .expect("legacy proxy invoke id should map to its reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before orphan recovery");
     state
         .pool_routing_reservations
         .lock()
@@ -2994,9 +3037,6 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
         true,
     )
     .await;
-    refresh_pool_routing_snapshot(state.as_ref())
-        .await
-        .expect("reconcile routing snapshot after orphan failure");
 
     let failure_at: Option<String> = sqlx::query_scalar(
         "SELECT last_route_failure_at FROM pool_upstream_accounts WHERE id = ?1",
@@ -3022,6 +3062,12 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
         initial_generation,
         "reservation release should notify waiting routing requests"
     );
+    assert!(matches!(
+        resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve after in-memory orphan fence"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
 }
 
 #[tokio::test]

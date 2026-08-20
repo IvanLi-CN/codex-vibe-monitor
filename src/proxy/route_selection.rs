@@ -2401,7 +2401,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             pending_attempt_record
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
-                            None,
+                            trace_context.and_then(|trace| trace.request_model.as_deref()),
                         ),
                     )
                     .await
@@ -2473,7 +2473,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             pending_attempt_record
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
-                            None,
+                            trace_context.and_then(|trace| trace.request_model.as_deref()),
                         ),
                     )
                     .await
@@ -2909,7 +2909,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 pending_attempt_record
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
-                None,
+                trace_context.and_then(|trace| trace.request_model.as_deref()),
             )
             .await
                 } else {
@@ -2932,7 +2932,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .and_then(|pending| pending.attempt_id),
                 account.sticky_affinity_generation,
                 prompt_cache_key.or(sticky_event_prompt_cache_key),
-                None,
+                trace_context.and_then(|trace| trace.request_model.as_deref()),
             )
             .await
                 }
@@ -3034,7 +3034,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        None,
+                        trace_context.and_then(|trace| trace.request_model.as_deref()),
                     ),
                 )
                 .await

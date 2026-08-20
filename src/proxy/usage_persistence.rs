@@ -1908,22 +1908,26 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
             persist_pool_route_failure_then_release(
                 state,
                 reservation_key,
-                record_pool_route_transport_failure(
-                    &state.pool,
+                record_pool_route_transport_failure_for_attempt_and_broadcast(
+                    state,
                     account_id,
                     sticky_key,
                     &error_message,
                     Some(invoke_id),
+                    None,
+                    None,
                 ),
             )
             .await
         } else {
-            record_pool_route_transport_failure(
-                &state.pool,
+            record_pool_route_transport_failure_for_attempt_and_broadcast(
+                state,
                 account_id,
                 sticky_key,
                 &error_message,
                 Some(invoke_id),
+                None,
+                None,
             )
             .await
         };
