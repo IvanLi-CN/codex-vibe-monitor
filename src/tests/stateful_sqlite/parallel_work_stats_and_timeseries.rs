@@ -2759,7 +2759,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("insert live invocation row");
 
-    let Json(summary) = fetch_summary_from_memory_snapshot(
+    let response = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -2769,13 +2769,8 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
         }),
     )
     .await
-    .expect("fetch all-time summary with archived history present");
-
-    assert_eq!(summary.total_count, 3);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 2);
-    assert_eq!(summary.total_tokens, 30);
-    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+    .expect_err("missing live-rollup cursor must fail closed instead of omitting live history");
+    assert!(matches!(response, ApiError::Unavailable(_)));
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
