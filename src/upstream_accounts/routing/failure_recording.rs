@@ -208,7 +208,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     if outcome.availability_increased {
         state
             .pool_routing_snapshot
-            .request_refresh_and_wake_waiters();
+            .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }
@@ -553,7 +553,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     if outcome.availability_increased {
         state
             .pool_routing_snapshot
-            .request_refresh_and_wake_waiters();
+            .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }
@@ -1422,7 +1422,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
     .await?;
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1448,7 +1448,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_and_broadcas
     .await?;
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1493,7 +1493,7 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_and
     .await?;
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1638,7 +1638,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     }
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1664,7 +1664,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_model_and_broadcast(
     .await?;
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);

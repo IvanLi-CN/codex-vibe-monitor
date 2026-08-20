@@ -1806,7 +1806,7 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
             // released slot cannot be retried through an unfenced route.
             state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters();
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
             release_pool_routing_reservation_without_availability(state, reservation_key);
             Ok(value)
         }

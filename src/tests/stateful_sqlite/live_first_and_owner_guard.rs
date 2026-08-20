@@ -2735,6 +2735,12 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     .await
     .expect("reserve only websocket candidate");
     assert!(matches!(reservation, PoolAccountResolution::Resolved(_)));
+    let http_waiter_capacity = state
+        .pool_no_candidate_waiters
+        .clone()
+        .acquire_many_owned(POOL_NO_CANDIDATE_WAITER_LIMIT as u32)
+        .await
+        .expect("occupy every HTTP NoCandidate waiter slot");
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: "pool-ws-no-candidate-audit".to_string(),
@@ -2773,14 +2779,14 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
         panic!("websocket capacity conflict should not connect upstream");
     };
     assert!(
-        started.elapsed() < Duration::from_millis(250),
-        "an upgraded websocket must not wait in the HTTP NoCandidate bulkhead"
+        started.elapsed() >= Duration::from_millis(750),
+        "an upgraded websocket must retain its availability wait instead of returning a saturated HTTP bulkhead result"
     );
     assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         state.pool_no_candidate_waiters.available_permits(),
-        POOL_NO_CANDIDATE_WAITER_LIMIT,
-        "an upgraded websocket must not consume an HTTP NoCandidate waiter slot"
+        0,
+        "an upgraded websocket must not acquire an HTTP NoCandidate waiter slot"
     );
 
     let payload: String =
@@ -2804,6 +2810,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     .expect("count websocket no-candidate attempts");
     assert_eq!(attempt_count, 0);
 
+    drop(http_waiter_capacity);
     release_pool_routing_reservation(&state, "websocket-no-candidate-holder");
     upstream_handle.abort();
 }
@@ -9821,7 +9828,9 @@ async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() 
         for _ in 0..8 {
             refresh_state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters();
+                .request_refresh_and_wake_waiters(|| {
+                    refresh_state.pool_routing_availability.publish()
+                });
             reconcile_pool_routing_snapshot(refresh_state.as_ref())
                 .await
                 .expect("rebuild no-candidate routing snapshot");

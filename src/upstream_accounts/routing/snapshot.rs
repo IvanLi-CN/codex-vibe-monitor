@@ -252,14 +252,19 @@ struct PoolRoutingSnapshotRefreshState {
 const REFRESH_PENDING_BIT: u64 = 1 << 63;
 const REFRESH_PUBLISHING_BIT: u64 = 1 << 62;
 const REFRESH_RECONCILING_BIT: u64 = 1 << 61;
-// A stale normal build gets one immediate successor. Further mutations still
-// fence stale snapshots, then wait for the low-frequency reconciler rather
-// than rebuilding forever.
+// A stale normal build gets one immediate successor. A capacity-increasing
+// event which races that successor can schedule one additional follow-up so
+// waiters do not wait for the 60-second reconciliation. Other mutations stay
+// fenced and deferred, avoiding an unbounded SQL rebuild loop.
 const REFRESH_COALESCED_SUCCESSOR_BIT: u64 = 1 << 60;
+const REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT: u64 = 1 << 59;
+const REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT: u64 = 1 << 58;
 const REFRESH_GENERATION_MASK: u64 = !(REFRESH_PENDING_BIT
     | REFRESH_PUBLISHING_BIT
     | REFRESH_RECONCILING_BIT
-    | REFRESH_COALESCED_SUCCESSOR_BIT);
+    | REFRESH_COALESCED_SUCCESSOR_BIT
+    | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
+    | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT);
 
 struct PoolRoutingSnapshotRefreshLease<'a> {
     store: &'a PoolRoutingSnapshotStore,
@@ -310,25 +315,44 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn current(&self) -> Option<Arc<PoolRoutingSnapshot>> {
-        self.snapshot
+        let epoch_before = self
+            .refresh_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        if epoch_before & REFRESH_PENDING_BIT != 0 {
+            return None;
+        }
+        let snapshot = self
+            .snapshot
             .read()
-            .expect("pool routing snapshot lock poisoned")
-            .clone()
+            .expect("pool routing snapshot lock poisoned");
+        let current = snapshot.clone();
+        // `request_refresh_inner` advances the epoch before it acquires this
+        // lock to discard the old value. The second epoch read rejects a
+        // mutation racing the clone, so request-time routing cannot keep a
+        // stale Arc across the event fence.
+        let epoch_after = self
+            .refresh_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        if epoch_before != epoch_after || epoch_after & REFRESH_PENDING_BIT != 0 {
+            return None;
+        }
+        current
     }
 
     pub(crate) fn request_refresh(&self) {
         self.request_refresh_inner(false);
     }
 
-    pub(crate) fn request_refresh_and_wake_waiters(&self) {
+    pub(crate) fn request_refresh_and_wake_waiters(&self, publish_availability: impl FnOnce()) {
         self.request_refresh_inner(true);
+        publish_availability();
     }
 
     fn request_refresh_inner(&self, wake_waiters: bool) {
         // Atomically fence an older reconciler and make the pending state
         // visible before waiting for refresh_state. This blocks stale capacity
         // wakeups while a mutation is queued behind a completing refresh.
-        let queued_refresh = self.advance_refresh_epoch();
+        let queued_refresh = self.advance_refresh_epoch(wake_waiters);
         // The committed mutation is now newer than the visible snapshot. Do
         // not select from that stale view while an event refresh catches up.
         *self
@@ -366,12 +390,13 @@ impl PoolRoutingSnapshotStore {
                 return None;
             }
             let refresh_generation = refresh_epoch & REFRESH_GENERATION_MASK;
-            let successor = refresh_epoch & REFRESH_COALESCED_SUCCESSOR_BIT;
+            let burst_state = refresh_epoch
+                & (REFRESH_COALESCED_SUCCESSOR_BIT | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT);
             if self
                 .refresh_epoch
                 .compare_exchange(
                     refresh_epoch,
-                    refresh_generation | REFRESH_RECONCILING_BIT | successor,
+                    refresh_generation | REFRESH_RECONCILING_BIT | burst_state,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -397,6 +422,7 @@ impl PoolRoutingSnapshotStore {
             .load(std::sync::atomic::Ordering::Acquire);
         if refresh_epoch & REFRESH_PUBLISHING_BIT != 0
             || refresh_epoch & REFRESH_RECONCILING_BIT == 0
+            || refresh_epoch & REFRESH_PENDING_BIT != 0
             || refresh_epoch & REFRESH_GENERATION_MASK != refresh_generation
         {
             drop(refresh_state);
@@ -440,7 +466,7 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn invalidate(&self) {
-        self.advance_refresh_epoch();
+        self.advance_refresh_epoch(false);
         let mut refresh_state = self
             .refresh_state
             .lock()
@@ -478,14 +504,6 @@ impl PoolRoutingSnapshotStore {
             & REFRESH_GENERATION_MASK
     }
 
-    fn immediate_successor_pending(&self) -> bool {
-        let epoch = self
-            .refresh_epoch
-            .load(std::sync::atomic::Ordering::Acquire);
-        epoch & (REFRESH_PENDING_BIT | REFRESH_RECONCILING_BIT | REFRESH_COALESCED_SUCCESSOR_BIT)
-            == (REFRESH_PENDING_BIT | REFRESH_COALESCED_SUCCESSOR_BIT)
-    }
-
     pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl Fn()) {
         loop {
             let epoch = self
@@ -498,22 +516,15 @@ impl PoolRoutingSnapshotStore {
                     | REFRESH_COALESCED_SUCCESSOR_BIT)
                 != 0
             {
-                // A release during a snapshot rebuild must wake only after its
-                // fenced snapshot is current. Retain the wake across both the
-                // pending and publishing phases instead of dropping it.
+                // A release must wake current waiters immediately, even when
+                // the candidate snapshot is fenced cold. The deferred signal
+                // gives those waiters another chance after the next safe
+                // snapshot install without coupling availability SSE traffic
+                // to an immediate SQL reconciliation.
                 self.deferred_availability_wake
                     .store(true, std::sync::atomic::Ordering::Release);
-                // If the lease ended before the deferred flag was recorded,
-                // retry immediately so this release cannot be left for a
-                // future, unrelated refresh cycle.
-                if self
-                    .refresh_epoch
-                    .load(std::sync::atomic::Ordering::Acquire)
-                    == epoch
-                {
-                    return;
-                }
-                continue;
+                publish_availability();
+                return;
             }
             if self
                 .refresh_epoch
@@ -548,27 +559,35 @@ impl PoolRoutingSnapshotStore {
             }
             let stale_generation = expected_generation
                 .is_some_and(|generation| epoch & REFRESH_GENERATION_MASK != generation);
+            let successor_was_queued = epoch & REFRESH_COALESCED_SUCCESSOR_BIT != 0;
             let successor = if stale_generation && epoch & REFRESH_PENDING_BIT != 0 {
                 REFRESH_COALESCED_SUCCESSOR_BIT
             } else {
                 0
             };
+            let availability_followup = epoch & REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT != 0;
             if self
                 .refresh_epoch
                 .compare_exchange(
                     epoch,
-                    (epoch & !REFRESH_RECONCILING_BIT) | successor,
+                    (epoch & !(REFRESH_RECONCILING_BIT | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT))
+                        | successor,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
                 .is_ok()
             {
+                if (!successor_was_queued && successor != 0) || availability_followup {
+                    self.refresh_tx.send_modify(|generation| {
+                        *generation = generation.wrapping_add(1);
+                    });
+                }
                 return;
             }
         }
     }
 
-    fn advance_refresh_epoch(&self) -> bool {
+    fn advance_refresh_epoch(&self, wake_waiters: bool) -> bool {
         loop {
             let epoch = self
                 .refresh_epoch
@@ -577,8 +596,54 @@ impl PoolRoutingSnapshotStore {
                 std::hint::spin_loop();
                 continue;
             }
+            let successor_queued = epoch & REFRESH_COALESCED_SUCCESSOR_BIT != 0;
+            let availability_followup_used = epoch & REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT != 0;
             if epoch & REFRESH_PENDING_BIT != 0 {
+                if wake_waiters && successor_queued && !availability_followup_used {
+                    let next_epoch = epoch
+                        | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT;
+                    if self
+                        .refresh_epoch
+                        .compare_exchange(
+                            epoch,
+                            next_epoch,
+                            std::sync::atomic::Ordering::AcqRel,
+                            std::sync::atomic::Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        return epoch & REFRESH_RECONCILING_BIT == 0;
+                    }
+                    continue;
+                }
                 return false;
+            }
+            if successor_queued {
+                let availability_followup = wake_waiters && !availability_followup_used;
+                let availability_followup_bits = if availability_followup {
+                    REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT
+                } else {
+                    0
+                };
+                let next_epoch = epoch | REFRESH_PENDING_BIT | availability_followup_bits;
+                if self
+                    .refresh_epoch
+                    .compare_exchange(
+                        epoch,
+                        next_epoch,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    // A successor has already been allowed for this burst.
+                    // A capacity wake earns one independently scheduled
+                    // follow-up; other events wait for the 60-second tick.
+                    return availability_followup && epoch & REFRESH_RECONCILING_BIT == 0;
+                }
+                continue;
             }
             let next_generation =
                 (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
@@ -588,7 +653,10 @@ impl PoolRoutingSnapshotStore {
                     epoch,
                     next_generation
                         | REFRESH_PENDING_BIT
-                        | (epoch & (REFRESH_RECONCILING_BIT | REFRESH_COALESCED_SUCCESSOR_BIT)),
+                        | (epoch
+                            & (REFRESH_RECONCILING_BIT
+                                | REFRESH_COALESCED_SUCCESSOR_BIT
+                                | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT)),
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -744,15 +812,10 @@ pub(crate) async fn refresh_pool_routing_snapshot(state: &AppState) -> Result<()
 }
 
 pub(crate) async fn reconcile_pool_routing_snapshot(state: &AppState) -> Result<()> {
-    // An event that races a normal build fences it and earns one immediate
-    // successor. Further races are left for the 60-second reconciliation.
-    for _ in 0..2 {
-        if try_refresh_pool_routing_snapshot(state).await?
-            || !state.pool_routing_snapshot.immediate_successor_pending()
-        {
-            break;
-        }
-    }
+    // `abandon_refresh` schedules a bounded successor only after the stale
+    // build has released its lease. Keeping this one-shot avoids consuming a
+    // watch event while the build is still active and prevents hot rebuilds.
+    let _ = try_refresh_pool_routing_snapshot(state).await?;
     Ok(())
 }
 
@@ -832,21 +895,15 @@ mod snapshot_store_tests {
     }
 
     #[test]
-    fn successor_event_cannot_install_a_snapshot_that_predates_it() {
+    fn successor_capacity_event_gets_one_immediate_followup() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
         let first_generation = store
             .begin_refresh()
             .expect("queued refresh should claim its reconciliation lease");
 
-        store.request_refresh_and_wake_waiters();
+        store.request_refresh();
         let successor_generation = store.refresh_generation();
-        store.request_refresh_and_wake_waiters();
-        assert_eq!(
-            store.refresh_generation(),
-            successor_generation,
-            "additional outage events must not keep invalidating the queued successor"
-        );
         assert!(
             !store.complete_refresh(first_generation, empty_snapshot(), || {}),
             "the build predating the first new event must not install"
@@ -856,32 +913,60 @@ mod snapshot_store_tests {
             .begin_refresh()
             .expect("one successor should remain after the stale build exits");
         assert_eq!(successor, successor_generation);
-        store.request_refresh_and_wake_waiters();
-        let deferred_generation = store.refresh_generation();
-        assert_ne!(
+        let refreshes = store.subscribe_refresh();
+        store.request_refresh_and_wake_waiters(|| {});
+        assert_eq!(
             store.refresh_generation(),
             successor_generation,
-            "an event during the successor must fence its stale snapshot"
+            "the capacity event shares the successor generation and fences its stale build"
         );
         assert!(
             !store.complete_refresh(successor, empty_snapshot(), || {}),
             "a successor cannot publish across a newer mutation"
         );
-        assert!(store.current().is_none());
         assert!(
-            store.refresh_pending(),
-            "the later event remains queued for low-frequency reconciliation"
+            refreshes
+                .has_changed()
+                .expect("refresh watch should remain open"),
+            "the capacity event must schedule one immediate follow-up after the successor exits"
         );
+        assert!(store.current().is_none());
 
-        let deferred = store
+        let followup = store
             .begin_refresh()
-            .expect("the deferred reconciliation should claim the queued generation");
-        assert_eq!(deferred, deferred_generation);
-        assert!(store.complete_refresh(deferred, empty_snapshot(), || {}));
+            .expect("the immediate capacity follow-up should claim the queued generation");
+        assert_eq!(followup, successor_generation);
+        assert!(store.complete_refresh(followup, empty_snapshot(), || {}));
         assert!(
             !store.refresh_pending(),
-            "a quiet deferred reconciliation should restore the ready state"
+            "a quiet immediate follow-up should restore the ready state"
         );
+    }
+
+    #[test]
+    fn successor_non_capacity_event_waits_for_the_low_frequency_reconcile() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh();
+        let first_generation = store
+            .begin_refresh()
+            .expect("queued refresh should claim its reconciliation lease");
+        store.request_refresh();
+        assert!(!store.complete_refresh(first_generation, empty_snapshot(), || {}));
+
+        let successor = store
+            .begin_refresh()
+            .expect("one successor should remain after the stale build exits");
+        let refreshes = store.subscribe_refresh();
+        store.request_refresh();
+        assert!(!store.complete_refresh(successor, empty_snapshot(), || {}));
+
+        assert!(
+            !refreshes
+                .has_changed()
+                .expect("refresh watch should remain open"),
+            "ordinary successor races must not schedule another immediate rebuild"
+        );
+        assert!(store.refresh_pending());
     }
 
     #[test]
@@ -908,7 +993,12 @@ mod snapshot_store_tests {
     #[test]
     fn pending_refresh_wakes_waiters_only_after_the_snapshot_installs() {
         let store = PoolRoutingSnapshotStore::new();
-        store.request_refresh_and_wake_waiters();
+        let immediately_published = std::cell::Cell::new(false);
+        store.request_refresh_and_wake_waiters(|| immediately_published.set(true));
+        assert!(
+            immediately_published.get(),
+            "a capacity-bearing mutation must immediately signal existing waiters"
+        );
         let generation = store
             .begin_refresh()
             .expect("pending refresh should claim its reconciliation lease");
@@ -922,7 +1012,7 @@ mod snapshot_store_tests {
     }
 
     #[test]
-    fn availability_release_deferred_while_pending_wakes_after_snapshot_install() {
+    fn availability_release_wakes_immediately_and_again_after_snapshot_install() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
         let generation = store
@@ -933,8 +1023,8 @@ mod snapshot_store_tests {
         store.publish_availability_if_ready(|| publish_count.set(publish_count.get() + 1));
         assert_eq!(
             publish_count.get(),
-            0,
-            "a pending snapshot must fence capacity wakes"
+            1,
+            "a release must wake waiters immediately while the stale snapshot stays cold"
         );
 
         assert!(store.complete_refresh(generation, empty_snapshot(), || {
@@ -942,8 +1032,8 @@ mod snapshot_store_tests {
         }));
         assert_eq!(
             publish_count.get(),
-            1,
-            "the installed snapshot must replay the deferred capacity wake"
+            2,
+            "the installed snapshot must replay the deferred wake for a fresh selection"
         );
     }
 

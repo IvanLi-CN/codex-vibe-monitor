@@ -1038,7 +1038,7 @@ pub(crate) async fn apply_imported_oauth_probe_result(
         if !was_selectable && became_selectable {
             state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters();
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
         }
     }
     Ok(probe.usage_snapshot_warning.clone())
@@ -1052,7 +1052,7 @@ pub(crate) async fn publish_new_account_routing_availability_if_selectable(
         Ok(Some(row)) if is_account_selectable_for_fresh_assignment(&row, false, Utc::now()) => {
             state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters();
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
         }
         Ok(_) => {}
         Err(err) => {

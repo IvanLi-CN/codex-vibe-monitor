@@ -198,6 +198,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait(
         None,
         None,
         wait_for_no_available,
+        true,
         wait_deadline,
         total_timeout_deadline,
         "",
@@ -327,6 +328,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         binding_constraint,
         None,
         wait_for_no_available,
+        true,
         wait_deadline,
         total_timeout_deadline,
         "",
@@ -441,6 +443,43 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     .await
 }
 
+pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation_without_no_candidate_bulkhead(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    requested_model: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+    binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
+    conversation_override: Option<&ConversationRoutingOverride>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
+    total_timeout_deadline: Option<Instant>,
+    endpoint: &str,
+    image_intent: crate::ImageIntent,
+    reservation_key: Option<&str>,
+) -> Result<PoolAccountResolutionWithWait> {
+    resolve_pool_account_for_request_with_wait_and_binding_constraint_internal(
+        state,
+        sticky_key,
+        requested_model,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        required_upstream_route_key,
+        binding_constraint,
+        conversation_override,
+        wait_for_no_available,
+        false,
+        wait_deadline,
+        total_timeout_deadline,
+        endpoint,
+        image_intent,
+        false,
+        reservation_key,
+    )
+    .await
+}
+
 pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
     state: &AppState,
     sticky_key: Option<&str>,
@@ -504,6 +543,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         binding_constraint,
         conversation_override,
         wait_for_no_available,
+        true,
         wait_deadline,
         total_timeout_deadline,
         endpoint,
@@ -524,6 +564,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
     binding_constraint: Option<&PromptCacheConversationBindingConstraint>,
     conversation_override: Option<&ConversationRoutingOverride>,
     wait_for_no_available: bool,
+    acquire_no_candidate_waiter: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
     endpoint: &str,
@@ -569,7 +610,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
         }
         match resolution {
             PoolAccountResolution::NoCandidate(audit) if wait_for_no_available => {
-                if no_candidate_waiter.is_none() {
+                if acquire_no_candidate_waiter && no_candidate_waiter.is_none() {
                     let Ok(permit) = state.pool_no_candidate_waiters.clone().try_acquire_owned()
                     else {
                         return Ok(PoolAccountResolutionWithWait::Resolution(

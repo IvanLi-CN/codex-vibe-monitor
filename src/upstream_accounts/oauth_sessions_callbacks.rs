@@ -194,7 +194,7 @@ pub(crate) async fn update_pool_routing_settings(
     // waiting requests must be notified after the refreshed view lands.
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
@@ -1409,7 +1409,7 @@ pub(crate) async fn create_api_key_account(
     // A new account can immediately satisfy a NoCandidate waiter.
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     Ok(Json(detail))
 }
 
@@ -1655,7 +1655,7 @@ pub(crate) async fn update_upstream_account_model_mappings_inner(
     // NoCandidate requests must be notified after the refreshed view lands.
     state
         .pool_routing_snapshot
-        .request_refresh_and_wake_waiters();
+        .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?
@@ -2432,7 +2432,7 @@ pub(crate) async fn update_upstream_account_inner(
     {
         state
             .pool_routing_snapshot
-            .request_refresh_and_wake_waiters();
+            .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
     }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)

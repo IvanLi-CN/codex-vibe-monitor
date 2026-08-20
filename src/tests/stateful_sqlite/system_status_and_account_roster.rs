@@ -2459,9 +2459,9 @@ pub(crate) async fn set_test_account_status(pool: &SqlitePool, account_id: i64, 
     sqlx::query("UPDATE pool_upstream_accounts SET status = ?1 WHERE id = ?2")
         .bind(status)
         .bind(account_id)
-        .execute(pool)
-        .await
-        .expect("set test pool account status");
+    .execute(pool)
+    .await
+    .expect("set test pool account status");
 }
 
 pub(crate) async fn clear_test_account_credentials(state: &Arc<AppState>, account_id: i64) {

@@ -439,7 +439,7 @@ pub(crate) async fn prepare_upstream_websocket(
         }
 
         let mut no_available_wait_deadline = None;
-        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation(
+        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation_without_no_candidate_bulkhead(
             state.as_ref(),
             sticky_key,
             requested_model,
@@ -448,10 +448,10 @@ pub(crate) async fn prepare_upstream_websocket(
             None,
             binding_constraint.as_ref(),
             conversation_override.as_ref(),
-            // The downstream WebSocket is already upgraded. It must not
-            // occupy the HTTP NoCandidate waiter bulkhead while awaiting an
-            // upstream route it can no longer reject with an HTTP response.
-            false,
+            // The downstream WebSocket is already upgraded. It still waits
+            // for an availability wake, but does not occupy the HTTP
+            // NoCandidate waiter bulkhead it can no longer reject through.
+            true,
             &mut no_available_wait_deadline,
             None,
             original_uri.path(),

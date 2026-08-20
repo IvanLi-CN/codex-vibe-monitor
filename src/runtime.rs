@@ -256,10 +256,13 @@ pub(crate) fn spawn_pool_routing_snapshot_reconcile(state: Arc<AppState>) {
         // Tokio intervals tick immediately; startup has already warmed the snapshot.
         ticker.tick().await;
         loop {
-            tokio::select! {
+            let refresh_pending = tokio::select! {
                 _ = state.shutdown.cancelled() => break,
-                _ = refreshes.changed() => {},
-                _ = ticker.tick() => {},
+                _ = refreshes.changed() => state.pool_routing_snapshot.refresh_pending(),
+                _ = ticker.tick() => true,
+            };
+            if !refresh_pending {
+                continue;
             }
             if let Err(err) = reconcile_pool_routing_snapshot(state.as_ref()).await {
                 state.pool_routing_snapshot.invalidate();

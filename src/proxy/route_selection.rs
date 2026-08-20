@@ -2115,7 +2115,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
-                                1,
+                                0,
                                 1,
                                 Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                             ),
@@ -2145,7 +2145,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
-                                1,
+                                0,
                                 1,
                                 Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                             ),
@@ -2434,7 +2434,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             proxy_binding_key_snapshot: None,
                             oauth_responses_debug: None,
                             attempt_summary: pool_attempt_summary(
-                                1,
+                                0,
                                 1,
                                 Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                             ),
