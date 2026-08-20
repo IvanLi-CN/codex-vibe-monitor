@@ -5041,7 +5041,7 @@ mod dispatch_tests {
             live_first_replay_exclusion(
                 1,
                 PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                "timed out",
+                "upstream handshake timed out after 1s",
                 7
             ),
             None,

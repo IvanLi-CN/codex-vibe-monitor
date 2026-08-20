@@ -1,6 +1,55 @@
 use super::*;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
+#[cfg(test)]
+struct PoolWebSocketPreConnectHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_websocket_pre_connect_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreConnectHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreConnectHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_websocket_pre_connect_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_websocket_pre_connect_hooks()
+        .lock()
+        .expect("lock websocket pre-connect hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolWebSocketPreConnectHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_websocket_pre_connect_hook(state: &AppState) {
+    let hook = pool_websocket_pre_connect_hooks()
+        .lock()
+        .expect("lock websocket pre-connect hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_websocket_pre_connect_hook(_state: &AppState) {}
+
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -342,6 +391,10 @@ impl PoolRoutingReservationGuard {
 
     fn restore_availability_on_drop(&mut self) {
         self.publish_availability_on_drop = true;
+    }
+
+    fn generation_is_current(&self) -> bool {
+        pool_routing_reservation_generation_is_current(self.state.as_ref(), &self.reservation_key)
     }
 
     fn release(&mut self) {
@@ -965,6 +1018,31 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             });
         }
     };
+
+    wait_for_pool_websocket_pre_connect_hook(state.as_ref()).await;
+    if !reservation_guard.generation_is_current() {
+        finalize_ws_attempt(
+            state.as_ref(),
+            pending_attempt_record.as_ref(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+            Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE),
+            None,
+            None,
+            None,
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
+        reservation_guard.release();
+        return Err(WsAttemptFailure {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+            retryable: false,
+            account_id: Some(account.account_id),
+            upstream_route_key: Some(account.upstream_route_key()),
+        });
+    }
 
     let socket_meter = UpstreamSocketByteMeter::default();
     let traffic_reporter = UpstreamTrafficReporter::new(

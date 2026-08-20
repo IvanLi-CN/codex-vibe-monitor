@@ -4597,6 +4597,9 @@ async fn prompt_cache_conversation_proxy_override_bypasses_node_shunt_group_slot
     .execute(&state.pool)
     .await
     .expect("enable node shunt group with no selectable slot proxies");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after node shunt group update");
 
     let prompt_cache_key = "prompt-cache-proxy-override-node-shunt";
     let payload: UpdatePromptCacheConversationBindingRequest = serde_json::from_value(json!({

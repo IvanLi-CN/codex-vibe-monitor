@@ -206,9 +206,15 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     let snapshot_changed = outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
     if outcome.availability_increased {
-        state
-            .pool_routing_snapshot
-            .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+        if pool_route_success_allows_reservation_release_publish(state, account_id).await {
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+        } else {
+            // Disabled or deleted accounts still need their recovered state
+            // reflected in the snapshot, but cannot satisfy a waiter.
+            state.pool_routing_snapshot.request_refresh();
+        }
     } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }
@@ -551,9 +557,15 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         || outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
     if outcome.availability_increased {
-        state
-            .pool_routing_snapshot
-            .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+        if pool_route_success_allows_reservation_release_publish(state, account_id).await {
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+        } else {
+            // Disabled or deleted accounts still need their recovered state
+            // reflected in the snapshot, but cannot satisfy a waiter.
+            state.pool_routing_snapshot.request_refresh();
+        }
     } else if snapshot_changed {
         state.pool_routing_snapshot.request_refresh();
     }

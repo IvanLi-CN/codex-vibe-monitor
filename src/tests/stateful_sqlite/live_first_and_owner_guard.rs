@@ -517,6 +517,9 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
@@ -648,6 +651,9 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
     let request_state = state.clone();
@@ -771,6 +777,9 @@ async fn final_route_gate_rejects_downstream_read_error_without_upstream_deliver
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
     let request_state = state.clone();
@@ -885,6 +894,9 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let sticky_key = "live-first-sticky-failure";
     upsert_sticky_route(
@@ -967,6 +979,9 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     body_tx
@@ -2757,6 +2772,129 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
     .await
     .expect("load websocket encrypted owner rate-limited terminal attempt");
     assert_eq!(owner_unavailable_attempts, 0);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_pre_connect_fence_prevents_stale_upstream_dispatch() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Fence",
+        "upstream-websocket-fence",
+        None,
+        None,
+        Some(&upstream_base),
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial websocket routing snapshot");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve websocket runtime timeouts");
+    let (pre_connect_rx, resume_pre_connect) =
+        crate::proxy::register_pool_websocket_pre_connect_hook(&state);
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-pre-connect-fence".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/realtime".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some("gpt-5-realtime".to_string()),
+    };
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        prepare_upstream_websocket(
+            request_state,
+            5357,
+            &"/v1/realtime?model=gpt-5-realtime"
+                .parse()
+                .expect("valid uri"),
+            &HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            &runtime_timeouts,
+            None,
+            Some("gpt-5-realtime"),
+            None,
+            None,
+            None,
+            false,
+            &trace,
+            None,
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        pre_connect_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("websocket request should reach the pre-connect fence")
+    })
+    .await
+    .expect("join websocket pre-connect fence receiver");
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement snapshot before releasing websocket pre-connect fence");
+    resume_pre_connect.notify_one();
+
+    let result = request_task
+        .await
+        .expect("websocket prepare task should join");
+    let Err(err) = result else {
+        panic!("fenced websocket account should fail closed");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE);
+    let (status, failure_kind, finished_at): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT status, failure_kind, finished_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fenced websocket attempt");
+    assert_eq!(status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        "a websocket pre-connect fence is a local availability rejection"
+    );
+    assert!(finished_at.is_some());
+    assert_eq!(
+        attempts
+            .lock()
+            .expect("lock websocket upstream attempts")
+            .get("Bearer upstream-websocket-fence")
+            .copied(),
+        None,
+        "the stale websocket lease must not open an upstream connection"
+    );
 
     upstream_handle.abort();
 }

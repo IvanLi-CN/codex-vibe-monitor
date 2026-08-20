@@ -1540,6 +1540,9 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let request_payload = json!({
         "model": "gpt-5.4",
