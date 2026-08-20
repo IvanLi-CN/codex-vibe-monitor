@@ -3942,6 +3942,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pending_pool_attempt_record_for_task
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            request_info_for_task.model.as_deref(),
                         ),
                     )
                     .await
@@ -3967,6 +3968,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 pending_pool_attempt_record_for_task
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
+                                request_info_for_task.model.as_deref(),
                             ),
                         )
                         .await
@@ -3993,6 +3995,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             prompt_cache_key_for_task
                                 .as_deref()
                                 .or(request_info_for_task.sticky_key.as_deref()),
+                            request_info_for_task.model.as_deref(),
                             ),
                         )
                         .await

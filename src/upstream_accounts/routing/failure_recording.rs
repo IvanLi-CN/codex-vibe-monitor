@@ -29,11 +29,48 @@ struct PoolRouteSuccessOutcome {
     availability_increased: bool,
 }
 
-fn apply_committed_pool_route_failure(state: &AppState, account_id: i64) {
-    if !state
-        .pool_routing_snapshot
-        .apply_committed_failure_fence(account_id)
-    {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolRouteFailureScope {
+    Diagnostic,
+    ExactModel,
+    Account,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PoolRouteFailureOutcome {
+    sticky_route_cleared: bool,
+    scope: PoolRouteFailureScope,
+}
+
+fn committed_failure_scope(
+    health_mutated: bool,
+    committed_scope: PoolRouteFailureScope,
+) -> PoolRouteFailureScope {
+    if health_mutated {
+        committed_scope
+    } else {
+        PoolRouteFailureScope::Diagnostic
+    }
+}
+
+fn apply_committed_pool_route_failure(
+    state: &AppState,
+    account_id: i64,
+    scope: PoolRouteFailureScope,
+    model: Option<&str>,
+) {
+    let installed = match scope {
+        PoolRouteFailureScope::Diagnostic => return,
+        PoolRouteFailureScope::ExactModel => model.is_some_and(|model| {
+            state
+                .pool_routing_snapshot
+                .apply_committed_model_failure_fence(account_id, model)
+        }),
+        PoolRouteFailureScope::Account => state
+            .pool_routing_snapshot
+            .apply_committed_account_failure_fence(account_id),
+    };
+    if !installed {
         // A concurrent settings or account mutation has already fenced the
         // snapshot. Retain that fail-closed path instead of reviving a stale
         // candidate view for this failure event.
@@ -844,6 +881,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         None,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -875,6 +913,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         None,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -894,7 +933,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
     prompt_cache_key: Option<&str>,
-) -> Result<bool> {
+    model: Option<&str>,
+) -> Result<PoolRouteFailureOutcome> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -967,30 +1007,42 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     }
     if route_http_failure_is_retryable_responses_overload(status, error_message) {
         if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-            record_api_key_temporary_model_failure_or_diagnostic(
-                pool,
-                account_id,
-                sticky_key,
-                error_message,
-                PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
-                status,
-                invoke_id,
-                attempt_id,
-            )
-            .await?;
-            return Ok(false);
+            let model_failure_recorded =
+                record_api_key_temporary_model_failure_or_diagnostic_with_model(
+                    pool,
+                    account_id,
+                    sticky_key,
+                    error_message,
+                    PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                    UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+                    status,
+                    invoke_id,
+                    attempt_id,
+                    model,
+                )
+                .await?;
+            return Ok(PoolRouteFailureOutcome {
+                sticky_route_cleared: false,
+                scope: committed_failure_scope(
+                    model_failure_recorded,
+                    PoolRouteFailureScope::ExactModel,
+                ),
+            });
         }
-        return record_pool_route_retryable_overload_failure_inner(
+        let scope = record_pool_route_retryable_overload_failure_scope(
             pool,
             account_id,
             sticky_key,
             error_message,
             invoke_id,
             attempt_id,
+            model,
         )
-        .await
-        .map(|_| false);
+        .await?;
+        return Ok(PoolRouteFailureOutcome {
+            sticky_route_cleared: false,
+            scope,
+        });
     }
 
     let explicit_model_failure = if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
@@ -1028,25 +1080,37 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && explicit_model_failure
         && !api_key_temporary_http_failure
     {
-        return Ok(false);
+        return Ok(PoolRouteFailureOutcome {
+            sticky_route_cleared: false,
+            scope: PoolRouteFailureScope::ExactModel,
+        });
     }
 
     if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && classification.disposition != UpstreamAccountFailureDisposition::HardUnavailable
     {
         if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-            record_api_key_temporary_model_failure_or_diagnostic(
-                pool,
-                account_id,
-                sticky_key,
-                error_message,
-                classification.failure_kind,
-                classification.reason_code,
-                status,
-                invoke_id,
-                attempt_id,
-            )
-            .await?;
+            let model_failure_recorded =
+                record_api_key_temporary_model_failure_or_diagnostic_with_model(
+                    pool,
+                    account_id,
+                    sticky_key,
+                    error_message,
+                    classification.failure_kind,
+                    classification.reason_code,
+                    status,
+                    invoke_id,
+                    attempt_id,
+                    model,
+                )
+                .await?;
+            return Ok(PoolRouteFailureOutcome {
+                sticky_route_cleared: false,
+                scope: committed_failure_scope(
+                    model_failure_recorded,
+                    PoolRouteFailureScope::ExactModel,
+                ),
+            });
         } else {
             let now_iso = format_utc_iso_millis(Utc::now());
             record_suppressed_pool_route_status_change(
@@ -1063,7 +1127,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             )
             .await?;
         }
-        return Ok(false);
+        return Ok(PoolRouteFailureOutcome {
+            sticky_route_cleared: false,
+            scope: PoolRouteFailureScope::Diagnostic,
+        });
     }
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
@@ -1089,7 +1156,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     attempt_id,
                 )
                 .await?;
-                return Ok(false);
+                return Ok(PoolRouteFailureOutcome {
+                    sticky_route_cleared: false,
+                    scope: PoolRouteFailureScope::Diagnostic,
+                });
             }
             if is_scope_permission_error_message(error_message)
                 && let Some(sticky_key) = sticky_key
@@ -1150,7 +1220,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 attempt_id,
             )
             .await?;
-            Ok(sticky_route_cleared)
+            Ok(PoolRouteFailureOutcome {
+                sticky_route_cleared,
+                scope: PoolRouteFailureScope::Account,
+            })
         }
         UpstreamAccountFailureDisposition::RateLimited
         | UpstreamAccountFailureDisposition::Retryable => {
@@ -1201,7 +1274,13 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 )
                 .await?;
             }
-            Ok(sticky_route_cleared)
+            Ok(PoolRouteFailureOutcome {
+                sticky_route_cleared,
+                scope: committed_failure_scope(
+                    applied_status_change,
+                    PoolRouteFailureScope::Account,
+                ),
+            })
         }
     }
 }
@@ -1232,25 +1311,52 @@ async fn record_pool_route_retryable_overload_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_pool_route_retryable_overload_failure_scope(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn record_pool_route_retryable_overload_failure_scope(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    model: Option<&str>,
+) -> Result<PoolRouteFailureScope> {
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
     if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
-            pool,
-            account_id,
-            sticky_key,
-            error_message,
-            PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
-            StatusCode::OK,
-            invoke_id,
-            attempt_id,
-        )
-        .await?;
-        return Ok(());
+        let model_failure_recorded =
+            record_api_key_temporary_model_failure_or_diagnostic_with_model(
+                pool,
+                account_id,
+                sticky_key,
+                error_message,
+                PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+                StatusCode::OK,
+                invoke_id,
+                attempt_id,
+                model,
+            )
+            .await?;
+        return Ok(committed_failure_scope(
+            model_failure_recorded,
+            PoolRouteFailureScope::ExactModel,
+        ));
     }
-    apply_pool_route_cooldown_failure(
+    let applied_status_change = apply_pool_route_cooldown_failure(
         pool,
         account_id,
         UPSTREAM_ACCOUNT_STATUS_ACTIVE,
@@ -1264,7 +1370,10 @@ async fn record_pool_route_retryable_overload_failure_inner(
         attempt_id,
     )
     .await?;
-    Ok(())
+    Ok(committed_failure_scope(
+        applied_status_change,
+        PoolRouteFailureScope::Account,
+    ))
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -1283,6 +1392,7 @@ pub(crate) async fn record_pool_route_transport_failure(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 pub(crate) async fn record_pool_route_transport_failure_for_model(
@@ -1293,34 +1403,18 @@ pub(crate) async fn record_pool_route_transport_failure_for_model(
     invoke_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
-    let account = load_upstream_account_row(pool, account_id)
-        .await?
-        .ok_or_else(|| anyhow!("account not found"))?;
-    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic_with_model(
-            pool,
-            account_id,
-            sticky_key,
-            error_message,
-            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
-            StatusCode::BAD_GATEWAY,
-            invoke_id,
-            None,
-            model,
-        )
-        .await?;
-        return Ok(());
-    }
-    record_pool_route_transport_failure_inner(
+    record_pool_route_transport_failure_for_attempt_with_kind_scope(
         pool,
         account_id,
         sticky_key,
         error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
         invoke_id,
         None,
+        model,
     )
     .await
+    .map(|_| ())
 }
 
 async fn record_pool_route_transport_failure_inner(
@@ -1330,7 +1424,7 @@ async fn record_pool_route_transport_failure_inner(
     error_message: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
-) -> Result<()> {
+) -> Result<bool> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1338,7 +1432,7 @@ async fn record_pool_route_transport_failure_inner(
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
     if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
+        return record_api_key_temporary_model_failure_or_diagnostic_with_model(
             pool,
             account_id,
             sticky_key,
@@ -1348,9 +1442,9 @@ async fn record_pool_route_transport_failure_inner(
             StatusCode::BAD_GATEWAY,
             invoke_id,
             attempt_id,
+            None,
         )
-        .await?;
-        return Ok(());
+        .await;
     }
     apply_pool_route_cooldown_failure(
         pool,
@@ -1365,8 +1459,7 @@ async fn record_pool_route_transport_failure_inner(
         invoke_id,
         attempt_id,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 pub(crate) async fn record_pool_route_transport_failure_for_attempt(
@@ -1398,25 +1491,58 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_pool_route_transport_failure_for_attempt_with_kind_scope(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        failure_kind,
+        invoke_id,
+        attempt_id,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Route persistence returns the precise snapshot mutation scope."
+)]
+async fn record_pool_route_transport_failure_for_attempt_with_kind_scope(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    model: Option<&str>,
+) -> Result<PoolRouteFailureScope> {
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
     if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
-            pool,
-            account_id,
-            sticky_key,
-            error_message,
-            failure_kind,
-            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
-            StatusCode::BAD_GATEWAY,
-            invoke_id,
-            attempt_id,
-        )
-        .await?;
-        return Ok(());
+        let model_failure_recorded =
+            record_api_key_temporary_model_failure_or_diagnostic_with_model(
+                pool,
+                account_id,
+                sticky_key,
+                error_message,
+                failure_kind,
+                UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+                StatusCode::BAD_GATEWAY,
+                invoke_id,
+                attempt_id,
+                model,
+            )
+            .await?;
+        return Ok(committed_failure_scope(
+            model_failure_recorded,
+            PoolRouteFailureScope::ExactModel,
+        ));
     }
-    record_pool_route_transport_failure_inner(
+    let applied_status_change = record_pool_route_transport_failure_inner(
         pool,
         account_id,
         sticky_key,
@@ -1424,7 +1550,11 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
         invoke_id,
         attempt_id,
     )
-    .await
+    .await?;
+    Ok(committed_failure_scope(
+        applied_status_change,
+        PoolRouteFailureScope::Account,
+    ))
 }
 
 pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
@@ -1435,8 +1565,9 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
     failure_kind: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    model: Option<&str>,
 ) -> Result<()> {
-    record_pool_route_transport_failure_for_attempt_with_kind(
+    let scope = record_pool_route_transport_failure_for_attempt_with_kind_scope(
         &state.pool,
         account_id,
         sticky_key,
@@ -1444,9 +1575,10 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
         failure_kind,
         invoke_id,
         attempt_id,
+        model,
     )
     .await?;
-    apply_committed_pool_route_failure(state, account_id);
+    apply_committed_pool_route_failure(state, account_id, scope, model);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1460,17 +1592,20 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_and_broadcas
     error_message: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    model: Option<&str>,
 ) -> Result<()> {
-    record_pool_route_transport_failure_for_attempt(
+    let scope = record_pool_route_transport_failure_for_attempt_with_kind_scope(
         &state.pool,
         account_id,
         sticky_key,
         error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
         invoke_id,
         attempt_id,
+        model,
     )
     .await?;
-    apply_committed_pool_route_failure(state, account_id);
+    apply_committed_pool_route_failure(state, account_id, scope, model);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1503,17 +1638,19 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_and
     error_message: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    model: Option<&str>,
 ) -> Result<()> {
-    record_pool_route_retryable_overload_failure_for_attempt(
+    let scope = record_pool_route_retryable_overload_failure_scope(
         &state.pool,
         account_id,
         sticky_key,
         error_message,
         invoke_id,
         attempt_id,
+        model,
     )
     .await?;
-    apply_committed_pool_route_failure(state, account_id);
+    apply_committed_pool_route_failure(state, account_id, scope, model);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1577,6 +1714,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -1611,6 +1749,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         prompt_cache_key,
+        None,
     )
     .await
     .map(|_| ())
@@ -1630,8 +1769,9 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
     prompt_cache_key: Option<&str>,
+    model: Option<&str>,
 ) -> Result<()> {
-    let sticky_route_cleared = record_pool_route_http_failure_with_image_intent_inner(
+    let outcome = record_pool_route_http_failure_with_image_intent_inner(
         &state.pool,
         account_id,
         account_kind,
@@ -1645,18 +1785,18 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         prompt_cache_key,
+        model,
     )
     .await?;
     invalidate_pool_routing_runtime_cache(state).await;
-    if sticky_route_cleared && let Some(sticky_key) = sticky_key {
+    if outcome.sticky_route_cleared && let Some(sticky_key) = sticky_key {
         invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
     }
-    if sticky_route_cleared
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
-    apply_committed_pool_route_failure(state, account_id);
+    apply_committed_pool_route_failure(state, account_id, outcome.scope, model);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1671,16 +1811,18 @@ pub(crate) async fn record_pool_route_transport_failure_for_model_and_broadcast(
     invoke_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
-    record_pool_route_transport_failure_for_model(
+    let scope = record_pool_route_transport_failure_for_attempt_with_kind_scope(
         &state.pool,
         account_id,
         sticky_key,
         error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
         invoke_id,
+        None,
         model,
     )
     .await?;
-    apply_committed_pool_route_failure(state, account_id);
+    apply_committed_pool_route_failure(state, account_id, scope, model);
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
@@ -1747,6 +1889,7 @@ pub(crate) async fn record_api_key_temporary_model_failure_or_diagnostic(
         None,
     )
     .await
+    .map(|_| ())
 }
 
 #[expect(
@@ -1764,7 +1907,7 @@ async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     exact_model: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     let status_change_enabled =
         account_status_change_reason_is_enabled(pool, account_id, reason_code).await?;
     let model_failure_recorded = if status_change_enabled {
@@ -1801,7 +1944,7 @@ async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
         false
     };
     if model_failure_recorded {
-        return Ok(());
+        return Ok(true);
     }
 
     let now_iso = format_utc_iso(Utc::now());
@@ -1817,7 +1960,8 @@ async fn record_api_key_temporary_model_failure_or_diagnostic_with_model(
         &now_iso,
         attempt_id,
     )
-    .await
+    .await?;
+    Ok(false)
 }
 
 pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {

@@ -1877,6 +1877,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             &account,
             requested_model,
         ) {
+            // A failure fence can replace the snapshot between attempts. Drop
+            // the old generation's reservation before selecting another route.
+            release_pool_routing_reservation(state.as_ref(), &reservation_key);
             excluded_ids.push(account.account_id);
             continue;
         }
@@ -2698,6 +2701,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
+                                    requested_model,
                                 ),
                             )
                             .await
@@ -2949,6 +2953,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
+                                    requested_model,
                                 ),
                             )
                             .await
@@ -3931,6 +3936,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
+                                requested_model,
                             ),
                         )
                         .await
@@ -3952,6 +3958,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.or(sticky_event_prompt_cache_key),
+                        requested_model,
                         ),
                     )
                     .await
@@ -4222,9 +4229,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 &message,
                                 PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
                                 trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                pending_attempt_record
-                                    .as_ref()
-                                    .and_then(|pending| pending.attempt_id),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                            requested_model,
                             ),
                         )
                         .await
@@ -4428,6 +4436,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
+                                requested_model,
                             ),
                         )
                         .await
@@ -4528,6 +4537,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 pending_attempt_record
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
+                                requested_model,
                             ),
                         )
                         .await

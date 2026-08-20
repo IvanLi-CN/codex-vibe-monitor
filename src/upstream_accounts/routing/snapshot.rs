@@ -10,6 +10,7 @@ pub(crate) struct PoolRoutingSnapshot {
     effective_rules: HashMap<i64, EffectiveRoutingRule>,
     node_shunt_assignments: UpstreamAccountNodeShuntAssignments,
     model_routes: HashMap<(i64, String), PoolRoutingModelRouteSnapshot>,
+    committed_failure_fences: HashSet<(i64, String)>,
     route_binding_failure_penalties: HashMap<String, i64>,
     transport_decode_sticky_escape_states: HashMap<i64, TransportDecodeStickyEscapeState>,
     group_metadata: HashMap<String, UpstreamAccountGroupMetadata>,
@@ -28,25 +29,30 @@ struct PoolRoutingModelRouteSnapshot {
 }
 
 impl PoolRoutingSnapshot {
+    fn with_committed_model_failure_fence(&self, account_id: i64, model: &str) -> Option<Self> {
+        let model = normalized_model_key(Some(model))?;
+        let mut snapshot = self.clone();
+        snapshot
+            .committed_failure_fences
+            .insert((account_id, model));
+        Some(snapshot)
+    }
+
     fn without_failed_account(&self, account_id: i64) -> Self {
         let mut snapshot = self.clone();
         snapshot.candidates.remove(&account_id);
         snapshot
             .candidate_order
             .retain(|candidate_id| *candidate_id != account_id);
-        // Sticky routing consults the account table before it considers the
-        // candidate set. Removing both prevents a just-failed account from
-        // bypassing the event fence through sticky reuse.
         snapshot.accounts.remove(&account_id);
         snapshot.effective_rules.remove(&account_id);
         snapshot
             .model_routes
             .retain(|(candidate_id, _), _| *candidate_id != account_id);
         snapshot
-    }
-
-    fn contains_account(&self, account_id: i64) -> bool {
-        self.accounts.contains_key(&account_id)
+            .committed_failure_fences
+            .retain(|(candidate_id, _)| *candidate_id != account_id);
+        snapshot
     }
 
     pub(crate) fn candidate(&self, account_id: i64) -> Option<&AccountRoutingCandidateRow> {
@@ -102,6 +108,12 @@ impl PoolRoutingSnapshot {
         account_ids
             .iter()
             .filter_map(|account_id| {
+                if self
+                    .committed_failure_fences
+                    .contains(&(*account_id, model.clone()))
+                {
+                    return Some((*account_id, ModelRoutePenalty::Excluded));
+                }
                 self.model_routes
                     .get(&(*account_id, model.clone()))
                     .map(|route| (*account_id, route.penalty_at(Utc::now())))
@@ -385,14 +397,14 @@ impl PoolRoutingSnapshotStore {
         self.request_refresh_inner(true);
     }
 
-    /// Applies a committed upstream failure immediately to the in-memory
-    /// routing view. The periodic reconciler later restores the database's
-    /// precise model-health state, but the request that observed the failure
-    /// can immediately fail over without reopening a candidate SQL path.
+    /// Applies a committed model failure immediately to the in-memory routing
+    /// view. The periodic reconciler later restores the database's precise
+    /// model-health state, but the request that observed the failure can
+    /// immediately fail over without reopening a candidate SQL path.
     ///
     /// Returns false when there is no current view to safely patch. Callers
     /// must then retain the normal fail-closed refresh fence.
-    pub(crate) fn apply_committed_failure_fence(&self, account_id: i64) -> bool {
+    pub(crate) fn apply_committed_model_failure_fence(&self, account_id: i64, model: &str) -> bool {
         let mut snapshot = self
             .snapshot
             .write()
@@ -408,7 +420,11 @@ impl PoolRoutingSnapshotStore {
             let Some(current) = snapshot.as_ref() else {
                 return false;
             };
-            if !current.contains_account(account_id) {
+            let Some(next_snapshot) = current.with_committed_model_failure_fence(account_id, model)
+            else {
+                return false;
+            };
+            if next_snapshot.committed_failure_fences == current.committed_failure_fences {
                 return true;
             }
 
@@ -433,7 +449,53 @@ impl PoolRoutingSnapshotStore {
                 // The write lock remains held across the epoch transition.
                 // Readers that sampled the prior generation either see this
                 // replacement or reject on their second epoch read.
-                *snapshot = Some(Arc::new(current.without_failed_account(account_id)));
+                *snapshot = Some(Arc::new(next_snapshot));
+                return true;
+            }
+        }
+    }
+
+    /// Applies a committed account cooldown or hard-unavailable mutation to
+    /// the in-memory view before releasing a reservation.
+    pub(crate) fn apply_committed_account_failure_fence(&self, account_id: i64) -> bool {
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .expect("pool routing snapshot lock poisoned");
+
+        loop {
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT) != 0 {
+                return false;
+            }
+            let Some(current) = snapshot.as_ref() else {
+                return false;
+            };
+            if current.account(account_id).is_none() {
+                return true;
+            }
+            let next_snapshot = current.without_failed_account(account_id);
+            let next_generation =
+                (epoch & REFRESH_GENERATION_MASK).wrapping_add(1) & REFRESH_GENERATION_MASK;
+            let next_epoch = next_generation
+                | (epoch
+                    & (REFRESH_RECONCILING_BIT
+                        | REFRESH_COALESCED_SUCCESSOR_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_QUEUED_BIT
+                        | REFRESH_AVAILABILITY_FOLLOWUP_USED_BIT));
+            if self
+                .refresh_epoch
+                .compare_exchange(
+                    epoch,
+                    next_epoch,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                *snapshot = Some(Arc::new(next_snapshot));
                 return true;
             }
         }
@@ -873,6 +935,7 @@ async fn try_refresh_pool_routing_snapshot(state: &AppState) -> Result<bool> {
             effective_rules,
             node_shunt_assignments,
             model_routes,
+            committed_failure_fences: HashSet::new(),
             route_binding_failure_penalties,
             transport_decode_sticky_escape_states,
             group_metadata,
@@ -922,6 +985,7 @@ mod snapshot_store_tests {
             effective_rules: HashMap::new(),
             node_shunt_assignments: UpstreamAccountNodeShuntAssignments::default(),
             model_routes: HashMap::new(),
+            committed_failure_fences: HashSet::new(),
             route_binding_failure_penalties: HashMap::new(),
             transport_decode_sticky_escape_states: HashMap::new(),
             group_metadata: HashMap::new(),
@@ -1113,6 +1177,29 @@ mod snapshot_store_tests {
         assert!(
             !published_availability.get(),
             "an initial refresh must not publish a waiter wake without a queued capacity event"
+        );
+    }
+
+    #[test]
+    fn committed_failure_fence_only_excludes_the_exact_model() {
+        let store = PoolRoutingSnapshotStore::new();
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
+        assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+
+        assert!(store.apply_committed_model_failure_fence(7, "model-a"));
+        let snapshot = store.current().expect("patched snapshot remains available");
+        assert_eq!(
+            snapshot.model_route_penalties(&[7], Some("model-a")),
+            HashMap::from([(7, ModelRoutePenalty::Excluded)]),
+            "the failed model must be fenced immediately",
+        );
+        assert!(
+            snapshot
+                .model_route_penalties(&[7], Some("model-b"))
+                .is_empty(),
+            "a model-a failure must not exclude model-b for the same account",
         );
     }
 

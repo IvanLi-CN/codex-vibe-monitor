@@ -3153,6 +3153,322 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_a_routable_accoun
 }
 
 #[tokio::test]
+async fn committed_model_failure_fence_keeps_another_model_on_the_same_account_selectable() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Per Model Failure Fence",
+        "per-model-failure-fence-key",
+    )
+    .await;
+    let failed_model = "gpt-failure-fence-a";
+    let healthy_model = "gpt-failure-fence-b";
+    observe_model_route_seen(&state.pool, account_id, Some(failed_model))
+        .await
+        .expect("seed failed model route");
+    observe_model_route_seen(&state.pool, account_id, Some(healthy_model))
+        .await
+        .expect("seed healthy model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install model route snapshot");
+
+    let reservation_key = "per-model-failure-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(failed_model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "model-a upstream transport failure",
+                Some("per-model-failure-fence-invoke"),
+                Some(failed_model),
+            ))
+            .await
+            .expect("persist the exact-model failure fence");
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(healthy_model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve the unaffected model immediately");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn committed_oauth_failure_fence_excludes_every_model_on_that_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Account Scoped Failure Fence", "scope-fence-token")
+            .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install oauth account snapshot");
+
+    let reservation_key = "account-scoped-failure-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("model-a".to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "oauth upstream transport failure",
+                Some("account-scoped-failure-fence-invoke"),
+                Some("model-a"),
+            ))
+            .await
+            .expect("persist the account-scoped failure fence");
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some("model-b"),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve after account-scoped fence");
+    assert!(matches!(resolution, PoolAccountResolution::NoCandidate(_)));
+}
+
+#[tokio::test]
+async fn committed_api_key_hard_failure_excludes_every_model_on_that_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Hard Account Scoped Failure Fence",
+        "hard-account-scope-fence-key",
+    )
+    .await;
+    let failed_model = "gpt-hard-failure-a";
+    let other_model = "gpt-hard-failure-b";
+    observe_model_route_seen(&state.pool, account_id, Some(failed_model))
+        .await
+        .expect("seed failed model route");
+    observe_model_route_seen(&state.pool, account_id, Some(other_model))
+        .await
+        .expect("seed other model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install api key snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::UNAUTHORIZED,
+        "pool upstream responded with 401: invalid api key",
+        Some("hard-account-scope-fence-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(failed_model),
+    )
+    .await
+    .expect("persist the account-scoped hard failure fence");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(other_model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after hard account failure fence");
+    assert!(matches!(resolution, PoolAccountResolution::NoCandidate(_)));
+}
+
+#[tokio::test]
+async fn api_key_413_diagnostic_does_not_exclude_its_model() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Diagnostic Only Failure",
+        "diagnostic-only-failure-key",
+    )
+    .await;
+    let model = "gpt-diagnostic-only";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed diagnostic model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install diagnostic snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "pool upstream responded with 413: request payload too large",
+        Some("diagnostic-only-failure-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record diagnostic-only failure");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after diagnostic-only failure");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn disabled_api_key_401_policy_does_not_exclude_its_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Disabled Hard Failure Policy",
+        "disabled-hard-failure-policy-key",
+    )
+    .await;
+    let model = "gpt-disabled-hard-policy";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed policy diagnostic model route");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_401 = 0 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("disable hard-failure policy");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install policy diagnostic snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::UNAUTHORIZED,
+        "pool upstream responded with 401: invalid api key",
+        Some("disabled-hard-failure-policy-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record policy-disabled diagnostic");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after policy-disabled diagnostic");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
 async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

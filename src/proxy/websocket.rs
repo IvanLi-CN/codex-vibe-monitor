@@ -1114,6 +1114,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     pending_attempt_record
                         .as_ref()
                         .and_then(|pending| pending.attempt_id),
+                    trace.request_model.as_deref(),
                 )
                 .await
                 {
@@ -1189,6 +1190,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     pending_attempt_record
                         .as_ref()
                         .and_then(|pending| pending.attempt_id),
+                    trace.request_model.as_deref(),
                 )
                 .await
                 {
@@ -1255,6 +1257,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 pending_attempt_record
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
+                trace.request_model.as_deref(),
             )
             .await
             {
@@ -1881,6 +1884,7 @@ pub(crate) async fn proxy_websocket_tunnel(
             pending_attempt_record
                 .as_ref()
                 .and_then(|pending| pending.attempt_id),
+            usage_tracker.trace.request_model.as_deref(),
         )
         .await
         {

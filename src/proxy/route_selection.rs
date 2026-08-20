@@ -2401,6 +2401,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             pending_attempt_record
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            None,
                         ),
                     )
                     .await
@@ -2472,6 +2473,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                             pending_attempt_record
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            None,
                         ),
                     )
                     .await
@@ -2907,6 +2909,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                 pending_attempt_record
                     .as_ref()
                     .and_then(|pending| pending.attempt_id),
+                None,
             )
             .await
                 } else {
@@ -2929,6 +2932,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     .and_then(|pending| pending.attempt_id),
                 account.sticky_affinity_generation,
                 prompt_cache_key.or(sticky_event_prompt_cache_key),
+                None,
             )
             .await
                 }
@@ -3030,6 +3034,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        None,
                     ),
                 )
                 .await
@@ -5097,6 +5102,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             live_prompt_cache_key
                                                 .as_deref()
                                                 .or(live_body_sticky_key.as_deref()),
+                                            None,
                                             ),
                                         )
                                         .await
@@ -5284,6 +5290,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 pending_pool_attempt_record_for_task
                                                     .as_ref()
                                                     .and_then(|pending| pending.attempt_id),
+                                                None,
                                             ),
                                         )
                                             .await
@@ -5391,6 +5398,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             prompt_cache_key_for_record
                                                 .as_deref()
                                                 .or(sticky_key_for_record.as_deref()),
+                                            None,
                                             ),
                                         )
                                         .await
@@ -5869,6 +5877,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .and_then(|pending| pending.attempt_id),
                         account.sticky_affinity_generation,
                         prompt_cache_key.as_deref(),
+                        None,
                         ),
                     )
                     .await
@@ -6027,6 +6036,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
+                        None,
                     ),
                 )
                 .await
@@ -6125,6 +6135,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             .and_then(|pending| pending.attempt_id),
                     account.sticky_affinity_generation,
                     prompt_cache_key_for_record.as_deref(),
+                    None,
                     ),
                 )
                     .await

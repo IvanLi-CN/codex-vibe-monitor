@@ -1522,7 +1522,14 @@ impl PoolRoutingReservationDropGuard {
             }
             // A failed write never establishes a routing fence. Keep the eventual
             // guard release silent so a waiter cannot immediately reselect it.
-            Err(err) => Err(err),
+            Err(err) => {
+                self.active = false;
+                release_pool_routing_reservation_without_availability(
+                    self.state.as_ref(),
+                    &self.reservation_key,
+                );
+                Err(err)
+            }
         }
     }
 }
@@ -1772,14 +1779,20 @@ fn try_reserve_pool_routing_account_for_model_inner(
     let existing_snapshot_generation = reservations
         .get(reservation_key)
         .and_then(|reservation| reservation.snapshot_generation);
-    // Check after acquiring the same mutex used for capacity accounting. A
-    // mutation that has already fenced this generation rejects the stale
-    // selection; a later mutation linearizes after this in-flight reservation.
-    if snapshot_generation.is_some_and(|generation| {
-        !state
-            .pool_routing_snapshot
-            .generation_is_current(generation)
-    }) {
+    let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
+        reservations
+            .get(reservation_key)
+            .and_then(|reservation| reservation.model.clone())
+    });
+    // Validate the candidate and its exact model health while holding the
+    // accounting mutex. A fence that won before this point cannot be bypassed
+    // by a preferred or sticky account retry.
+    let Some((snapshot, current_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        return false;
+    };
+    if snapshot_generation.is_some_and(|generation| generation != current_generation) {
         return false;
     }
     if let (Some(expected_generation), Some(existing_generation)) =
@@ -1788,11 +1801,17 @@ fn try_reserve_pool_routing_account_for_model_inner(
     {
         return false;
     }
-    let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
-        reservations
-            .get(reservation_key)
-            .and_then(|reservation| reservation.model.clone())
-    });
+    if snapshot.candidate(account.account_id).is_none() {
+        return false;
+    }
+    if model.as_deref().is_some_and(|model| {
+        snapshot
+            .model_route_penalties(&[account.account_id], Some(model))
+            .get(&account.account_id)
+            .is_some_and(|penalty| *penalty == ModelRoutePenalty::Excluded)
+    }) {
+        return false;
+    }
     if account.routing_source == PoolRoutingSelectionSource::StickyReuse
         && proxy_key.is_none()
         && model.is_none()
@@ -1885,30 +1904,7 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
-            let account_id = state
-                .pool_routing_reservations
-                .lock()
-                .expect("pool routing reservations mutex poisoned")
-                .get(reservation_key)
-                .map(|reservation| reservation.account_id);
-            let failure_fence_installed = account_id.is_some_and(|account_id| {
-                state
-                    .pool_routing_snapshot
-                    .apply_committed_failure_fence(account_id)
-            });
-            if !failure_fence_installed {
-                // No current snapshot can be patched safely. Preserve the
-                // ordinary cold fence and keep the release silent until its
-                // replacement is installed.
-                state
-                    .pool_routing_snapshot
-                    .request_refresh_and_defer_availability_wake();
-            }
-            release_pool_routing_reservation_with_availability(
-                state,
-                reservation_key,
-                failure_fence_installed,
-            );
+            release_pool_routing_reservation_with_availability(state, reservation_key, true);
             Ok(value)
         }
         Err(err) => {

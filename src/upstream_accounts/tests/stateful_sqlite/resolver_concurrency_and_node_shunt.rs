@@ -2171,6 +2171,7 @@ async fn automatic_single_rotation_429_clear_broadcasts_conversation_change() {
         None,
         None,
         Some(prompt_cache_key),
+        None,
     )
     .await
     .expect("record single-account rotation 429");
