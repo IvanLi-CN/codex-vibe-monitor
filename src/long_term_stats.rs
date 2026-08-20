@@ -3029,9 +3029,11 @@ async fn release_long_term_projection_daily_backups(
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
         );
-        let mut dates = query.separated(" OR ");
-        for (bucket_date, rebuild_token) in batch {
-            dates
+        for (index, (bucket_date, rebuild_token)) in batch.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(bucket_date = ")
                 .push_bind(bucket_date)
                 .push(" AND active_daily_backup_token = ")
@@ -3042,9 +3044,11 @@ async fn release_long_term_projection_daily_backups(
         let mut query = QueryBuilder::<Sqlite>::new(
             "DELETE FROM long_term_projection_daily_backup_claims WHERE ",
         );
-        let mut claims = query.separated(" OR ");
-        for (bucket_date, rebuild_token) in batch {
-            claims
+        for (index, (bucket_date, rebuild_token)) in batch.iter().enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(bucket_date = ")
                 .push_bind(bucket_date)
                 .push(" AND rebuild_token = ")
@@ -3581,9 +3585,11 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
             let mut query = QueryBuilder::<Sqlite>::new(
                 "DELETE FROM long_term_projection_dirty_buckets WHERE ",
             );
-            let mut dates = query.separated(" OR ");
-            for dirty in published_dirty {
-                dates
+            for (index, dirty) in published_dirty.iter().enumerate() {
+                if index > 0 {
+                    query.push(" OR ");
+                }
+                query
                     .push("(bucket_date = ")
                     .push_bind(&dirty.bucket_date)
                     .push(" AND generation = ")
@@ -3597,9 +3603,11 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
         );
-        let mut dates = query.separated(" OR ");
-        for (rebuild, token) in rebuilds.iter().zip(&rebuild_tokens) {
-            dates
+        for (index, (rebuild, token)) in rebuilds.iter().zip(&rebuild_tokens).enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(bucket_date = ")
                 .push_bind(&rebuild.bucket_date)
                 .push(" AND active_daily_backup_token = ")
@@ -3610,9 +3618,11 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
         let mut query = QueryBuilder::<Sqlite>::new(
             "DELETE FROM long_term_projection_daily_backup_claims WHERE ",
         );
-        let mut claims = query.separated(" OR ");
-        for (rebuild, token) in rebuilds.iter().zip(&rebuild_tokens) {
-            claims
+        for (index, (rebuild, token)) in rebuilds.iter().zip(&rebuild_tokens).enumerate() {
+            if index > 0 {
+                query.push(" OR ");
+            }
+            query
                 .push("(bucket_date = ")
                 .push_bind(&rebuild.bucket_date)
                 .push(" AND rebuild_token = ")
