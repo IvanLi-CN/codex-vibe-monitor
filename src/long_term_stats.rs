@@ -581,6 +581,21 @@ struct LongTermArchiveCompatibility {
     legacy_max_duration_ms: Option<f64>,
     legacy_min_occurred_at: Option<String>,
     has_rfc3339: bool,
+    rfc3339_max_duration_ms: Option<f64>,
+    rfc3339_min_occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LongTermRfc3339Compatibility {
+    max_duration_ms: Option<f64>,
+    min_occurred_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct LongTermArchiveCompatibilityRow {
+    id: i64,
+    occurred_at: String,
+    t_total_ms: Option<f64>,
 }
 
 async fn long_term_archive_invocation_query_for_range(
@@ -601,9 +616,9 @@ async fn long_term_archive_invocation_query_for_range(
     );
     let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("occurred_at");
     let rfc3339_reaches_range_start =
-        long_term_rfc3339_reaches_epoch_sql("occurred_at", &query.t_total_ms_column, "?1");
+        long_term_rfc3339_reaches_epoch_sql("occurred_at", &query.t_total_ms_column, "?3");
     let rfc3339 = format!(
-        "{} WHERE {} AND instr(occurred_at, 'T') > 0 AND {} < ?2 AND ({} >= ?1 OR ({} IS NOT NULL AND {} > 0 AND {}))",
+        "{} WHERE {} AND instr(occurred_at, 'T') > 0 AND occurred_at >= ?1 AND occurred_at < ?2 AND {} < ?4 AND ({} >= ?3 OR ({} IS NOT NULL AND {} > 0 AND {}))",
         query.select,
         query.terminal_filter,
         rfc3339_epoch,
@@ -620,28 +635,78 @@ async fn long_term_archive_invocation_query_for_range(
     })
 }
 
+fn long_term_projection_update_compatibility_duration(
+    maximum: &mut Option<f64>,
+    duration_ms: Option<f64>,
+) {
+    let Some(duration_ms) = duration_ms.filter(|value| *value > 0.0) else {
+        return;
+    };
+    if maximum.is_none_or(|current| duration_ms > current) {
+        *maximum = Some(duration_ms);
+    }
+}
+
 async fn inspect_long_term_archive_compatibility(
     pool: &Pool<Sqlite>,
     query: &LongTermArchiveInvocationQueryParts,
+    control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<LongTermArchiveCompatibility> {
-    let (legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339) = sqlx::query_as::<_, (Option<f64>, Option<String>, i64)>(&format!(
-        "SELECT MAX(CASE WHEN {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN {} END), MIN(CASE WHEN {} AND instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN occurred_at END), EXISTS(SELECT 1 FROM codex_invocations WHERE {} AND instr(occurred_at, 'T') > 0)",
-        query.terminal_filter,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        query.terminal_filter,
-        query.t_total_ms_column,
-        query.t_total_ms_column,
-        query.terminal_filter,
-    ))
-    .fetch_one(pool)
-    .await?;
+    let compatibility_rows = format!(
+        "SELECT id, occurred_at, {} AS t_total_ms FROM codex_invocations WHERE id > ?1 AND {} ORDER BY id ASC LIMIT ?2",
+        query.t_total_ms_column, query.terminal_filter,
+    );
+    // SQLite permits caller-assigned non-positive rowids; start at the true lower bound so a
+    // compatibility probe cannot silently omit historical archive rows.
+    let mut cursor = i64::MIN;
+    let mut legacy_max_duration_ms = None;
+    let mut legacy_min_occurred_at = None;
+    let mut rfc3339_max_duration_ms = None;
+    let mut rfc3339_min_occurred_at = None;
+    loop {
+        control.check()?;
+        let rows = sqlx::query_as::<_, LongTermArchiveCompatibilityRow>(&compatibility_rows)
+            .bind(cursor)
+            .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+            .fetch_all(pool)
+            .await?;
+        let row_count = rows.len();
+        for row in rows {
+            cursor = row.id;
+            if row.occurred_at.contains('T') {
+                rfc3339_min_occurred_at = Some(
+                    rfc3339_min_occurred_at.map_or(row.occurred_at.clone(), |current: String| {
+                        current.min(row.occurred_at.clone())
+                    }),
+                );
+                long_term_projection_update_compatibility_duration(
+                    &mut rfc3339_max_duration_ms,
+                    row.t_total_ms,
+                );
+            } else if row.t_total_ms.is_some_and(|duration_ms| duration_ms > 0.0) {
+                legacy_min_occurred_at = Some(
+                    legacy_min_occurred_at.map_or(row.occurred_at.clone(), |current: String| {
+                        current.min(row.occurred_at.clone())
+                    }),
+                );
+                long_term_projection_update_compatibility_duration(
+                    &mut legacy_max_duration_ms,
+                    row.t_total_ms,
+                );
+            }
+        }
+        control.complete_archive_compatibility_batch();
+        if row_count < LONG_TERM_PROJECTION_WRITE_BATCH_ROWS {
+            break;
+        }
+    }
     Ok(LongTermArchiveCompatibility {
         has_legacy_crossing: legacy_max_duration_ms.is_some(),
         legacy_max_duration_ms,
         legacy_min_occurred_at,
-        has_rfc3339: has_rfc3339 != 0,
+        has_rfc3339: rfc3339_min_occurred_at.is_some(),
+        rfc3339_max_duration_ms,
+        rfc3339_min_occurred_at,
     })
 }
 
@@ -649,18 +714,29 @@ async fn load_long_term_archive_compatibility(
     pool: &Pool<Sqlite>,
     file_path: &str,
     archive_sha256: &str,
+    file_fingerprint: &str,
 ) -> Result<Option<LongTermArchiveCompatibility>> {
-    let row = sqlx::query_as::<_, (i64, Option<f64>, Option<String>, i64)>(
-        "SELECT has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339 FROM long_term_projection_archive_compatibility WHERE file_path = ?1 AND archive_sha256 = ?2",
+    let row = sqlx::query_as::<_, (i64, Option<f64>, Option<String>, i64, Option<f64>, Option<String>)>(
+        "SELECT has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339, rfc3339_max_duration_ms, rfc3339_min_occurred_at FROM long_term_projection_archive_compatibility WHERE file_path = ?1 AND archive_sha256 = ?2 AND file_fingerprint = ?3",
     )
     .bind(file_path)
     .bind(archive_sha256)
+    .bind(file_fingerprint)
     .fetch_optional(pool)
     .await?;
     Ok(row.and_then(
-        |(has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339)| {
+        |(
+            has_legacy_crossing,
+            legacy_max_duration_ms,
+            legacy_min_occurred_at,
+            has_rfc3339,
+            rfc3339_max_duration_ms,
+            rfc3339_min_occurred_at,
+        )| {
             if has_legacy_crossing != 0
                 && (legacy_max_duration_ms.is_none() || legacy_min_occurred_at.is_none())
+                || has_rfc3339 != 0
+                    && (rfc3339_max_duration_ms.is_none() || rfc3339_min_occurred_at.is_none())
             {
                 // This cache entry predates the bounded crossing metadata. Reinspect the
                 // immutable archive once rather than retaining its old prefix scan.
@@ -671,6 +747,8 @@ async fn load_long_term_archive_compatibility(
                     legacy_max_duration_ms,
                     legacy_min_occurred_at,
                     has_rfc3339: has_rfc3339 != 0,
+                    rfc3339_max_duration_ms,
+                    rfc3339_min_occurred_at,
                 })
             }
         },
@@ -694,19 +772,23 @@ async fn persist_long_term_archive_compatibility(
     pool: &Pool<Sqlite>,
     file_path: &str,
     archive_sha256: &str,
+    file_fingerprint: &str,
     compatibility: LongTermArchiveCompatibility,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
-        "INSERT INTO long_term_projection_archive_compatibility (file_path, archive_sha256, has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(file_path) DO UPDATE SET archive_sha256 = excluded.archive_sha256, has_legacy_crossing = excluded.has_legacy_crossing, legacy_max_duration_ms = excluded.legacy_max_duration_ms, legacy_min_occurred_at = excluded.legacy_min_occurred_at, has_rfc3339 = excluded.has_rfc3339, updated_at = datetime('now')",
+        "INSERT INTO long_term_projection_archive_compatibility (file_path, archive_sha256, file_fingerprint, has_legacy_crossing, legacy_max_duration_ms, legacy_min_occurred_at, has_rfc3339, rfc3339_max_duration_ms, rfc3339_min_occurred_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(file_path) DO UPDATE SET archive_sha256 = excluded.archive_sha256, file_fingerprint = excluded.file_fingerprint, has_legacy_crossing = excluded.has_legacy_crossing, legacy_max_duration_ms = excluded.legacy_max_duration_ms, legacy_min_occurred_at = excluded.legacy_min_occurred_at, has_rfc3339 = excluded.has_rfc3339, rfc3339_max_duration_ms = excluded.rfc3339_max_duration_ms, rfc3339_min_occurred_at = excluded.rfc3339_min_occurred_at, updated_at = datetime('now')",
     )
     .bind(file_path)
     .bind(archive_sha256)
+    .bind(file_fingerprint)
     .bind(compatibility.has_legacy_crossing)
     .bind(compatibility.legacy_max_duration_ms)
     .bind(&compatibility.legacy_min_occurred_at)
     .bind(compatibility.has_rfc3339)
+    .bind(compatibility.rfc3339_max_duration_ms)
+    .bind(&compatibility.rfc3339_min_occurred_at)
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await
@@ -716,31 +798,46 @@ async fn load_or_inspect_long_term_archive_compatibility(
     pool: &Pool<Sqlite>,
     archive_pool: &Pool<Sqlite>,
     file_path: &str,
+    file_fingerprint: &str,
     query: &LongTermArchiveInvocationQueryParts,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<LongTermArchiveCompatibility> {
     let archive_sha256 = load_long_term_archive_sha256(pool, file_path).await?;
     if let Some(archive_sha256) = archive_sha256.as_deref()
         && let Some(compatibility) =
-            load_long_term_archive_compatibility(pool, file_path, archive_sha256).await?
+            load_long_term_archive_compatibility(pool, file_path, archive_sha256, file_fingerprint)
+                .await?
     {
         return Ok(compatibility);
     }
 
     // Old archives can contain legacy or RFC3339 timestamps. Inspect once, then retain the
-    // immutable archive's capability by checksum so ordinary canonical repairs stay range-seeked.
-    let compatibility = inspect_long_term_archive_compatibility(archive_pool, query).await?;
+    // opened archive's checksum-and-file identity so ordinary canonical repairs stay range-seeked.
+    let compatibility =
+        inspect_long_term_archive_compatibility(archive_pool, query, control).await?;
     if let Some(archive_sha256) = archive_sha256.as_deref() {
         persist_long_term_archive_compatibility(
             pool,
             file_path,
             archive_sha256,
+            file_fingerprint,
             compatibility.clone(),
             control,
         )
         .await?;
     }
     Ok(compatibility)
+}
+
+fn long_term_archive_file_fingerprint(file_path: &str) -> Result<String> {
+    let metadata = fs::metadata(file_path)
+        .with_context(|| format!("failed to inspect long-term archive {file_path}"))?;
+    let modified = metadata
+        .modified()
+        .with_context(|| format!("failed to inspect long-term archive timestamp {file_path}"))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .with_context(|| format!("long-term archive timestamp predates Unix epoch: {file_path}"))?;
+    Ok(format!("{}:{}", metadata.len(), modified.as_nanos()))
 }
 
 fn long_term_archive_legacy_crossing_start(
@@ -757,6 +854,31 @@ fn long_term_archive_legacy_crossing_start(
     start
         .checked_sub_signed(ChronoDuration::milliseconds(max_duration_ms as i64 + 1_000))
         .map(|value| value.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+fn long_term_rfc3339_text_bounds(
+    start: chrono::DateTime<chrono_tz::Tz>,
+    end: chrono::DateTime<chrono_tz::Tz>,
+    compatibility: &LongTermRfc3339Compatibility,
+) -> (String, String) {
+    let lower = compatibility
+        .max_duration_ms
+        .filter(|duration_ms| duration_ms.is_finite() && *duration_ms > 0.0)
+        .and_then(|duration_ms| {
+            let seconds = (duration_ms / 1000.0).ceil();
+            (seconds <= (i64::MAX - 15 * 60 * 60 - 1) as f64).then_some(seconds as i64)
+        })
+        .and_then(|seconds| {
+            start.checked_sub_signed(ChronoDuration::seconds(seconds + 15 * 60 * 60 + 1))
+        })
+        .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_else(|| compatibility.min_occurred_at.clone());
+    let upper = end
+        .checked_add_signed(ChronoDuration::hours(15))
+        .unwrap_or(end)
+        .format("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    (lower, upper)
 }
 
 async fn load_long_term_archive_invocation_rows_for_range(
@@ -789,8 +911,18 @@ async fn load_long_term_archive_invocation_rows_for_range(
         rows.extend(crossing_rows);
     }
     if compatibility.has_rfc3339 {
+        let rfc3339_compatibility = LongTermRfc3339Compatibility {
+            max_duration_ms: compatibility.rfc3339_max_duration_ms,
+            min_occurred_at: compatibility.rfc3339_min_occurred_at.clone().context(
+                "long-term archive RFC3339 compatibility cache is missing a bounded start",
+            )?,
+        };
+        let (rfc3339_lower, rfc3339_upper) =
+            long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
         rows.extend(
             sqlx::query_as::<_, LongTermInvocationRow>(&queries.rfc3339)
+                .bind(rfc3339_lower)
+                .bind(rfc3339_upper)
                 .bind(start.timestamp())
                 .bind(end.timestamp())
                 .fetch_all(pool)
@@ -1397,6 +1529,8 @@ struct LongTermProjectionWriteControl<'a> {
     stop_after_refresh_publication: Option<&'a CancellationToken>,
     #[cfg(test)]
     stop_after_backup_cleanup_marker: Option<&'a CancellationToken>,
+    #[cfg(test)]
+    stop_after_archive_compatibility_batch: Option<&'a CancellationToken>,
 }
 
 impl<'a> LongTermProjectionWriteControl<'a> {
@@ -1414,6 +1548,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_refresh_publication: None,
             #[cfg(test)]
             stop_after_backup_cleanup_marker: None,
+            #[cfg(test)]
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1434,6 +1570,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_refresh_publication: None,
             #[cfg(test)]
             stop_after_backup_cleanup_marker: None,
+            #[cfg(test)]
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1452,6 +1590,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
             stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1470,6 +1609,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
             stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1486,6 +1626,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: Some(shutdown),
             stop_after_refresh_publication: None,
             stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1502,6 +1643,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: Some(shutdown),
             stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: None,
         }
     }
 
@@ -1518,6 +1660,24 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
             stop_after_backup_cleanup_marker: Some(shutdown),
+            stop_after_archive_compatibility_batch: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn stopping_after_archive_compatibility_batch(
+        shutdown: &'a CancellationToken,
+        gate: &'a crate::db_pressure::DbPressureGate,
+    ) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            gate: Some(gate),
+            committed_batches: None,
+            cancel_after_commit: None,
+            stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: None,
+            stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: Some(shutdown),
         }
     }
 
@@ -1538,6 +1698,13 @@ impl<'a> LongTermProjectionWriteControl<'a> {
     fn complete_backup_cleanup_marker(&self) {
         #[cfg(test)]
         if let Some(shutdown) = self.stop_after_backup_cleanup_marker {
+            shutdown.cancel();
+        }
+    }
+
+    fn complete_archive_compatibility_batch(&self) {
+        #[cfg(test)]
+        if let Some(shutdown) = self.stop_after_archive_compatibility_batch {
             shutdown.cancel();
         }
     }
@@ -1693,19 +1860,32 @@ async fn ensure_long_term_projection_source_indexes(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure long-term projection text end index")?;
     if columns.contains("status") {
-        // This stays empty for normal canonical timestamps. Targeted repairs can use it to
-        // decide whether the non-sargable RFC3339 compatibility branch is necessary at all.
+        // RFC3339 rows are exceptional, but preserving them requires an index-backed candidate
+        // range before the exact (and deliberately compatibility-safe) epoch predicate runs.
         sqlx::query(
             r#"
-            CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_rfc3339
-            ON codex_invocations (id)
+            CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_rfc3339_occurred_at
+            ON codex_invocations (occurred_at)
             WHERE instr(occurred_at, 'T') > 0
               AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
             "#,
         )
         .execute(pool)
         .await
-        .context("failed to ensure long-term projection RFC3339 index")?;
+        .context("failed to ensure long-term projection RFC3339 timestamp index")?;
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_rfc3339_duration
+            ON codex_invocations (t_total_ms DESC)
+            WHERE instr(occurred_at, 'T') > 0
+              AND t_total_ms IS NOT NULL
+              AND t_total_ms > 0
+              AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to ensure long-term projection RFC3339 duration index")?;
     }
     Ok(())
 }
@@ -2541,21 +2721,35 @@ fn long_term_projection_crossing_text_query(select: &str) -> String {
     )
 }
 
-const LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY: &str = r#"
-    SELECT EXISTS(
-        SELECT 1
-        FROM codex_invocations
-        WHERE instr(occurred_at, 'T') > 0
-          AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')
-    )
-    "#;
+async fn load_long_term_projection_live_rfc3339_compatibility(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<LongTermRfc3339Compatibility>> {
+    let terminal_filter = "instr(occurred_at, 'T') > 0 AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')";
+    let minimum = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT occurred_at FROM codex_invocations WHERE {terminal_filter} ORDER BY occurred_at ASC LIMIT 1"
+    ))
+    .fetch_optional(pool)
+    .await?;
+    let Some(min_occurred_at) = minimum else {
+        return Ok(None);
+    };
+    let max_duration_ms = sqlx::query_scalar::<_, f64>(&format!(
+        "SELECT t_total_ms FROM codex_invocations WHERE {terminal_filter} AND t_total_ms IS NOT NULL AND t_total_ms > 0 ORDER BY t_total_ms DESC LIMIT 1"
+    ))
+    .fetch_optional(pool)
+    .await?;
+    Ok(Some(LongTermRfc3339Compatibility {
+        max_duration_ms,
+        min_occurred_at,
+    }))
+}
 
-async fn long_term_projection_live_has_rfc3339_rows(pool: &Pool<Sqlite>) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar::<_, i64>(LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY)
-            .fetch_one(pool)
-            .await?
-            != 0,
+fn long_term_projection_live_rfc3339_query(select: &str) -> String {
+    let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("inv.occurred_at");
+    let rfc3339_reaches_range_start =
+        long_term_rfc3339_reaches_epoch_sql("inv.occurred_at", "inv.t_total_ms", "?3");
+    format!(
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND inv.occurred_at >= ?1 AND inv.occurred_at < ?2 AND {rfc3339_epoch} < ?4 AND ({rfc3339_epoch} >= ?3 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND {rfc3339_reaches_range_start}))"
     )
 }
 
@@ -3362,15 +3556,16 @@ async fn load_long_term_projection_rows_for_date(
             .fetch_all(pool)
             .await?,
     );
-    if long_term_projection_live_has_rfc3339_rows(pool).await? {
-        let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("inv.occurred_at");
-        let rfc3339_reaches_range_start =
-            long_term_rfc3339_reaches_epoch_sql("inv.occurred_at", "inv.t_total_ms", "?1");
-        let rfc3339_query = format!(
-            "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND {rfc3339_epoch} < ?2 AND ({rfc3339_epoch} >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND {rfc3339_reaches_range_start}))"
-        );
+    if let Some(rfc3339_compatibility) =
+        load_long_term_projection_live_rfc3339_compatibility(pool).await?
+    {
+        let (rfc3339_lower, rfc3339_upper) =
+            long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
+        let rfc3339_query = long_term_projection_live_rfc3339_query(&select);
         rows.extend(
             sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
+                .bind(rfc3339_lower)
+                .bind(rfc3339_upper)
                 .bind(start.timestamp())
                 .bind(end.timestamp())
                 .fetch_all(pool)
@@ -3411,6 +3606,8 @@ async fn load_long_term_projection_rows_for_date(
         if !overlaps {
             continue;
         }
+        let archive_fingerprint_before =
+            long_term_archive_file_fingerprint(archive_path.file_path())?;
         let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-projection-targeted-repair",
@@ -3422,12 +3619,30 @@ async fn load_long_term_projection_rows_for_date(
                 archive_path.file_path()
             );
         };
+        let archive_fingerprint_after =
+            match long_term_archive_file_fingerprint(archive_path.file_path()) {
+                Ok(fingerprint) => fingerprint,
+                Err(error) => {
+                    archive_pool.close().await;
+                    drop(cleanup);
+                    return Err(error);
+                }
+            };
+        if archive_fingerprint_before != archive_fingerprint_after {
+            archive_pool.close().await;
+            drop(cleanup);
+            anyhow::bail!(
+                "long-term projection source changed while opening archive {}",
+                archive_path.file_path()
+            );
+        }
         let archive_rows = async {
             let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
             let compatibility = load_or_inspect_long_term_archive_compatibility(
                 pool,
                 &archive_pool,
                 archive_path.file_path(),
+                &archive_fingerprint_after,
                 &archive_query.parts,
                 control,
             )
@@ -8556,10 +8771,13 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE TABLE IF NOT EXISTS long_term_projection_archive_compatibility (
             file_path TEXT PRIMARY KEY,
             archive_sha256 TEXT NOT NULL,
+            file_fingerprint TEXT,
             has_legacy_crossing INTEGER NOT NULL,
             legacy_max_duration_ms REAL,
             legacy_min_occurred_at TEXT,
             has_rfc3339 INTEGER NOT NULL,
+            rfc3339_max_duration_ms REAL,
+            rfc3339_min_occurred_at TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -8583,6 +8801,36 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await;
     if let Err(error) = archive_legacy_start_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let archive_fingerprint_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_archive_compatibility ADD COLUMN file_fingerprint TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = archive_fingerprint_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let archive_rfc3339_duration_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_archive_compatibility ADD COLUMN rfc3339_max_duration_ms REAL",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = archive_rfc3339_duration_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let archive_rfc3339_start_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_archive_compatibility ADD COLUMN rfc3339_min_occurred_at TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = archive_rfc3339_start_migration
         && !error.to_string().contains("duplicate column name")
     {
         return Err(error.into());
@@ -13653,21 +13901,6 @@ mod tests {
             .await
             .expect("projection source indexes");
         sqlx::query(
-            "CREATE INDEX idx_codex_invocations_occurred_at ON codex_invocations (occurred_at)",
-        )
-        .execute(&pool)
-        .await
-        .expect("occurred_at index");
-        let compatibility_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
-            "EXPLAIN QUERY PLAN {LONG_TERM_PROJECTION_LIVE_RFC3339_COMPATIBILITY_QUERY}"
-        ))
-        .fetch_all(&pool)
-        .await
-        .expect("RFC3339 compatibility query plan");
-        assert!(compatibility_plan.iter().any(|(_, _, _, detail)| {
-            detail.contains("idx_codex_invocations_long_term_projection_rfc3339")
-        }));
-        sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (1, 'canonical', '2026-07-26 12:00:00', 'success', 100)",
         )
         .execute(&pool)
@@ -13690,9 +13923,10 @@ mod tests {
             .single()
             .expect("Shanghai day end");
         assert!(
-            !long_term_projection_live_has_rfc3339_rows(&pool)
+            load_long_term_projection_live_rfc3339_compatibility(&pool)
                 .await
                 .expect("canonical compatibility gate")
+                .is_none()
         );
         let control = LongTermProjectionWriteControl::unrestricted();
         let canonical_rows =
@@ -13713,11 +13947,27 @@ mod tests {
         .execute(&pool)
         .await
         .expect("RFC3339 invocation");
-        assert!(
-            long_term_projection_live_has_rfc3339_rows(&pool)
+        let rfc3339_compatibility = load_long_term_projection_live_rfc3339_compatibility(&pool)
+            .await
+            .expect("updated RFC3339 compatibility gate")
+            .expect("RFC3339 compatibility metadata");
+        let (rfc3339_lower, rfc3339_upper) =
+            long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
+        let query =
+            long_term_projection_live_rfc3339_query("SELECT inv.id FROM codex_invocations inv");
+        let plan =
+            sqlx::query_as::<_, (i64, i64, i64, String)>(&format!("EXPLAIN QUERY PLAN {query}"))
+                .bind(&rfc3339_lower)
+                .bind(&rfc3339_upper)
+                .bind(start.timestamp())
+                .bind(end.timestamp())
+                .fetch_all(&pool)
                 .await
-                .expect("updated RFC3339 compatibility gate")
-        );
+                .expect("RFC3339 range query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_codex_invocations_long_term_projection_rfc3339_occurred_at")
+                && detail.contains("occurred_at>? AND occurred_at<?")
+        }));
         let mixed_rows = load_long_term_projection_rows_for_date(&pool, date, start, end, &control)
             .await
             .expect("mixed projection rows");
@@ -15091,28 +15341,103 @@ mod tests {
             legacy_max_duration_ms: Some(2_000.0),
             legacy_min_occurred_at: Some("2026-07-25 23:59:59".to_string()),
             has_rfc3339: false,
+            rfc3339_max_duration_ms: None,
+            rfc3339_min_occurred_at: None,
         };
         persist_long_term_archive_compatibility(
             &pool,
             "archive.sqlite.gz",
             "archive-sha-one",
+            "archive-fingerprint-one",
             original.clone(),
             &control,
         )
         .await
         .expect("persist archive capability");
         assert_eq!(
-            load_long_term_archive_compatibility(&pool, "archive.sqlite.gz", "archive-sha-one")
-                .await
-                .expect("load matching capability"),
+            load_long_term_archive_compatibility(
+                &pool,
+                "archive.sqlite.gz",
+                "archive-sha-one",
+                "archive-fingerprint-one",
+            )
+            .await
+            .expect("load matching capability"),
             Some(original)
         );
         assert_eq!(
-            load_long_term_archive_compatibility(&pool, "archive.sqlite.gz", "archive-sha-two")
-                .await
-                .expect("reject stale capability"),
+            load_long_term_archive_compatibility(
+                &pool,
+                "archive.sqlite.gz",
+                "archive-sha-two",
+                "archive-fingerprint-one",
+            )
+            .await
+            .expect("reject stale capability"),
             None
         );
+        assert_eq!(
+            load_long_term_archive_compatibility(
+                &pool,
+                "archive.sqlite.gz",
+                "archive-sha-one",
+                "archive-fingerprint-two",
+            )
+            .await
+            .expect("reject replaced archive capability"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_compatibility_inspection_checks_cancellation_between_bounded_batches() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, status TEXT, t_total_ms REAL)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive invocation schema");
+        sqlx::query(
+            r#"
+            WITH RECURSIVE source(id) AS (
+                VALUES(1)
+                UNION ALL
+                SELECT id + 1 FROM source WHERE id < 1025
+            )
+            INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms)
+            SELECT id, printf('2026-07-%02d 00:00:00', (id % 28) + 1), 'success', 1
+            FROM source
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("archive source rows");
+        let query = long_term_archive_invocation_query_for_range(&pool)
+            .await
+            .expect("archive range queries");
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let interrupted =
+            LongTermProjectionWriteControl::stopping_after_archive_compatibility_batch(
+                &shutdown, &gate,
+            );
+        let error = inspect_long_term_archive_compatibility(&pool, &query.parts, &interrupted)
+            .await
+            .expect_err("cancellation stops before the second bounded scan");
+        assert!(long_term_projection_write_is_deferred(&error));
+
+        let recovered_control = LongTermProjectionWriteControl::unrestricted();
+        let recovered =
+            inspect_long_term_archive_compatibility(&pool, &query.parts, &recovered_control)
+                .await
+                .expect("a later attempt rescans and recovers compatibility");
+        assert!(recovered.has_legacy_crossing);
+        assert_eq!(recovered.legacy_max_duration_ms, Some(1.0));
     }
 
     #[tokio::test]
@@ -15222,9 +15547,11 @@ mod tests {
                 && detail.contains("occurred_at>? AND occurred_at<?")
         }));
 
-        let compatibility = inspect_long_term_archive_compatibility(&pool, &queries.parts)
-            .await
-            .expect("archive compatibility probe");
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let compatibility =
+            inspect_long_term_archive_compatibility(&pool, &queries.parts, &control)
+                .await
+                .expect("archive compatibility probe");
         assert_eq!(
             compatibility,
             LongTermArchiveCompatibility {
@@ -15232,8 +15559,34 @@ mod tests {
                 legacy_max_duration_ms: None,
                 legacy_min_occurred_at: None,
                 has_rfc3339: true,
+                rfc3339_max_duration_ms: Some(600.0),
+                rfc3339_min_occurred_at: Some("2026-07-25T15:59:59.500Z".to_string()),
             }
         );
+        let rfc3339_compatibility = LongTermRfc3339Compatibility {
+            max_duration_ms: compatibility.rfc3339_max_duration_ms,
+            min_occurred_at: compatibility
+                .rfc3339_min_occurred_at
+                .clone()
+                .expect("RFC3339 archive compatibility start"),
+        };
+        let (rfc3339_lower, rfc3339_upper) =
+            long_term_rfc3339_text_bounds(start, end, &rfc3339_compatibility);
+        let rfc3339_plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            queries.rfc3339
+        ))
+        .bind(&rfc3339_lower)
+        .bind(&rfc3339_upper)
+        .bind(start.timestamp())
+        .bind(end.timestamp())
+        .fetch_all(&pool)
+        .await
+        .expect("RFC3339 archive query plan");
+        assert!(rfc3339_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_invocations_occurred_at")
+                && detail.contains("occurred_at>? AND occurred_at<?")
+        }));
         let rows = load_long_term_archive_invocation_rows_for_range(
             &pool,
             &queries,
@@ -15293,9 +15646,11 @@ mod tests {
             )
             .single()
             .expect("Shanghai next day start");
-        let compatibility = inspect_long_term_archive_compatibility(&pool, &queries.parts)
-            .await
-            .expect("archive compatibility probe");
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let compatibility =
+            inspect_long_term_archive_compatibility(&pool, &queries.parts, &control)
+                .await
+                .expect("archive compatibility probe");
         assert_eq!(
             compatibility,
             LongTermArchiveCompatibility {
@@ -15303,6 +15658,8 @@ mod tests {
                 legacy_max_duration_ms: Some(1e300),
                 legacy_min_occurred_at: Some("2026-01-01 00:00:00".to_string()),
                 has_rfc3339: false,
+                rfc3339_max_duration_ms: None,
+                rfc3339_min_occurred_at: None,
             }
         );
         assert!(long_term_archive_legacy_crossing_start(&start, 1e300).is_none());
@@ -15325,20 +15682,25 @@ mod tests {
                 && detail.contains("occurred_at>? AND occurred_at<?")
         }));
 
-        let control = LongTermProjectionWriteControl::unrestricted();
         persist_long_term_archive_compatibility(
             &pool,
             "legacy.sqlite.gz",
             "legacy-sha",
+            "legacy-fingerprint",
             compatibility,
             &control,
         )
         .await
         .expect("persist legacy compatibility");
-        let cached = load_long_term_archive_compatibility(&pool, "legacy.sqlite.gz", "legacy-sha")
-            .await
-            .expect("load legacy compatibility")
-            .expect("cached legacy compatibility");
+        let cached = load_long_term_archive_compatibility(
+            &pool,
+            "legacy.sqlite.gz",
+            "legacy-sha",
+            "legacy-fingerprint",
+        )
+        .await
+        .expect("load legacy compatibility")
+        .expect("cached legacy compatibility");
         let rows =
             load_long_term_archive_invocation_rows_for_range(&pool, &queries, cached, start, end)
                 .await
@@ -15415,6 +15777,8 @@ mod tests {
                 legacy_max_duration_ms: None,
                 legacy_min_occurred_at: None,
                 has_rfc3339: false,
+                rfc3339_max_duration_ms: None,
+                rfc3339_min_occurred_at: None,
             },
             start,
             end,
@@ -15484,7 +15848,7 @@ mod tests {
             .await
             .expect("full schema");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, t_total_ms) VALUES (1, 'boundary-invoke', ?1, 'success', 0.001)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, raw_response, t_total_ms) VALUES (1, 'boundary-invoke', ?1, 'success', '{}', '{}', 0.001)",
         )
         .bind(occurred_at)
         .execute(&pool)
