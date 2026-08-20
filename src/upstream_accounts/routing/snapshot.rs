@@ -239,6 +239,7 @@ pub(crate) struct PoolRoutingSnapshotStore {
     snapshot: std::sync::RwLock<Option<Arc<PoolRoutingSnapshot>>>,
     refresh_tx: tokio::sync::watch::Sender<u64>,
     refresh_epoch: std::sync::atomic::AtomicU64,
+    deferred_availability_wake: std::sync::atomic::AtomicBool,
     refresh_state: std::sync::Mutex<PoolRoutingSnapshotRefreshState>,
 }
 
@@ -265,6 +266,7 @@ impl PoolRoutingSnapshotStore {
             snapshot: std::sync::RwLock::new(None),
             refresh_tx,
             refresh_epoch: std::sync::atomic::AtomicU64::new(0),
+            deferred_availability_wake: std::sync::atomic::AtomicBool::new(false),
             refresh_state: std::sync::Mutex::new(PoolRoutingSnapshotRefreshState::default()),
         }
     }
@@ -309,7 +311,7 @@ impl PoolRoutingSnapshotStore {
         &self,
         refresh_generation: u64,
         snapshot: PoolRoutingSnapshot,
-        publish_availability: impl FnOnce(),
+        publish_availability: impl Fn(),
     ) -> bool {
         if self.refresh_generation() != refresh_generation {
             return false;
@@ -347,12 +349,16 @@ impl PoolRoutingSnapshotStore {
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
         let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
-        if wake_waiters {
-            publish_availability();
-        }
         self.refresh_epoch
             .store(refresh_generation, std::sync::atomic::Ordering::Release);
         drop(refresh_state);
+        if wake_waiters
+            || self
+                .deferred_availability_wake
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.publish_availability_if_ready(publish_availability);
+        }
         true
     }
 
@@ -392,13 +398,28 @@ impl PoolRoutingSnapshotStore {
             & REFRESH_GENERATION_MASK
     }
 
-    pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl FnOnce()) {
+    pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl Fn()) {
         loop {
             let epoch = self
                 .refresh_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
             if epoch & (REFRESH_PENDING_BIT | REFRESH_PUBLISHING_BIT) != 0 {
-                return;
+                // A release during a snapshot rebuild must wake only after its
+                // fenced snapshot is current. Retain the wake across both the
+                // pending and publishing phases instead of dropping it.
+                self.deferred_availability_wake
+                    .store(true, std::sync::atomic::Ordering::Release);
+                // If the lease ended before the deferred flag was recorded,
+                // retry immediately so this release cannot be left for a
+                // future, unrelated refresh cycle.
+                if self
+                    .refresh_epoch
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == epoch
+                {
+                    return;
+                }
+                continue;
             }
             if self
                 .refresh_epoch
@@ -413,7 +434,12 @@ impl PoolRoutingSnapshotStore {
                 publish_availability();
                 self.refresh_epoch
                     .store(epoch, std::sync::atomic::Ordering::Release);
-                return;
+                if !self
+                    .deferred_availability_wake
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    return;
+                }
             }
         }
     }
@@ -647,17 +673,17 @@ mod snapshot_store_tests {
     fn initial_refresh_can_install_without_a_mutation_event() {
         let store = PoolRoutingSnapshotStore::new();
         let initial_generation = store.refresh_generation();
-        let mut published_availability = false;
+        let published_availability = std::cell::Cell::new(false);
 
         assert!(
             store.complete_refresh(initial_generation, empty_snapshot(), || {
-                published_availability = true;
+                published_availability.set(true);
             })
         );
         assert!(store.current().is_some());
         assert!(!store.refresh_pending());
         assert!(
-            !published_availability,
+            !published_availability.get(),
             "an initial refresh must not publish a waiter wake without a queued capacity event"
         );
     }
@@ -667,12 +693,57 @@ mod snapshot_store_tests {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh_and_wake_waiters();
         let generation = store.refresh_generation();
-        let mut published_availability = false;
+        let published_availability = std::cell::Cell::new(false);
 
         assert!(store.complete_refresh(generation, empty_snapshot(), || {
-            published_availability = true;
+            published_availability.set(true);
         }));
-        assert!(published_availability);
+        assert!(published_availability.get());
         assert!(!store.refresh_pending());
+    }
+
+    #[test]
+    fn availability_release_deferred_while_pending_wakes_after_snapshot_install() {
+        let store = PoolRoutingSnapshotStore::new();
+        store.request_refresh();
+        let generation = store.refresh_generation();
+        let publish_count = std::cell::Cell::new(0);
+
+        store.publish_availability_if_ready(|| publish_count.set(publish_count.get() + 1));
+        assert_eq!(
+            publish_count.get(),
+            0,
+            "a pending snapshot must fence capacity wakes"
+        );
+
+        assert!(store.complete_refresh(generation, empty_snapshot(), || {
+            publish_count.set(publish_count.get() + 1);
+        }));
+        assert_eq!(
+            publish_count.get(),
+            1,
+            "the installed snapshot must replay the deferred capacity wake"
+        );
+    }
+
+    #[test]
+    fn availability_release_deferred_while_publishing_is_replayed() {
+        let store = PoolRoutingSnapshotStore::new();
+        let publish_count = std::cell::Cell::new(0);
+
+        store.publish_availability_if_ready(|| {
+            publish_count.set(publish_count.get() + 1);
+            if publish_count.get() == 1 {
+                // This nested release sees the publishing lease. Its wake must
+                // be replayed after the lease rather than being silently lost.
+                store.publish_availability_if_ready(|| {});
+            }
+        });
+
+        assert_eq!(
+            publish_count.get(),
+            2,
+            "a capacity release during a publishing lease must get its own wake"
+        );
     }
 }
