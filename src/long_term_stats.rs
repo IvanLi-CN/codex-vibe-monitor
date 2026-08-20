@@ -24,6 +24,11 @@ const LONG_TERM_REFRESH_LOCK_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
     Duration::from_secs(3),
 ];
+const LONG_TERM_PROJECTION_LOCK_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+];
 pub(crate) const LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET: &str = "long_term_usage_stats";
 
 static LONG_TERM_REFRESH_LOCK: once_cell::sync::Lazy<Mutex<()>> =
@@ -1054,6 +1059,7 @@ const LONG_TERM_PROJECTION_DAILY_VERIFY_INTERVAL: Duration = Duration::from_secs
 const LONG_TERM_PROJECTION_MAX_BUCKETS_PER_FLUSH: i64 = 1;
 const LONG_TERM_PROJECTION_MAX_EVENTS_PER_FLUSH: i64 = 2_000;
 const LONG_TERM_PROJECTION_WRITE_BATCH_ROWS: usize = 512;
+const LONG_TERM_PROJECTION_ADMISSION_WAIT: Duration = Duration::from_millis(250);
 // The incremental rollup commit also persists the cursor and projection status.
 const LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS: usize =
     LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2;
@@ -1183,17 +1189,28 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         Option<crate::db_pressure::DbBackgroundPermit>,
     )> {
         self.check()?;
-        let permit = self
-            .gate
-            .map(|gate| {
-                gate.try_begin_background("long_term_projection_write")
-                    .map_err(|reason| {
-                        anyhow!(
-                            "long-term projection write deferred by database pressure: {reason}"
-                        )
-                    })
-            })
-            .transpose()?;
+        let permit = if let Some(gate) = self.gate {
+            let result = if let Some(shutdown) = self.shutdown {
+                tokio::select! {
+                    _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                    result = gate.begin_background_with_busy_wait(
+                        "long_term_projection_write",
+                        LONG_TERM_PROJECTION_ADMISSION_WAIT,
+                    ) => result,
+                }
+            } else {
+                gate.begin_background_with_busy_wait(
+                    "long_term_projection_write",
+                    LONG_TERM_PROJECTION_ADMISSION_WAIT,
+                )
+                .await
+            };
+            Some(result.map_err(|reason| {
+                anyhow!("long-term projection write deferred by database pressure: {reason}")
+            })?)
+        } else {
+            None
+        };
         Ok((pool.begin().await?, permit))
     }
 
@@ -1476,10 +1493,10 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
               WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
                 SELECT
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date(strftime('%s', inv.occurred_at), 'unixepoch', '+8 hours')
+                    THEN date((julianday(inv.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
                     ELSE date(inv.occurred_at) END,
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date(CAST(strftime('%s', inv.occurred_at) AS INTEGER) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                    THEN date((julianday(inv.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                     ELSE date(julianday(inv.occurred_at) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 86400000.0) END
                 FROM codex_invocations inv
                 WHERE (CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END) = {account_id}
@@ -1988,7 +2005,10 @@ async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
 
 async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> Result<()> {
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
-    let result = flush_long_term_projection_inner(state, trigger).await;
+    let result = run_long_term_projection_flush_with_retry(&state.shutdown, || {
+        flush_long_term_projection_inner(state, trigger)
+    })
+    .await;
     let load_row_count = result.as_ref().copied().unwrap_or_default();
     state
         .memory_diagnostics
@@ -2030,6 +2050,52 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
             }
         }
     }
+}
+
+async fn run_long_term_projection_flush_with_retry<T, Operation, OperationFuture>(
+    shutdown: &CancellationToken,
+    operation: Operation,
+) -> Result<T>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<T>>,
+{
+    run_long_term_projection_flush_with_retry_delays(
+        shutdown,
+        operation,
+        &LONG_TERM_PROJECTION_LOCK_RETRY_DELAYS,
+    )
+    .await
+}
+
+async fn run_long_term_projection_flush_with_retry_delays<T, Operation, OperationFuture>(
+    shutdown: &CancellationToken,
+    mut operation: Operation,
+    retry_delays: &[Duration],
+) -> Result<T>
+where
+    Operation: FnMut() -> OperationFuture,
+    OperationFuture: Future<Output = Result<T>>,
+{
+    for (attempt, delay) in retry_delays.iter().enumerate() {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) if crate::is_sqlite_lock_error(&error) => {
+                warn!(
+                    attempt = attempt + 1,
+                    retry_after_ms = delay.as_millis(),
+                    error = %error,
+                    "long-term projection flush hit a SQLite lock; retrying"
+                );
+                tokio::select! {
+                    _ = shutdown.cancelled() => bail!("long-term projection write cancelled during SQLite lock retry"),
+                    _ = sleep(*delay) => {}
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    operation().await
 }
 
 async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static str) -> Result<u64> {
@@ -2736,7 +2802,7 @@ async fn load_long_term_projection_rows_for_date(
             .await?,
     );
     let rfc3339_query = format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) < ?2 AND (CAST(strftime('%s', inv.occurred_at) AS INTEGER) >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND CAST(strftime('%s', inv.occurred_at) AS INTEGER) + inv.t_total_ms / 1000.0 >= ?1))"
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND (julianday(inv.occurred_at) - 2440587.5) * 86400.0 < ?2 AND ((julianday(inv.occurred_at) - 2440587.5) * 86400.0 >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND (julianday(inv.occurred_at) - 2440587.5) * 86400.0 + inv.t_total_ms / 1000.0 >= ?1))"
     );
     rows.extend(
         sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
@@ -7707,8 +7773,12 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure long-term projection canonical interval state table")?;
+    sqlx::query("DROP INDEX IF EXISTS idx_long_term_projection_interval_state_range")
+        .execute(pool)
+        .await
+        .context("failed to replace long-term projection interval range index")?;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_range ON long_term_projection_interval_state (interval_start_ms, interval_end_ms)",
+        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_end_start ON long_term_projection_interval_state (interval_end_ms, interval_start_ms)",
     )
     .execute(pool)
     .await
@@ -8457,6 +8527,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_materialization_control_waits_for_a_short_lived_background_slot() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let held = gate
+            .try_begin_background("test-short-lived-background-slot")
+            .expect("hold background admission");
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+
+        let release = async move {
+            sleep(Duration::from_millis(10)).await;
+            drop(held);
+        };
+        let write = persist_long_term_refresh_progress(&pool, 256, 512, &control);
+        let (_, result) = tokio::join!(release, write);
+        result.expect("a short-lived background slot is admitted within the P2 window");
+        assert_eq!(
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT processed_rows, total_rows FROM long_term_stats_state WHERE id = ?1",
+            )
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_one(&pool)
+            .await
+            .expect("persisted progress"),
+            (256, 512)
+        );
+    }
+
+    #[tokio::test]
     async fn daily_verify_stays_due_until_its_queued_bucket_is_rebuilt() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -8622,8 +8728,16 @@ mod tests {
         let public_rows = load_long_term_daily_rows(&pool, "model", None, &date_text, &date_text)
             .await
             .expect("last-good daily rows remain readable after cancellation");
-        assert_eq!(public_rows.len(), 1);
-        assert_eq!(public_rows[0].series_key, "model:previous-0");
+        assert_eq!(
+            public_rows.len(),
+            LONG_TERM_PROJECTION_WRITE_BATCH_ROWS + 1,
+            "the complete last-good snapshot remains visible after cancellation"
+        );
+        assert!(
+            public_rows
+                .iter()
+                .all(|row| row.series_key.starts_with("model:previous-"))
+        );
 
         let recovery_control = LongTermProjectionWriteControl::unrestricted();
         apply_long_term_refresh_rollups_with_control(
@@ -10639,6 +10753,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_interval_lookup_seeks_from_interval_end() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let (start_epoch, end_epoch) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let start_ms = start_epoch * 1_000;
+        let end_ms = end_epoch * 1_000;
+        sqlx::query(
+            "INSERT INTO long_term_projection_interval_state (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms) VALUES (1, 'model:old', 'account:old', ?1, ?2), (2, 'model:current', 'account:current', ?3, ?4)",
+        )
+        .bind(start_ms - 86_400_000)
+        .bind(start_ms - 1)
+        .bind(start_ms + 1_000)
+        .bind(start_ms + 2_000)
+        .execute(&pool)
+        .await
+        .expect("seed canonical intervals");
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+            "EXPLAIN QUERY PLAN SELECT invocation_row_id FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+        )
+        .bind(end_ms)
+        .bind(start_ms)
+        .fetch_all(&pool)
+        .await
+        .expect("canonical interval query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_long_term_projection_interval_state_end_start")
+        }));
+
+        let index =
+            load_long_term_projection_interval_index(&pool, &HashSet::from([date.to_string()]))
+                .await
+                .expect("load canonical interval index");
+        let key = projection_interval_key(
+            "daily",
+            date.to_string(),
+            "model".to_string(),
+            "model:current".to_string(),
+        );
+        assert_eq!(
+            index.get(&key).expect("current interval union").duration_ms,
+            1_000
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_interval_fallback_honors_rebuild_suppressions() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -12488,6 +12654,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projection_flush_retries_a_transient_sqlite_lock() {
+        let shutdown = CancellationToken::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let operation_attempts = Arc::clone(&attempts);
+        let outcome = run_long_term_projection_flush_with_retry_delays(
+            &shutdown,
+            move || {
+                let operation_attempts = Arc::clone(&operation_attempts);
+                async move {
+                    let attempt = operation_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt < 3 {
+                        Err(anyhow::anyhow!("database is locked"))
+                    } else {
+                        Ok(attempt)
+                    }
+                }
+            },
+            &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .expect("transient lock retries before deferring a repair");
+        assert_eq!(outcome, 3);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn projection_flush_cancels_during_sqlite_lock_retry() {
+        let shutdown = CancellationToken::new();
+        let operation_shutdown = shutdown.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let operation_attempts = Arc::clone(&attempts);
+        let error = run_long_term_projection_flush_with_retry_delays(
+            &shutdown,
+            move || {
+                let operation_attempts = Arc::clone(&operation_attempts);
+                let operation_shutdown = operation_shutdown.clone();
+                async move {
+                    operation_attempts.fetch_add(1, Ordering::SeqCst);
+                    operation_shutdown.cancel();
+                    Err::<(), _>(anyhow::anyhow!("database is locked"))
+                }
+            },
+            &[Duration::ZERO, Duration::ZERO, Duration::ZERO],
+        )
+        .await
+        .expect_err("shutdown stops the lock retry without another write attempt");
+        assert!(long_term_projection_write_is_deferred(&error));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn projection_date_rebuild_filters_rfc3339_rows_by_shanghai_epoch_bounds() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -12511,7 +12728,7 @@ mod tests {
         .await
         .expect("local boundary invocation");
         sqlx::query(
-            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, t_total_ms) VALUES (3, 'rfc3339-crossing', '2026-07-25T15:59:59Z', 'success', 100, 2000)",
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens, t_total_ms) VALUES (3, 'rfc3339-crossing', '2026-07-25T15:59:59.500Z', 'success', 100, 600)",
         )
         .execute(&pool)
         .await
