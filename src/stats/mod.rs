@@ -1118,6 +1118,22 @@ impl ArchiveBatchPathRow {
         }
     }
 
+    pub(crate) fn with_coverage(
+        file_path: impl Into<String>,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+    ) -> Self {
+        Self {
+            file_path: file_path.into(),
+            month_key: None,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at: None,
+            needs_overall: None,
+            needs_failures: None,
+        }
+    }
+
     pub(crate) fn file_path(&self) -> &str {
         &self.file_path
     }
@@ -1302,6 +1318,36 @@ pub(crate) async fn load_live_invocation_ids_after_id(
         .into_iter()
         .map(|row| row.id)
         .collect())
+}
+
+pub(crate) async fn load_live_invocation_ids_after_id_bounded(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    source_scope: InvocationSourceScope,
+    start_after_id: i64,
+    limit: usize,
+) -> Result<HashSet<i64>> {
+    if start_after_id < 0 {
+        return Ok(HashSet::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE id > ");
+    query.push_bind(start_after_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    #[derive(Debug, FromRow)]
+    struct IdRow {
+        id: i64,
+    }
+    let rows = query
+        .push(" LIMIT ")
+        .push_bind((limit.saturating_add(1)) as i64)
+        .build_query_as::<IdRow>()
+        .fetch_all(executor)
+        .await?;
+    if rows.len() > limit {
+        return Err(anyhow!("summary live-tail id budget exceeded ({})", limit));
+    }
+    Ok(rows.into_iter().map(|row| row.id).collect())
 }
 
 pub(crate) async fn load_completed_invocation_archive_paths(
@@ -3093,11 +3139,46 @@ pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
 ) -> Result<Vec<InvocationHourlyRollupRecord>> {
+    query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budget(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas_bounded(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: usize,
+) -> Result<Vec<InvocationHourlyRollupRecord>> {
+    query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budget(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        Some(max_rows),
+    )
+    .await
+}
+
+async fn query_unmaterialized_invocation_archive_hourly_rollup_deltas_with_budget(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: Option<usize>,
+) -> Result<Vec<InvocationHourlyRollupRecord>> {
     let pending_state = load_pending_invocation_archive_hourly_rollup_deltas(
         pool,
         source_scope,
         range,
         exclude_invocation_ids,
+        max_rows,
     )
     .await?;
     let mut pending_bucket_sources = pending_state
@@ -3163,14 +3244,61 @@ pub(crate) async fn load_pending_invocation_archive_hourly_rollup_deltas(
     source_scope: InvocationSourceScope,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: Option<usize>,
 ) -> Result<PendingInvocationArchiveOverallState> {
-    let archive_rows = load_invocation_archives_missing_rollup_target(
-        pool,
-        HOURLY_ROLLUP_TARGET_INVOCATIONS,
-        range,
-    )
-    .await?;
+    let archive_rows = match max_rows {
+        Some(max_rows) => {
+            load_invocation_archives_missing_rollup_target_bounded(
+                pool,
+                HOURLY_ROLLUP_TARGET_INVOCATIONS,
+                range,
+                SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES.min(max_rows.max(1)),
+            )
+            .await?
+        }
+        None => {
+            load_invocation_archives_missing_rollup_target(
+                pool,
+                HOURLY_ROLLUP_TARGET_INVOCATIONS,
+                range,
+            )
+            .await?
+        }
+    };
+    if max_rows.is_some() && archive_rows.len() > SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES {
+        return Err(anyhow!(
+            "summary archive batch budget exceeded ({})",
+            SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES
+        ));
+    }
+    if let Some(max_rows) = max_rows
+        && range.is_none()
+        && !archive_rows.is_empty()
+    {
+        let mut row_count_query = QueryBuilder::<Sqlite>::new(
+            "SELECT COALESCE(SUM(row_count), 0) FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path IN (",
+        );
+        {
+            let mut separated = row_count_query.separated(", ");
+            for archive_row in &archive_rows {
+                separated.push_bind(archive_row.file_path());
+            }
+        }
+        row_count_query.push(")");
+        let row_count = row_count_query
+            .build_query_scalar::<i64>()
+            .fetch_one(pool)
+            .await
+            .context("summary archive row-count budget hydration failed")?;
+        if row_count > max_rows as i64 {
+            return Err(anyhow!(
+                "summary archive row budget exceeded ({row_count} > {max_rows})"
+            ));
+        }
+    }
     let mut pending_state = PendingInvocationArchiveOverallState::default();
+    let mut scanned_rows = 0usize;
 
     for archive_row in archive_rows {
         let Some((archive_pool, temp_cleanup)) =
@@ -3194,6 +3322,14 @@ pub(crate) async fn load_pending_invocation_archive_hourly_rollup_deltas(
             .await?;
             if rows.is_empty() {
                 break;
+            }
+            if let Some(max_rows) = max_rows {
+                scanned_rows = scanned_rows.saturating_add(rows.len());
+                if scanned_rows > max_rows {
+                    return Err(anyhow!(
+                        "summary archive exact row budget exceeded ({scanned_rows} > {max_rows})"
+                    ));
+                }
             }
             cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
             let filtered_rows = rows
@@ -3700,6 +3836,33 @@ pub(crate) async fn query_unmaterialized_invocation_archive_totals(
         totals.non_success_cost += row.non_success_cost;
     }
 
+    Ok(totals)
+}
+
+pub(crate) async fn query_unmaterialized_invocation_archive_totals_bounded(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+    max_rows: usize,
+) -> Result<StatsTotals> {
+    let mut totals = StatsTotals::default();
+    for row in query_unmaterialized_invocation_archive_hourly_rollup_deltas_bounded(
+        pool,
+        source_scope,
+        range,
+        exclude_invocation_ids,
+        max_rows,
+    )
+    .await?
+    {
+        totals.total_count += row.total_count;
+        totals.success_count += row.success_count;
+        totals.failure_count += row.failure_count;
+        totals.total_tokens += row.total_tokens;
+        totals.total_cost += row.total_cost;
+        totals.non_success_cost += row.non_success_cost;
+    }
     Ok(totals)
 }
 
