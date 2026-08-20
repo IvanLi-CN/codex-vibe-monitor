@@ -7188,78 +7188,28 @@ struct SummaryProjectionArchiveReplayCoverage {
 }
 
 impl SummaryProjectionArchiveReplayCoverage {
-    fn supports_unavailable_archive(self, archive_has_materialized_rollups: bool) -> bool {
-        archive_has_materialized_rollups
-            || (self.overall && self.account_stats && self.usage_breakdown)
+    fn supports_unavailable_archive(self) -> bool {
+        self.overall && self.account_stats && self.usage_breakdown
     }
 }
 
 #[derive(Debug, Clone, Default)]
 struct SummaryProjectionFreshness {
-    rolling_confirmed_at: Arc<StdMutex<Option<Instant>>>,
-    all_time_confirmed_at: Arc<StdMutex<Option<Instant>>>,
-    all_time_account_confirmed_at: Arc<StdMutex<HashMap<i64, Instant>>>,
     global_all_time_eligible: bool,
     account_all_time_eligible: HashSet<i64>,
 }
 
 impl SummaryProjectionFreshness {
     fn rolling_at(&self, built_at: Option<Instant>) -> Option<Instant> {
-        let confirmed_at = *self
-            .rolling_confirmed_at
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match (built_at, confirmed_at) {
-            (Some(built_at), Some(confirmed_at)) => Some(built_at.max(confirmed_at)),
-            (Some(built_at), None) => Some(built_at),
-            (None, Some(confirmed_at)) => Some(confirmed_at),
-            (None, None) => None,
-        }
+        built_at
     }
 
     fn all_time_at(&self, built_at: Option<Instant>, account_id: Option<i64>) -> Option<Instant> {
-        let confirmed_at = match account_id {
-            None if self.global_all_time_eligible => *self
-                .all_time_confirmed_at
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            Some(account_id) if self.account_all_time_eligible.contains(&account_id) => self
-                .all_time_account_confirmed_at
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get(&account_id)
-                .copied(),
-            _ => None,
+        let eligible = match account_id {
+            None => self.global_all_time_eligible,
+            Some(account_id) => self.account_all_time_eligible.contains(&account_id),
         };
-        match (built_at, confirmed_at) {
-            (Some(built_at), Some(confirmed_at)) => Some(built_at.max(confirmed_at)),
-            (Some(built_at), None) => Some(built_at),
-            (None, Some(confirmed_at)) => Some(confirmed_at),
-            (None, None) => None,
-        }
-    }
-
-    fn confirm_unchanged(&self) {
-        let now = Instant::now();
-        *self
-            .rolling_confirmed_at
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        if self.global_all_time_eligible {
-            *self
-                .all_time_confirmed_at
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        }
-        if !self.account_all_time_eligible.is_empty() {
-            let mut confirmed_at = self
-                .all_time_account_confirmed_at
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for account_id in &self.account_all_time_eligible {
-                confirmed_at.insert(*account_id, now);
-            }
-        }
+        if eligible { built_at } else { None }
     }
 }
 
@@ -8655,6 +8605,8 @@ async fn refresh_summary_snapshots_with_mode(
                 projection.all_time_refreshed_at,
                 projection.all_time_account_refreshed_at.clone(),
                 projection.archive_account_ids_by_file.clone(),
+                projection.freshness.global_all_time_eligible,
+                projection.freshness.account_all_time_eligible.clone(),
             )
         });
     let projection = tokio::time::timeout(
@@ -8893,6 +8845,8 @@ async fn build_summary_projection(
         Option<Instant>,
         HashMap<i64, Instant>,
         HashMap<String, HashSet<i64>>,
+        bool,
+        HashSet<i64>,
     )>,
 ) -> Result<SummaryProjection> {
     let end = Utc::now() + ChronoDuration::seconds(1);
@@ -8901,6 +8855,8 @@ async fn build_summary_projection(
         previous_all_time_refreshed_at,
         mut all_time_account_refreshed_at,
         mut archive_account_ids_by_file,
+        previous_global_all_time_eligible,
+        previous_account_all_time_eligible,
     ) = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
@@ -9183,9 +9139,7 @@ async fn build_summary_projection(
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
         else {
-            if replay_coverage
-                .supports_unavailable_archive(archive.has_materialized_historical_rollups())
-            {
+            if replay_coverage.supports_unavailable_archive() {
                 // A materialized archive remains answerable from its durable rollup baseline.
                 // Replay fallback additionally needs every response dimension, otherwise a
                 // global total could conceal missing account or usage/model detail.
@@ -9261,9 +9215,7 @@ async fn build_summary_projection(
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if replay_coverage
-                .supports_unavailable_archive(archive.has_materialized_historical_rollups())
-            {
+            if replay_coverage.supports_unavailable_archive() {
                 // Preserve the read-only historical fallback only when durable state proves
                 // every response dimension. A global-only replay marker is not enough.
                 continue;
@@ -9704,18 +9656,23 @@ async fn build_summary_projection(
         .await;
     let refreshed_at = Some(Instant::now());
     let freshness = SummaryProjectionFreshness {
-        global_all_time_eligible: all_time_was_fully_rebuilt
-            && !global_all_time_source_unavailable
-            && all_time_by_account.contains_key(&None),
-        account_all_time_eligible: if all_time_was_fully_rebuilt && !account_all_time_unavailable {
-            all_time_by_account
-                .keys()
-                .filter_map(|account_id| *account_id)
-                .collect()
+        global_all_time_eligible: if all_time_was_fully_rebuilt {
+            !global_all_time_source_unavailable && all_time_by_account.contains_key(&None)
         } else {
-            HashSet::new()
+            previous_global_all_time_eligible
         },
-        ..SummaryProjectionFreshness::default()
+        account_all_time_eligible: if all_time_was_fully_rebuilt {
+            if account_all_time_unavailable {
+                previous_account_all_time_eligible
+            } else {
+                all_time_by_account
+                    .keys()
+                    .filter_map(|account_id| *account_id)
+                    .collect()
+            }
+        } else {
+            previous_account_all_time_eligible
+        },
     };
     let mut projection = SummaryProjection {
         records,
@@ -9813,21 +9770,31 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
             };
             dirty |= matches!(trigger, Trigger::Mutation);
             if !state.subscription_hub.has_summary_owner().await {
-                // A typed ingress silence proves the canonical projection has not changed.
-                // Renew only its in-memory confirmation so an idle first request is not made
-                // unavailable solely because no consumer kept a SQL producer alive. A dirty
-                // projection is never renewed this way and remains unavailable past 15s.
-                if !dirty
-                    && let Some(projection) = state.subscription_hub.summary_projection().await
-                {
-                    projection.freshness.confirm_unchanged();
+                // Do not fabricate freshness while the projection has no active consumer.
+                // Once the last successful build approaches the hard serving budget, promote
+                // the cadence tick into a bounded background refresh. Mutation bursts remain
+                // dirty signals and are coalesced by the same single-flight gate below.
+                if !dirty {
+                    let stale = state
+                        .subscription_hub
+                        .summary_projection()
+                        .await
+                        .is_none_or(|projection| {
+                            projection
+                                .freshness
+                                .rolling_at(projection.refreshed_at)
+                                .is_none_or(|refreshed_at| {
+                                    refreshed_at.elapsed()
+                                        >= SUMMARY_SNAPSHOT_MAX_STALE
+                                            .saturating_sub(SUMMARY_PROJECTION_BUILD_DEADLINE)
+                                })
+                        });
+                    if stale {
+                        dirty = true;
+                    }
                 }
-                continue;
             }
             if !dirty {
-                if let Some(projection) = state.subscription_hub.summary_projection().await {
-                    projection.freshness.confirm_unchanged();
-                }
                 continue;
             }
             let now = Instant::now();
@@ -25342,6 +25309,33 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_handler_preserves_all_time_last_good_across_rolling_only_refresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        refresh_summary_snapshots_with_mode(state.as_ref(), false)
+            .await
+            .expect("rolling-only refresh preserves prior all-time projection");
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("exact all-time last-good remains available after rolling refresh");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
     async fn summary_handler_keeps_global_all_time_freshness_separate_from_accounts() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -25416,7 +25410,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_handler_serves_an_idle_projection_after_memory_confirmation() {
+    async fn summary_handler_rejects_an_expired_projection_after_idle_cadence() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -25433,15 +25427,9 @@ mod request_compression_query_tests {
             .subscription_hub
             .store_summary_projection(Arc::unwrap_or_clone(projection))
             .await;
-        let projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("stored projection");
-        projection.freshness.confirm_unchanged();
         state.pool.close().await;
 
-        let Json(response) = fetch_summary(
+        let error = fetch_summary(
             State(state),
             Query(SummaryQuery {
                 window: Some("1d".to_string()),
@@ -25451,9 +25439,8 @@ mod request_compression_query_tests {
             }),
         )
         .await
-        .expect("idle projection remains an exact memory-only response");
-        assert_eq!(response.total_count, 1);
-        assert_eq!(response.total_tokens, 17);
+        .expect_err("expired projection must not be revived by idle cadence");
+        assert!(matches!(error, ApiError::Unavailable(_)));
     }
 
     #[tokio::test]
@@ -25527,6 +25514,39 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert unavailable materialized archive manifest");
+        let usage = load_summary_projection_rollup_usage(&state.pool)
+            .await
+            .expect("load materialized usage rollup");
+        assert!(
+            usage.contains_key(&(bucket, None)),
+            "materialized account usage must contribute to the global projection scope"
+        );
+        assert!(
+            usage.contains_key(&(bucket, Some(42))),
+            "materialized account usage must remain available to the account projection scope"
+        );
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', '/definitely/missing/summary.sqlite.gz', 'summary-test')",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+        .execute(&state.pool)
+        .await
+        .expect("mark unavailable archive global scope as replayed");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with incomplete materialized replay metadata");
+        let incomplete = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection with incomplete replay metadata");
+        assert_eq!(
+            incomplete.unavailable_unmaterialized_archive_ranges.len(),
+            1,
+            "materialization alone cannot prove account or usage dimensions"
+        );
         for target in [
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
@@ -25540,21 +25560,9 @@ mod request_compression_query_tests {
             .await
             .expect("mark unavailable archive account scope as replayed");
         }
-        let usage = load_summary_projection_rollup_usage(&state.pool)
-            .await
-            .expect("load materialized usage rollup");
-        assert!(
-            usage.contains_key(&(bucket, None)),
-            "materialized account usage must contribute to the global projection scope"
-        );
-        assert!(
-            usage.contains_key(&(bucket, Some(42))),
-            "materialized account usage must remain available to the account projection scope"
-        );
-
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("hydrate projection from materialized rollup");
+            .expect("hydrate projection from fully replayed materialized rollup");
         let expected = query_hourly_backed_summary_range(
             state.as_ref(),
             Utc::now() - ChronoDuration::days(40),

@@ -276,6 +276,16 @@ async fn insert_hourly_rollup_archive_replay_marker(
     .expect("insert hourly rollup archive replay marker");
 }
 
+async fn mark_summary_archive_replay_complete(pool: &SqlitePool, file_path: &Path) {
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        insert_hourly_rollup_archive_replay_marker(pool, target, file_path).await;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SeedInvocationArchiveBatchRow<'a> {
     pub(crate) id: i64,
@@ -4169,6 +4179,7 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
         SOURCE_PROXY,
     )
     .await;
+    mark_summary_archive_replay_complete(&state.pool, &first_archive_path).await;
 
     fs::write(&first_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable mixed-state summary archive batch");
@@ -8578,6 +8589,7 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("seed pre-materialized summary rollups");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
 
     fs::remove_file(&archive_path).expect("prune materialized archive file");
 
@@ -8748,6 +8760,7 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
@@ -8961,6 +8974,7 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("seed materialized summary rollup row");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
 
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt materialized archive batch");
 
@@ -9315,6 +9329,7 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
@@ -9552,6 +9567,7 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
