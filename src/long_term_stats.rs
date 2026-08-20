@@ -1457,6 +1457,11 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
+    spawn_long_term_stats_backfill(
+        state.pool.clone(),
+        state.config.long_term_stats_hourly_retention_days,
+        cancel.clone(),
+    );
     tokio::spawn(async move {
         let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
         flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1958,11 +1963,10 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     let state_row = load_long_term_state(&state.pool).await?;
     migrate_long_term_projection_legacy_interval_state(&state.pool, &control).await?;
     let mut baseline_cursor = None;
-    if !matches!(
-        state_row.status.as_str(),
-        LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY
-    ) && !long_term_rollups_exist(&state.pool).await?
-    {
+    if long_term_initial_materialization_needed(
+        &state_row.status,
+        long_term_rollups_exist(&state.pool).await?,
+    ) {
         // The dedicated refresher owns the first full materialization. Running it from this
         // P2 cursor worker bypasses pressure admission and can hold a competing writer lock.
         control.check()?;
@@ -2361,6 +2365,10 @@ async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {
             .await?
             != 0,
     )
+}
+
+fn long_term_initial_materialization_needed(status: &str, rollups_exist: bool) -> bool {
+    !matches!(status, LONG_TERM_STATUS_READY | LONG_TERM_STATUS_EMPTY) && !rollups_exist
 }
 
 fn long_term_projection_hourly_retention_start_date(retention_days: u64) -> NaiveDate {
@@ -4330,15 +4338,54 @@ pub(crate) fn spawn_long_term_stats_backfill(
     shutdown: CancellationToken,
 ) {
     tokio::spawn(async move {
-        let _ = mark_long_term_stats_backfill_preparing(&pool).await;
         let mut ticker = interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             if shutdown.is_cancelled() {
                 break;
             }
-            if let Err(err) = refresh_long_term_stats(&pool, retention_days).await {
-                warn!(error = %err, "long-term stats materialization failed");
+            let state = match load_long_term_state(&pool).await {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!(error = %error, "failed to inspect long-term initial materialization state");
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = ticker.tick() => {}
+                    }
+                    continue;
+                }
+            };
+            let rollups_exist = match long_term_rollups_exist(&pool).await {
+                Ok(exists) => exists,
+                Err(error) => {
+                    warn!(error = %error, "failed to inspect long-term initial materialization rollups");
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = ticker.tick() => {}
+                    }
+                    continue;
+                }
+            };
+            if !long_term_initial_materialization_needed(&state.status, rollups_exist) {
+                break;
+            }
+            if let Err(error) = mark_long_term_stats_backfill_preparing(&pool).await {
+                warn!(error = %error, "failed to mark long-term initial materialization preparing");
+            } else {
+                let gate = crate::db_pressure::global_db_pressure_gate();
+                match gate.try_begin_background("long_term_initial_materialization") {
+                    Ok(_permit) => {
+                        if shutdown.is_cancelled() {
+                            break;
+                        }
+                        if let Err(error) = refresh_long_term_stats(&pool, retention_days).await {
+                            warn!(error = %error, "long-term initial materialization failed");
+                        }
+                    }
+                    Err(reason) => {
+                        debug!(reason = %reason, "long-term initial materialization deferred by database pressure");
+                    }
+                }
             }
             tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -7280,6 +7327,26 @@ mod tests {
             "repair_deadline"
         ));
         assert!(long_term_projection_runs_hourly_retention("daily_verify"));
+    }
+
+    #[test]
+    fn initial_materializer_only_runs_before_a_durable_long_term_baseline() {
+        assert!(long_term_initial_materialization_needed(
+            LONG_TERM_STATUS_PREPARING,
+            false,
+        ));
+        assert!(long_term_initial_materialization_needed(
+            LONG_TERM_STATUS_RUNNING,
+            false,
+        ));
+        assert!(!long_term_initial_materialization_needed(
+            LONG_TERM_STATUS_READY,
+            false,
+        ));
+        assert!(!long_term_initial_materialization_needed(
+            LONG_TERM_STATUS_PREPARING,
+            true,
+        ));
     }
 
     #[test]
