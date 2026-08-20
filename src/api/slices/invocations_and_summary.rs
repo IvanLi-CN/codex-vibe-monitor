@@ -7500,7 +7500,12 @@ fn summary_projection_account_record_totals(
     record: &SummaryProjectionRecord,
 ) -> Option<(i64, StatsTotals)> {
     let account_id = record.row.upstream_account_id.filter(|id| *id > 0)?;
-    if record.account_rollup_covered || record.account_archive_totals_fallback_included {
+    if record.account_rollup_covered
+        || record.account_archive_totals_fallback_included
+        // Unmaterialized archive totals are loaded once by the bounded account aggregate below;
+        // retaining the exact row for rolling/usage views must not add it to all-time a second time.
+        || (record.is_archive_record && !record.archive_has_materialized_rollups)
+    {
         return None;
     }
     Some((account_id, summary_projection_record_totals(record)))
@@ -8283,8 +8288,9 @@ async fn merge_summary_projection_archive_records_with_coverage(
             && !protected_boundary_buckets.contains(&bucket);
         let usage_cursor_covers_row = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor);
         let usage_global_rollup_covered = hourly_rollup_usage.contains_key(&(bucket, None))
-            && usage_rollup_archive_replayed.is_none_or(|replayed| replayed)
-            && (archive_has_materialized_rollups || usage_cursor_covers_row);
+            && ((archive_has_materialized_rollups
+                && usage_rollup_archive_replayed.is_none_or(|replayed| replayed))
+                || (!archive_has_materialized_rollups && usage_cursor_covers_row));
         let usage_account_rollup_covered = hourly_rollup_usage
             .contains_key(&(bucket, row.upstream_account_id))
             && (archive_has_materialized_rollups
