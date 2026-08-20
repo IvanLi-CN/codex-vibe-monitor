@@ -4,6 +4,7 @@
 
 - Canonical spec: `docs/specs/q8h3n-proxy-hot-path-streaming-stability/SPEC.md`
 - Implementation summary: 已完成
+- Legacy invocation raw codec inference is now an atomic one-time schema migration. Its persistent marker eliminates repeated full-table UPDATE scans on completed databases, while the older raw-blob link seed marker remains a verified compatibility completion proof.
 - 最新收口：`proxy capture follow-up` 已改成 subscriber-aware，`receiver_count()==0` 且非 shutdown flush 时不会再消耗 follow-up seq 或触发 summary/quota / rollup refresh；active subscriber 与 shutdown tail flush 语义已回归验证。
 - Response raw capture stores identity bytes as Zstd, retains pre-compressed wire bytes without a second compression pass, and uses a CRC-framed persistent overflow spool when the bounded writer pool is saturated. Incomplete spool files are retained for inspection; complete files replay during startup.
 - Overflow spools rotate at 16 MiB and reserve a 512 MiB directory budget. If a new spool cannot be admitted, capture records `capture_unavailable:spool_capacity`; it does not create a second in-memory overflow queue or delay downstream forwarding. The paired pool invocation and attempt share one finalized response raw blob with independent persistent links.
