@@ -247,6 +247,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
                 account_id: preferred_id,
                 model: None,
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
             },
         );
@@ -2526,6 +2527,7 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
                 account_id,
                 model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2631,6 +2633,7 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_refreshed_fence_insta
                 account_id,
                 model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2687,6 +2690,7 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
                 account_id,
                 model: Some("gpt-failed-fence".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2740,6 +2744,7 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
                 account_id,
                 model: Some("gpt-guarded-failed-fence".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2793,6 +2798,7 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
                 account_id,
                 model: Some("gpt-cancelled-fence".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2852,6 +2858,7 @@ async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_wait
                 account_id,
                 model: Some("gpt-live-first-handoff".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2911,6 +2918,7 @@ async fn cancelling_websocket_reservation_guard_releases_and_wakes_waiters() {
                 account_id,
                 model: Some("gpt-websocket-cancellation".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2969,6 +2977,7 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
                 account_id,
                 model: None,
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -3220,6 +3229,16 @@ async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending()
         .current_with_generation()
         .expect("selection should capture a published snapshot before the race");
     let concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, Some(model));
+    assert!(
+        try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+            state.as_ref(),
+            "fenced-model-live-first",
+            &account,
+            Some(model),
+            concurrency_limit,
+            snapshot_generation,
+        )
+    );
     state.pool_routing_snapshot.request_refresh();
     assert!(
         !try_reserve_pool_routing_account_for_model_at_snapshot_generation(
@@ -3232,6 +3251,14 @@ async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending()
         ),
         "a mutation after fresh selection but before reservation must fence the stale candidate"
     );
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the replacement snapshot before the delayed send check");
+    assert!(
+        !pool_routing_reservation_generation_is_current(state.as_ref(), "fenced-model-live-first",),
+        "a completed replacement snapshot must invalidate the live-first lease"
+    );
+    release_pool_routing_reservation(&state, "fenced-model-live-first");
     assert!(
         !state
             .pool_routing_reservations
@@ -3479,6 +3506,7 @@ async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
                     account_id,
                     model: Some(model.to_string()),
                     proxy_key: None,
+                    snapshot_generation: None,
                     created_at: Instant::now(),
                 },
             );
@@ -3563,6 +3591,7 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
                     account_id,
                     model: Some(model.to_string()),
                     proxy_key: None,
+                    snapshot_generation: None,
                     created_at: Instant::now(),
                 },
             );
@@ -3662,6 +3691,7 @@ async fn queued_model_capacity_audit_ignores_unrelated_cooldown_expiry() {
                 account_id: capacity_id,
                 model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );

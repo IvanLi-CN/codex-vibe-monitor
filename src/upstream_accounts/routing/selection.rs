@@ -1329,6 +1329,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                 reservation_key,
                                                 &account,
                                                 requested_model,
+                                                routing_snapshot.model_route_concurrency_limit(
+                                                    account.account_id,
+                                                    requested_model,
+                                                ),
+                                                snapshot_generation,
                                             )
                                             .await?
                                             {
@@ -1362,6 +1367,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             reservation_key,
                                             &account,
                                             requested_model,
+                                            routing_snapshot.model_route_concurrency_limit(
+                                                account.account_id,
+                                                requested_model,
+                                            ),
+                                            snapshot_generation,
                                         )
                                         .await?
                                         {
@@ -2166,17 +2176,12 @@ async fn reserve_sticky_model_route(
     reservation_key: Option<&str>,
     account: &PoolResolvedAccount,
     requested_model: Option<&str>,
+    concurrency_limit: Option<i64>,
+    snapshot_generation: u64,
 ) -> Result<bool> {
     let Some(reservation_key) = reservation_key else {
         return Ok(true);
     };
-    let Some((snapshot, snapshot_generation)) =
-        state.pool_routing_snapshot.current_with_generation()
-    else {
-        return Ok(false);
-    };
-    let concurrency_limit =
-        snapshot.model_route_concurrency_limit(account.account_id, requested_model);
     Ok(
         try_reserve_pool_routing_account_for_model_at_snapshot_generation(
             state,

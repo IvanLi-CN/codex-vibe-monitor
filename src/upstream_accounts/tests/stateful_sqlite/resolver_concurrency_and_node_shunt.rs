@@ -265,6 +265,7 @@ async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reser
                 account_id: reserved_account_id,
                 model: None,
                 proxy_key: Some(secondary_proxy_key.clone()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -384,6 +385,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
             account_id: reserved_account_id,
             model: None,
             proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+            snapshot_generation: None,
             created_at: Instant::now(),
         },
     );
@@ -393,6 +395,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
             account_id: reserved_account_id,
             model: None,
             proxy_key: Some(secondary_proxy_key.clone()),
+            snapshot_generation: None,
             created_at: Instant::now(),
         },
     );
@@ -582,6 +585,7 @@ async fn node_shunt_assignments_keep_globally_reserved_proxy_keys_occupied() {
                 account_id: 0,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -750,6 +754,7 @@ async fn node_shunt_sticky_reuse_preserves_slot_for_in_flight_account() {
                 account_id: reserved_account_id,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -1157,6 +1162,7 @@ async fn provisioning_scope_skips_proxy_keys_reserved_by_other_accounts() {
                 account_id: 0,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -1276,6 +1282,7 @@ async fn provisioning_scope_reuses_live_reserved_proxy_key_for_same_account() {
                 account_id,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );

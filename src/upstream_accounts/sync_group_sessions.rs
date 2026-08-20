@@ -1965,6 +1965,7 @@ pub(crate) fn reserve_imported_oauth_node_shunt_scope(
                 account_id: account_id.unwrap_or_default(),
                 model: None,
                 proxy_key: Some(proxy_key.clone()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );

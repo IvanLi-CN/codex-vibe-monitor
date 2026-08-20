@@ -986,7 +986,7 @@ async fn prepare_capture_request_body(
                     )
                     .await
                 } else {
-                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request_and_reservation(
                         state.as_ref(),
                         live_body_sticky_key.as_deref(),
                         live_body_key_probe.model.as_deref(),

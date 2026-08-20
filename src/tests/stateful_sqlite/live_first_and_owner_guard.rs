@@ -140,6 +140,99 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
 }
 
 #[tokio::test]
+async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account(&state, "Fenced", "upstream-fenced").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial live-first routing snapshot");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let (pre_send_rx, resume_pre_send) =
+        crate::proxy::register_pool_live_first_pre_send_hook(&state);
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1_via_pool(
+            request_state,
+            4243,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
+            runtime_timeouts,
+            None,
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        pre_send_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("live-first request should reach the pre-send fence")
+    })
+    .await
+    .expect("join pre-send fence receiver");
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement snapshot before releasing the pre-send fence");
+    resume_pre_send.notify_one();
+
+    let err = request_task
+        .await
+        .expect("live-first request task should join")
+        .expect_err("fenced pre-send account should fail closed");
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, failure_kind, finished_at): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT status, failure_kind, finished_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fenced live-first attempt");
+    assert_eq!(status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        "a pre-send fence is a local availability rejection, not a transport failure"
+    );
+    assert!(
+        finished_at.is_some(),
+        "the pre-send fence must terminate its attempt instead of leaving orphan recovery armed"
+    );
+    assert_eq!(
+        attempts
+            .lock()
+            .expect("lock upstream attempts")
+            .get("Bearer upstream-fenced")
+            .copied(),
+        None,
+        "the stale live-first lease must not create an upstream request"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

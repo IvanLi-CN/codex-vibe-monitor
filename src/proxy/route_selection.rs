@@ -7,6 +7,55 @@ use super::*;
 type ViaPoolResponseFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Response, ProxyErrorResponse>> + Send + 'a>>;
 
+#[cfg(test)]
+struct PoolLiveFirstPreSendHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_live_first_pre_send_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolLiveFirstPreSendHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolLiveFirstPreSendHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_live_first_pre_send_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_live_first_pre_send_hooks()
+        .lock()
+        .expect("lock live-first pre-send hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolLiveFirstPreSendHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_live_first_pre_send_hook(state: &AppState) {
+    let hook = pool_live_first_pre_send_hooks()
+        .lock()
+        .expect("lock live-first pre-send hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_live_first_pre_send_hook(_state: &AppState) {}
+
 fn plain_proxy_error(status: StatusCode, message: impl Into<String>) -> ProxyErrorResponse {
     let message = message.into();
     ProxyErrorResponse {
@@ -1952,6 +2001,31 @@ async fn annotate_live_first_codex_imagegen_rewrite(
     }
 }
 
+fn live_first_reservation_generation_is_current(state: &AppState, reservation_key: &str) -> bool {
+    pool_routing_reservation_generation_is_current(state, reservation_key)
+}
+
+async fn finalize_live_first_pre_send_fence(
+    state: &AppState,
+    pending_attempt_record: Option<&PendingPoolAttemptRecord>,
+    deferred_early_phase_cleanup_guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    connect_started: Instant,
+) {
+    finalize_tracked_live_first_pool_attempt(
+        state,
+        pending_attempt_record,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        Some(StatusCode::SERVICE_UNAVAILABLE),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE),
+        Some(elapsed_ms(connect_started)),
+        None,
+        None,
+    )
+    .await;
+    complete_deferred_pool_early_phase_cleanup_guard(deferred_early_phase_cleanup_guard);
+}
+
 pub(crate) async fn send_pool_request_live_first_attempt(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -2089,6 +2163,14 @@ pub(crate) async fn send_pool_request_live_first_attempt(
             PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone())
         }
     };
+    if !live_first_reservation_generation_is_current(state.as_ref(), &reservation_key) {
+        return Err(build_pool_no_available_account_error(
+            0,
+            1,
+            state.pool_no_available_wait.retry_after_secs,
+            None,
+        ));
+    }
     let request_connection_scoped = connection_scoped_header_names(headers);
     let connect_started = Instant::now();
     let attempt_started_at_utc = Utc::now();
@@ -2259,6 +2341,24 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     account.upstream_base_url.host_str(),
                 )
             });
+            wait_for_pool_live_first_pre_send_hook(state.as_ref()).await;
+            // The reservation may have been fenced while the attempt/audit setup awaited.
+            // Recheck immediately before creating the upstream send future.
+            if !live_first_reservation_generation_is_current(state.as_ref(), &reservation_key) {
+                finalize_live_first_pre_send_fence(
+                    state.as_ref(),
+                    pending_attempt_record.as_ref(),
+                    &mut deferred_early_phase_cleanup_guard,
+                    connect_started,
+                )
+                .await;
+                return Err(build_pool_no_available_account_error(
+                    0,
+                    1,
+                    state.pool_no_available_wait.retry_after_secs,
+                    None,
+                ));
+            }
             match timeout(
                 attempt_send_timeout,
                 send_counted_upstream_http_request(
@@ -2536,6 +2636,23 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     account.upstream_base_url.host_str(),
                 )
             });
+            wait_for_pool_live_first_pre_send_hook(state.as_ref()).await;
+            // OAuth has the same asynchronous setup window as the API-key path.
+            if !live_first_reservation_generation_is_current(state.as_ref(), &reservation_key) {
+                finalize_live_first_pre_send_fence(
+                    state.as_ref(),
+                    pending_attempt_record.as_ref(),
+                    &mut deferred_early_phase_cleanup_guard,
+                    connect_started,
+                )
+                .await;
+                return Err(build_pool_no_available_account_error(
+                    0,
+                    1,
+                    state.pool_no_available_wait.retry_after_secs,
+                    None,
+                ));
+            }
             let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(
                 method.clone(),
                 original_uri,
@@ -4734,11 +4851,10 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             // Selection has inserted the reservation before returning. Own it
                             // before any model-mapping or timeout await so cancellation cannot
                             // leak a model-cap slot in the live-first handoff window.
-                            let mut live_first_reservation_guard =
-                                PoolRoutingReservationDropGuard::new(
-                                    state.clone(),
-                                    pool_routing_reservation_key.clone(),
-                                );
+                            let live_first_reservation_guard = PoolRoutingReservationDropGuard::new(
+                                state.clone(),
+                                pool_routing_reservation_key.clone(),
+                            );
                             let mut pool_attempt_trace_context =
                                 build_via_pool_attempt_trace_context(
                                     proxy_request_id,
@@ -4778,17 +4894,14 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     initial_account.clone(),
                                     None,
                                     Some(&pool_attempt_trace_context),
-                                    None,
+                                    Some(live_first_reservation_guard),
                                     &replay_status_rx,
                                     &replayable_body.first_live_chunk_sent_at_rx,
                                     None,
                                 )
                                 .await
                                 {
-                                    Ok(upstream) => {
-                                        live_first_reservation_guard.disarm();
-                                        upstream
-                                    }
+                                    Ok(upstream) => upstream,
                                     Err(first_error) => match continue_or_retry_pool_live_request(
                                         state.clone(),
                                         proxy_request_id,
@@ -4813,10 +4926,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     )
                                     .await
                                     {
-                                        Ok(upstream) => {
-                                            live_first_reservation_guard.disarm();
-                                            upstream
-                                        }
+                                        Ok(upstream) => upstream,
                                         Err(err) => {
                                             return Err(
                                                 proxy_error_response_from_pool_upstream_error(

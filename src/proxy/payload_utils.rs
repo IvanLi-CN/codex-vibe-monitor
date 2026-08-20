@@ -1424,6 +1424,7 @@ pub(crate) struct PoolRoutingReservation {
     pub(crate) account_id: i64,
     pub(crate) model: Option<String>,
     pub(crate) proxy_key: Option<String>,
+    pub(crate) snapshot_generation: Option<u64>,
     #[allow(dead_code)]
     pub(crate) created_at: Instant,
 }
@@ -1733,6 +1734,25 @@ pub(crate) fn try_reserve_pool_routing_account_for_model_at_snapshot_generation(
     )
 }
 
+pub(crate) fn pool_routing_reservation_generation_is_current(
+    state: &AppState,
+    reservation_key: &str,
+) -> bool {
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let Some(snapshot_generation) = reservations
+        .get(reservation_key)
+        .and_then(|reservation| reservation.snapshot_generation)
+    else {
+        return false;
+    };
+    state
+        .pool_routing_snapshot
+        .generation_is_current(snapshot_generation)
+}
+
 fn try_reserve_pool_routing_account_for_model_inner(
     state: &AppState,
     reservation_key: &str,
@@ -1749,6 +1769,9 @@ fn try_reserve_pool_routing_account_for_model_inner(
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
+    let existing_snapshot_generation = reservations
+        .get(reservation_key)
+        .and_then(|reservation| reservation.snapshot_generation);
     // Check after acquiring the same mutex used for capacity accounting. A
     // mutation that has already fenced this generation rejects the stale
     // selection; a later mutation linearizes after this in-flight reservation.
@@ -1757,6 +1780,12 @@ fn try_reserve_pool_routing_account_for_model_inner(
             .pool_routing_snapshot
             .generation_is_current(generation)
     }) {
+        return false;
+    }
+    if let (Some(expected_generation), Some(existing_generation)) =
+        (snapshot_generation, existing_snapshot_generation)
+        && expected_generation != existing_generation
+    {
         return false;
     }
     let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
@@ -1792,6 +1821,7 @@ fn try_reserve_pool_routing_account_for_model_inner(
             account_id: account.account_id,
             model,
             proxy_key,
+            snapshot_generation: snapshot_generation.or(existing_snapshot_generation),
             created_at: Instant::now(),
         },
     );

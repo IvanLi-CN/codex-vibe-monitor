@@ -4118,6 +4118,7 @@ async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_gro
                 account_id,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -4213,6 +4214,7 @@ async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
                 account_id,
                 model: None,
                 proxy_key: Some(secondary_proxy_key),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
