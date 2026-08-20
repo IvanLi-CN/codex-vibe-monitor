@@ -183,7 +183,7 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
         proxy_openai_v1_via_pool(
             request_state,
             4243,
-            &"/v1/chat/completions".parse().expect("valid uri"),
+            &"/v1/responses".parse().expect("valid uri"),
             Method::POST,
             HeaderMap::from_iter([
                 (
@@ -1199,7 +1199,7 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","messages":[]}"#,
+            br#"{"model":"gpt-5","input":"pending"}"#,
         )))
         .await
         .expect("send live-first request body");
