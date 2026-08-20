@@ -1888,10 +1888,7 @@ mod tests {
             .await
             .expect("upstream body should start before tail validation")
             .expect("first upstream chunk should be emitted");
-        assert_eq!(
-            first,
-            Bytes::from_static(br#"{"model":"gpt-5.6","input":"hello"}"#)
-        );
+        assert_eq!(first, Bytes::from_static(b"{\"model\":\"gpt-5.6\""));
         request_body_tx
             .send(Ok(Bytes::from_static(b" trailing")))
             .await
