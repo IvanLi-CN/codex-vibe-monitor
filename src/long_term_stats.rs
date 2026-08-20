@@ -553,11 +553,61 @@ fn hydrate_long_term_archive_attempt_account(
 }
 
 async fn long_term_archive_invocation_query(pool: &Pool<Sqlite>) -> Result<String> {
-    long_term_archive_invocation_query_with_range(pool, false).await
+    let query = long_term_archive_invocation_query_parts(pool).await?;
+    Ok(format!(
+        "{} WHERE {} ORDER BY occurred_at ASC, id ASC",
+        query.select, query.terminal_filter
+    ))
 }
 
-async fn long_term_archive_invocation_query_for_range(pool: &Pool<Sqlite>) -> Result<String> {
-    long_term_archive_invocation_query_with_range(pool, true).await
+#[derive(Debug)]
+struct LongTermArchiveInvocationRangeQueries {
+    canonical: String,
+    crossing_text: String,
+    rfc3339: String,
+}
+
+#[derive(Debug)]
+struct LongTermArchiveInvocationQueryParts {
+    select: String,
+    terminal_filter: String,
+    t_total_ms_column: String,
+}
+
+async fn long_term_archive_invocation_query_for_range(
+    pool: &Pool<Sqlite>,
+) -> Result<LongTermArchiveInvocationRangeQueries> {
+    let query = long_term_archive_invocation_query_parts(pool).await?;
+    let canonical = format!(
+        "{} WHERE {} AND instr(occurred_at, 'T') = 0 AND occurred_at >= ?1 AND occurred_at < ?2",
+        query.select, query.terminal_filter
+    );
+    let crossing_text = format!(
+        "{} WHERE {} AND occurred_at < ?1 AND CASE WHEN instr(occurred_at, 'T') = 0 AND {} IS NOT NULL AND {} > 0 THEN julianday(occurred_at) + {} / 86400000.0 END >= julianday(?1)",
+        query.select,
+        query.terminal_filter,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+    );
+    let rfc3339_epoch = long_term_rfc3339_whole_epoch_seconds_sql("occurred_at");
+    let rfc3339_reaches_range_start =
+        long_term_rfc3339_reaches_epoch_sql("occurred_at", &query.t_total_ms_column, "?1");
+    let rfc3339 = format!(
+        "{} WHERE {} AND instr(occurred_at, 'T') > 0 AND {} < ?2 AND ({} >= ?1 OR ({} IS NOT NULL AND {} > 0 AND {}))",
+        query.select,
+        query.terminal_filter,
+        rfc3339_epoch,
+        rfc3339_epoch,
+        query.t_total_ms_column,
+        query.t_total_ms_column,
+        rfc3339_reaches_range_start,
+    );
+    Ok(LongTermArchiveInvocationRangeQueries {
+        canonical,
+        crossing_text,
+        rfc3339,
+    })
 }
 
 fn long_term_rfc3339_whole_second_sql(value: &str) -> String {
@@ -631,10 +681,9 @@ fn long_term_rfc3339_shanghai_date_sql(value: &str, duration_ms: Option<&str>) -
     )
 }
 
-async fn long_term_archive_invocation_query_with_range(
+async fn long_term_archive_invocation_query_parts(
     pool: &Pool<Sqlite>,
-    bounded_to_target_date: bool,
-) -> Result<String> {
+) -> Result<LongTermArchiveInvocationQueryParts> {
     let columns = load_archive_table_columns(pool, "codex_invocations").await?;
     let select = |column: &str| long_term_legacy_select_expr(&columns, column);
     let status_column = if columns.contains("status") {
@@ -669,27 +718,7 @@ async fn long_term_archive_invocation_query_with_range(
     } else {
         "NULL"
     };
-    let occurred_at_value =
-        "CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END";
-    let occurred_at_epoch = long_term_rfc3339_whole_epoch_seconds_sql(occurred_at_value);
-    let occurred_at_reaches_range_start =
-        long_term_rfc3339_reaches_epoch_sql(occurred_at_value, t_total_ms_column, "?2");
-    let range_filter = bounded_to_target_date.then(|| {
-        format!(
-            r#"
-        AND {occurred_at_epoch} < ?1
-        AND (
-            {occurred_at_epoch} >= ?2
-            OR (
-                {t_total_ms_column} IS NOT NULL
-                AND {t_total_ms_column} > 0
-                AND {occurred_at_reaches_range_start}
-            )
-        )
-            "#,
-        )
-    });
-    Ok(format!(
+    let select = format!(
         r#"
         SELECT
             id,
@@ -714,9 +743,6 @@ async fn long_term_archive_invocation_query_with_range(
             {t_upstream_stream_ms},
             {error_message}
         FROM codex_invocations
-        WHERE LOWER(TRIM(COALESCE({status_column}, ''))) NOT IN ('running', 'pending')
-        {range_filter}
-        ORDER BY occurred_at ASC, id ASC
         "#,
         invoke_id = select("invoke_id"),
         status = select("status"),
@@ -736,8 +762,14 @@ async fn long_term_archive_invocation_query_with_range(
         t_upstream_ttfb_ms = select("t_upstream_ttfb_ms"),
         t_upstream_stream_ms = select("t_upstream_stream_ms"),
         error_message = select("error_message"),
-        range_filter = range_filter.as_deref().unwrap_or_default(),
-    ))
+    );
+    Ok(LongTermArchiveInvocationQueryParts {
+        select,
+        terminal_filter: format!(
+            "LOWER(TRIM(COALESCE({status_column}, ''))) NOT IN ('running', 'pending')"
+        ),
+        t_total_ms_column: t_total_ms_column.to_string(),
+    })
 }
 
 fn long_term_legacy_select_expr(columns: &HashSet<String>, column: &str) -> String {
@@ -3149,14 +3181,40 @@ async fn load_long_term_projection_rows_for_date(
             );
         };
         let archive_query = long_term_archive_invocation_query_for_range(&archive_pool).await?;
-        let archive_rows = sqlx::query_as::<_, LongTermInvocationRow>(&archive_query)
-            .bind(end.timestamp())
-            .bind(start.timestamp())
-            .fetch_all(&archive_pool)
-            .await;
+        let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
+        let end_text = end.format("%Y-%m-%d %H:%M:%S").to_string();
+        let archive_rows = async {
+            let mut archive_rows =
+                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.canonical)
+                    .bind(&start_text)
+                    .bind(&end_text)
+                    .fetch_all(&archive_pool)
+                    .await?;
+            archive_rows.extend(
+                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.crossing_text)
+                    .bind(&start_text)
+                    .fetch_all(&archive_pool)
+                    .await?,
+            );
+            archive_rows.extend(
+                sqlx::query_as::<_, LongTermInvocationRow>(&archive_query.rfc3339)
+                    .bind(start.timestamp())
+                    .bind(end.timestamp())
+                    .fetch_all(&archive_pool)
+                    .await?,
+            );
+            Ok::<_, sqlx::Error>(archive_rows)
+        }
+        .await;
         archive_pool.close().await;
         drop(cleanup);
-        for mut row in archive_rows? {
+        let mut archive_rows = archive_rows?;
+        archive_rows.sort_by(|left, right| {
+            left.occurred_at
+                .cmp(&right.occurred_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for mut row in archive_rows {
             if row.upstream_account_id.is_none()
                 && let Some(invoke_id) = row.invoke_id.as_ref()
                 && let Some(account_id) =
@@ -4627,12 +4685,11 @@ fn long_term_source_effective_date(
     occurred_at: &str,
     t_total_ms: Option<f64>,
 ) -> Option<NaiveDate> {
-    let start_ms = parse_long_term_timestamp_ms(occurred_at)?;
-    let duration_ms = t_total_ms
+    let start = parse_long_term_timestamp(occurred_at)?;
+    let end_ms = t_total_ms
         .filter(|value| value.is_finite() && *value > 0.0)
-        .map(|value| value.round().clamp(0.0, i64::MAX as f64) as i64)
-        .unwrap_or_default();
-    let end_ms = start_ms.saturating_add(duration_ms);
+        .and_then(|duration_ms| long_term_interval_end_ms(start, duration_ms))
+        .unwrap_or(start.epoch_ms);
     Shanghai
         .timestamp_millis_opt(end_ms)
         .single()
@@ -14522,6 +14579,12 @@ mod tests {
         .await
         .expect("archive invocation schema");
         sqlx::query(
+            "CREATE INDEX idx_archive_invocations_occurred_at ON codex_invocations (occurred_at)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive occurred_at index");
+        sqlx::query(
             "INSERT INTO codex_invocations (id, occurred_at, status, t_total_ms) VALUES (1, '2026-07-25T15:59:59.500Z', 'success', 600)",
         )
         .execute(&pool)
@@ -14575,9 +14638,9 @@ mod tests {
         .execute(&pool)
         .await
         .expect("archive high-precision RFC3339 pre-start row");
-        let query = long_term_archive_invocation_query_for_range(&pool)
+        let queries = long_term_archive_invocation_query_for_range(&pool)
             .await
-            .expect("archive range query");
+            .expect("archive range queries");
         let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
         let start = Shanghai
             .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
@@ -14593,13 +14656,163 @@ mod tests {
             )
             .single()
             .expect("Shanghai next day start");
-        let rows = sqlx::query_as::<_, (i64,)>(&query)
-            .bind(end.timestamp())
-            .bind(start.timestamp())
+        let start_text = start.format("%Y-%m-%d %H:%M:%S").to_string();
+        let end_text = end.format("%Y-%m-%d %H:%M:%S").to_string();
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            queries.canonical
+        ))
+        .bind(&start_text)
+        .bind(&end_text)
+        .fetch_all(&pool)
+        .await
+        .expect("canonical archive query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_invocations_occurred_at")
+                && detail.contains("occurred_at>? AND occurred_at<?")
+        }));
+
+        let mut rows = sqlx::query_as::<_, (i64,)>(&queries.canonical)
+            .bind(&start_text)
+            .bind(&end_text)
             .fetch_all(&pool)
             .await
-            .expect("archive range rows");
+            .expect("canonical archive range rows");
+        rows.extend(
+            sqlx::query_as::<_, (i64,)>(&queries.crossing_text)
+                .bind(&start_text)
+                .fetch_all(&pool)
+                .await
+                .expect("crossing legacy archive range rows"),
+        );
+        rows.extend(
+            sqlx::query_as::<_, (i64,)>(&queries.rfc3339)
+                .bind(start.timestamp())
+                .bind(end.timestamp())
+                .fetch_all(&pool)
+                .await
+                .expect("RFC3339 archive range rows"),
+        );
+        rows.sort_unstable();
         assert_eq!(rows, vec![(1,), (2,), (5,), (7,), (8,)]);
+    }
+
+    #[tokio::test]
+    async fn archive_cleanup_safe_starts_preserve_nanosecond_cross_day_endpoints() {
+        let occurred_at = "2026-07-25T15:59:59.9999999Z";
+        let expected_safe_start = NaiveDate::from_ymd_opt(2026, 7, 27).expect("fixed date");
+        let unique = format!(
+            "{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let invocation_db_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-invocation-boundary-{unique}.sqlite"
+        ));
+        let invocation_archive_path = invocation_db_path.with_extension("sqlite.gz");
+        fs::File::create(&invocation_db_path).expect("create invocation archive database");
+        let invocation_options = format!("sqlite://{}", invocation_db_path.to_string_lossy())
+            .parse::<SqliteConnectOptions>()
+            .expect("parse invocation archive URL")
+            .create_if_missing(true);
+        let invocation_archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(invocation_options)
+            .await
+            .expect("open invocation archive database");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY, occurred_at TEXT NOT NULL, t_total_ms REAL)",
+        )
+        .execute(&invocation_archive_pool)
+        .await
+        .expect("create invocation archive schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, t_total_ms) VALUES (1, ?1, 0.001)",
+        )
+        .bind(occurred_at)
+        .execute(&invocation_archive_pool)
+        .await
+        .expect("insert nanosecond invocation source");
+        invocation_archive_pool.close().await;
+        crate::maintenance::deflate_sqlite_file_to_gzip(
+            &invocation_db_path,
+            &invocation_archive_path,
+        )
+        .expect("compress invocation archive");
+        assert_eq!(
+            long_term_invocation_archive_safe_start(
+                invocation_archive_path.to_string_lossy().as_ref()
+            )
+            .await
+            .expect("read invocation archive boundary"),
+            Some(expected_safe_start)
+        );
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, t_total_ms) VALUES (1, 'boundary-invoke', ?1, 'success', 0.001)",
+        )
+        .bind(occurred_at)
+        .execute(&pool)
+        .await
+        .expect("insert live invocation source");
+
+        let attempt_db_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-attempt-boundary-{unique}.sqlite"
+        ));
+        let attempt_archive_path = attempt_db_path.with_extension("sqlite.gz");
+        fs::File::create(&attempt_db_path).expect("create attempt archive database");
+        let attempt_options = format!("sqlite://{}", attempt_db_path.to_string_lossy())
+            .parse::<SqliteConnectOptions>()
+            .expect("parse attempt archive URL")
+            .create_if_missing(true);
+        let attempt_archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(attempt_options)
+            .await
+            .expect("open attempt archive database");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, upstream_account_id INTEGER)",
+        )
+        .execute(&attempt_archive_pool)
+        .await
+        .expect("create attempt archive schema");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, upstream_account_id) VALUES (1, 'boundary-invoke', ?1, 42)",
+        )
+        .bind(occurred_at)
+        .execute(&attempt_archive_pool)
+        .await
+        .expect("insert attempt mapping");
+        attempt_archive_pool.close().await;
+        crate::maintenance::deflate_sqlite_file_to_gzip(&attempt_db_path, &attempt_archive_path)
+            .expect("compress attempt archive");
+        assert_eq!(
+            long_term_attempt_archive_safe_start(
+                &pool,
+                attempt_archive_path.to_string_lossy().as_ref(),
+                None,
+            )
+            .await
+            .expect("read attempt archive boundary"),
+            Some(expected_safe_start)
+        );
+
+        for path in [
+            invocation_db_path,
+            invocation_archive_path,
+            attempt_db_path,
+            attempt_archive_path,
+        ] {
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[tokio::test]
