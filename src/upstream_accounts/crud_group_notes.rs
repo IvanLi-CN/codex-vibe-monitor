@@ -542,7 +542,7 @@ pub(crate) fn build_model_routing_attempt_timeline_query(
                      OR latest.model_route_priority_before IS NOT NULL
                      OR latest.model_route_priority_after IS NOT NULL
                  )
-               ORDER BY latest.occurred_at DESC, latest.id DESC
+               ORDER BY latest.occurred_epoch_ms DESC, latest.id DESC
                LIMIT 1
           )
          WHERE accounts.id = attempts.upstream_account_id

@@ -271,6 +271,14 @@ async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
             .any(|record| record.id == format!("attempt:{attempt_id}")),
         "the local-timestamp attempt should remain visible in the 15-minute window"
     );
+    assert_eq!(
+        live.records
+            .iter()
+            .find(|record| record.id == format!("attempt:{attempt_id}"))
+            .and_then(|record| record.model_route_state_after.as_deref()),
+        Some("degraded"),
+        "the attempt must use its latest linked transition across timestamp formats"
+    );
     assert!(
         live.records
             .iter()

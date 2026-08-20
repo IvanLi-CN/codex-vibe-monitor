@@ -841,7 +841,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_attempt_latest
-        ON pool_upstream_account_events (attempt_id, occurred_at DESC, id DESC)
+        ON pool_upstream_account_events (attempt_id, occurred_epoch_ms DESC, id DESC)
         WHERE attempt_id IS NOT NULL
         "#,
     )
