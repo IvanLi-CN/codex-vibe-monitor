@@ -142,10 +142,17 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
 #[tokio::test]
 async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
@@ -165,25 +172,21 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
         .await
         .expect("publish initial live-first routing snapshot");
 
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts");
     let (pre_send_rx, resume_pre_send) =
         crate::proxy::register_pool_live_first_pre_send_hook(&state);
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     // Keep the body stream open until the pre-send generation fence is reached.
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","input":"pending"#,
+            br#"{"model":"gpt-5","input":"pending"}"#,
         )))
         .await
         .expect("send live-first request body");
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
-        proxy_openai_v1_via_pool(
-            request_state,
-            4243,
-            &"/v1/responses".parse().expect("valid uri"),
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
             Method::POST,
             HeaderMap::from_iter([
                 (
@@ -196,8 +199,6 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
                 ),
             ]),
             Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
-            runtime_timeouts,
-            None,
         )
         .await
     });
@@ -215,11 +216,10 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
         .expect("install replacement snapshot before releasing the pre-send fence");
     resume_pre_send.notify_one();
 
-    let err = request_task
+    let response = request_task
         .await
-        .expect("live-first request task should join")
-        .expect_err("fenced pre-send account should fail closed");
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        .expect("live-first request task should join");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let (status, failure_kind, finished_at): (String, Option<String>, Option<String>) =
         sqlx::query_as(
             "SELECT status, failure_kind, finished_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
@@ -1167,10 +1167,18 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
 
 #[tokio::test]
 async fn cancelling_live_first_before_model_mapping_releases_its_routing_reservation() {
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(10),
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
@@ -1189,10 +1197,6 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("install the candidate snapshot before exercising live-first cancellation");
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
-        .await
-        .expect("resolve pool runtime timeouts before blocking model mapping");
-
     // `load_model_mapping_for_account` takes this lock after selection has
     // reserved the account. Holding it makes the cancellation window exact.
     let runtime_cache_guard = state.pool_routing_runtime_cache.lock().await;
@@ -1200,17 +1204,15 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     // Keep the body stream open until selection has reserved the route.
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","input":"pending"#,
+            br#"{"model":"gpt-5","input":"pending"}"#,
         )))
         .await
         .expect("send live-first request body");
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
-        let uri = "/v1/responses".parse().expect("valid responses uri");
-        proxy_openai_v1_via_pool(
-            request_state,
-            9842,
-            &uri,
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid responses uri")),
             Method::POST,
             HeaderMap::from_iter([
                 (
@@ -1223,8 +1225,6 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
                 ),
             ]),
             Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
-            runtime_timeouts,
-            None,
         )
         .await
     });
