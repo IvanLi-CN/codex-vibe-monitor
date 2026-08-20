@@ -1083,20 +1083,18 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
-    if let Some((response, snapshot_age_ms)) = state
+    if let Some((response, snapshot_age)) = state
         .system_status_cache
         .lock()
         .await
         .latest
         .as_ref()
-        .map(|entry| {
-            (
-                entry.response.clone(),
-                entry.cached_at.elapsed().as_millis() as u64,
-            )
+        .map(|entry| (entry.response.clone(), entry.cached_at.elapsed()))
+        .filter(|(_, snapshot_age)| {
+            *snapshot_age <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
         })
-        .filter(|(_, snapshot_age_ms)| *snapshot_age_ms <= SYSTEM_STATUS_CACHE_TTL_SECS * 1_000)
     {
+        let snapshot_age_ms = snapshot_age.as_millis() as u64;
         debug!(
             metrics_source = "system_status_memory_snapshot",
             snapshot_age_ms, "serving system status from last-good memory snapshot"

@@ -3940,6 +3940,91 @@ pub(crate) async fn query_unmaterialized_upstream_account_archive_totals(
     Ok(totals)
 }
 
+/// Aggregate unmaterialized account archive rows in one archive pass.  The summary projection
+/// uses this for its all-time account snapshots so account cardinality does not multiply archive
+/// opens and decompression work.
+pub(crate) async fn query_unmaterialized_upstream_account_archive_totals_by_account(
+    pool: &Pool<Sqlite>,
+    rollup_target: &str,
+    source_scope: InvocationSourceScope,
+    range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    exclude_invocation_ids: Option<&HashSet<i64>>,
+) -> Result<HashMap<i64, StatsTotals>> {
+    let archive_rows =
+        load_invocation_archives_missing_effective_rollup_target(pool, rollup_target, range)
+            .await?;
+    let mut totals_by_account = HashMap::<i64, StatsTotals>::new();
+
+    for archive_row in archive_rows {
+        let Some((archive_pool, temp_cleanup)) =
+            open_invocation_archive_batch_pool(&archive_row, "summary-account-stats").await?
+        else {
+            continue;
+        };
+        let mut cursor_id = 0_i64;
+        loop {
+            let rows = load_invocation_hourly_source_rows_after_id(
+                &archive_pool,
+                cursor_id,
+                source_scope,
+                BACKFILL_BATCH_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+            for row in rows {
+                if exclude_invocation_ids.is_some_and(|ids| ids.contains(&row.id))
+                    || !invocation_hourly_source_record_matches_range(&row, range)
+                {
+                    continue;
+                }
+                let Some(account_id) = row.resolved_upstream_account_id().filter(|id| *id > 0)
+                else {
+                    continue;
+                };
+                let classification = resolve_failure_classification(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                );
+                let entry = totals_by_account.entry(account_id).or_default();
+                entry.total_count += 1;
+                if crate::api::prompt_invocation_status_is_success_like(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                ) && classification.failure_class == FailureClass::None
+                {
+                    entry.success_count += 1;
+                } else if crate::api::prompt_invocation_status_counts_toward_terminal_totals(
+                    row.status.as_deref(),
+                ) && classification.failure_class != FailureClass::None
+                {
+                    entry.failure_count += 1;
+                }
+                entry.total_tokens += row.total_tokens.unwrap_or_default();
+                entry.total_cost += row.cost.unwrap_or_default();
+                if invocation_counts_toward_non_success_usage(
+                    row.status.as_deref(),
+                    row.error_message.as_deref(),
+                    row.failure_kind.as_deref(),
+                    row.failure_class.as_deref(),
+                    row.is_actionable,
+                ) {
+                    entry.non_success_cost += row.cost.unwrap_or_default();
+                }
+            }
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(totals_by_account)
+}
+
 pub(crate) async fn query_unmaterialized_upstream_account_archive_non_success_usage(
     pool: &Pool<Sqlite>,
     rollup_target: &str,
