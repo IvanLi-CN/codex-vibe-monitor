@@ -35,6 +35,7 @@
 
 - Response raw capture must preserve an already content-encoded wire response as-is; it must not decode and recompress `gzip`, `zstd`, or `deflate` on the proxy request path.
 - Identity payload storage defaults to Zstd. Existing `.gz` captures remain readable and expire through normal retention; no bulk migration is permitted.
+- Raw codec inference for legacy invocation rows must run as a persistent, atomic one-time migration. Completed databases may read only its completion marker at startup; historical raw-blob link seed completion is valid compatibility proof because it was recorded after codec inference.
 - A saturated raw writer queues enabled capture work in the durable spool. Compression concurrency is bounded by `PROXY_RAW_ZSTD_MAX_CONCURRENT_WRITERS` or `clamp(available_parallelism / 2, 2, 8)`. If the spool hard limit cannot accept a capture, the invocation records `capture_unavailable:*`; it never falls back to an unbounded memory queue.
 - A paired pool response stream uses one bounded ingress and one encoder worker. Invocation and attempt metadata may link to the same published response raw path, while retention keeps that path until both independent owners have released it.
 - `src/config.rs` / `src/app_state.rs` / `src/runtime.rs` 中 whole-proxy admission gate 的移除、纯观测型 in-flight 指标与 deprecated 配置告警。
@@ -74,6 +75,7 @@
 
 - `codex-testbox` 上 100 个同时发起的 `/v1/*` 代理请求不会出现任何本地 `503 proxy concurrency limit reached; retry later`。
 - response raw append 不再位于 chunk 转发之前；request raw 写盘不再阻塞上游发送。
+- Given a legacy SQLite database without raw codec completion proof, When schema startup infers raw codecs, Then both codec fields and the completion marker commit atomically; subsequent completed startups do not scan `codex_invocations`.
 - 大于小体积阈值的 pool request body 不再默认整包内存物化；sticky 探测仅依赖前缀窗口或 replay snapshot 前缀。
 - capture 大 body 读取会产生 file-backed replay snapshot；超限/超时/客户端断开时仅保留有界 partial body 证据，不得因为切换 snapshot 控制面而丢 raw failure context，也不得把成功读取的大 body 同时整包留在内存。
 - capture pool outbound 与 route-selection prebuffer fallback 的大 body failover snapshot kind 必须为 `file`；11MB/21MB/62MB 等请求不得在正常临时文件可用时继续以 `snapshot_kind="memory"` 进入上游 timeout / failover 日志。

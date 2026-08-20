@@ -20,5 +20,6 @@
 - file-backed pool replay 的路由投影收口为单次读取与单次 JSON parse；解析结果限定为路由所需的紧凑字段，保留既有 sticky key 类型错误和重复字段降级语义，避免大请求在同一准备阶段重复打开临时文件。
 - Response raw storage distinguishes wire encoding from storage encoding: identity content is stored with Zstd, while pre-compressed wire bytes remain untouched. A saturated writer uses a CRC-framed local spool so enabled response capture is not silently discarded.
 - Paired pool response capture writes one finalized payload and stores independent invocation/attempt links. Durable spool capacity failure is explicit `capture_unavailable`, avoiding a second in-memory queue and duplicate response compression.
+- Raw codec inference records its own completion marker atomically with legacy backfill. The pre-existing raw-blob link seed marker is accepted only as compatibility proof because schema startup has already completed codec inference before that seed is recorded.
 
 - response raw 的内存归因与物理文件指标分开：writer occupancy 通过现有 semaphore 和有界队列估算，spool 只作为持久化/磁盘指标；不会因为 raw 文件总量或 `liveInvocationsCount` 直接判定 RSS 根因。
