@@ -876,6 +876,41 @@ mod snapshot_store_tests {
     }
 
     #[test]
+    fn mutation_fence_makes_current_snapshot_cold_before_its_write_lock() {
+        let store = Arc::new(PoolRoutingSnapshotStore::new());
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
+        assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+
+        // Hold the snapshot read lock so the mutation can advance its epoch
+        // but cannot clear the old Arc. `current` must observe that fence
+        // without waiting for or returning the stale snapshot.
+        let snapshot_read = store
+            .snapshot
+            .read()
+            .expect("lock snapshot for mutation fence test");
+        let requested_store = store.clone();
+        let requested = std::thread::spawn(move || requested_store.request_refresh());
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !store.refresh_pending() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mutation should set the refresh fence before waiting for the snapshot lock"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            store.current().is_none(),
+            "request-time routing must fail closed once the mutation fence is visible"
+        );
+        drop(snapshot_read);
+        requested
+            .join()
+            .expect("refresh request thread should join");
+    }
+
+    #[test]
     fn stale_refresh_cannot_install_after_a_newer_mutation() {
         let store = PoolRoutingSnapshotStore::new();
         store.request_refresh();
