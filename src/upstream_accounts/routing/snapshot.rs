@@ -397,6 +397,15 @@ impl PoolRoutingSnapshotStore {
         self.request_refresh_inner(true);
     }
 
+    /// Records an observation for the normal low-frequency reconcile without
+    /// fencing a still-valid routing view. Success, affinity, and capability
+    /// observations use this path; failure mutations must use a fence.
+    pub(crate) fn request_low_frequency_reconcile(&self) {
+        self.refresh_tx.send_modify(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
+    }
+
     /// Applies a committed model failure immediately to the in-memory routing
     /// view. The periodic reconciler later restores the database's precise
     /// model-health state, but the request that observed the failure can

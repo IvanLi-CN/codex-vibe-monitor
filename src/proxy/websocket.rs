@@ -3279,7 +3279,15 @@ pub(crate) async fn persist_ws_usage_event(
                 .await?;
             }
         }
-        state.pool_routing_snapshot.request_refresh();
+        if is_completed_terminal_event {
+            // Success only enriches model observations. Keep an established
+            // websocket lease valid until the bounded reconcile observes it.
+            state
+                .pool_routing_snapshot
+                .request_low_frequency_reconcile();
+        } else {
+            state.pool_routing_snapshot.request_refresh();
+        }
         state
             .subscription_hub
             .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);

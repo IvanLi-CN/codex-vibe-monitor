@@ -2621,7 +2621,7 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
-async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_installs() {
+async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_model_fence_installs() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2683,7 +2683,7 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_insta
     assert_ne!(
         *availability.borrow(),
         initial_generation,
-        "the committed in-memory failure fence must wake NoCandidate waiters"
+        "the committed in-memory model fence must wake waiters"
     );
     assert!(matches!(
         crate::upstream_accounts::resolve_pool_account_for_request(
@@ -2695,7 +2695,7 @@ async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_fence_insta
         )
         .await
         .expect("resolve from the in-memory failure fence"),
-        PoolAccountResolution::NoCandidate(_)
+        PoolAccountResolution::DegradedOnly
     ));
 }
 

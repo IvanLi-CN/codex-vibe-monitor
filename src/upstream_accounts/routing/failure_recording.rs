@@ -260,14 +260,19 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         if pool_route_success_allows_reservation_release_publish(state, account_id).await {
             state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+                .request_low_frequency_reconcile();
+            state.pool_routing_availability.publish();
         } else {
             // Disabled or deleted accounts still need their recovered state
-            // reflected in the snapshot, but cannot satisfy a waiter.
-            state.pool_routing_snapshot.request_refresh();
+            // reconciled, but cannot satisfy a waiter.
+            state
+                .pool_routing_snapshot
+                .request_low_frequency_reconcile();
         }
     } else if snapshot_changed {
-        state.pool_routing_snapshot.request_refresh();
+        state
+            .pool_routing_snapshot
+            .request_low_frequency_reconcile();
     }
     if outcome.sticky_mutation.writes_conversation_operation() {
         if let Some(sticky_key) = sticky_key {
@@ -611,14 +616,19 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         if pool_route_success_allows_reservation_release_publish(state, account_id).await {
             state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+                .request_low_frequency_reconcile();
+            state.pool_routing_availability.publish();
         } else {
             // Disabled or deleted accounts still need their recovered state
-            // reflected in the snapshot, but cannot satisfy a waiter.
-            state.pool_routing_snapshot.request_refresh();
+            // reconciled, but cannot satisfy a waiter.
+            state
+                .pool_routing_snapshot
+                .request_low_frequency_reconcile();
         }
     } else if snapshot_changed {
-        state.pool_routing_snapshot.request_refresh();
+        state
+            .pool_routing_snapshot
+            .request_low_frequency_reconcile();
     }
     if outcome.sticky_mutation.writes_conversation_operation() {
         if let Some(sticky_key) = sticky_key {

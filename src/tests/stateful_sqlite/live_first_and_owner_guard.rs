@@ -170,6 +170,14 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
         .expect("resolve pool runtime timeouts");
     let (pre_send_rx, resume_pre_send) =
         crate::proxy::register_pool_live_first_pre_send_hook(&state);
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    body_tx
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","messages":[]}"#,
+        )))
+        .await
+        .expect("send live-first request body");
+    drop(body_tx);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         proxy_openai_v1_via_pool(
@@ -187,7 +195,7 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
                     HeaderValue::from_static("application/json"),
                 ),
             ]),
-            Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
             runtime_timeouts,
             None,
         )
@@ -1191,14 +1199,14 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","input":"pending"}"#,
+            br#"{"model":"gpt-5","messages":[]}"#,
         )))
         .await
         .expect("send live-first request body");
     drop(body_tx);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
-        let uri = "/v1/responses".parse().expect("valid responses uri");
+        let uri = "/v1/chat/completions".parse().expect("valid chat uri");
         proxy_openai_v1_via_pool(
             request_state,
             9842,
@@ -3462,6 +3470,10 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
             .has_changed()
             .expect("snapshot refresh channel must remain open"),
         "a newly observed endpoint capability must request a snapshot refresh"
+    );
+    assert!(
+        !state.pool_routing_snapshot.refresh_pending(),
+        "success observations must not fence an established route while the bounded reconcile catches up"
     );
     assert_eq!(
         *availability.borrow(),
