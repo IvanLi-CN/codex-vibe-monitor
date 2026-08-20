@@ -7243,6 +7243,10 @@ pub(crate) struct SummaryProjection {
     // A failed account rebuild must not make a fresh global aggregate stale, and an old account
     // response must never borrow the global aggregate's freshness.
     all_time_account_refreshed_at: HashMap<i64, Instant>,
+    // This separates a caller-provided, unknown account (whose all-time aggregate is exactly
+    // zero once the global projection is fresh) from an account whose durable history could not
+    // be hydrated. The latter must retain the unavailable contract rather than become zero.
+    all_time_account_ids_with_projection_data: HashSet<i64>,
     // Archive files are immutable once completed. Reuse their bounded account-key discovery on
     // later refreshes so maintenance never repeatedly scans a large low-cardinality archive.
     archive_account_ids_by_file: HashMap<String, HashSet<i64>>,
@@ -7266,6 +7270,22 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
+        let in_progress = self
+            .in_progress_by_account
+            .get(&upstream_account_id)
+            .copied()
+            .unwrap_or_default();
+        let mut response = StatsTotals::default().into_response();
+        response.non_success_cost = Some(0.0);
+        response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+        response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+        response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+        response.in_progress_phase_counts = Some(in_progress.phase_counts);
+        response.maintenance = self.maintenance.clone();
+        response
+    }
+
     fn response_for_query(
         &self,
         params: &SummaryQuery,
@@ -7315,14 +7335,23 @@ impl SummaryProjection {
             return Ok(response.clone());
         }
         if matches!(window, SummaryWindow::All) {
+            let account_has_projection_data = upstream_account_id.is_some_and(|account_id| {
+                self.all_time_account_ids_with_projection_data
+                    .contains(&account_id)
+            });
             let all_time_refreshed_at = self.freshness.all_time_at(
                 match upstream_account_id {
                     None => self.all_time_refreshed_at,
+                    Some(_) if !account_has_projection_data => self.all_time_refreshed_at,
                     Some(account_id) => {
                         self.all_time_account_refreshed_at.get(&account_id).copied()
                     }
                 },
-                upstream_account_id,
+                if account_has_projection_data {
+                    upstream_account_id
+                } else {
+                    None
+                },
             );
             if all_time_refreshed_at
                 .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
@@ -7335,6 +7364,9 @@ impl SummaryProjection {
                 return Ok(response.clone());
             }
             if upstream_account_id.is_some() {
+                if !account_has_projection_data {
+                    return Ok(self.empty_all_time_account_response(upstream_account_id));
+                }
                 return Err(ApiError::unavailable(anyhow!(
                     "summary all-time account snapshot is not hydrated"
                 )));
@@ -7446,6 +7478,36 @@ impl SummaryProjection {
             usage_selected.truncate(limit);
         }
 
+        // A materialized archive with an incomplete replay marker contributes its complete
+        // exact bucket here. Its compact rollup can contain only a prefix of that archive, so
+        // add either the exact rows or the compact aggregate for this scope, never both. This
+        // deliberately excludes live-tail rows: those are an increment beyond a valid rollup
+        // cursor and must continue to be added to the aggregate.
+        let exact_total_rollup_buckets = selected
+            .iter()
+            .filter(|record| {
+                record.is_archive_record
+                    && record.archive_has_materialized_rollups
+                    && match upstream_account_id {
+                        None => !record.global_rollup_covered,
+                        Some(_) => !record.account_rollup_covered,
+                    }
+            })
+            .map(|record| align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0))
+            .collect::<HashSet<_>>();
+        let exact_usage_rollup_buckets = usage_selected
+            .iter()
+            .filter(|record| {
+                record.is_archive_record
+                    && record.archive_has_materialized_rollups
+                    && match upstream_account_id {
+                        None => !record.usage_global_rollup_covered,
+                        Some(_) => !record.usage_account_rollup_covered,
+                    }
+            })
+            .map(|record| align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0))
+            .collect::<HashSet<_>>();
+
         let mut totals = StatsTotals::default();
         let mut usage_breakdown = UsageBreakdownAccumulator::default();
         let mut non_success_tokens = 0_i64;
@@ -7489,6 +7551,9 @@ impl SummaryProjection {
                 if *account != upstream_account_id {
                     continue;
                 }
+                if exact_total_rollup_buckets.contains(bucket) {
+                    continue;
+                }
                 totals = totals.add(*bucket_totals);
                 non_success_tokens += self
                     .hourly_rollup_non_success_tokens
@@ -7497,7 +7562,11 @@ impl SummaryProjection {
                     .unwrap_or_default();
             }
             for ((bucket, account), usage) in &self.hourly_rollup_usage {
-                if *bucket >= start && *bucket < end && *account == upstream_account_id {
+                if *bucket >= start
+                    && *bucket < end
+                    && *account == upstream_account_id
+                    && !exact_usage_rollup_buckets.contains(bucket)
+                {
                     usage_breakdown.merge_response(usage);
                 }
             }
@@ -8376,16 +8445,22 @@ async fn merge_summary_projection_archive_records_with_coverage(
                 "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
             ));
         }
-        let global_rollup_covered =
-            archive_has_materialized_rollups && hourly_rollup_totals.contains_key(&(bucket, None));
-        let account_rollup_covered = archive_has_materialized_rollups
-            && account_rollup_archive_replayed.is_none_or(|replayed| replayed)
-            && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id));
         let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
         let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
         let bucket_is_full_rollup = bucket >= full_rollup_start
             && bucket < full_rollup_end
             && !protected_boundary_buckets.contains(&bucket);
+        // A protected boundary is retained for exact account/usage detail, but its durable
+        // global totals remain authoritative. Only an interior full hour needs a replay marker
+        // before raw rows replace the compact global aggregate.
+        let global_rollup_covered = archive_has_materialized_rollups
+            && hourly_rollup_totals.contains_key(&(bucket, None))
+            && (!bucket_is_full_rollup
+                || overall_rollup_archive_replayed.is_none_or(|replayed| replayed));
+        let account_rollup_covered = archive_has_materialized_rollups
+            && hourly_rollup_totals.contains_key(&(bucket, row.upstream_account_id))
+            && (!bucket_is_full_rollup
+                || account_rollup_archive_replayed.is_none_or(|replayed| replayed));
         let usage_cursor_covers_row = usage_rollup_cursor.is_some_and(|cursor| row.id <= cursor);
         let usage_global_rollup_covered = hourly_rollup_usage.contains_key(&(bucket, None))
             && ((archive_has_materialized_rollups
@@ -9698,6 +9773,7 @@ async fn build_summary_projection(
             previous_all_time_refreshed_at
         },
         all_time_account_refreshed_at,
+        all_time_account_ids_with_projection_data: account_ids_with_projection_data,
         archive_account_ids_by_file,
         unavailable_unmaterialized_archive_ranges,
         closed_window_by_key: HashMap::new(),
@@ -25071,6 +25147,38 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_handler_unknown_all_time_account_uses_fresh_memory_zero_response() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_projection_fixture(&state).await;
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Pacific/Auckland".to_string()),
+                upstream_account_id: Some(9_999_999),
+            }),
+        )
+        .await
+        .expect("fresh projection preserves the legacy zero response for an unknown account");
+
+        assert_eq!(response.total_count, 0);
+        assert_eq!(response.total_tokens, 0);
+        assert_eq!(response.total_cost, 0.0);
+        assert_eq!(response.non_success_cost, Some(0.0));
+        assert_eq!(response.usage_breakdown, None);
+        assert_eq!(response.in_progress_conversation_count, Some(0));
+        assert_eq!(response.in_progress_retry_conversation_count, Some(0));
+        assert!(response.in_progress_phase_counts.is_some());
+        assert!(response.maintenance.is_some());
+    }
+
+    #[tokio::test]
     async fn summary_handler_rejects_unsupported_duration_before_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -26020,6 +26128,137 @@ mod request_compression_query_tests {
         .expect("bounded persisted-id lookup");
         assert_eq!(records.len(), 1);
         assert!(records.contains_key("live-authoritative-copy"));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_archive_merge_keeps_exact_global_row_without_overall_replay() {
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory archive pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+             id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
+             source TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, \
+             cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, \
+             cost_input REAL, cost_cache_write REAL, cost_cache_read REAL, cost_output REAL, \
+             cost_reasoning REAL, status TEXT, error_message TEXT, failure_kind TEXT, \
+             failure_class TEXT)",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive fixture table");
+        let bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0) - 3_600;
+        let occurred_at = db_occurred_at_lower_bound(
+            Utc.timestamp_opt(bucket + 300, 0)
+                .single()
+                .expect("valid archive row time"),
+        );
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
+             VALUES (8, 'archive-global-replay-gap', ?1, 'proxy', '{}', 9, 1.0, 'success')",
+        )
+        .bind(occurred_at)
+        .execute(&archive_pool)
+        .await
+        .expect("insert archive replay row");
+        let live_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory live pool");
+        sqlx::query("CREATE TABLE codex_invocations (id INTEGER PRIMARY KEY)")
+            .execute(&live_pool)
+            .await
+            .expect("create live fixture table");
+        let archive_range = ExactUtcRange {
+            start: Utc
+                .timestamp_opt(bucket, 0)
+                .single()
+                .expect("valid range start"),
+            end: Utc
+                .timestamp_opt(bucket + 3_600, 0)
+                .single()
+                .expect("valid range end"),
+        };
+        let mut totals = HashMap::new();
+        totals.insert((bucket, None), StatsTotals::default());
+        let mut usage = HashMap::new();
+        usage.insert(
+            (bucket, None),
+            UsageBreakdownResponse {
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
+                output_tokens: 0,
+                costs: None,
+                models: Vec::new(),
+            },
+        );
+        let mut records = HashMap::new();
+        let mut budget = 0;
+        let mut bytes = 0;
+        merge_summary_projection_archive_records_with_coverage(
+            &archive_pool,
+            &live_pool,
+            &HashSet::new(),
+            &totals,
+            &usage,
+            true,
+            Some(false),
+            Some(true),
+            Some(true),
+            archive_range,
+            &HashSet::new(),
+            None,
+            &HashSet::new(),
+            &mut records,
+            &mut budget,
+            &mut bytes,
+        )
+        .await
+        .expect("merge exact archive row when overall replay is missing");
+        let record = records
+            .get("archive-global-replay-gap")
+            .expect("missing overall replay keeps the exact archive row");
+        assert!(!record.global_rollup_covered);
+        assert_eq!(record.row.total_tokens, 9);
+
+        // The exact record replaces the partial compact aggregate for this full hour. A
+        // projection view must not add the rollup's prefix once the missing replay marker has
+        // intentionally selected the archive source of truth.
+        let projection = SummaryProjection {
+            records: vec![record.clone()],
+            hourly_buckets: BTreeMap::from([(bucket, vec![0])]),
+            hourly_rollup_totals: HashMap::from([(
+                (bucket, None),
+                StatsTotals {
+                    total_count: 1,
+                    success_count: 1,
+                    total_tokens: 4,
+                    total_cost: 0.5,
+                    ..StatsTotals::default()
+                },
+            )]),
+            refreshed_at: Some(Instant::now()),
+            ..SummaryProjection::default()
+        };
+        let response = projection
+            .response_for_query(
+                &SummaryQuery {
+                    window: Some("2h".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: None,
+                },
+                100,
+            )
+            .expect("fresh in-memory range response");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.success_count, 1);
+        assert_eq!(response.total_tokens, 9);
+        assert_eq!(response.total_cost, 1.0);
     }
 
     #[tokio::test]
