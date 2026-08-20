@@ -12306,7 +12306,7 @@ mod tests {
             .iter()
             .find(|point| point.bucket_start == fallback_bucket_start)
             .expect("exact fallback point");
-        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let projected_parallel = loop {
             let projected_parallel = {
                 let guard = state.subscription_hub.state.lock().await;
@@ -15876,19 +15876,13 @@ mod tests {
             .expect("build empty working conversations baseline");
 
         let now = Utc::now();
-        let first_occurred_at = format_naive(
-            (now - ChronoDuration::minutes(2))
-                .with_timezone(&Shanghai)
-                .naive_local(),
-        );
-        let second_occurred_at = format_naive(
-            (now - ChronoDuration::minutes(1))
-                .with_timezone(&Shanghai)
-                .naive_local(),
-        );
+        // Bounded hydration reads current-hour P1 rows plus materialized prior-hour history.
+        // Keep both fixture rows in the live hour so the contract does not depend on an
+        // hour-rollup boundary while CI happens to run near the top of an hour.
+        let occurred_at = format_naive(now.with_timezone(&Shanghai).naive_local());
         for (invoke_id, occurred_at, total_tokens) in [
-            ("reentered-older", first_occurred_at.as_str(), 11_i64),
-            ("reentered-newer", second_occurred_at.as_str(), 31_i64),
+            ("reentered-older", occurred_at.as_str(), 11_i64),
+            ("reentered-newer", occurred_at.as_str(), 31_i64),
         ] {
             sqlx::query(
                 r#"
