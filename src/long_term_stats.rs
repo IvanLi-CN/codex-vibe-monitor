@@ -3124,37 +3124,57 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
     mark_ready: bool,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
-    if rebuilds.len() > LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES {
-        for (index, rebuild_chunk) in rebuilds
-            .chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES)
-            .enumerate()
-        {
-            let last_chunk =
-                (index + 1) * LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES >= rebuilds.len();
-            let chunk_dates = rebuild_chunk
-                .iter()
-                .map(|rebuild| rebuild.bucket_date.as_str())
-                .collect::<HashSet<_>>();
-            let chunk_dirty = clear_dirty_buckets
-                .iter()
-                .filter(|dirty| chunk_dates.contains(dirty.bucket_date.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
-            // Older chunks publish a complete replacement but retain the cursor. If the
-            // process stops before the final chunk, the terminal event is retried rather than
-            // skipped; only the final bounded publication advances it.
-            commit_long_term_projection_date_rebuilds_with_control(
-                pool,
-                rebuild_chunk,
-                last_chunk.then_some(next_cursor).flatten(),
-                &chunk_dirty,
-                last_chunk && mark_ready,
-                control,
-            )
-            .await?;
-        }
-        return Ok(());
+    if rebuilds.is_empty() {
+        return commit_long_term_projection_date_rebuild_chunk_with_control(
+            pool,
+            rebuilds,
+            next_cursor,
+            clear_dirty_buckets,
+            mark_ready,
+            control,
+        )
+        .await;
     }
+    for (index, rebuild_chunk) in rebuilds
+        .chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES)
+        .enumerate()
+    {
+        let last_chunk =
+            (index + 1) * LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES >= rebuilds.len();
+        let chunk_dates = rebuild_chunk
+            .iter()
+            .map(|rebuild| rebuild.bucket_date.as_str())
+            .collect::<HashSet<_>>();
+        let chunk_dirty = clear_dirty_buckets
+            .iter()
+            .filter(|dirty| chunk_dates.contains(dirty.bucket_date.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        // Older chunks publish a complete replacement but retain the cursor. If the process
+        // stops before the final chunk, the terminal event is retried rather than skipped; only
+        // the final bounded publication advances it.
+        commit_long_term_projection_date_rebuild_chunk_with_control(
+            pool,
+            rebuild_chunk,
+            last_chunk.then_some(next_cursor).flatten(),
+            &chunk_dirty,
+            last_chunk && mark_ready,
+            control,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn commit_long_term_projection_date_rebuild_chunk_with_control(
+    pool: &Pool<Sqlite>,
+    rebuilds: &[LongTermProjectionDateRebuild],
+    next_cursor: Option<i64>,
+    clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
+    mark_ready: bool,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    debug_assert!(rebuilds.len() <= LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES);
     let repaired_start_date = rebuilds
         .iter()
         .filter(|rebuild| !rebuild.daily.is_empty())
