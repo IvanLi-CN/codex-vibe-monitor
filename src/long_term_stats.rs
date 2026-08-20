@@ -601,13 +601,13 @@ async fn long_term_archive_invocation_query_with_range(
     let range_filter = bounded_to_target_date.then(|| {
         format!(
             r#"
-        AND (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 < ?1
+        AND ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 < ?1
         AND (
-            (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 >= ?2
+            ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 >= ?2
             OR (
                 {t_total_ms_column} IS NOT NULL
                 AND {t_total_ms_column} > 0
-                AND (julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400.0 + {t_total_ms_column} / 1000.0 >= ?2
+                AND ROUND((julianday(CASE WHEN instr(occurred_at, 'T') > 0 THEN occurred_at ELSE occurred_at || '+08:00' END) - 2440587.5) * 86400000.0) / 1000.0 + {t_total_ms_column} / 1000.0 >= ?2
             )
         )
             "#,
@@ -1255,8 +1255,18 @@ impl<'a> LongTermProjectionWriteControl<'a> {
                 result = tokio::time::timeout(
                     LONG_TERM_PROJECTION_TRANSACTION_WAIT,
                     pool.begin_with("BEGIN IMMEDIATE"),
-                ) => result
-                    .map_err(|_| anyhow!("long-term projection write deferred by database pressure: transaction admission timed out"))??,
+                ) => match result {
+                    Ok(transaction) => transaction?,
+                    Err(_) => {
+                        if let Some(gate) = self.gate {
+                            gate.record_pressure(
+                                "long_term_projection_write",
+                                "transaction_admission_timeout",
+                            );
+                        }
+                        bail!("long-term projection write deferred by database pressure: transaction admission timed out");
+                    }
+                },
             }
         } else {
             pool.begin().await?
@@ -1272,8 +1282,18 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         if let Some(shutdown) = self.shutdown {
             tokio::select! {
                 _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
-                result = tokio::time::timeout(LONG_TERM_PROJECTION_TRANSACTION_WAIT, transaction.commit()) => result
-                    .map_err(|_| anyhow!("long-term projection write deferred by database pressure: transaction commit timed out"))??,
+                result = tokio::time::timeout(LONG_TERM_PROJECTION_TRANSACTION_WAIT, transaction.commit()) => match result {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        if let Some(gate) = self.gate {
+                            gate.record_pressure(
+                                "long_term_projection_write",
+                                "transaction_commit_timeout",
+                            );
+                        }
+                        bail!("long-term projection write deferred by database pressure: transaction commit timed out");
+                    }
+                },
             }
         } else {
             transaction.commit().await?;
@@ -1387,19 +1407,19 @@ async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> 
           WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
             SELECT
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date((julianday(OLD.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
+                THEN date(ROUND((julianday(OLD.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(OLD.occurred_at) END,
               CASE WHEN instr(OLD.occurred_at, 'T') > 0
-                THEN date((julianday(OLD.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date(ROUND((julianday(OLD.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(OLD.occurred_at) + MAX(COALESCE(OLD.t_total_ms, 0), 0) / 86400000.0) END
             WHERE OLD.occurred_at IS NOT NULL AND TRIM(OLD.occurred_at) <> ''
             UNION ALL
             SELECT
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date((julianday(NEW.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
+                THEN date(ROUND((julianday(NEW.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(NEW.occurred_at) END,
               CASE WHEN instr(NEW.occurred_at, 'T') > 0
-                THEN date((julianday(NEW.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                THEN date(ROUND((julianday(NEW.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                 ELSE date(julianday(NEW.occurred_at) + MAX(COALESCE(NEW.t_total_ms, 0), 0) / 86400000.0) END
             WHERE NEW.occurred_at IS NOT NULL AND TRIM(NEW.occurred_at) <> ''
             UNION ALL
@@ -1557,10 +1577,10 @@ pub(crate) async fn ensure_long_term_projection_account_trigger(pool: &Pool<Sqli
               WITH RECURSIVE affected_dates(bucket_date, end_date) AS (
                 SELECT
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date((julianday(inv.occurred_at) - 2440587.5) * 86400.0, 'unixepoch', '+8 hours')
+                    THEN date(ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0, 'unixepoch', '+8 hours')
                     ELSE date(inv.occurred_at) END,
                   CASE WHEN instr(inv.occurred_at, 'T') > 0
-                    THEN date((julianday(inv.occurred_at) - 2440587.5) * 86400.0 + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
+                    THEN date(ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + MAX(COALESCE(inv.t_total_ms, 0), 0) / 1000.0, 'unixepoch', '+8 hours')
                     ELSE date(julianday(inv.occurred_at) + MAX(COALESCE(inv.t_total_ms, 0), 0) / 86400000.0) END
                 FROM codex_invocations inv
                 WHERE (CASE WHEN json_valid(inv.payload) THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER) END) = {account_id}
@@ -2950,7 +2970,7 @@ async fn load_long_term_projection_rows_for_date(
             .await?,
     );
     let rfc3339_query = format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND (julianday(inv.occurred_at) - 2440587.5) * 86400.0 < ?2 AND ((julianday(inv.occurred_at) - 2440587.5) * 86400.0 >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND (julianday(inv.occurred_at) - 2440587.5) * 86400.0 + inv.t_total_ms / 1000.0 >= ?1))"
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') > 0 AND ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 < ?2 AND (ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 >= ?1 OR (inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 AND ROUND((julianday(inv.occurred_at) - 2440587.5) * 86400000.0) / 1000.0 + inv.t_total_ms / 1000.0 >= ?1))"
     );
     rows.extend(
         sqlx::query_as::<_, LongTermInvocationRow>(&rfc3339_query)
@@ -5240,8 +5260,10 @@ async fn refresh_long_term_stats_with_control(
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     let _guard = LONG_TERM_REFRESH_LOCK.lock().await;
-    run_long_term_refresh_with_retry(|| refresh_long_term_stats_once(pool, retention_days, control))
-        .await
+    run_long_term_refresh_with_retry(control.shutdown, || {
+        refresh_long_term_stats_once(pool, retention_days, control)
+    })
+    .await
 }
 
 async fn persist_long_term_refresh_progress(
@@ -5263,16 +5285,23 @@ async fn persist_long_term_refresh_progress(
 }
 
 async fn run_long_term_refresh_with_retry<T, Operation, OperationFuture>(
+    shutdown: Option<&CancellationToken>,
     operation: Operation,
 ) -> Result<T>
 where
     Operation: FnMut() -> OperationFuture,
     OperationFuture: Future<Output = Result<T>>,
 {
-    run_long_term_refresh_with_retry_delays(operation, &LONG_TERM_REFRESH_LOCK_RETRY_DELAYS).await
+    run_long_term_refresh_with_retry_delays(
+        shutdown,
+        operation,
+        &LONG_TERM_REFRESH_LOCK_RETRY_DELAYS,
+    )
+    .await
 }
 
 async fn run_long_term_refresh_with_retry_delays<T, Operation, OperationFuture>(
+    shutdown: Option<&CancellationToken>,
     mut operation: Operation,
     retry_delays: &[Duration],
 ) -> Result<T>
@@ -5281,6 +5310,9 @@ where
     OperationFuture: Future<Output = Result<T>>,
 {
     for (attempt, delay) in retry_delays.iter().enumerate() {
+        if shutdown.is_some_and(CancellationToken::is_cancelled) {
+            bail!("long-term stats refresh cancelled before SQLite lock retry");
+        }
         match operation().await {
             Ok(value) => return Ok(value),
             Err(error) if crate::is_sqlite_lock_error(&error) => {
@@ -5290,10 +5322,20 @@ where
                     error = %error,
                     "long-term stats refresh hit a SQLite lock; retrying"
                 );
-                sleep(*delay).await;
+                if let Some(shutdown) = shutdown {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => bail!("long-term stats refresh cancelled during SQLite lock retry"),
+                        _ = sleep(*delay) => {}
+                    }
+                } else {
+                    sleep(*delay).await;
+                }
             }
             Err(error) => return Err(error),
         }
+    }
+    if shutdown.is_some_and(CancellationToken::is_cancelled) {
+        bail!("long-term stats refresh cancelled before SQLite lock retry");
     }
     operation().await
 }
@@ -8799,6 +8841,53 @@ mod tests {
             .try_begin_background("verify-cancelled-transaction-released-permit")
             .expect("cancellation releases the P2 admission permit");
         drop(permit);
+        external_writer
+            .rollback()
+            .await
+            .expect("release external SQLite writer lock");
+        cleanup_long_term_file_backed_pool(pool, db_path).await;
+    }
+
+    #[tokio::test]
+    async fn controlled_transaction_timeout_waits_for_pressure_cooldown_before_retry() {
+        let (pool, _db_url, db_path) = long_term_file_backed_pool_with_busy_timeout(
+            "cooldown-locked-write",
+            Duration::from_secs(30),
+        )
+        .await;
+        let mut external_writer = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .expect("hold the external SQLite writer lock");
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_millis(50));
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let observed_generation = gate.eligibility_generation();
+
+        let error = tokio::time::timeout(Duration::from_millis(400), control.begin(&pool))
+            .await
+            .expect("bounded transaction admission")
+            .expect_err("external writer keeps transaction admission blocked");
+        assert!(long_term_projection_write_is_pressure_deferred(&error));
+        let retry_at = long_term_projection_pressure_retry_at(&gate)
+            .expect("transaction admission timeout starts a pressure cooldown");
+        assert!(matches!(
+            gate.background_deny_reason(),
+            Some(crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. })
+        ));
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(10),
+                wait_for_long_term_projection_pressure_retry(
+                    &gate,
+                    observed_generation,
+                    Some(retry_at)
+                ),
+            )
+            .await
+            .is_err()
+        );
+
         external_writer
             .rollback()
             .await
@@ -13083,6 +13172,7 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let operation_attempts = Arc::clone(&attempts);
         let outcome = run_long_term_refresh_with_retry_delays(
+            None,
             move || {
                 let operation_attempts = Arc::clone(&operation_attempts);
                 async move {
@@ -13107,6 +13197,7 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let operation_attempts = Arc::clone(&attempts);
         let error = run_long_term_refresh_with_retry_delays(
+            None,
             move || {
                 let operation_attempts = Arc::clone(&operation_attempts);
                 async move {
@@ -13120,6 +13211,31 @@ mod tests {
         .expect_err("persistent locks must exhaust the bounded retry budget");
         assert!(crate::is_sqlite_lock_error(&error));
         assert_eq!(attempts.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn long_term_refresh_cancels_before_a_second_sqlite_lock_retry() {
+        let shutdown = CancellationToken::new();
+        let operation_shutdown = shutdown.clone();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let operation_attempts = Arc::clone(&attempts);
+        let error = run_long_term_refresh_with_retry_delays(
+            Some(&shutdown),
+            move || {
+                let operation_attempts = Arc::clone(&operation_attempts);
+                let operation_shutdown = operation_shutdown.clone();
+                async move {
+                    operation_attempts.fetch_add(1, Ordering::SeqCst);
+                    operation_shutdown.cancel();
+                    Err::<(), _>(anyhow::anyhow!("database is locked"))
+                }
+            },
+            &[Duration::from_secs(1)],
+        )
+        .await
+        .expect_err("shutdown stops the initial refresh before another lock retry");
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -13214,6 +13330,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("RFC3339 outside invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (6, 'rfc3339-day-start', '2026-07-25T16:00:00Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 day-start invocation");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (7, 'rfc3339-next-day-start', '2026-07-26T16:00:00Z', 'success', 100)",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 next-day-start invocation");
         let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("fixed date");
         let start = Shanghai
             .from_local_datetime(&date.and_hms_opt(0, 0, 0).expect("day start"))
@@ -13246,7 +13374,7 @@ mod tests {
             .await
             .expect("projection rows");
 
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         let ids = rows
             .iter()
             .filter_map(|row| row.invoke_id.as_deref())
@@ -13258,6 +13386,7 @@ mod tests {
                 "local-boundary",
                 "rfc3339-crossing",
                 "legacy-crossing",
+                "rfc3339-day-start",
             ])
         );
     }
@@ -13334,6 +13463,28 @@ mod tests {
         .await
         .expect("dirty correction dates");
         assert_eq!(dirty_dates, vec!["2026-07-25", "2026-07-26"]);
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets")
+            .execute(&pool)
+            .await
+            .expect("clear fractional correction markers");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status, model) VALUES (2, '2026-07-25T16:00:00Z', 'success', 'before')",
+        )
+        .execute(&pool)
+        .await
+        .expect("RFC3339 day-start invocation");
+        sqlx::query("UPDATE codex_invocations SET model = 'after' WHERE id = 2")
+            .execute(&pool)
+            .await
+            .expect("RFC3339 day-start correction");
+        let dirty_dates = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY bucket_date",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("day-start correction dates");
+        assert_eq!(dirty_dates, vec!["2026-07-26"]);
     }
 
     #[tokio::test]
@@ -13355,6 +13506,18 @@ mod tests {
         .execute(&pool)
         .await
         .expect("archive fractional RFC3339 row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (2, '2026-07-25T16:00:00Z', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 day-start row");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, occurred_at, status) VALUES (3, '2026-07-26T16:00:00Z', 'success')",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive RFC3339 next-day-start row");
         let query = long_term_archive_invocation_query_for_range(&pool)
             .await
             .expect("archive range query");
@@ -13379,7 +13542,7 @@ mod tests {
             .fetch_all(&pool)
             .await
             .expect("archive range rows");
-        assert_eq!(rows, vec![(1,)]);
+        assert_eq!(rows, vec![(1,), (2,)]);
     }
 
     #[tokio::test]
