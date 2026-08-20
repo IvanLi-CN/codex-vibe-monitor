@@ -1,5 +1,54 @@
 use super::*;
 
+#[cfg(test)]
+struct PoolLiveFirstPostReservationHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_live_first_post_reservation_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolLiveFirstPostReservationHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolLiveFirstPostReservationHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_live_first_post_reservation_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_live_first_post_reservation_hooks()
+        .lock()
+        .expect("lock live-first post-reservation hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolLiveFirstPostReservationHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_live_first_post_reservation_hook(state: &AppState) {
+    let hook = pool_live_first_post_reservation_hooks()
+        .lock()
+        .expect("lock live-first post-reservation hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_live_first_post_reservation_hook(_state: &AppState) {}
+
 pub(crate) fn proxy_stream_usage_observed(response_info: &ResponseCaptureInfo) -> bool {
     response_info.usage.total_tokens.is_some()
         || response_info.usage.input_tokens.is_some()
@@ -1033,6 +1082,7 @@ async fn prepare_capture_request_body(
                 state.clone(),
                 live_routing_reservation_key.clone(),
             ));
+            wait_for_pool_live_first_post_reservation_hook(state.as_ref()).await;
             let decision = decide_live_request_streaming(
                 &live_settings,
                 invoke_id,

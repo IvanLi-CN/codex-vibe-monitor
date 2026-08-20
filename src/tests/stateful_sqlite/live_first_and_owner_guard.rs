@@ -210,6 +210,9 @@ async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
     })
     .await
     .expect("join pre-send fence receiver");
+    // The pre-send hook proves the live stream already owns the reservation. End the
+    // downstream body so the capture fallback cannot turn the local fence into a 408.
+    drop(body_tx);
     set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
     refresh_pool_routing_snapshot(state.as_ref())
         .await
@@ -1197,9 +1200,8 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
     refresh_pool_routing_snapshot(state.as_ref())
         .await
         .expect("install the candidate snapshot before exercising live-first cancellation");
-    // `load_model_mapping_for_account` takes this lock after selection has
-    // reserved the account. Holding it makes the cancellation window exact.
-    let runtime_cache_guard = state.pool_routing_runtime_cache.lock().await;
+    let (post_reservation_rx, _resume_post_reservation) =
+        crate::proxy::register_pool_live_first_post_reservation_hook(&state);
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     // Keep the body stream open until selection has reserved the route.
     body_tx
@@ -1229,29 +1231,28 @@ async fn cancelling_live_first_before_model_mapping_releases_its_routing_reserva
         .await
     });
 
-    timeout(Duration::from_secs(1), async {
-        loop {
-            if state
-                .pool_routing_reservations
-                .lock()
-                .expect("lock routing reservations")
-                .len()
-                == 1
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+    tokio::task::spawn_blocking(move || {
+        post_reservation_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("selection should reserve before model mapping is allowed to complete")
     })
     .await
-    .expect("selection should reserve before model mapping is allowed to complete");
+    .expect("join post-reservation fence receiver");
+    assert_eq!(
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("lock routing reservations")
+            .len(),
+        1,
+        "post-reservation fence must observe the owned routing reservation"
+    );
 
     request_task.abort();
     let join_error = request_task
         .await
         .expect_err("cancelling the request should cancel its task");
     assert!(join_error.is_cancelled());
-    drop(runtime_cache_guard);
     timeout(Duration::from_secs(1), async {
         loop {
             if state
