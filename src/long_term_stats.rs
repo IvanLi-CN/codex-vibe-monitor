@@ -1039,6 +1039,7 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             .context("failed to add archive hash to replay markers")?;
     }
     ensure_long_term_projection_schema(pool).await?;
+    ensure_long_term_projection_source_indexes(pool).await?;
     ensure_long_term_projection_correction_trigger(pool).await?;
     ensure_long_term_projection_archive_trigger(pool).await?;
     Ok(())
@@ -1190,6 +1191,39 @@ fn long_term_projection_write_is_deferred(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("long-term projection write deferred by database pressure")
         || message.contains("long-term projection write cancelled")
+}
+
+async fn ensure_long_term_projection_source_indexes(pool: &Pool<Sqlite>) -> Result<()> {
+    let invocation_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'codex_invocations')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !invocation_table_exists {
+        return Ok(());
+    }
+    let columns = load_sqlite_table_columns(pool, "codex_invocations").await?;
+    if !columns.contains("occurred_at") || !columns.contains("t_total_ms") {
+        return Ok(());
+    }
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_long_term_projection_text_end
+        ON codex_invocations (
+            CASE
+                WHEN instr(occurred_at, 'T') = 0
+                  AND t_total_ms IS NOT NULL
+                  AND t_total_ms > 0
+                THEN julianday(occurred_at) + t_total_ms / 86400000.0
+            END
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection text end index")?;
+    Ok(())
 }
 
 async fn ensure_long_term_projection_correction_trigger(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1911,7 +1945,7 @@ fn long_term_projection_canonical_query(select: &str) -> String {
 
 fn long_term_projection_crossing_text_query(select: &str) -> String {
     format!(
-        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND instr(inv.occurred_at, 'T') = 0 AND inv.occurred_at < ?1 AND inv.id IN (SELECT state.invocation_row_id FROM long_term_projection_interval_state state WHERE state.interval_end_ms > ?2 AND state.interval_start_ms < ?3 UNION SELECT legacy.invocation_row_id FROM long_term_projection_intervals legacy WHERE legacy.bucket_date = ?4)"
+        "{select} WHERE LOWER(TRIM(COALESCE(inv.status, ''))) NOT IN ('running', 'pending') AND inv.occurred_at < ?1 AND CASE WHEN instr(inv.occurred_at, 'T') = 0 AND inv.t_total_ms IS NOT NULL AND inv.t_total_ms > 0 THEN julianday(inv.occurred_at) + inv.t_total_ms / 86400000.0 END >= julianday(?1)"
     )
 }
 
@@ -2639,9 +2673,6 @@ async fn load_long_term_projection_rows_for_date(
     rows.extend(
         sqlx::query_as::<_, LongTermInvocationRow>(&crossing_text_query)
             .bind(&start_text)
-            .bind(start.timestamp_millis())
-            .bind(end.timestamp_millis())
-            .bind(date.to_string())
             .fetch_all(pool)
             .await?,
     );
@@ -7351,12 +7382,6 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure long-term projection canonical interval range index")?;
     sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_interval_state_end_range ON long_term_projection_interval_state (interval_end_ms, interval_start_ms)",
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure long-term projection canonical interval end range index")?;
-    sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS long_term_projection_interval_suppressions (
             invocation_row_id INTEGER NOT NULL,
@@ -12002,6 +12027,9 @@ mod tests {
             .await
             .expect("memory pool");
         create_long_term_test_invocations(&pool).await;
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
         sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, total_tokens) VALUES (1, 'utc-boundary', '2026-07-25T16:30:00Z', 'success', 100)",
         )
@@ -12047,33 +12075,18 @@ mod tests {
             )
             .single()
             .expect("Shanghai day end");
-        sqlx::query(
-            "INSERT INTO long_term_projection_interval_state (invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms) VALUES (4, 'model:legacy', 'other', ?1, ?2)",
-        )
-        .bind(start.timestamp_millis() - 1_000)
-        .bind(start.timestamp_millis() + 1_000)
-        .execute(&pool)
-        .await
-        .expect("canonical legacy crossing interval");
         let crossing_query =
             long_term_projection_crossing_text_query("SELECT inv.id FROM codex_invocations inv");
         let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
             "EXPLAIN QUERY PLAN {crossing_query}"
         ))
         .bind(start.format("%Y-%m-%d %H:%M:%S").to_string())
-        .bind(start.timestamp_millis())
-        .bind(end.timestamp_millis())
-        .bind(date.to_string())
         .fetch_all(&pool)
         .await
         .expect("crossing query plan");
         assert!(plan.iter().any(|(_, _, _, detail)| {
-            detail.contains("idx_long_term_projection_interval_state_end_range")
+            detail.contains("idx_codex_invocations_long_term_projection_text_end")
         }));
-        assert!(
-            plan.iter()
-                .any(|(_, _, _, detail)| detail.contains("SEARCH inv USING INTEGER PRIMARY KEY"))
-        );
 
         let rows = load_long_term_projection_rows_for_date(&pool, date, start, end)
             .await
