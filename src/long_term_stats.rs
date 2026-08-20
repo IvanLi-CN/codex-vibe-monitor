@@ -2412,9 +2412,10 @@ async fn complete_long_term_projection_daily_verify_with_control(
     }
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
-        "UPDATE long_term_projection_state SET last_daily_verify_at = datetime('now'), updated_at = datetime('now') WHERE consumer = ?1",
+        "UPDATE long_term_projection_state SET last_daily_verify_at = datetime('now'), updated_at = datetime('now') WHERE consumer = ?1 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?2)",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .bind(daily_verify_date)
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await
@@ -7842,6 +7843,9 @@ mod tests {
                 .expect("unrepaired verification remains due")
         );
 
+        queue_long_term_projection_repairs(&pool, &[today.clone()], "newer_generation")
+            .await
+            .expect("queue a newer daily repair");
         complete_long_term_projection_daily_verify_with_control(
             &pool,
             &today,
@@ -7850,6 +7854,25 @@ mod tests {
         )
         .await
         .expect("verified today bucket");
+        assert!(
+            long_term_projection_daily_verify_due(&pool)
+                .await
+                .expect("new dirty generation keeps verification due")
+        );
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1")
+            .bind(&today)
+            .execute(&pool)
+            .await
+            .expect("clear completed dirty marker");
+        complete_long_term_projection_daily_verify_with_control(
+            &pool,
+            &today,
+            &[today.clone()],
+            &control,
+        )
+        .await
+        .expect("verified clean today bucket");
         assert!(
             !long_term_projection_daily_verify_due(&pool)
                 .await
