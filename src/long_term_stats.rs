@@ -28,6 +28,8 @@ pub(crate) const LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET: &str = "long_term_usage_
 
 static LONG_TERM_REFRESH_LOCK: once_cell::sync::Lazy<Mutex<()>> =
     once_cell::sync::Lazy::new(|| Mutex::new(()));
+static LONG_TERM_PROJECTION_PUBLICATION_SEQUENCE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LongTermRange {
@@ -1059,8 +1061,8 @@ const LONG_TERM_PROJECTION_INCREMENTAL_ROLLUP_ROWS: usize =
 // transaction also updates the bucket marker, so leave one row of headroom.
 const LONG_TERM_PROJECTION_REBUILD_SEGMENT_ROWS: usize =
     (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 1) / 3;
-// Publishing a rebuilt date updates its dirty generation, public backup pointer, and owner
-// claim. Keep those changes, plus the cursor and status rows, inside one 512-row transaction.
+// Staging more dates than this would make retry bookkeeping needlessly large. Publication is a
+// single token transaction; each already-published date is released separately afterward.
 const LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES: usize =
     (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2) / 3;
 
@@ -1072,6 +1074,8 @@ struct LongTermProjectionWriteControl<'a> {
     committed_batches: Option<(&'a AtomicUsize, usize)>,
     #[cfg(test)]
     cancel_after_commit: Option<(&'a CancellationToken, &'a AtomicUsize, usize)>,
+    #[cfg(test)]
+    stop_after_rebuild_chunk: Option<&'a CancellationToken>,
 }
 
 impl<'a> LongTermProjectionWriteControl<'a> {
@@ -1083,6 +1087,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             committed_batches: None,
             #[cfg(test)]
             cancel_after_commit: None,
+            #[cfg(test)]
+            stop_after_rebuild_chunk: None,
         }
     }
 
@@ -1097,6 +1103,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             committed_batches: None,
             #[cfg(test)]
             cancel_after_commit: None,
+            #[cfg(test)]
+            stop_after_rebuild_chunk: None,
         }
     }
 
@@ -1112,6 +1120,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             gate: Some(gate),
             committed_batches: Some((committed_batches, limit)),
             cancel_after_commit: None,
+            stop_after_rebuild_chunk: None,
         }
     }
 
@@ -1127,6 +1136,28 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             gate: Some(gate),
             committed_batches: None,
             cancel_after_commit: Some((shutdown, committed_batches, limit)),
+            stop_after_rebuild_chunk: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn stopping_after_rebuild_chunk(
+        shutdown: &'a CancellationToken,
+        gate: &'a crate::db_pressure::DbPressureGate,
+    ) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            gate: Some(gate),
+            committed_batches: None,
+            cancel_after_commit: None,
+            stop_after_rebuild_chunk: Some(shutdown),
+        }
+    }
+
+    fn complete_rebuild_chunk(&self) {
+        #[cfg(test)]
+        if let Some(shutdown) = self.stop_after_rebuild_chunk {
+            shutdown.cancel();
         }
     }
 
@@ -1860,7 +1891,7 @@ async fn load_long_term_projection_ready_dates(
         return Ok(HashSet::new());
     }
     let mut builder = QueryBuilder::<Sqlite>::new(
-        "SELECT state.bucket_date FROM long_term_projection_bucket_state state WHERE state.interval_baseline_ready = 1 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets dirty WHERE dirty.bucket_date = state.bucket_date) AND state.bucket_date IN (",
+        "SELECT state.bucket_date FROM long_term_projection_bucket_state state WHERE state.interval_baseline_ready = 1 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets dirty LEFT JOIN long_term_projection_date_publications publication ON publication.publication_token = state.publication_token WHERE dirty.bucket_date = state.bucket_date AND (publication.published IS NULL OR publication.published = 0 OR state.publication_generation IS NULL OR dirty.generation <> state.publication_generation)) AND state.bucket_date IN (",
     );
     let mut separated = builder.separated(", ");
     for date in dates {
@@ -2616,10 +2647,29 @@ struct LongTermProjectionDateRebuild {
     source_row_count: u64,
 }
 
+#[derive(Debug)]
+struct LongTermProjectionRebuildPublication<'a> {
+    next_cursor: Option<i64>,
+    clear_dirty_buckets: &'a [LongTermProjectionDirtyBucket],
+    mark_ready: bool,
+    publish_state: bool,
+    publication_token: Option<&'a str>,
+    repaired_start_date: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct LongTermProjectionDirtyBucket {
     bucket_date: String,
     generation: i64,
+}
+
+fn next_long_term_projection_publication_token() -> String {
+    let sequence =
+        LONG_TERM_PROJECTION_PUBLICATION_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    format!(
+        "long-term-publication:{}:{sequence}",
+        Utc::now().timestamp_micros()
+    )
 }
 
 fn long_term_projection_row_affects_date(row: &LongTermInvocationRow, bucket_date: &str) -> bool {
@@ -2948,6 +2998,31 @@ async fn ensure_long_term_projection_daily_backup(
     .await
 }
 
+async fn stage_long_term_projection_date_publication(
+    pool: &Pool<Sqlite>,
+    bucket_date: &str,
+    rebuild_token: &str,
+    publication_token: &str,
+    publication_generation: Option<i64>,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    let staged = sqlx::query(
+        "UPDATE long_term_projection_bucket_state SET publication_token = ?1, publication_generation = ?2, updated_at = datetime('now') WHERE bucket_date = ?3 AND active_daily_backup_token = ?4",
+    )
+    .bind(publication_token)
+    .bind(publication_generation)
+    .bind(bucket_date)
+    .bind(rebuild_token)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if staged != 1 {
+        bail!("long-term projection date publication lost its backup for {bucket_date}");
+    }
+    control.commit(transaction, permit).await
+}
+
 async fn ensure_long_term_projection_daily_backup_for_date(
     pool: &Pool<Sqlite>,
     bucket_date: &str,
@@ -3173,14 +3248,25 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
         return commit_long_term_projection_date_rebuild_chunk_with_control(
             pool,
             rebuilds,
-            next_cursor,
-            clear_dirty_buckets,
-            mark_ready,
-            true,
+            LongTermProjectionRebuildPublication {
+                next_cursor,
+                clear_dirty_buckets,
+                mark_ready,
+                publish_state: true,
+                publication_token: None,
+                repaired_start_date: None,
+            },
             control,
         )
         .await;
     }
+    let publication_token = next_long_term_projection_publication_token();
+    let repaired_start_date = rebuilds
+        .iter()
+        .filter(|rebuild| !rebuild.daily.is_empty())
+        .map(|rebuild| rebuild.bucket_date.as_str())
+        .min()
+        .map(str::to_string);
     for (index, rebuild_chunk) in rebuilds
         .chunks(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES)
         .enumerate()
@@ -3196,45 +3282,79 @@ async fn commit_long_term_projection_date_rebuilds_with_control(
             .filter(|dirty| chunk_dates.contains(dirty.bucket_date.as_str()))
             .cloned()
             .collect::<Vec<_>>();
-        // Older chunks publish a complete replacement but retain the cursor. If the process
-        // stops before the final chunk, the terminal event is retried rather than skipped; only
-        // the final bounded publication advances it.
+        // Staged chunks retain their backup pointer and dirty generation. The final bounded
+        // transaction publishes a token with the cursor; readers do not expose a staged prefix.
         commit_long_term_projection_date_rebuild_chunk_with_control(
             pool,
             rebuild_chunk,
-            last_chunk.then_some(next_cursor).flatten(),
-            &chunk_dirty,
-            last_chunk && mark_ready,
-            last_chunk,
+            LongTermProjectionRebuildPublication {
+                next_cursor: last_chunk.then_some(next_cursor).flatten(),
+                clear_dirty_buckets: &chunk_dirty,
+                mark_ready: last_chunk && mark_ready,
+                publish_state: last_chunk,
+                publication_token: Some(&publication_token),
+                repaired_start_date: last_chunk
+                    .then_some(repaired_start_date.as_deref())
+                    .flatten(),
+            },
             control,
         )
         .await?;
+        if !last_chunk {
+            control.complete_rebuild_chunk();
+            control.check()?;
+        }
     }
+    release_long_term_projection_date_publication(
+        pool,
+        rebuilds,
+        clear_dirty_buckets,
+        &publication_token,
+        control,
+    )
+    .await?;
     Ok(())
 }
 
 async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     pool: &Pool<Sqlite>,
     rebuilds: &[LongTermProjectionDateRebuild],
-    next_cursor: Option<i64>,
-    clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
-    mark_ready: bool,
-    publish_state: bool,
+    publication: LongTermProjectionRebuildPublication<'_>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     debug_assert!(rebuilds.len() <= LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES);
-    let repaired_start_date = rebuilds
+    let chunk_repaired_start_date = rebuilds
         .iter()
         .filter(|rebuild| !rebuild.daily.is_empty())
         .map(|rebuild| rebuild.bucket_date.as_str())
         .min()
         .map(str::to_string);
+    let repaired_start_date = publication
+        .repaired_start_date
+        .map(str::to_string)
+        .or(chunk_repaired_start_date);
     let repaired_nonempty = repaired_start_date.is_some();
 
     let mut rebuild_tokens = Vec::with_capacity(rebuilds.len());
     for rebuild in rebuilds {
         let token = format!("long-term-date:{}", rebuild.bucket_date);
         ensure_long_term_projection_daily_backup(pool, rebuild, &token, control).await?;
+        if let Some(publication_token) = publication.publication_token {
+            let publication_generation = publication
+                .clear_dirty_buckets
+                .iter()
+                .find(|dirty| dirty.bucket_date == rebuild.bucket_date)
+                .map(|dirty| dirty.generation);
+            stage_long_term_projection_date_publication(
+                pool,
+                &rebuild.bucket_date,
+                &token,
+                publication_token,
+                publication_generation,
+                control,
+            )
+            .await?;
+        }
         clear_long_term_projection_rebuild_members(pool, &token, control).await?;
         rebuild_tokens.push(token.clone());
         if rebuild.interval_segments.is_empty() {
@@ -3344,11 +3464,14 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
         clear_long_term_projection_rebuild_members(pool, token, control).await?;
     }
 
-    // Releasing the public backup, clearing the matching dirty generation, and advancing the
-    // cursor are one publication boundary. A cancelled worker therefore leaves either the
-    // last-good snapshot and old cursor, or a fully published replacement and new cursor.
+    if !publication.publish_state {
+        return Ok(());
+    }
+
+    // Publishing the token, cursor, and status is a single small transaction. Cleanup only
+    // removes already-published indirection, so cancellation cannot expose a staged prefix.
     let (mut transaction, permit) = control.begin(pool).await?;
-    if mark_ready {
+    if publication.mark_ready {
         let initial_marker = sqlx::query_scalar::<_, Option<String>>(
             "SELECT last_error FROM long_term_stats_state WHERE id = ?1",
         )
@@ -3362,29 +3485,40 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
             );
         }
     }
-    let published_dirty = clear_dirty_buckets
-        .iter()
-        .filter(|dirty| {
-            rebuilds
-                .iter()
-                .any(|rebuild| rebuild.bucket_date == dirty.bucket_date)
-        })
-        .collect::<Vec<_>>();
-    if !published_dirty.is_empty() {
-        let mut query =
-            QueryBuilder::<Sqlite>::new("DELETE FROM long_term_projection_dirty_buckets WHERE ");
-        let mut dates = query.separated(" OR ");
-        for dirty in published_dirty {
-            dates
-                .push("(bucket_date = ")
-                .push_bind(&dirty.bucket_date)
-                .push(" AND generation = ")
-                .push_bind(dirty.generation)
-                .push(")");
+    if let Some(publication_token) = publication.publication_token {
+        sqlx::query(
+            "INSERT INTO long_term_projection_date_publications (publication_token, published) VALUES (?1, 1) ON CONFLICT(publication_token) DO UPDATE SET published = 1, updated_at = datetime('now')",
+        )
+        .bind(publication_token)
+        .execute(&mut *transaction)
+        .await?;
+    } else {
+        let published_dirty = publication
+            .clear_dirty_buckets
+            .iter()
+            .filter(|dirty| {
+                rebuilds
+                    .iter()
+                    .any(|rebuild| rebuild.bucket_date == dirty.bucket_date)
+            })
+            .collect::<Vec<_>>();
+        if !published_dirty.is_empty() {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "DELETE FROM long_term_projection_dirty_buckets WHERE ",
+            );
+            let mut dates = query.separated(" OR ");
+            for dirty in published_dirty {
+                dates
+                    .push("(bucket_date = ")
+                    .push_bind(&dirty.bucket_date)
+                    .push(" AND generation = ")
+                    .push_bind(dirty.generation)
+                    .push(")");
+            }
+            query.build().execute(&mut *transaction).await?;
         }
-        query.build().execute(&mut *transaction).await?;
     }
-    if !rebuild_tokens.is_empty() {
+    if publication.publication_token.is_none() && !rebuild_tokens.is_empty() {
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, updated_at = datetime('now') WHERE ",
         );
@@ -3412,7 +3546,7 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
         }
         query.build().execute(&mut *transaction).await?;
     }
-    if let Some(cursor) = next_cursor {
+    if let Some(cursor) = publication.next_cursor {
         sqlx::query(
             "INSERT INTO long_term_projection_state (consumer, cursor_row_id, last_flush_at, last_error) VALUES (?1, ?2, datetime('now'), NULL) ON CONFLICT(consumer) DO UPDATE SET cursor_row_id = MAX(long_term_projection_state.cursor_row_id, excluded.cursor_row_id), last_flush_at = excluded.last_flush_at, last_error = NULL, updated_at = datetime('now')",
         )
@@ -3424,9 +3558,9 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     sqlx::query(
         "UPDATE long_term_stats_state SET status = CASE WHEN ?1 OR (?2 AND ?3 AND status = ?4) THEN ?5 ELSE status END, statistics_start_date = CASE WHEN ?6 IS NULL THEN statistics_start_date WHEN statistics_start_date IS NULL OR ?6 < statistics_start_date THEN ?6 ELSE statistics_start_date END, last_error = CASE WHEN ?1 OR (?2 AND ?3 AND status = ?4) THEN NULL ELSE last_error END, updated_at = datetime('now') WHERE id = ?7",
     )
-    .bind(mark_ready)
+    .bind(publication.mark_ready)
     .bind(repaired_nonempty)
-    .bind(publish_state)
+    .bind(publication.publish_state)
     .bind(LONG_TERM_STATUS_EMPTY)
     .bind(LONG_TERM_STATUS_READY)
     .bind(repaired_start_date)
@@ -3434,8 +3568,81 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await?;
-    for token in rebuild_tokens {
-        clear_long_term_projection_daily_backup(pool, &token, control).await?;
+    if publication.publication_token.is_none() {
+        for token in rebuild_tokens {
+            clear_long_term_projection_daily_backup(pool, &token, control).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn release_long_term_projection_date_publication(
+    pool: &Pool<Sqlite>,
+    rebuilds: &[LongTermProjectionDateRebuild],
+    clear_dirty_buckets: &[LongTermProjectionDirtyBucket],
+    publication_token: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    for rebuild in rebuilds {
+        let rebuild_token = format!("long-term-date:{}", rebuild.bucket_date);
+        let publication_generation = clear_dirty_buckets
+            .iter()
+            .find(|dirty| dirty.bucket_date == rebuild.bucket_date)
+            .map(|dirty| dirty.generation);
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let has_newer_dirty = if let Some(publication_generation) = publication_generation {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation <> ?2)",
+            )
+            .bind(&rebuild.bucket_date)
+            .bind(publication_generation)
+            .fetch_one(&mut *transaction)
+            .await?
+                != 0
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1)",
+            )
+            .bind(&rebuild.bucket_date)
+            .fetch_one(&mut *transaction)
+            .await?
+                != 0
+        };
+        if has_newer_dirty {
+            control.commit(transaction, permit).await?;
+            continue;
+        }
+        if let Some(publication_generation) = publication_generation {
+            sqlx::query(
+                "DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2",
+            )
+            .bind(&rebuild.bucket_date)
+            .bind(publication_generation)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        let released = sqlx::query(
+            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = NULL, publication_generation = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2 AND publication_token = ?3",
+        )
+        .bind(&rebuild.bucket_date)
+        .bind(&rebuild_token)
+        .bind(publication_token)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if released != 0 {
+            sqlx::query(
+                "DELETE FROM long_term_projection_daily_backup_claims WHERE bucket_date = ?1 AND rebuild_token = ?2",
+            )
+            .bind(&rebuild.bucket_date)
+            .bind(&rebuild_token)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        control.commit(transaction, permit).await?;
+        if released != 0 {
+            clear_long_term_projection_daily_backup(pool, &rebuild_token, control).await?;
+        }
     }
     Ok(())
 }
@@ -7262,6 +7469,8 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
             bucket_date TEXT PRIMARY KEY,
             interval_baseline_ready INTEGER NOT NULL DEFAULT 0,
             active_daily_backup_token TEXT,
+            publication_token TEXT,
+            publication_generation INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -7275,6 +7484,26 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await;
     if let Err(error) = daily_backup_token_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let publication_token_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_bucket_state ADD COLUMN publication_token TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = publication_token_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let publication_generation_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_bucket_state ADD COLUMN publication_generation INTEGER",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = publication_generation_migration
         && !error.to_string().contains("duplicate column name")
     {
         return Err(error.into());
@@ -7311,6 +7540,18 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure long-term projection daily backup table")?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS long_term_projection_date_publications (
+            publication_token TEXT PRIMARY KEY,
+            published INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection date publication table")?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_long_term_projection_daily_backups_token_date ON long_term_projection_daily_backups (rebuild_token, stats_date)",
     )
@@ -7470,7 +7711,21 @@ fn long_term_projection_active_daily_cte() -> &'static str {
         d.first_byte_sum_ms, d.first_byte_samples, d.response_sum_ms, d.response_samples
       FROM long_term_usage_daily d
       LEFT JOIN long_term_projection_bucket_state state ON state.bucket_date = d.stats_date
+      LEFT JOIN long_term_projection_date_publications publication
+        ON publication.publication_token = state.publication_token
       WHERE state.active_daily_backup_token IS NULL
+         OR (
+           publication.published = 1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM long_term_projection_dirty_buckets dirty
+             WHERE dirty.bucket_date = d.stats_date
+               AND (
+                 state.publication_generation IS NULL
+                 OR dirty.generation <> state.publication_generation
+               )
+           )
+         )
       UNION ALL
       SELECT backup.stats_date, backup.dimension, backup.series_key, backup.display_name,
         backup.reasoning_effort, backup.calls, backup.token_total, backup.token_samples,
@@ -7483,6 +7738,19 @@ fn long_term_projection_active_daily_cte() -> &'static str {
       JOIN long_term_projection_bucket_state state
         ON state.bucket_date = backup.stats_date
        AND state.active_daily_backup_token = backup.rebuild_token
+      LEFT JOIN long_term_projection_date_publications publication
+        ON publication.publication_token = state.publication_token
+      WHERE publication.published IS NULL
+         OR publication.published = 0
+         OR EXISTS (
+           SELECT 1
+           FROM long_term_projection_dirty_buckets dirty
+           WHERE dirty.bucket_date = backup.stats_date
+             AND (
+               state.publication_generation IS NULL
+               OR dirty.generation <> state.publication_generation
+             )
+         )
     )
     "#
 }
@@ -10927,6 +11195,14 @@ mod tests {
             .expect("empty projection state");
 
         let first_date = NaiveDate::from_ymd_opt(2025, 1, 1).expect("first projection date");
+        let first_date_text = first_date.to_string();
+        sqlx::query(
+            "INSERT INTO long_term_usage_daily (stats_date, dimension, series_key, display_name, calls) VALUES (?1, 'model', 'model:last-good', 'last good', 41)",
+        )
+        .bind(&first_date_text)
+        .execute(&pool)
+        .await
+        .expect("seed last-good first chunk row");
         let mut rebuilds = Vec::with_capacity(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES + 1);
         let mut dirty = Vec::with_capacity(LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES + 1);
         for offset in 0..=LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES {
@@ -10980,18 +11256,10 @@ mod tests {
             });
         }
 
-        // Each empty date commits six bounded staging transactions. The first date has one
-        // additional daily-row transaction, followed by one first-chunk publication transaction.
-        let commits_before_second_chunk = LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES * 6 + 2;
         let shutdown = CancellationToken::new();
         let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
-        let committed_batches = AtomicUsize::new(0);
-        let interrupted = LongTermProjectionWriteControl::stopping_after(
-            &shutdown,
-            &gate,
-            &committed_batches,
-            commits_before_second_chunk,
-        );
+        let interrupted =
+            LongTermProjectionWriteControl::stopping_after_rebuild_chunk(&shutdown, &gate);
         commit_long_term_projection_date_rebuilds_with_control(
             &pool,
             &rebuilds,
@@ -11023,9 +11291,16 @@ mod tests {
             )
             .fetch_one(&pool)
             .await
-            .expect("remaining dirty chunk"),
-            1
+            .expect("all dirty dates remain before publication"),
+            (LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES + 1) as i64
         );
+        let visible_rows =
+            load_long_term_daily_rows(&pool, "model", None, &first_date_text, &first_date_text)
+                .await
+                .expect("staged chunk keeps last-good public row");
+        assert_eq!(visible_rows.len(), 1);
+        assert_eq!(visible_rows[0].series_key, "model:last-good");
+        assert_eq!(visible_rows[0].calls, 41);
 
         let unrestricted = LongTermProjectionWriteControl::unrestricted();
         commit_long_term_projection_date_rebuilds_with_control(
@@ -11061,6 +11336,12 @@ mod tests {
             .expect("cleared dirty chunks"),
             0
         );
+        let published_rows =
+            load_long_term_daily_rows(&pool, "model", None, &first_date_text, &first_date_text)
+                .await
+                .expect("published first chunk row");
+        assert_eq!(published_rows.len(), 1);
+        assert_eq!(published_rows[0].series_key, "model:chunked");
     }
 
     #[tokio::test]
