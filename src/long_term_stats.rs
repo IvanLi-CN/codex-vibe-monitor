@@ -2046,6 +2046,7 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     );
 
     let started = Instant::now();
+    finish_long_term_projection_publication_cleanup(&state.pool, &control).await?;
     let mut cursor = load_long_term_projection_cursor_with_control(&state.pool, &control).await?;
     let daily_verify_requested =
         trigger == "daily_verify" || long_term_projection_daily_verify_due(&state.pool).await?;
@@ -2661,6 +2662,14 @@ struct LongTermProjectionRebuildPublication<'a> {
 struct LongTermProjectionDirtyBucket {
     bucket_date: String,
     generation: i64,
+}
+
+#[derive(Debug, FromRow)]
+struct LongTermProjectionPublicationMember {
+    bucket_date: String,
+    rebuild_token: String,
+    publication_token: String,
+    publication_generation: Option<i64>,
 }
 
 fn next_long_term_projection_publication_token() -> String {
@@ -3589,60 +3598,104 @@ async fn release_long_term_projection_date_publication(
             .iter()
             .find(|dirty| dirty.bucket_date == rebuild.bucket_date)
             .map(|dirty| dirty.generation);
-        let (mut transaction, permit) = control.begin(pool).await?;
-        let has_newer_dirty = if let Some(publication_generation) = publication_generation {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation <> ?2)",
-            )
-            .bind(&rebuild.bucket_date)
-            .bind(publication_generation)
-            .fetch_one(&mut *transaction)
-            .await?
-                != 0
-        } else {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1)",
-            )
-            .bind(&rebuild.bucket_date)
-            .fetch_one(&mut *transaction)
-            .await?
-                != 0
-        };
-        if has_newer_dirty {
-            control.commit(transaction, permit).await?;
-            continue;
-        }
-        if let Some(publication_generation) = publication_generation {
-            sqlx::query(
-                "DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2",
-            )
-            .bind(&rebuild.bucket_date)
-            .bind(publication_generation)
-            .execute(&mut *transaction)
-            .await?;
-        }
-        let released = sqlx::query(
-            "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = NULL, publication_generation = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2 AND publication_token = ?3",
+        release_long_term_projection_publication_member(
+            pool,
+            &rebuild.bucket_date,
+            &rebuild_token,
+            publication_generation,
+            publication_token,
+            control,
         )
-        .bind(&rebuild.bucket_date)
-        .bind(&rebuild_token)
-        .bind(publication_token)
-        .execute(&mut *transaction)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn release_long_term_projection_publication_member(
+    pool: &Pool<Sqlite>,
+    bucket_date: &str,
+    rebuild_token: &str,
+    publication_generation: Option<i64>,
+    publication_token: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<bool> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    let has_newer_dirty = if let Some(publication_generation) = publication_generation {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation <> ?2)",
+        )
+        .bind(bucket_date)
+        .bind(publication_generation)
+        .fetch_one(&mut *transaction)
         .await?
-        .rows_affected();
-        if released != 0 {
-            sqlx::query(
-                "DELETE FROM long_term_projection_daily_backup_claims WHERE bucket_date = ?1 AND rebuild_token = ?2",
-            )
-            .bind(&rebuild.bucket_date)
-            .bind(&rebuild_token)
-            .execute(&mut *transaction)
-            .await?;
-        }
+            != 0
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1)",
+        )
+        .bind(bucket_date)
+        .fetch_one(&mut *transaction)
+        .await?
+            != 0
+    };
+    if has_newer_dirty {
         control.commit(transaction, permit).await?;
-        if released != 0 {
-            clear_long_term_projection_daily_backup(pool, &rebuild_token, control).await?;
-        }
+        return Ok(false);
+    }
+    if let Some(publication_generation) = publication_generation {
+        sqlx::query(
+            "DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1 AND generation = ?2",
+        )
+        .bind(bucket_date)
+        .bind(publication_generation)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    let released = sqlx::query(
+        "UPDATE long_term_projection_bucket_state SET active_daily_backup_token = NULL, publication_token = NULL, publication_generation = NULL, updated_at = datetime('now') WHERE bucket_date = ?1 AND active_daily_backup_token = ?2 AND publication_token = ?3",
+    )
+    .bind(bucket_date)
+    .bind(rebuild_token)
+    .bind(publication_token)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if released != 0 {
+        sqlx::query(
+            "DELETE FROM long_term_projection_daily_backup_claims WHERE bucket_date = ?1 AND rebuild_token = ?2",
+        )
+        .bind(bucket_date)
+        .bind(rebuild_token)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    control.commit(transaction, permit).await?;
+    if released != 0 {
+        clear_long_term_projection_daily_backup(pool, rebuild_token, control).await?;
+    }
+    Ok(released != 0)
+}
+
+async fn finish_long_term_projection_publication_cleanup(
+    pool: &Pool<Sqlite>,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let members = sqlx::query_as::<_, LongTermProjectionPublicationMember>(
+        "SELECT state.bucket_date, state.active_daily_backup_token AS rebuild_token, state.publication_token, state.publication_generation FROM long_term_projection_bucket_state state JOIN long_term_projection_date_publications publication ON publication.publication_token = state.publication_token WHERE publication.published = 1 AND state.active_daily_backup_token IS NOT NULL ORDER BY state.updated_at ASC, state.bucket_date ASC LIMIT ?1",
+    )
+    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+    .fetch_all(pool)
+    .await?;
+    for member in members {
+        let _released = release_long_term_projection_publication_member(
+            pool,
+            &member.bucket_date,
+            &member.rebuild_token,
+            member.publication_generation,
+            &member.publication_token,
+            control,
+        )
+        .await?;
     }
     Ok(())
 }
