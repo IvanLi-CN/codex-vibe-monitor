@@ -1962,6 +1962,13 @@ async fn flush_long_term_projection(state: &AppState, trigger: &'static str) -> 
 }
 
 async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static str) -> Result<u64> {
+    // The initial refresher and P2 share date backups for crash recovery, but never their live
+    // replacement window. Defer P2 while the refresher owns this process-wide maintenance lock;
+    // a later terminal wake or ticker retries the bounded work.
+    let _refresh_guard = match LONG_TERM_REFRESH_LOCK.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => return Ok(0),
+    };
     let control = LongTermProjectionWriteControl::background(
         &state.shutdown,
         crate::db_pressure::global_db_pressure_gate(),
