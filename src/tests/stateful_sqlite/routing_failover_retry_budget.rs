@@ -59,6 +59,7 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     for sticky_key in ["sticky-free-001", "sticky-free-002"] {
         upsert_test_sticky_route_at(&state.pool, sticky_key, free_id, &recent_seen_at).await;
     }
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
         .await
@@ -1715,14 +1716,14 @@ async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     set_test_account_degraded_route_state(
-        &state.pool,
+        &state,
         primary_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
         "test degraded plain 429",
     )
     .await;
     set_test_account_degraded_route_state(
-        &state.pool,
+        &state,
         secondary_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
         "test degraded 5xx",
@@ -2213,6 +2214,7 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(

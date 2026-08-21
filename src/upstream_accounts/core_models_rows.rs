@@ -297,7 +297,7 @@ where
         .map_err(serde::de::Error::custom)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 #[allow(dead_code)]
 pub(crate) struct PoolStickyRouteRow {
     pub(crate) sticky_key: String,

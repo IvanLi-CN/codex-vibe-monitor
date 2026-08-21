@@ -2154,6 +2154,7 @@ pub(crate) struct LiveRequestStreamingPerfResponse {
     pub(crate) measured_invocation_count: i64,
     pub(crate) response_invocation_count: i64,
     pub(crate) cohorts: Vec<LiveRequestStreamingCohortStats>,
+    pub(crate) route_finalization: LiveRequestStreamingRouteFinalizationStats,
 }
 
 #[derive(Debug, Serialize)]
@@ -2182,6 +2183,31 @@ pub(crate) struct LiveRequestStreamingPercentiles {
     pub(crate) p50_ms: f64,
     pub(crate) p90_ms: f64,
     pub(crate) p99_ms: f64,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingValuePercentiles {
+    pub(crate) p50: f64,
+    pub(crate) p90: f64,
+    pub(crate) p99: f64,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingRouteFinalizationStats {
+    pub(crate) sample_count: i64,
+    pub(crate) sufficient_samples: bool,
+    pub(crate) raw_bytes: Option<LiveRequestStreamingValuePercentiles>,
+    pub(crate) logical_bytes: Option<LiveRequestStreamingValuePercentiles>,
+    pub(crate) raw_ratio: Option<LiveRequestStreamingValuePercentiles>,
+    pub(crate) logical_ratio: Option<LiveRequestStreamingValuePercentiles>,
+    pub(crate) finalization_ms: Option<LiveRequestStreamingPercentiles>,
+    pub(crate) eof_finalized_rate: f64,
+    pub(crate) conservative_buffered_rate: f64,
+    pub(crate) dependency_factor_counts: std::collections::BTreeMap<String, i64>,
+    pub(crate) hot_cache_hit_rate: f64,
+    pub(crate) cold_load_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2,16 +2,167 @@ use super::*;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PoolRoutingRuntimeCache {
+    /// Monotonically changes whenever a routing write publishes a new snapshot.
+    pub(crate) generation: u64,
+    /// A routing-state write can invalidate the immutable snapshot without
+    /// performing a database rebuild on the request that observed the write.
+    /// The next reader rebuilds it through the shared cold-load lock.
+    pub(crate) invalidated: bool,
+    #[cfg(test)]
+    pub(crate) sqlite_data_version: i64,
     pub(crate) api_key: Option<String>,
     pub(crate) request_compression: PoolRoutingRequestCompressionSettingsResolved,
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResolved,
+    pub(crate) cache_hit_protection: CacheHitProtectionSettings,
+    pub(crate) live_request_streaming: LiveRequestStreamingSettings,
     pub(crate) model_routing: PoolModelRoutingRuntimeCache,
+    pub(crate) prompt_route_cache: Arc<std::sync::Mutex<PoolRoutingPromptRouteCache>>,
+    pub(crate) sticky_route_cache: Arc<std::sync::Mutex<PoolRoutingStickyRouteCache>>,
+}
+
+pub(crate) const POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY: usize = 16_384;
+pub(crate) const POOL_ROUTING_STICKY_ROUTE_CACHE_CAPACITY: usize = 16_384;
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) struct PoolRoutingPromptRouteCacheKey {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) request_contains_encrypted_content: bool,
+    pub(crate) encrypted_session_owner_routing_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRoutingPromptRouteCacheValue {
+    pub(crate) binding_constraint: Option<PromptCacheConversationBindingConstraint>,
+    pub(crate) owner_auto_guard_active: bool,
+    pub(crate) conversation_override: Option<ConversationRoutingOverride>,
+}
+
+/// Bounded, negative-caching lookup table for high-cardinality conversation
+/// keys. The owning runtime snapshot replaces this cache on routing writes.
+#[derive(Debug, Default)]
+pub(crate) struct PoolRoutingPromptRouteCache {
+    generation: u64,
+    values: HashMap<PoolRoutingPromptRouteCacheKey, Option<PoolRoutingPromptRouteCacheValue>>,
+    recency: std::collections::VecDeque<PoolRoutingPromptRouteCacheKey>,
+}
+
+impl PoolRoutingPromptRouteCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        key: &PoolRoutingPromptRouteCacheKey,
+    ) -> Option<Option<PoolRoutingPromptRouteCacheValue>> {
+        let value = self.values.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        key: PoolRoutingPromptRouteCacheKey,
+        value: Option<PoolRoutingPromptRouteCacheValue>,
+    ) {
+        self.values.insert(key.clone(), value);
+        self.touch(&key);
+        while self.values.len() > POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY {
+            let Some(oldest) = self.recency.pop_front() else {
+                break;
+            };
+            self.values.remove(&oldest);
+        }
+    }
+
+    pub(crate) fn invalidate_prompt_cache_key(&mut self, prompt_cache_key: &str) {
+        self.generation = self.generation.saturating_add(1);
+        self.values
+            .retain(|key, _| key.prompt_cache_key != prompt_cache_key);
+        self.recency
+            .retain(|key| key.prompt_cache_key != prompt_cache_key);
+    }
+
+    fn touch(&mut self, key: &PoolRoutingPromptRouteCacheKey) {
+        self.recency.retain(|existing| existing != key);
+        self.recency.push_back(key.clone());
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub(crate) struct PoolRoutingStickyRouteCacheKey {
+    pub(crate) sticky_key: String,
+    pub(crate) model_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRoutingStickyRouteCacheValue {
+    pub(crate) route: Option<PoolStickyRouteRow>,
+    pub(crate) affinity_generation: i64,
+}
+
+/// Bounded, negative-caching lookup table for sticky routing keys. Entries are
+/// invalidated by the routing mutation broadcasts after the durable write.
+#[derive(Debug, Default)]
+pub(crate) struct PoolRoutingStickyRouteCache {
+    generation: u64,
+    values: HashMap<PoolRoutingStickyRouteCacheKey, PoolRoutingStickyRouteCacheValue>,
+    recency: std::collections::VecDeque<PoolRoutingStickyRouteCacheKey>,
+}
+
+impl PoolRoutingStickyRouteCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        key: &PoolRoutingStickyRouteCacheKey,
+    ) -> Option<PoolRoutingStickyRouteCacheValue> {
+        let value = self.values.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        key: PoolRoutingStickyRouteCacheKey,
+        value: PoolRoutingStickyRouteCacheValue,
+    ) {
+        self.values.insert(key.clone(), value);
+        self.touch(&key);
+        while self.values.len() > POOL_ROUTING_STICKY_ROUTE_CACHE_CAPACITY {
+            let Some(oldest) = self.recency.pop_front() else {
+                break;
+            };
+            self.values.remove(&oldest);
+        }
+    }
+
+    pub(crate) fn invalidate_sticky_key(&mut self, sticky_key: &str) {
+        self.generation = self.generation.saturating_add(1);
+        self.values.retain(|key, _| key.sticky_key != sticky_key);
+        self.recency.retain(|key| key.sticky_key != sticky_key);
+    }
+
+    fn touch(&mut self, key: &PoolRoutingStickyRouteCacheKey) {
+        self.recency.retain(|existing| existing != key);
+        self.recency.push_back(key.clone());
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PoolModelRoutingRuntimeCache {
     pub(crate) generation: u64,
     pub(crate) mappings_by_account: HashMap<i64, Vec<CompiledModelMapping>>,
+    pub(crate) routing_account_rows_by_id: HashMap<i64, std::sync::Arc<UpstreamAccountRow>>,
+    pub(crate) routing_candidates: Vec<AccountRoutingCandidateRow>,
+    pub(crate) effective_rules_by_account: HashMap<i64, EffectiveRoutingRule>,
+    pub(crate) group_metadata_by_name: HashMap<String, UpstreamAccountGroupMetadata>,
+    pub(crate) route_binding_failure_penalties: HashMap<String, i64>,
+    pub(crate) transport_decode_sticky_escape_states:
+        HashMap<i64, TransportDecodeStickyEscapeState>,
+    pub(crate) model_route_runtime: HashMap<(i64, String), ModelRouteRuntimeSnapshot>,
     pub(crate) available_models: Vec<String>,
     pub(crate) warmed_model_account_ids: HashMap<String, Vec<i64>>,
 }
@@ -2120,6 +2271,9 @@ pub(crate) struct AppState {
         Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
+    #[cfg(test)]
+    pub(crate) pool_routing_test_data_version_connection:
+        Arc<Mutex<Option<sqlx::pool::PoolConnection<Sqlite>>>>,
     pub(crate) pool_model_routing_cache_write_lock: Arc<Mutex<()>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,
@@ -2157,6 +2311,94 @@ impl PoolRoutingAvailabilitySignal {
 pub(crate) struct PricingCatalog {
     pub(crate) version: String,
     pub(crate) models: HashMap<String, ModelPricing>,
+}
+
+#[cfg(test)]
+mod pool_routing_prompt_route_cache_tests {
+    use super::*;
+
+    fn key(index: usize) -> PoolRoutingPromptRouteCacheKey {
+        PoolRoutingPromptRouteCacheKey {
+            prompt_cache_key: format!("prompt-{index}"),
+            request_contains_encrypted_content: false,
+            encrypted_session_owner_routing_enabled: false,
+        }
+    }
+
+    #[test]
+    fn routing_hot_cache_retains_negative_entries_and_evicts_lru() {
+        let mut cache = PoolRoutingPromptRouteCache::default();
+        for index in 0..POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY {
+            cache.insert(key(index), None);
+        }
+        assert!(cache.get(&key(0)).is_some_and(|value| value.is_none()));
+        cache.insert(key(POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY), None);
+
+        assert!(cache.get(&key(0)).is_some_and(|value| value.is_none()));
+        assert!(cache.get(&key(1)).is_none());
+        assert!(
+            cache
+                .get(&key(POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY))
+                .is_some_and(|value| value.is_none())
+        );
+    }
+
+    #[test]
+    fn routing_hot_cache_invalidates_all_variants_for_prompt_key() {
+        let mut cache = PoolRoutingPromptRouteCache::default();
+        let mut encrypted = key(1);
+        encrypted.request_contains_encrypted_content = true;
+        cache.insert(key(1), None);
+        cache.insert(encrypted, None);
+        cache.insert(key(2), None);
+
+        cache.invalidate_prompt_cache_key("prompt-1");
+
+        assert!(cache.get(&key(1)).is_none());
+        assert!(cache.get(&key(2)).is_some_and(|value| value.is_none()));
+    }
+
+    #[test]
+    fn routing_hot_cache_invalidates_every_sticky_model_variant() {
+        let mut cache = PoolRoutingStickyRouteCache::default();
+        let base = PoolRoutingStickyRouteCacheKey {
+            sticky_key: "sticky-1".to_string(),
+            model_key: None,
+        };
+        let model = PoolRoutingStickyRouteCacheKey {
+            sticky_key: "sticky-1".to_string(),
+            model_key: Some("gpt-5".to_string()),
+        };
+        let other = PoolRoutingStickyRouteCacheKey {
+            sticky_key: "sticky-2".to_string(),
+            model_key: None,
+        };
+        let negative = PoolRoutingStickyRouteCacheValue {
+            route: None,
+            affinity_generation: 7,
+        };
+        cache.insert(base.clone(), negative.clone());
+        cache.insert(model.clone(), negative);
+        cache.insert(
+            other.clone(),
+            PoolRoutingStickyRouteCacheValue {
+                route: None,
+                affinity_generation: 9,
+            },
+        );
+
+        cache.invalidate_sticky_key("sticky-1");
+
+        assert!(cache.get(&base).is_none());
+        assert!(cache.get(&model).is_none());
+        assert_eq!(
+            cache
+                .get(&other)
+                .expect("other key remains cached")
+                .affinity_generation,
+            9
+        );
+    }
 }
 
 impl Default for PricingCatalog {

@@ -1302,6 +1302,27 @@ export interface LiveRequestStreamingPercentiles {
   p99Ms: number;
 }
 
+export interface LiveRequestStreamingValuePercentiles {
+  p50: number;
+  p90: number;
+  p99: number;
+}
+
+export interface LiveRequestStreamingRouteFinalizationStats {
+  sampleCount: number;
+  sufficientSamples: boolean;
+  rawBytes?: LiveRequestStreamingValuePercentiles | null;
+  logicalBytes?: LiveRequestStreamingValuePercentiles | null;
+  rawRatio?: LiveRequestStreamingValuePercentiles | null;
+  logicalRatio?: LiveRequestStreamingValuePercentiles | null;
+  finalizationMs?: LiveRequestStreamingPercentiles | null;
+  eofFinalizedRate: number;
+  conservativeBufferedRate: number;
+  dependencyFactorCounts: Record<string, number>;
+  hotCacheHitRate: number;
+  coldLoadRate: number;
+}
+
 export interface LiveRequestStreamingCohortStats {
   cohort: string;
   transportMode: "buffered" | "live_first" | "unknown" | string;
@@ -1325,6 +1346,7 @@ export interface LiveRequestStreamingPerf {
   measuredInvocationCount: number;
   responseInvocationCount: number;
   cohorts: LiveRequestStreamingCohortStats[];
+  routeFinalization?: LiveRequestStreamingRouteFinalizationStats;
 }
 
 export interface PerfStatsQuery {

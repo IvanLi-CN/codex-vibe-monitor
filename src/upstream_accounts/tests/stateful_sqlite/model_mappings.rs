@@ -109,6 +109,114 @@ async fn post_create_sync_warms_empty_model_mapping_cache_entry() {
 }
 
 #[tokio::test]
+async fn routing_hot_cache_invalidation_rebuilds_once_with_a_new_generation() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    seed_pool_routing_api_key(&state, "pool-routing-invalidation-key").await;
+
+    let (initial, initial_was_warm) = load_pool_routing_runtime_cache_with_status(state.as_ref())
+        .await
+        .expect("load seeded routing cache");
+    assert!(initial_was_warm);
+
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
+    assert!(
+        state
+            .pool_routing_runtime_cache
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|cache| cache.invalidated),
+        "the failure path must invalidate without rebuilding synchronously"
+    );
+
+    let (rebuilt, rebuilt_was_warm) = load_pool_routing_runtime_cache_with_status(state.as_ref())
+        .await
+        .expect("rebuild invalidated routing cache");
+    assert!(!rebuilt_was_warm);
+    assert!(rebuilt.generation > initial.generation);
+
+    let (hot, _hot_was_warm) = load_pool_routing_runtime_cache_with_status(state.as_ref())
+        .await
+        .expect("reuse rebuilt routing cache");
+    assert!(
+        hot.generation >= rebuilt.generation,
+        "test-only fixture writes may force an additional snapshot refresh"
+    );
+    assert!(!hot.invalidated);
+}
+
+#[tokio::test]
+async fn routing_hot_cache_covers_production_negative_sticky_and_concurrent_misses() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    seed_pool_routing_api_key(&state, "pool-routing-hot-cache-production-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Hot cache production account",
+        "sk-hot-cache-production",
+        None,
+        Some("https://hot-cache-production.example.com/backend-api/codex"),
+    )
+    .await;
+    let sticky_key = "hot-cache-production-negative";
+    let already_tried = Vec::<i64>::new();
+    let excluded_route_keys = HashSet::new();
+
+    let (first, second, third, fourth) = tokio::join!(
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+    );
+    for resolution in [first, second, third, fourth] {
+        assert!(
+            matches!(resolution, Ok(PoolAccountResolution::Resolved(_))),
+            "concurrent production route lookups should resolve a fallback account: {resolution:?}"
+        );
+    }
+
+    let cache_key = PoolRoutingStickyRouteCacheKey {
+        sticky_key: sticky_key.to_string(),
+        model_key: None,
+    };
+    let runtime_cache = state
+        .pool_routing_runtime_cache
+        .lock()
+        .await
+        .clone()
+        .expect("routing runtime cache should be initialized");
+    let cached_negative = runtime_cache
+        .sticky_route_cache
+        .lock()
+        .expect("lock sticky route cache")
+        .get(&cache_key)
+        .expect("concurrent cold misses should coalesce into one cached entry");
+    assert!(
+        cached_negative.route.is_none(),
+        "a missing sticky route must be retained as a bounded negative cache entry"
+    );
+}
+
+#[tokio::test]
 async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let api_key_account_id = insert_api_key_account(&state.pool, "Mapping API key").await;
@@ -478,6 +586,9 @@ async fn model_mapping_routing_bypasses_allowlist_but_respects_system_deny() {
     ensure_account_has_unsupported_model_tag(&state.pool, account_id, "upstream-special")
         .await
         .expect("deny mapped target");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("publish mapped target system deny");
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         state.as_ref(),
         None,

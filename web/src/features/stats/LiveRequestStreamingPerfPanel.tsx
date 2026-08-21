@@ -1,6 +1,10 @@
 import { Alert } from "../../components/ui/alert";
 import { useTranslation } from "../../i18n";
-import type { LiveRequestStreamingCohortStats, LiveRequestStreamingPerf } from "../../lib/api";
+import type {
+  LiveRequestStreamingCohortStats,
+  LiveRequestStreamingPerf,
+  LiveRequestStreamingValuePercentiles,
+} from "../../lib/api";
 
 const MIN_SUCCESS_SAMPLES = 200;
 
@@ -13,9 +17,10 @@ export interface LiveRequestStreamingPerfPanelProps {
 function findCohort(
   cohorts: LiveRequestStreamingCohortStats[],
   cohort: string,
-  transportMode: string,
+  preferredTransportMode: string,
 ): LiveRequestStreamingCohortStats | undefined {
-  return cohorts.find((item) => item.cohort === cohort && item.transportMode === transportMode);
+  const matching = cohorts.filter((item) => item.cohort === cohort);
+  return matching.find((item) => item.transportMode === preferredTransportMode) ?? matching[0];
 }
 
 function formatMs(value: number | undefined): string {
@@ -24,6 +29,21 @@ function formatMs(value: number | undefined): string {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatDistribution(
+  value: LiveRequestStreamingValuePercentiles | undefined | null,
+  suffix: string,
+): string {
+  if (!value) return "-";
+  return `${Math.round(value.p50)} / ${Math.round(value.p90)} / ${Math.round(value.p99)} ${suffix}`;
+}
+
+function formatRatioDistribution(
+  value: LiveRequestStreamingValuePercentiles | undefined | null,
+): string {
+  if (!value) return "-";
+  return `${(value.p50 * 100).toFixed(1)} / ${(value.p90 * 100).toFixed(1)} / ${(value.p99 * 100).toFixed(1)}%`;
 }
 
 function formatBenefit(control: number | undefined, treatment: number | undefined): string {
@@ -139,6 +159,10 @@ export function LiveRequestStreamingPerfPanel({
   const overlapBenefitReady =
     metricHasEnoughSamples(control, "requestUpstreamOverlapSampleCount") &&
     metricHasEnoughSamples(treatment, "requestUpstreamOverlapSampleCount");
+  const routeFinalization = data?.routeFinalization;
+  const routeFactors = Object.entries(routeFinalization?.dependencyFactorCounts ?? {})
+    .map(([factor, count]) => `${factor}: ${count}`)
+    .join(" · ");
 
   return (
     <section className="surface-panel" data-testid="live-request-streaming-perf-panel">
@@ -201,6 +225,61 @@ export function LiveRequestStreamingPerfPanel({
                 }
               />
             </dl>
+            <div className="border-t border-base-300/70 pt-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <div className="text-sm font-semibold text-base-content">
+                  {t("stats.liveRequestStreaming.routeFinalization")}
+                </div>
+                <div className="font-mono text-xs text-base-content/65">
+                  n={routeFinalization?.sampleCount ?? 0}
+                </div>
+              </div>
+              {!routeFinalization?.sufficientSamples ? (
+                <div className="mt-1 text-xs text-warning">
+                  {t("stats.liveRequestStreaming.insufficient", {
+                    count: routeFinalization?.sampleCount ?? 0,
+                    minimum: MIN_SUCCESS_SAMPLES,
+                  })}
+                </div>
+              ) : null}
+              <dl className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeRawBytes")}
+                  value={formatDistribution(routeFinalization?.rawBytes, "B")}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeLogicalBytes")}
+                  value={formatDistribution(routeFinalization?.logicalBytes, "B")}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeRawRatio")}
+                  value={formatRatioDistribution(routeFinalization?.rawRatio)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeLogicalRatio")}
+                  value={formatRatioDistribution(routeFinalization?.logicalRatio)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeFinalizationMs")}
+                  value={formatMs(routeFinalization?.finalizationMs?.p50Ms)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeEofBuffered")}
+                  value={formatPercent(routeFinalization?.eofFinalizedRate ?? 0)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeCacheHit")}
+                  value={formatPercent(routeFinalization?.hotCacheHitRate ?? 0)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeColdLoad")}
+                  value={formatPercent(routeFinalization?.coldLoadRate ?? 0)}
+                />
+              </dl>
+              {routeFactors ? (
+                <div className="mt-2 text-xs text-base-content/60">{routeFactors}</div>
+              ) : null}
+            </div>
           </>
         )}
       </div>

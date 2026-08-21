@@ -50,8 +50,9 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## `/v1/responses` Live Request Body
 
-- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and live-first treatment cohorts without an account-group filter.
-- The request pipeline reuses the raw replay snapshot for retries, applies incremental JSON/compression transforms before outbound bytes, and only starts an upstream attempt after routing metadata is known.
+- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and v2 treatment cohorts without an account-group filter; v1 data is excluded from the v2 comparison.
+- The request pipeline reuses the raw replay snapshot for retries, validates the complete root JSON object before publishing the final route, then applies JSON/compression transforms. No upstream body exists while a route can still change; bounded parsing, cold cache and EOF finalization preserve the buffered contract.
+- The runtime snapshot carries the live setting, account rows, candidates, rules, capability state, bindings, sticky routes, route penalties and model health needed for selection. Prompt-cache/encrypted-owner and sticky-route lookups use independent 16,384-entry negative LRUs with single-flight cold reads and write-through invalidation. Failures and recoveries publish a refreshed routing snapshot; healthy success acknowledgements do not trigger a reload. The performance response reports route-finalization byte positions, ratios, factors and cache outcomes separately from successful response-benefit samples.
 - Invocation persistence and hourly statistics retain exact request/response overlap timestamps so the performance surface compares direct first-response and first-token measurements instead of additive stage estimates.
 
 ## Verification State

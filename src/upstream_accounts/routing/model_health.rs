@@ -157,6 +157,94 @@ impl ModelRoutePenalty {
     }
 }
 
+/// The subset of model-route state that participates in request-time pool
+/// selection. It is built with the immutable routing snapshot, then evaluated
+/// against the current clock without another database read.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelRouteRuntimeSnapshot {
+    state: String,
+    cooldown_until: Option<String>,
+    cache_concurrency_limit: Option<i64>,
+}
+
+impl ModelRouteRuntimeSnapshot {
+    pub(crate) fn penalty_at(&self, now: DateTime<Utc>) -> ModelRoutePenalty {
+        let cooling_down = self.state == MODEL_ROUTE_STATE_COOLING_DOWN
+            && self
+                .cooldown_until
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                .is_some_and(|until| until > now);
+        if cooling_down {
+            ModelRoutePenalty::Excluded
+        } else if self.state == MODEL_ROUTE_STATE_DEGRADED
+            || self.state == MODEL_ROUTE_STATE_COOLING_DOWN
+        {
+            ModelRoutePenalty::Demoted
+        } else {
+            ModelRoutePenalty::Normal
+        }
+    }
+
+    pub(crate) fn requires_expired_cooldown_probe_at(&self, now: DateTime<Utc>) -> bool {
+        self.state == MODEL_ROUTE_STATE_COOLING_DOWN
+            && self
+                .cooldown_until
+                .as_deref()
+                .and_then(parse_to_utc_datetime)
+                .is_some_and(|until| until <= now)
+    }
+
+    pub(crate) fn concurrency_limit_at(
+        &self,
+        cache_hit_protection_enabled: bool,
+        now: DateTime<Utc>,
+    ) -> Option<i64> {
+        if self.requires_expired_cooldown_probe_at(now) {
+            return Some(1);
+        }
+        cache_hit_protection_enabled
+            .then_some(self.cache_concurrency_limit)
+            .flatten()
+            .map(|limit| limit.max(1))
+    }
+}
+
+pub(crate) async fn load_model_route_runtime_snapshots(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<(i64, String), ModelRouteRuntimeSnapshot>> {
+    let rows = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<i64>)>(
+        r#"
+        SELECT routes.account_id, routes.model, routes.state, routes.cooldown_until,
+               routes.cache_concurrency_limit
+          FROM pool_upstream_account_model_routes AS routes
+          JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
+         WHERE accounts.kind = ?1
+           AND COALESCE(accounts.deleted_at, '') = ''
+           AND routes.last_seen_at >= ?2
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .bind(cutoff_string())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(account_id, model, state, cooldown_until, cache_concurrency_limit)| {
+                (
+                    (account_id, model),
+                    ModelRouteRuntimeSnapshot {
+                        state,
+                        cooldown_until,
+                        cache_concurrency_limit,
+                    },
+                )
+            },
+        )
+        .collect())
+}
+
 fn now_string() -> String {
     Utc::now().to_rfc3339()
 }

@@ -809,6 +809,9 @@ async fn enable_cache_hit_protection(state: &AppState) {
     .execute(&state.pool)
     .await
     .expect("enable cache-hit protection");
+    refresh_pool_routing_runtime_cache(state)
+        .await
+        .expect("publish cache-hit protection settings");
 }
 
 async fn cache_hit_route_state(
@@ -1411,6 +1414,9 @@ async fn cache_hit_protection_atomically_reserves_single_model_slot() {
     .execute(&state.pool)
     .await
     .expect("switch cache-hit overflow mode to reroute");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("publish cache-hit overflow mode");
 
     let excluded_ids = Vec::new();
     let excluded_routes = HashSet::new();

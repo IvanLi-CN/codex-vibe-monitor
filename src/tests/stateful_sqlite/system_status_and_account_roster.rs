@@ -1632,6 +1632,8 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        #[cfg(test)]
+        pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
@@ -1965,6 +1967,9 @@ pub(crate) fn clone_state_with_upstream_accounts(
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
+        pool_routing_test_data_version_connection: state
+            .pool_routing_test_data_version_connection
+            .clone(),
         pool_model_routing_cache_write_lock: state.pool_model_routing_cache_write_lock.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
@@ -2025,6 +2030,9 @@ fn clone_state_with_retry_delay_overrides(
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
+        pool_routing_test_data_version_connection: state
+            .pool_routing_test_data_version_connection
+            .clone(),
         pool_model_routing_cache_write_lock: state.pool_model_routing_cache_write_lock.clone(),
         pool_live_attempt_ids: state.pool_live_attempt_ids.clone(),
         pool_group_429_retry_delay_override: pool_group_delay,
@@ -2124,6 +2132,8 @@ pub(crate) async fn test_state_from_existing_pool(
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+        #[cfg(test)]
+        pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         pool_group_429_retry_delay_override: None,
@@ -2499,7 +2509,7 @@ pub(crate) async fn set_test_account_generic_route_cooldown(
 }
 
 pub(crate) async fn set_test_account_degraded_route_state(
-    pool: &SqlitePool,
+    state: &Arc<AppState>,
     account_id: i64,
     failure_kind: &str,
     error_message: &str,
@@ -2525,9 +2535,10 @@ pub(crate) async fn set_test_account_degraded_route_state(
     .bind(&now_iso)
     .bind(failure_kind)
     .bind(account_id)
-    .execute(pool)
+    .execute(&state.pool)
     .await
     .expect("set test pool account degraded route state");
+    state.pool_routing_runtime_cache.lock().await.take();
 }
 
 async fn set_test_account_route_cooldown(
