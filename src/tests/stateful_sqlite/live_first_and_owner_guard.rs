@@ -579,10 +579,10 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
     });
     body_tx
         .send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5","stream":true,"#,
+            br#"{"model":"gpt-5","stream":true,"input":"hello","foo":1,"#,
         )))
         .await
-        .expect("send valid live request prefix");
+        .expect("send valid live request prefix with finalized input");
 
     assert!(
         timeout(Duration::from_secs(1), async {
@@ -602,7 +602,7 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
         })
         .await
         .is_ok(),
-        "live-first should start after model-only route finalization"
+        "live-first should start after all route-affecting fields are finalized"
     );
     body_tx
         .send(Ok(Bytes::from_static(b"}")))
