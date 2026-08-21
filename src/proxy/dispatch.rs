@@ -1391,6 +1391,26 @@ fn live_route_dependency_factors(
     factors
 }
 
+fn normalize_live_request_streaming_decision_for_measurement(
+    decision: Option<&LiveRequestStreamingDecision>,
+    route_measurement: Option<&LiveRequestStreamingMeasurement>,
+) -> Option<LiveRequestStreamingDecision> {
+    let decision = decision?;
+    let route_finalized_at_eof = route_measurement.is_some_and(|measurement| {
+        measurement.route_finalization_outcome == Some("buffered_eof_final_route")
+    });
+    if route_finalized_at_eof && decision.transport_mode == RequestBodyTransportMode::LiveFirst {
+        Some(LiveRequestStreamingDecision {
+            transport_mode: RequestBodyTransportMode::Buffered,
+            eligible: false,
+            reason: "route_finalized_at_eof",
+            ..decision.clone()
+        })
+    } else {
+        Some(decision.clone())
+    }
+}
+
 /// A live probe is safe to commit once the model is known and image routing is
 /// not positively required. The pipeline separately records whether that
 /// probe was finalized at EOF; EOF-finalized samples remain buffered for
@@ -1537,8 +1557,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
-            let capture_failure_decision = prepared_live_request_streaming_decision
-                .clone()
+            let capture_failure_decision =
+                normalize_live_request_streaming_decision_for_measurement(
+                    prepared_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
+                )
                 .unwrap_or_else(|| {
                     LiveRequestStreamingDecision::buffered("request_body_capture_failed")
                 });
@@ -1700,12 +1723,17 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
+    let persisted_live_request_streaming_decision =
+        normalize_live_request_streaming_decision_for_measurement(
+            prepared_live_request_streaming_decision.as_ref(),
+            live_route_finalization_measurement.as_ref(),
+        );
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
-    let live_first_eligible = prepared_live_request_streaming_decision
+    let live_first_eligible = persisted_live_request_streaming_decision
         .as_ref()
         .is_some_and(|decision| decision.eligible);
-    let live_first_reason = prepared_live_request_streaming_decision
+    let live_first_reason = persisted_live_request_streaming_decision
         .as_ref()
         .map(|decision| decision.reason)
         .unwrap_or("not_live_candidate");
@@ -1967,7 +1995,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
             t_req_parse_ms,
-            live_request_streaming_decision: prepared_live_request_streaming_decision.clone(),
+            live_request_streaming_decision: persisted_live_request_streaming_decision.clone(),
             live_request_streaming_experiment_group: live_first_experiment_group.clone(),
             live_first_attempt_failed,
             live_first_request_body_first_byte_at,
@@ -2142,6 +2170,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 first_attempt_failed: risk.first_attempt_failed,
                                 fallback_or_retry: risk.fallback_or_retry,
                                 ambiguous_upstream_delivery: risk.ambiguous_upstream_delivery,
+                                route_finalization_outcome: (context
+                                    .live_request_streaming_decision
+                                    .as_ref()
+                                    .is_some_and(|decision| {
+                                        decision.reason == "route_finalized_at_eof"
+                                    }))
+                                .then_some("buffered_eof_final_route"),
                                 upstream_account_group: err
                                     .account
                                     .as_ref()
@@ -2832,26 +2867,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
-    let route_finalized_at_eof =
-        live_route_finalization_measurement
-            .as_ref()
-            .is_some_and(|measurement| {
-                measurement.route_finalization_outcome == Some("buffered_eof_final_route")
-            });
     let live_request_streaming_decision = if let Some(decision) =
-        prepared_live_request_streaming_decision
+        persisted_live_request_streaming_decision
     {
-        if route_finalized_at_eof && decision.transport_mode == RequestBodyTransportMode::LiveFirst
-        {
-            LiveRequestStreamingDecision {
-                transport_mode: RequestBodyTransportMode::Buffered,
-                eligible: false,
-                reason: "route_finalized_at_eof",
-                ..decision
-            }
-        } else {
-            decision
-        }
+        decision
     } else if capture_target == ProxyCaptureTarget::Responses {
         match load_pool_routing_runtime_cache(state.as_ref()).await {
             Ok(snapshot) => decide_live_request_streaming(

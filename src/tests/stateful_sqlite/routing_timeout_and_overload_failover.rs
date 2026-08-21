@@ -339,7 +339,11 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
-    assert_eq!(payload["requestBodyTransportMode"], "live_first");
+    assert_eq!(payload["requestBodyTransportMode"], "buffered");
+    assert_eq!(
+        payload["routeFinalizationOutcome"],
+        "buffered_eof_final_route"
+    );
     assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
     assert_eq!(payload["liveFirstAttemptFailed"], true);
     assert_eq!(payload["liveFirstFallbackOrRetry"], true);
