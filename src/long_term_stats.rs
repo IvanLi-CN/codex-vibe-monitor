@@ -6847,6 +6847,36 @@ async fn refresh_long_term_stats_inner(
         if replayed_archive_files.contains(archive_path.file_path()) {
             continue;
         }
+        let archive_sha256_before_open = match crate::maintenance::sha256_hex_file(
+            std::path::Path::new(archive_path.file_path()),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                archive_read_failed = true;
+                failed_archive_paths.insert(archive_path.file_path().to_string());
+                let unreadable_start =
+                    long_term_unreadable_source_start(&archive_path, retention_start);
+                unreadable_source_start_date = Some(
+                    unreadable_source_start_date
+                        .map_or(unreadable_start, |current| current.min(unreadable_start)),
+                );
+                match (
+                    archive_path
+                        .coverage_start_at()
+                        .and_then(long_term_archive_end_date),
+                    archive_path
+                        .coverage_end_at()
+                        .and_then(long_term_archive_end_date),
+                ) {
+                    (Some(start), Some(end)) => {
+                        failed_archive_ranges.push((start.to_string(), end.to_string()));
+                    }
+                    _ => clear_all_attempt_markers = true,
+                }
+                warn!(error = %error, file_path = archive_path.file_path(), "long-term stats archive identity read failed");
+                continue;
+            }
+        };
         let Some((archive_pool, cleanup)) = (match open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-stats",
@@ -6942,7 +6972,45 @@ async fn refresh_long_term_stats_inner(
                         archive_path.coverage_end_at(),
                     );
                 }
-                archive_markers.push(archive_path.file_path().to_string());
+                let archive_sha256_after_read = crate::maintenance::sha256_hex_file(
+                    std::path::Path::new(archive_path.file_path()),
+                );
+                if archive_sha256_after_read
+                    .as_ref()
+                    .is_ok_and(|value| value == &archive_sha256_before_open)
+                {
+                    archive_markers.push((
+                        archive_path.file_path().to_string(),
+                        archive_sha256_before_open,
+                    ));
+                } else {
+                    archive_read_failed = true;
+                    failed_archive_paths.insert(archive_path.file_path().to_string());
+                    let unreadable_start =
+                        long_term_unreadable_source_start(&archive_path, retention_start);
+                    unreadable_source_start_date = Some(
+                        unreadable_source_start_date
+                            .map_or(unreadable_start, |current| current.min(unreadable_start)),
+                    );
+                    match (
+                        archive_path
+                            .coverage_start_at()
+                            .and_then(long_term_archive_end_date),
+                        archive_path
+                            .coverage_end_at()
+                            .and_then(long_term_archive_end_date),
+                    ) {
+                        (Some(start), Some(end)) => {
+                            failed_archive_ranges.push((start.to_string(), end.to_string()));
+                        }
+                        _ => clear_all_attempt_markers = true,
+                    }
+                    warn!(
+                        file_path = archive_path.file_path(),
+                        error = ?archive_sha256_after_read.as_ref().err(),
+                        "long-term stats archive changed while it was scanned; clearing its replay marker for retry"
+                    );
+                }
             }
             Err(error) => {
                 archive_read_failed = true;
@@ -7499,7 +7567,7 @@ struct LongTermRefreshRollupInput<'a> {
     source_rows_empty: bool,
     archive_read_failed: bool,
     terminal_proof_reconciliation_incomplete: bool,
-    archive_markers: &'a [String],
+    archive_markers: &'a [(String, String)],
     failed_archive_paths: &'a HashSet<String>,
     clear_all_attempt_markers: bool,
     failed_archive_ranges: &'a [(String, String)],
@@ -7507,7 +7575,7 @@ struct LongTermRefreshRollupInput<'a> {
 }
 
 struct LongTermRefreshArchiveMarkers<'a> {
-    archive_markers: &'a [String],
+    archive_markers: &'a [(String, String)],
     archive_read_failed: bool,
     failed_archive_paths: &'a HashSet<String>,
     clear_all_attempt_markers: bool,
@@ -7777,16 +7845,24 @@ async fn persist_long_term_refresh_archive_markers_with_control(
         failed_archive_ranges,
         attempt_archive_markers,
     } = markers;
-    for file_path in archive_markers {
-        let archive_sha256 = sqlx::query_scalar::<_, String>(
-            "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1 LIMIT 1",
-        )
-        .bind(file_path)
-        .fetch_optional(pool)
-        .await?;
+    for (file_path, archive_sha256) in archive_markers {
         let (mut transaction, permit) = control.begin(pool).await?;
         sqlx::query(
-            "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256)
+            SELECT ?1, 'codex_invocations', ?2, ?3
+            WHERE EXISTS (
+                SELECT 1
+                FROM archive_batches
+                WHERE dataset = 'codex_invocations'
+                  AND status = 'completed'
+                  AND file_path = ?2
+                  AND sha256 = ?3
+            )
+            ON CONFLICT(target, dataset, file_path) DO UPDATE SET
+                archive_sha256 = excluded.archive_sha256,
+                replayed_at = datetime('now')
+            "#,
         )
         .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
         .bind(file_path)
@@ -10641,6 +10717,113 @@ mod tests {
             .expect("released cleanup pointer"),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_archive_marker_requires_the_scanned_manifest_identity() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let archive_path = "rewritten-invocation-archive.sqlite.gz".to_string();
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('codex_invocations', '2026-08', ?1, 'rewritten-sha', 1, 'completed', datetime('now'))",
+        )
+        .bind(&archive_path)
+        .execute(&pool)
+        .await
+        .expect("record rewritten archive manifest");
+
+        let control = LongTermProjectionWriteControl::unrestricted();
+        let stale_marker = vec![(archive_path.clone(), "scanned-sha".to_string())];
+        let no_failed_paths = HashSet::new();
+        let no_failed_ranges = Vec::new();
+        let no_attempt_markers = HashSet::new();
+        persist_long_term_refresh_archive_markers_with_control(
+            &pool,
+            LongTermRefreshArchiveMarkers {
+                archive_markers: &stale_marker,
+                archive_read_failed: false,
+                failed_archive_paths: &no_failed_paths,
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &no_failed_ranges,
+                attempt_archive_markers: &no_attempt_markers,
+            },
+            &control,
+        )
+        .await
+        .expect("defer stale archive marker");
+        let stale_marker_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(&archive_path)
+        .fetch_one(&pool)
+        .await
+        .expect("stale marker count");
+        assert_eq!(stale_marker_count, 0);
+
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, 'prior-sha')",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(&archive_path)
+        .execute(&pool)
+        .await
+        .expect("seed stale replay marker");
+        let changed_paths = HashSet::from([archive_path.clone()]);
+        persist_long_term_refresh_archive_markers_with_control(
+            &pool,
+            LongTermRefreshArchiveMarkers {
+                archive_markers: &[],
+                archive_read_failed: true,
+                failed_archive_paths: &changed_paths,
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &no_failed_ranges,
+                attempt_archive_markers: &no_attempt_markers,
+            },
+            &control,
+        )
+        .await
+        .expect("clear replay marker for a changed source");
+        let changed_marker_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(&archive_path)
+        .fetch_one(&pool)
+        .await
+        .expect("changed marker count");
+        assert_eq!(changed_marker_count, 0);
+
+        let current_marker = vec![(archive_path.clone(), "rewritten-sha".to_string())];
+        persist_long_term_refresh_archive_markers_with_control(
+            &pool,
+            LongTermRefreshArchiveMarkers {
+                archive_markers: &current_marker,
+                archive_read_failed: false,
+                failed_archive_paths: &no_failed_paths,
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &no_failed_ranges,
+                attempt_archive_markers: &no_attempt_markers,
+            },
+            &control,
+        )
+        .await
+        .expect("persist matching archive marker");
+        let persisted_sha256 = sqlx::query_scalar::<_, String>(
+            "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+        .bind(&archive_path)
+        .fetch_one(&pool)
+        .await
+        .expect("matching marker sha");
+        assert_eq!(persisted_sha256, "rewritten-sha");
     }
 
     #[tokio::test]
