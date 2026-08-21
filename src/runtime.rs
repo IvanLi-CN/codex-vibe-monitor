@@ -242,9 +242,10 @@ pub(crate) async fn run() -> Result<()> {
     // Listen for shutdown before the readiness-gated hydration loop so an unavailable
     // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
-    // Dashboard warm-up can take an unbounded startup-only interval. Hydrate the bounded
-    // Summary/System Status hot-read snapshots after it, otherwise their 15s/60s service clocks
-    // could expire before either maintainer is even installed.
+    // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
+    // every such read before publishing the bounded Summary/System Status snapshots, otherwise
+    // their 15s/60s service clocks could expire before HTTP is ready to serve them.
+    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
     warm_dashboard_runtime_projection(state.as_ref()).await;
     hydrate_startup_memory_snapshots(state.as_ref()).await?;
     spawn_summary_snapshot_maintenance(state.clone());

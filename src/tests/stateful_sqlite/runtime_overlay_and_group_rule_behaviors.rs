@@ -330,7 +330,8 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
         ..RequestCaptureInfo::default()
     };
     let invoke_id = "invoke-running";
-    let occurred_at = "2026-03-17 18:13:34";
+    let occurred_at_owned = format_naive(Utc::now().naive_utc());
+    let occurred_at = occurred_at_owned.as_str();
     let record = build_running_proxy_capture_record(
         invoke_id,
         occurred_at,
