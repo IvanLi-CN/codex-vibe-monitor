@@ -344,6 +344,18 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
         payload["routeFinalizationOutcome"],
         "buffered_eof_final_route"
     );
+    assert!(
+        payload["routeFinalizationRawBytes"]
+            .as_i64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(payload["routeFinalizationRawRatio"], 1.0);
+    assert!(
+        payload["routeFinalizationLogicalBytes"]
+            .as_i64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(payload["routeFinalizationLogicalRatio"], 1.0);
     assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
     assert_eq!(payload["liveFirstAttemptFailed"], true);
     assert_eq!(payload["liveFirstFallbackOrRetry"], true);

@@ -1512,7 +1512,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx,
         live_first_experiment_group,
-        live_route_finalization_measurement,
+        mut live_route_finalization_measurement,
     } = Box::pin(prepare_capture_request_body(
         state.clone(),
         proxy_request_id,
@@ -1730,6 +1730,25 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         );
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
+    let logical_request_body_bytes = if live_route_finalization_measurement.is_some() {
+        pool_request_snapshot_logical_body_bytes(
+            &request_body_snapshot,
+            headers
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await
+        .ok()
+    } else {
+        None
+    };
+    if let Some(route_measurement) = live_route_finalization_measurement.as_mut() {
+        route_measurement.route_finalization_raw_bytes = Some(request_body_bytes_len);
+        route_measurement.route_finalization_logical_bytes = logical_request_body_bytes;
+        route_measurement.route_finalization_raw_ratio = Some(1.0);
+        route_measurement.route_finalization_logical_ratio =
+            logical_request_body_bytes.map(|_| 1.0);
+    }
     let live_first_eligible = persisted_live_request_streaming_decision
         .as_ref()
         .is_some_and(|decision| decision.eligible);
@@ -2882,14 +2901,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     } else {
         LiveRequestStreamingDecision::buffered("endpoint_not_supported")
     };
-    let logical_request_body_bytes = pool_request_snapshot_logical_body_bytes(
-        &request_body_snapshot,
-        headers
-            .get(header::CONTENT_ENCODING)
-            .and_then(|value| value.to_str().ok()),
-    )
-    .await
-    .ok();
     let upstream_request_first_byte_ms = live_first_request_body_first_byte_at.map(|sent_at| {
         sent_at
             .saturating_duration_since(req_read_started)
