@@ -1025,6 +1025,10 @@ async fn prepare_capture_request_body(
         ))) = resolution
         {
             live_first_experiment_group = initial_account.group_name.clone();
+            let mut live_route_reservation_guard = Some(PoolRoutingReservationDropGuard::new(
+                state.clone(),
+                live_routing_reservation_key.clone(),
+            ));
             let decision = decide_live_request_streaming(
                 &live_settings,
                 invoke_id,
@@ -1206,6 +1210,7 @@ async fn prepare_capture_request_body(
                         initial_account,
                         model_mapping,
                         Some(&trace_context),
+                        live_route_reservation_guard.take(),
                         &replay_status_rx,
                         &first_upstream_body_poll_at_rx,
                         Some(original_request_stream_rx),

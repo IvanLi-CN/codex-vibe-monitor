@@ -1980,6 +1980,7 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     account: PoolResolvedAccount,
     model_mapping: Option<ResolvedModelMapping>,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    reservation_guard: Option<PoolRoutingReservationDropGuard>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     first_request_body_poll_at_rx: &watch::Receiver<Option<Instant>>,
     oauth_original_request_stream_rx: Option<watch::Receiver<Option<bool>>>,
@@ -2065,14 +2066,18 @@ pub(crate) async fn send_pool_request_live_first_attempt(
     };
 
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    reserve_pool_routing_account_for_model(
-        state.as_ref(),
-        &reservation_key,
-        &account,
-        trace_context.and_then(|trace| trace.request_model.as_deref()),
-    );
-    let mut reservation_guard =
-        PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
+    let mut reservation_guard = match reservation_guard {
+        Some(guard) => guard,
+        None => {
+            reserve_pool_routing_account_for_model(
+                state.as_ref(),
+                &reservation_key,
+                &account,
+                trace_context.and_then(|trace| trace.request_model.as_deref()),
+            );
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone())
+        }
+    };
     let request_connection_scoped = connection_scoped_header_names(headers);
     let connect_started = Instant::now();
     let attempt_started_at_utc = Utc::now();
@@ -4656,6 +4661,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                     initial_account.clone(),
                                     None,
                                     Some(&pool_attempt_trace_context),
+                                    None,
                                     &replay_status_rx,
                                     &replayable_body.first_live_chunk_sent_at_rx,
                                     None,
