@@ -2649,16 +2649,7 @@ async fn wait_for_long_term_projection_pressure_retry(
 }
 
 fn long_term_projection_allows_expensive_repair(trigger: &str) -> bool {
-    trigger != "terminal_deadline"
-}
-
-fn long_term_projection_runs_hourly_retention(trigger: &str) -> bool {
-    matches!(trigger, "daily_verify" | "maintenance_deadline")
-}
-
-fn long_term_projection_maintenance_requested(trigger: &str, daily_verify_requested: bool) -> bool {
-    long_term_projection_runs_hourly_retention(trigger)
-        || (daily_verify_requested && trigger != "terminal_deadline")
+    matches!(trigger, "repair_deadline" | "daily_verify")
 }
 
 async fn mark_long_term_projection_failure(state: &AppState, error: &anyhow::Error) {
@@ -3163,12 +3154,8 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     );
 
     let started = Instant::now();
-    if matches!(trigger, "daily_verify" | "maintenance_deadline")
-        && finish_long_term_projection_publication_cleanup(&state.pool, &control).await?
-    {
-        // Cleanup is independently durable maintenance. One 512-row batch is enough for this
-        // deadline; the next maintenance tick discovers the remaining publication work.
-        return Ok(0);
+    if trigger == "maintenance_deadline" {
+        return advance_long_term_projection_maintenance(state, &control).await;
     }
     let mut cursor = load_long_term_projection_cursor_with_control(&state.pool, &control).await?;
     let daily_verify_requested =
@@ -3178,8 +3165,6 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     } else {
         None
     };
-    let maintenance_requested =
-        long_term_projection_maintenance_requested(trigger, daily_verify_requested);
     let state_row = load_long_term_state(&state.pool).await?;
     let mut baseline_cursor = None;
     let rollups_exist = long_term_rollups_exist(&state.pool).await?;
@@ -3203,15 +3188,6 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         // buckets need interval baselines before new terminal deltas can be merged exactly.
         baseline_cursor = Some(load_long_term_terminal_watermark(&state.pool).await?);
     }
-
-    // Legacy expansion cleanup is maintenance, not part of the terminal P1 path. Advancing one
-    // bounded batch here keeps old upgrades recoverable without allowing a daily verification to
-    // monopolize SQLite until every expanded row is gone.
-    let legacy_migration_advanced = if maintenance_requested {
-        migrate_long_term_projection_legacy_interval_state(&state.pool, &control).await?
-    } else {
-        false
-    };
 
     let mut repaired = Vec::new();
     let mut event_count = 0usize;
@@ -3488,17 +3464,7 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         invalidate_long_term_projection_interval_cache(state).await;
     }
 
-    let (retention_pruned_hourly_rows, retention_pruned_interval_rows) =
-        if maintenance_requested && !legacy_migration_advanced {
-            prune_long_term_projection_hourly_retention_with_control(
-                &state.pool,
-                state.config.long_term_stats_hourly_retention_days,
-                &control,
-            )
-            .await?
-        } else {
-            (0, 0)
-        };
+    let (retention_pruned_hourly_rows, retention_pruned_interval_rows) = (0, 0);
 
     if let Some(daily_verify_date) = daily_verify_date {
         let maintenance_pending = long_term_projection_maintenance_needed(
@@ -3590,7 +3556,6 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         interval_key_count = runtime.interval_index.len(),
         deferred_repair_count,
         deferred_repair_backoff_count,
-        legacy_migration_advanced,
         retention_pruned_hourly_rows,
         retention_pruned_interval_rows,
         flush_outcome = "accepted",
@@ -3599,6 +3564,29 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     );
     drop(runtime);
     Ok(loaded_row_count.saturating_add(event_count as u64))
+}
+
+async fn advance_long_term_projection_maintenance(
+    state: &AppState,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<u64> {
+    // Maintenance is intentionally a single durable continuation step. Each helper makes at
+    // most one 512-row transaction and re-checks cancellation and database pressure before it
+    // starts. Letting a deadline exhaust every backlog would recreate the writer starvation
+    // this worker is intended to avoid.
+    if finish_long_term_projection_publication_cleanup(&state.pool, control).await? {
+        return Ok(0);
+    }
+    if migrate_long_term_projection_legacy_interval_state(&state.pool, control).await? {
+        return Ok(0);
+    }
+    let (hourly, intervals) = prune_long_term_projection_hourly_retention_with_control(
+        &state.pool,
+        state.config.long_term_stats_hourly_retention_days,
+        control,
+    )
+    .await?;
+    Ok(hourly.saturating_add(intervals))
 }
 
 async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {
@@ -9835,7 +9823,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_projection_flush_defers_expensive_repairs_and_retention() {
+    fn terminal_and_maintenance_deadlines_defer_expensive_repairs() {
         assert!(!long_term_projection_allows_expensive_repair(
             "terminal_deadline"
         ));
@@ -9843,27 +9831,8 @@ mod tests {
             "repair_deadline"
         ));
         assert!(long_term_projection_allows_expensive_repair("daily_verify"));
-        assert!(long_term_projection_allows_expensive_repair(
+        assert!(!long_term_projection_allows_expensive_repair(
             "maintenance_deadline"
-        ));
-
-        assert!(!long_term_projection_runs_hourly_retention(
-            "terminal_deadline"
-        ));
-        assert!(!long_term_projection_runs_hourly_retention(
-            "repair_deadline"
-        ));
-        assert!(long_term_projection_runs_hourly_retention("daily_verify"));
-        assert!(long_term_projection_runs_hourly_retention(
-            "maintenance_deadline"
-        ));
-        assert!(!long_term_projection_maintenance_requested(
-            "terminal_deadline",
-            true
-        ));
-        assert!(long_term_projection_maintenance_requested(
-            "repair_deadline",
-            true
         ));
     }
 
