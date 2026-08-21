@@ -10550,7 +10550,11 @@ async fn build_summary_projection(
     let refreshed_at = Some(Instant::now());
     let freshness = SummaryProjectionFreshness {
         global_all_time_eligible: if all_time_was_fully_rebuilt {
-            !global_all_time_source_unavailable && all_time_by_account.contains_key(&None)
+            if global_all_time_source_unavailable {
+                previous_global_all_time_eligible && all_time_by_account.contains_key(&None)
+            } else {
+                all_time_by_account.contains_key(&None)
+            }
         } else {
             previous_global_all_time_eligible
         },
@@ -26872,7 +26876,6 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate all-time projection from durable global rollup");
-        state.pool.close().await;
 
         let Json(global) = fetch_summary(
             State(state.clone()),
@@ -26887,6 +26890,58 @@ mod request_compression_query_tests {
         .expect("global compact coverage remains exact");
         assert_eq!(global.total_count, 3);
         assert_eq!(global.total_tokens, 91);
+
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay \
+             WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+        .bind(archive_path)
+        .execute(&state.pool)
+        .await
+        .expect("remove global replay completion proof");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh preserves exact global all-time last-good");
+
+        let Json(last_good) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("fresh exact global last-good survives an incomplete refresh");
+        assert_eq!(last_good.total_count, 3);
+        assert_eq!(last_good.total_tokens, 91);
+
+        let mut projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("refresh stores the global all-time last-good projection");
+        Arc::make_mut(&mut projection).all_time_refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state
+            .subscription_hub
+            .store_summary_projection(Arc::unwrap_or_clone(projection))
+            .await;
+        state.pool.close().await;
+
+        let expired_global = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(matches!(expired_global, Err(ApiError::Unavailable(_))));
 
         let account = fetch_summary(
             State(state),
