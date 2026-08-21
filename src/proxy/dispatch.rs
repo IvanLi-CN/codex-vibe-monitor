@@ -1399,7 +1399,7 @@ fn normalize_live_request_streaming_decision_for_measurement(
     let route_finalized_at_eof = route_measurement.is_some_and(|measurement| {
         measurement.route_finalization_outcome == Some("buffered_eof_final_route")
     });
-    if route_finalized_at_eof && decision.transport_mode == RequestBodyTransportMode::LiveFirst {
+    if route_finalized_at_eof {
         Some(LiveRequestStreamingDecision {
             transport_mode: RequestBodyTransportMode::Buffered,
             eligible: false,
@@ -4919,6 +4919,32 @@ mod dispatch_tests {
         );
         probe.image_intent = ImageIntent::No;
         assert!(!live_route_dependency_factors(&probe, true).contains(&"image_capability"));
+    }
+
+    #[test]
+    fn eof_route_measurement_normalizes_buffered_decision_reasons() {
+        let decision = LiveRequestStreamingDecision {
+            transport_mode: RequestBodyTransportMode::Buffered,
+            revision: Some(LIVE_REQUEST_STREAMING_REVISION),
+            variant: Some(LiveRequestStreamingExperimentVariant::Treatment),
+            eligible: false,
+            reason: "routing_metadata_incomplete",
+        };
+        let measurement = LiveRequestStreamingMeasurement {
+            route_finalization_outcome: Some("buffered_eof_final_route"),
+            ..LiveRequestStreamingMeasurement::default()
+        };
+        let normalized = normalize_live_request_streaming_decision_for_measurement(
+            Some(&decision),
+            Some(&measurement),
+        )
+        .expect("EOF route decision should remain present");
+        assert_eq!(
+            normalized.transport_mode,
+            RequestBodyTransportMode::Buffered
+        );
+        assert_eq!(normalized.reason, "route_finalized_at_eof");
+        assert_eq!(normalized.variant, decision.variant);
     }
 
     #[tokio::test]
