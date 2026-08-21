@@ -7998,10 +7998,9 @@ async fn apply_long_term_refresh_rollups_with_control(
     }
     // The planner selects one due repair date per refresh. Keep this final publication write
     // bounded even if a future caller accidentally changes that scheduling contract.
-    ensure!(
-        completed_integrity_repairs.len() <= 1,
-        "long-term refresh may complete at most one integrity repair per publication"
-    );
+    if completed_integrity_repairs.len() > 1 {
+        bail!("long-term refresh may complete at most one integrity repair per publication");
+    }
     // A completed repair is not durable until its candidate has been published. Account for it
     // while choosing the public state, but retain its queue entry until the final publication
     // transaction so cancellation cannot strand an unpublished backup without a retry path.
