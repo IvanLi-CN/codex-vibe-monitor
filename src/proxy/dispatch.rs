@@ -910,6 +910,12 @@ async fn prepare_capture_request_body(
         runtime_timeouts.request_read_timeout,
     )
     .await;
+    let live_resolved_content_encoding = live_pipeline.as_ref().and_then(|pipeline| {
+        pipeline
+            .resolved_request_content_encoding_rx
+            .borrow()
+            .clone()
+    });
     let live_route_finalization_ms = elapsed_ms(req_read_started);
     let response_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &Method::POST);
@@ -1040,10 +1046,20 @@ async fn prepare_capture_request_body(
                     upstream_base_url_host: None,
                     request_model: live_body_key_probe.model.clone(),
                 };
-                let target_encoding = live_responses_target_request_content_encoding(
-                    downstream_content_encoding.as_deref(),
-                    initial_account.request_compression_algorithm,
-                );
+                let target_encoding = live_resolved_content_encoding
+                    .clone()
+                    .map(|resolved| {
+                        live_responses_target_request_content_encoding_with_resolved(
+                            resolved,
+                            initial_account.request_compression_algorithm,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        live_responses_target_request_content_encoding(
+                            downstream_content_encoding.as_deref(),
+                            initial_account.request_compression_algorithm,
+                        )
+                    });
                 let Ok(target_encoding) = target_encoding else {
                     warn!(
                         proxy_request_id,
@@ -1229,6 +1245,8 @@ async fn prepare_capture_request_body(
                         }
                         Err(error) => {
                             live_first_attempt_failed = true;
+                            live_first_request_body_first_byte_at =
+                                *first_upstream_body_poll_at_rx.borrow();
                             warn!(
                                 proxy_request_id,
                                 error = %error.message,
@@ -1355,12 +1373,16 @@ fn live_route_dependency_factors(
     factors
 }
 
-/// A `PoolReplayBodyKeyProbe` from the live parser is only published after the
-/// root object closes and the trailing-content check completes. Until a future
-/// request contract can prove that later duplicate routing fields are
-/// impossible, no request can satisfy this predicate before EOF.
-fn live_route_probe_can_start_before_eof(_probe: &PoolReplayBodyKeyProbe) -> bool {
-    false
+/// A live probe is safe to commit only when the currently enabled routing
+/// factors are absent from the unread portion. Sticky/prompt-cache ownership,
+/// encrypted-session ownership, and known image intent remain buffered; the
+/// incremental pipeline keeps those root fields in its precommit set.
+fn live_route_probe_can_start_before_eof(probe: &PoolReplayBodyKeyProbe) -> bool {
+    probe.model.is_some()
+        && probe.sticky_key.is_none()
+        && probe.prompt_cache_key.is_none()
+        && !probe.contains_encrypted_content
+        && probe.image_intent != ImageIntent::Yes
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1934,6 +1956,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             live_request_streaming_decision: prepared_live_request_streaming_decision.clone(),
             live_request_streaming_experiment_group: live_first_experiment_group.clone(),
             live_first_attempt_failed,
+            live_first_request_body_first_byte_at,
         });
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, Some(capture_target));
@@ -2098,7 +2121,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         context.live_request_streaming_decision.as_ref().map(|_| {
                             let risk = live_request_streaming_risk_flags(
                                 context.live_first_attempt_failed,
-                                false,
+                                context.live_first_request_body_first_byte_at.is_some(),
                                 err.attempt_summary.pool_attempt_count,
                             );
                             LiveRequestStreamingMeasurement {
@@ -4788,9 +4811,22 @@ mod dispatch_tests {
     use super::*;
 
     #[test]
-    fn final_route_gate_never_starts_before_eof_for_generic_json() {
+    fn final_route_gate_starts_only_for_model_only_routes() {
         assert!(!live_route_probe_can_start_before_eof(
             &PoolReplayBodyKeyProbe::default()
+        ));
+        assert!(live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(!live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                sticky_key: Some("sticky".to_string()),
+                ..PoolReplayBodyKeyProbe::default()
+            }
         ));
     }
 

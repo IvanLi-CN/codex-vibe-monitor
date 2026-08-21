@@ -95,9 +95,16 @@ async fn load_sticky_route_with_runtime_cache(
     {
         return Ok((value.route, value.affinity_generation));
     }
+    let sticky_cache_generation = runtime_cache
+        .sticky_route_cache
+        .lock()
+        .map(|cache| cache.generation())
+        .unwrap_or_default();
     let (route, affinity_generation) =
         load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model).await?;
-    if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock() {
+    if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
+        && cache.generation() == sticky_cache_generation
+    {
         cache.insert(
             key,
             PoolRoutingStickyRouteCacheValue {
@@ -1698,8 +1705,15 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         );
     }
 
-    let warmed_model_account_ids =
-        warmed_routing_account_ids_for_model(state, requested_model).await;
+    let warmed_model_account_ids = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .and_then(|model| {
+            routing_snapshot
+                .warmed_model_account_ids
+                .get(&model.to_ascii_lowercase())
+                .cloned()
+        });
     let mut candidates = routing_snapshot
         .routing_candidates
         .iter()

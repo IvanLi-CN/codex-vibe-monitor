@@ -6003,6 +6003,15 @@ async fn live_request_streaming_perf_uses_the_filtered_cohort_as_its_coverage_de
                 "firstResponseByteTotalMs": 140.0,
                 "firstTokenTotalMs": 250.0,
                 "requestUpstreamOverlapMs": 80.0,
+                "routeFinalizationOutcome": "live_first_model_ready",
+                "routeFinalizationRawBytes": 128.0,
+                "routeFinalizationLogicalBytes": 96.0,
+                "routeFinalizationRawRatio": 0.5,
+                "routeFinalizationLogicalRatio": 0.4,
+                "routeFinalizationMs": 12.0,
+                "routeDependencyFactors": ["model"],
+                "routingHotCacheHit": true,
+                "routingHotCacheColdLoad": false,
             }),
         ),
         (
@@ -6087,6 +6096,24 @@ async fn live_request_streaming_perf_uses_the_filtered_cohort_as_its_coverage_de
         140.0,
     );
     assert_f64_close(treatment.first_attempt_failure_rate, 0.5);
+    assert_eq!(live.route_finalization.sample_count, 1);
+    assert!(!live.route_finalization.sufficient_samples);
+    assert_f64_close(
+        live.route_finalization
+            .raw_bytes
+            .as_ref()
+            .map(|stats| stats.p50)
+            .unwrap_or_default(),
+        128.0,
+    );
+    assert_eq!(
+        live.route_finalization
+            .dependency_factor_counts
+            .get("model"),
+        Some(&1),
+    );
+    assert_f64_close(live.route_finalization.hot_cache_hit_rate, 1.0);
+    assert_f64_close(live.route_finalization.cold_load_rate, 0.0);
 }
 
 #[tokio::test]

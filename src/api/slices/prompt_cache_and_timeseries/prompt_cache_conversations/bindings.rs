@@ -1602,6 +1602,9 @@ pub(crate) async fn broadcast_prompt_cache_conversation_changed(
         && let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
     {
         cache.invalidate_prompt_cache_key(prompt_cache_key);
+        if let Ok(mut sticky_cache) = runtime_cache.sticky_route_cache.lock() {
+            sticky_cache.invalidate_sticky_key(prompt_cache_key);
+        }
     }
     state
         .subscription_hub

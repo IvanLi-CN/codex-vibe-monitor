@@ -5181,6 +5181,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         live_request_streaming_decision: None,
         live_request_streaming_experiment_group: None,
         live_first_attempt_failed: false,
+        live_first_request_body_first_byte_at: None,
     };
 
     sqlx::query(
@@ -5329,6 +5330,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         live_request_streaming_decision: None,
         live_request_streaming_experiment_group: None,
         live_first_attempt_failed: false,
+        live_first_request_body_first_byte_at: None,
     };
 
     let account = PoolResolvedAccount {
@@ -5462,6 +5464,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         live_request_streaming_decision: None,
         live_request_streaming_experiment_group: None,
         live_first_attempt_failed: false,
+        live_first_request_body_first_byte_at: None,
     };
 
     sqlx::query(
@@ -7286,6 +7289,7 @@ async fn send_pool_request_with_failover_returns_owner_unavailable_for_encrypted
             live_request_streaming_decision: None,
             live_request_streaming_experiment_group: None,
             live_first_attempt_failed: false,
+            live_first_request_body_first_byte_at: None,
         }),
         Some("encrypted-owner-unavailable-request-key"),
         None,

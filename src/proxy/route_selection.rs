@@ -1390,6 +1390,11 @@ pub(crate) async fn load_via_pool_effective_routing_with_cache(
     {
         return Ok(pool_routing_prompt_route_cache_value(value, true));
     }
+    let prompt_cache_generation = runtime_cache
+        .prompt_route_cache
+        .lock()
+        .map(|cache| cache.generation())
+        .unwrap_or_default();
     let (binding_constraint, owner_auto_guard_active) =
         resolve_prompt_cache_effective_routing_constraint(
             &state.pool,
@@ -1425,7 +1430,9 @@ pub(crate) async fn load_via_pool_effective_routing_with_cache(
             conversation_override: conversation_override.clone(),
         })
     };
-    if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock() {
+    if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
+        && cache.generation() == prompt_cache_generation
+    {
         cache.insert(key, value.clone());
     }
     Ok(pool_routing_prompt_route_cache_value(value, false))
@@ -3084,6 +3091,7 @@ pub(crate) async fn continue_or_retry_pool_live_request(
         live_request_streaming_decision: None,
         live_request_streaming_experiment_group: None,
         live_first_attempt_failed: false,
+        live_first_request_body_first_byte_at: None,
     };
     let result = continue_or_retry_pool_live_request_inner(
         state.clone(),
@@ -3433,6 +3441,7 @@ async fn continue_or_retry_pool_live_request_inner(
                     live_request_streaming_decision: None,
                     live_request_streaming_experiment_group: None,
                     live_first_attempt_failed: false,
+                    live_first_request_body_first_byte_at: None,
                 }),
                 replay_sticky_key.as_deref(),
                 replay_sticky_key.as_deref(),
@@ -3734,6 +3743,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 live_request_streaming_decision: None,
                                 live_request_streaming_experiment_group: None,
                                 live_first_attempt_failed: false,
+                                live_first_request_body_first_byte_at: None,
                             }),
                             body_sticky_key.as_deref(),
                             body_sticky_key.as_deref(),
@@ -5346,6 +5356,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                 live_request_streaming_decision: None,
                                 live_request_streaming_experiment_group: None,
                                 live_first_attempt_failed: false,
+                                live_first_request_body_first_byte_at: None,
                             }),
                             body_sticky_key.as_deref(),
                             body_sticky_key.as_deref(),
@@ -5413,6 +5424,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                             live_request_streaming_decision: None,
                             live_request_streaming_experiment_group: None,
                             live_first_attempt_failed: false,
+                            live_first_request_body_first_byte_at: None,
                         }),
                         header_sticky_key.as_deref(),
                         None,

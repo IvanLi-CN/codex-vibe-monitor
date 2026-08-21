@@ -375,7 +375,44 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let bound_group = "live-route-gate-bound-group";
+    let other_group = "live-route-gate-other-group";
+    ensure_test_group_binding(&state.pool, bound_group, None).await;
+    ensure_test_group_binding(&state.pool, other_group, None).await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some(bound_group),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        Some(other_group),
+        None,
+        None,
+    )
+    .await;
+    let prompt_cache_key = "pck-live-treatment";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_conversation_bindings (
+            prompt_cache_key, binding_kind, group_name, upstream_account_id,
+            created_at, updated_at
+        ) VALUES (?1, 'group', ?2, NULL, ?3, ?3)
+        "#,
+    )
+    .bind(prompt_cache_key)
+    .bind(bound_group)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("insert final-route-gate prompt cache binding");
     let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
         "liveRequestStreaming": {
             "enabled": true,
@@ -390,9 +427,10 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
-    let first_chunk =
-        "{\"model\":\"gpt-5\",\"promptCacheKey\":\"pck-live-treatment\",\"input\":\"ready\"}\n"
-            .to_string();
+    let first_chunk = format!(
+        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"ready\"}}\n"
+    )
+    .to_string();
     let body_task = tokio::spawn(async move {
         tx.send(Ok(Bytes::from(first_chunk)))
             .await
@@ -483,7 +521,7 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
 }
 
 #[tokio::test]
-async fn final_route_gate_rejects_malformed_tail_without_upstream_delivery() {
+async fn final_route_gate_cancels_upstream_after_malformed_tail() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -539,7 +577,7 @@ async fn final_route_gate_rejects_malformed_tail_without_upstream_delivery() {
         .expect("send valid live request prefix");
 
     assert!(
-        timeout(Duration::from_millis(100), async {
+        timeout(Duration::from_secs(1), async {
             loop {
                 if attempts
                     .lock()
@@ -555,8 +593,8 @@ async fn final_route_gate_rejects_malformed_tail_without_upstream_delivery() {
             }
         })
         .await
-        .is_err(),
-        "malformed input must not reach an upstream before the final route is known"
+        .is_ok(),
+        "live-first should start after model-only route finalization"
     );
     body_tx
         .send(Ok(Bytes::from_static(b"}")))
@@ -579,7 +617,7 @@ async fn final_route_gate_rejects_malformed_tail_without_upstream_delivery() {
             .is_some_and(|message| message.contains("request body must be valid JSON"))
     );
 
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let invocation = timeout(Duration::from_secs(1), async {
         loop {

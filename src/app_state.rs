@@ -41,11 +41,16 @@ pub(crate) struct PoolRoutingPromptRouteCacheValue {
 /// keys. The owning runtime snapshot replaces this cache on routing writes.
 #[derive(Debug, Default)]
 pub(crate) struct PoolRoutingPromptRouteCache {
+    generation: u64,
     values: HashMap<PoolRoutingPromptRouteCacheKey, Option<PoolRoutingPromptRouteCacheValue>>,
     recency: std::collections::VecDeque<PoolRoutingPromptRouteCacheKey>,
 }
 
 impl PoolRoutingPromptRouteCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn get(
         &mut self,
         key: &PoolRoutingPromptRouteCacheKey,
@@ -71,6 +76,7 @@ impl PoolRoutingPromptRouteCache {
     }
 
     pub(crate) fn invalidate_prompt_cache_key(&mut self, prompt_cache_key: &str) {
+        self.generation = self.generation.saturating_add(1);
         self.values
             .retain(|key, _| key.prompt_cache_key != prompt_cache_key);
         self.recency
@@ -99,11 +105,16 @@ pub(crate) struct PoolRoutingStickyRouteCacheValue {
 /// invalidated by the routing mutation broadcasts after the durable write.
 #[derive(Debug, Default)]
 pub(crate) struct PoolRoutingStickyRouteCache {
+    generation: u64,
     values: HashMap<PoolRoutingStickyRouteCacheKey, PoolRoutingStickyRouteCacheValue>,
     recency: std::collections::VecDeque<PoolRoutingStickyRouteCacheKey>,
 }
 
 impl PoolRoutingStickyRouteCache {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn get(
         &mut self,
         key: &PoolRoutingStickyRouteCacheKey,
@@ -129,6 +140,7 @@ impl PoolRoutingStickyRouteCache {
     }
 
     pub(crate) fn invalidate_sticky_key(&mut self, sticky_key: &str) {
+        self.generation = self.generation.saturating_add(1);
         self.values.retain(|key, _| key.sticky_key != sticky_key);
         self.recency.retain(|key| key.sticky_key != sticky_key);
     }

@@ -904,7 +904,8 @@ pub(crate) async fn persist_pool_failover_terminal_invocation(
     let live_request_streaming_measurement = live_request_streaming_decision.map(|_| {
         let risk = live_request_streaming_risk_flags(
             runtime_snapshot_context.is_some_and(|context| context.live_first_attempt_failed),
-            false,
+            runtime_snapshot_context
+                .is_some_and(|context| context.live_first_request_body_first_byte_at.is_some()),
             error.attempt_summary.pool_attempt_count,
         );
         LiveRequestStreamingMeasurement {
