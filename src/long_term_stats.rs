@@ -1688,6 +1688,8 @@ struct LongTermProjectionWriteControl<'a> {
     #[cfg(test)]
     stop_after_refresh_publication: Option<&'a CancellationToken>,
     #[cfg(test)]
+    stop_after_completed_integrity_repairs: Option<&'a CancellationToken>,
+    #[cfg(test)]
     stop_after_backup_cleanup_marker: Option<&'a CancellationToken>,
     #[cfg(test)]
     stop_after_archive_compatibility_batch: Option<&'a CancellationToken>,
@@ -1706,6 +1708,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             stop_after_rebuild_chunk: None,
             #[cfg(test)]
             stop_after_refresh_publication: None,
+            #[cfg(test)]
+            stop_after_completed_integrity_repairs: None,
             #[cfg(test)]
             stop_after_backup_cleanup_marker: None,
             #[cfg(test)]
@@ -1729,6 +1733,8 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             #[cfg(test)]
             stop_after_refresh_publication: None,
             #[cfg(test)]
+            stop_after_completed_integrity_repairs: None,
+            #[cfg(test)]
             stop_after_backup_cleanup_marker: None,
             #[cfg(test)]
             stop_after_archive_compatibility_batch: None,
@@ -1749,6 +1755,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: None,
             stop_after_archive_compatibility_batch: None,
         }
@@ -1768,6 +1775,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: Some((shutdown, committed_batches, limit)),
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: None,
             stop_after_archive_compatibility_batch: None,
         }
@@ -1785,6 +1793,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: Some(shutdown),
             stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: None,
             stop_after_archive_compatibility_batch: None,
         }
@@ -1802,6 +1811,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: Some(shutdown),
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: None,
             stop_after_archive_compatibility_batch: None,
         }
@@ -1819,6 +1829,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: Some(shutdown),
             stop_after_archive_compatibility_batch: None,
         }
@@ -1836,6 +1847,7 @@ impl<'a> LongTermProjectionWriteControl<'a> {
             cancel_after_commit: None,
             stop_after_rebuild_chunk: None,
             stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: None,
             stop_after_backup_cleanup_marker: None,
             stop_after_archive_compatibility_batch: Some(shutdown),
         }
@@ -1851,6 +1863,31 @@ impl<'a> LongTermProjectionWriteControl<'a> {
     fn complete_refresh_publication(&self) {
         #[cfg(test)]
         if let Some(shutdown) = self.stop_after_refresh_publication {
+            shutdown.cancel();
+        }
+    }
+
+    #[cfg(test)]
+    fn stopping_after_completed_integrity_repairs(
+        shutdown: &'a CancellationToken,
+        gate: &'a crate::db_pressure::DbPressureGate,
+    ) -> Self {
+        Self {
+            shutdown: Some(shutdown),
+            gate: Some(gate),
+            committed_batches: None,
+            cancel_after_commit: None,
+            stop_after_rebuild_chunk: None,
+            stop_after_refresh_publication: None,
+            stop_after_completed_integrity_repairs: Some(shutdown),
+            stop_after_backup_cleanup_marker: None,
+            stop_after_archive_compatibility_batch: None,
+        }
+    }
+
+    fn complete_integrity_repairs(&self) {
+        #[cfg(test)]
+        if let Some(shutdown) = self.stop_after_completed_integrity_repairs {
             shutdown.cancel();
         }
     }
@@ -7959,22 +7996,36 @@ async fn apply_long_term_refresh_rollups_with_control(
         schedule_long_term_repair_retry(&mut transaction, mismatch).await?;
         control.commit(transaction, permit).await?;
     }
-    for date in completed_integrity_repairs {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        sqlx::query("DELETE FROM long_term_stats_repair_queue WHERE stats_date = ?1")
-            .bind(date.to_string())
-            .execute(&mut *transaction)
-            .await?;
-        control.commit(transaction, permit).await?;
-        info!(stats_date = %date, "long-term stats integrity repair completed");
+    // The planner selects one due repair date per refresh. Keep this final publication write
+    // bounded even if a future caller accidentally changes that scheduling contract.
+    ensure!(
+        completed_integrity_repairs.len() <= 1,
+        "long-term refresh may complete at most one integrity repair per publication"
+    );
+    // A completed repair is not durable until its candidate has been published. Account for it
+    // while choosing the public state, but retain its queue entry until the final publication
+    // transaction so cancellation cannot strand an unpublished backup without a retry path.
+    let completed_integrity_repair_dates = completed_integrity_repairs
+        .iter()
+        .filter(|date| **date >= reconstructable_start)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut pending_integrity_repairs_query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date >= ",
+    );
+    pending_integrity_repairs_query.push_bind(reconstructable_start.to_string());
+    if !completed_integrity_repair_dates.is_empty() {
+        pending_integrity_repairs_query.push(" AND stats_date NOT IN (");
+        let mut dates = pending_integrity_repairs_query.separated(", ");
+        for date in &completed_integrity_repair_dates {
+            dates.push_bind(date);
+        }
+        dates.push_unseparated(")");
     }
-
-    let pending_integrity_repairs = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date >= ?1",
-    )
-    .bind(reconstructable_start.to_string())
-    .fetch_one(pool)
-    .await?;
+    let pending_integrity_repairs = pending_integrity_repairs_query
+        .build_query_scalar::<i64>()
+        .fetch_one(pool)
+        .await?;
     let status = if pending_integrity_repairs > 0
         || archive_read_failed
         || terminal_proof_reconciliation_incomplete
@@ -8001,6 +8052,8 @@ async fn apply_long_term_refresh_rollups_with_control(
     } else {
         None
     };
+    control.complete_integrity_repairs();
+    control.check()?;
     // Stage every replacement behind one publication token. The final transaction below flips
     // this token and the public state together, so cancellation cannot expose a mixed refresh.
     let refresh_publication_token =
@@ -8027,6 +8080,12 @@ async fn apply_long_term_refresh_rollups_with_control(
         .execute(&mut *transaction)
         .await?;
     }
+    for date in completed_integrity_repairs {
+        sqlx::query("DELETE FROM long_term_stats_repair_queue WHERE stats_date = ?1")
+            .bind(date.to_string())
+            .execute(&mut *transaction)
+            .await?;
+    }
     sqlx::query(
         "UPDATE long_term_stats_state SET status = ?1, statistics_start_date = ?2, processed_rows = ?3, total_rows = ?3, last_error = ?4, updated_at = datetime('now') WHERE id = ?5",
     )
@@ -8038,6 +8097,9 @@ async fn apply_long_term_refresh_rollups_with_control(
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await?;
+    for date in completed_integrity_repairs {
+        info!(stats_date = %date, "long-term stats integrity repair completed");
+    }
     control.complete_refresh_publication();
     control.check()?;
     if let Some(publication_token) = refresh_publication_token.as_deref() {
@@ -11043,6 +11105,153 @@ mod tests {
         .await
         .expect("recovered status");
         assert_eq!(recovered_status, LONG_TERM_STATUS_READY);
+    }
+
+    #[tokio::test]
+    async fn cancelled_completed_repair_keeps_the_retry_queue_until_publication() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let date_text = date.to_string();
+        let (start_epoch, _) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let replacement = LongTermBucket {
+            bucket_start_epoch: start_epoch,
+            dimension: "model".to_string(),
+            series_key: "model:replacement".to_string(),
+            display_name: "replacement".to_string(),
+            reasoning_effort: String::new(),
+            stats_date: Some(date_text.clone()),
+            accumulator: LongTermAccumulator {
+                calls: 1,
+                ..LongTermAccumulator::default()
+            },
+        };
+        let daily = HashMap::from([(
+            (
+                date_text.clone(),
+                "model".to_string(),
+                replacement.series_key.clone(),
+            ),
+            replacement,
+        )]);
+        let recomputed_dates = HashSet::from([date]);
+        let completed_integrity_repairs = HashSet::from([date]);
+        sqlx::query(
+            "INSERT INTO long_term_stats_repair_queue (stats_date, expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, last_error) VALUES (?1, 1, 0, 0, 0, 0, 0, 'repair pending')",
+        )
+        .bind(&date_text)
+        .execute(&pool)
+        .await
+        .expect("seed completed repair queue entry");
+
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let interrupted_control =
+            LongTermProjectionWriteControl::stopping_after_completed_integrity_repairs(
+                &shutdown, &gate,
+            );
+        let error = apply_long_term_refresh_rollups_with_control(
+            &pool,
+            LongTermRefreshRollupInput {
+                hourly: &HashMap::new(),
+                daily: &daily,
+                recomputed_dates: &recomputed_dates,
+                retention_start: date,
+                integrity_repair_failures: &[],
+                completed_integrity_repairs: &completed_integrity_repairs,
+                reconstructable_start: date,
+                statistics_start_date: Some(&date_text),
+                initial_materialization: true,
+                processed_rows_count: 1,
+                source_rows_empty: false,
+                archive_read_failed: false,
+                terminal_proof_reconciliation_incomplete: false,
+                archive_markers: &[],
+                failed_archive_paths: &HashSet::new(),
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &[],
+                attempt_archive_markers: &HashSet::new(),
+            },
+            &interrupted_control,
+        )
+        .await
+        .expect_err("cancellation before publication");
+        assert!(long_term_projection_write_is_deferred(&error));
+        assert!(shutdown.is_cancelled());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("queued repair survives cancellation"),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_bucket_state WHERE bucket_date = ?1 AND active_daily_backup_token IS NOT NULL AND publication_token IS NULL",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("unpublished backup retains its recovery owner"),
+            1
+        );
+
+        let recovery_control = LongTermProjectionWriteControl::unrestricted();
+        apply_long_term_refresh_rollups_with_control(
+            &pool,
+            LongTermRefreshRollupInput {
+                hourly: &HashMap::new(),
+                daily: &daily,
+                recomputed_dates: &recomputed_dates,
+                retention_start: date,
+                integrity_repair_failures: &[],
+                completed_integrity_repairs: &completed_integrity_repairs,
+                reconstructable_start: date,
+                statistics_start_date: Some(&date_text),
+                initial_materialization: true,
+                processed_rows_count: 1,
+                source_rows_empty: false,
+                archive_read_failed: false,
+                terminal_proof_reconciliation_incomplete: false,
+                archive_markers: &[],
+                failed_archive_paths: &HashSet::new(),
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &[],
+                attempt_archive_markers: &HashSet::new(),
+            },
+            &recovery_control,
+        )
+        .await
+        .expect("retry completes the queued repair");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+            )
+            .bind(&date_text)
+            .fetch_one(&pool)
+            .await
+            .expect("completed repair queue entry removed with publication"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM long_term_stats_state WHERE id = ?1",
+            )
+            .bind(LONG_TERM_STATE_ID)
+            .fetch_one(&pool)
+            .await
+            .expect("published state"),
+            LONG_TERM_STATUS_READY
+        );
     }
 
     #[tokio::test]
