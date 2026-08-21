@@ -92,9 +92,10 @@ impl LiveResponsesRequestBodyPipeline {
     }
 }
 
-/// Starts a replay-backed request-body transformer. The routing probe becomes
-/// available only after the complete root object has been parsed, so a caller
-/// never sends an upstream body for a provisional route.
+/// Starts a replay-backed request-body transformer. The routing probe can be
+/// published while the root object is still open only when a future-safe route
+/// commit is proven; otherwise it remains buffered until the complete root
+/// object has been parsed.
 pub(crate) fn spawn_live_responses_request_body_pipeline(
     raw_body: Body,
     downstream_content_encoding: Option<String>,
@@ -532,6 +533,7 @@ fn live_routing_probe_from_fields(
         } else {
             ImageIntent::Unknown
         },
+        root_object_complete,
     }
 }
 
@@ -550,11 +552,12 @@ fn is_precommit_routing_root_field(key: &str) -> bool {
 }
 
 fn should_defer_route_commit(_key: &str, _value_start: u8) -> bool {
-    // Route-affecting root fields are kept in `pending_fields` and are handled
-    // before this check. Once model/input and those fields are known, an
-    // ordinary field is the first safe commit point; later route fields still
-    // remain deferred because they are classified by `is_precommit...`.
-    false
+    // JSON object fields are unordered and optional. After any ordinary field
+    // there may still be a later input, tools, metadata, sticky, prompt-cache,
+    // or encrypted-content field that changes the route. Without a schema-level
+    // end marker, EOF is the only proof that the route-affecting root set is
+    // complete, so the live encoder must stay uncommitted until root EOF.
+    true
 }
 
 struct LiveRootFieldTransformer {
@@ -1547,7 +1550,7 @@ mod tests {
     async fn final_route_gate_waits_for_late_routing_metadata_before_upstream_body() {
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
         tx.send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5.6","input":"hello","#,
+            br#"{"model":"gpt-5.6","input":"hello","instructions":"stream","#,
         )))
         .await
         .expect("send request prefix");

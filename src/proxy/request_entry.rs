@@ -1654,6 +1654,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
     pub(crate) image_intent: ImageIntent,
+    pub(crate) root_object_complete: bool,
 }
 
 /// Immutable request semantics derived from the single replay snapshot.
@@ -5262,6 +5263,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                     &sticky_key_probe,
                                 ),
                             image_intent: ImageIntent::Unknown,
+                            root_object_complete: true,
                         },
                     ));
                 }
@@ -5349,6 +5351,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                             &sticky_key_probe,
                         ),
                     image_intent: ImageIntent::Unknown,
+                    root_object_complete: false,
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()

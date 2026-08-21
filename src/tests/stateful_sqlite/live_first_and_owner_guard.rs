@@ -358,8 +358,14 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn final_route_gate_starts_upstream_before_eof_with_prompt_cache_and_sticky_routing() {
+#[test]
+fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing() {
+    run_future_with_large_stack(async {
+        final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inner().await;
+    });
+}
+
+async fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inner() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -428,7 +434,7 @@ async fn final_route_gate_starts_upstream_before_eof_with_prompt_cache_and_stick
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
     let first_chunk = format!(
-        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"ready\",\"instructions\":\"stream\"}}\n"
+        "{{\"model\":\"gpt-5\",\"promptCacheKey\":\"{prompt_cache_key}\",\"input\":\"ready\"}}\n"
     )
     .to_string();
     let body_task = tokio::spawn(async move {
@@ -469,12 +475,15 @@ async fn final_route_gate_starts_upstream_before_eof_with_prompt_cache_and_stick
         .await
     });
 
-    timeout(
-        Duration::from_secs(1),
-        wait_for_pool_upstream_request_attempts(&state.pool, 1),
-    )
-    .await
-    .expect("prompt-cache routing should start upstream before EOF");
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            wait_for_pool_upstream_request_attempts(&state.pool, 1),
+        )
+        .await
+        .is_err(),
+        "the final-route gate must not start upstream before EOF"
+    );
     let _ = release_tail_tx.send(());
     body_task.await.expect("request body task should join");
     let response = request_task
@@ -487,9 +496,11 @@ async fn final_route_gate_starts_upstream_before_eof_with_prompt_cache_and_stick
     let response_payload: Value =
         serde_json::from_slice(&response_body).expect("decode routed capture response body");
     assert_eq!(response_payload["authorization"], "Bearer upstream-primary");
-    let attempts = attempts.lock().expect("lock route fixture attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    {
+        let attempts = attempts.lock().expect("lock route fixture attempts");
+        assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+        assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    }
     let (transport_mode, finalization_outcome) = timeout(Duration::from_secs(1), async {
         loop {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
@@ -514,10 +525,10 @@ async fn final_route_gate_starts_upstream_before_eof_with_prompt_cache_and_stick
     })
     .await
     .expect("live treatment invocation should persist");
-    assert_eq!(transport_mode.as_deref(), Some("live_first"));
+    assert_eq!(transport_mode.as_deref(), Some("buffered"));
     assert_eq!(
         finalization_outcome.as_deref(),
-        Some("live_first_model_ready")
+        Some("buffered_eof_final_route")
     );
 
     upstream_handle.abort();
@@ -603,8 +614,8 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
 
     assert_eq!(
         count_pool_upstream_request_attempts(&state.pool).await,
-        1,
-        "a malformed tail after live-first commit must cancel the provisional upstream attempt"
+        0,
+        "malformed JSON must not start an upstream attempt before final route validation"
     );
 
     let invocation = timeout(Duration::from_secs(1), async {
@@ -642,10 +653,7 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
             .expect("malformed live invocation payload"),
     )
     .expect("decode malformed live invocation payload");
-    assert_eq!(
-        invocation_payload["ambiguousUpstreamDelivery"], true,
-        "a malformed tail after upstream body delivery must be recorded as ambiguous"
-    );
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
 
     upstream_handle.abort();
 }
@@ -948,8 +956,14 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
     upstream_handle.abort();
 }
 
-#[tokio::test]
-async fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
+#[test]
+fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
+    run_future_with_large_stack(async {
+        final_route_gate_cancellation_after_eof_releases_active_reservation_inner().await;
+    });
+}
+
+async fn final_route_gate_cancellation_after_eof_releases_active_reservation_inner() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_secs(5);
     config.proxy_enforce_stream_include_usage = false;

@@ -1333,13 +1333,17 @@ async fn prepare_capture_request_body(
         .await;
     }
 
-    let route_finalization_outcome = match prepared_live_request_streaming_decision
-        .as_ref()
-        .map(|decision| decision.transport_mode)
-    {
-        Some(RequestBodyTransportMode::LiveFirst) => "live_first_model_ready",
-        _ if live_candidate => "buffered_eof_final_route",
-        _ => "buffered_no_model",
+    let route_finalization_outcome = if live_body_key_probe.root_object_complete && live_candidate {
+        "buffered_eof_final_route"
+    } else {
+        match prepared_live_request_streaming_decision
+            .as_ref()
+            .map(|decision| decision.transport_mode)
+        {
+            Some(RequestBodyTransportMode::LiveFirst) => "live_first_model_ready",
+            _ if live_candidate => "buffered_eof_final_route",
+            _ => "buffered_no_model",
+        }
     };
 
     PreparedCaptureRequestBody {
@@ -1388,11 +1392,9 @@ fn live_route_dependency_factors(
 }
 
 /// A live probe is safe to commit once the model is known and image routing is
-/// not positively required. Sticky and prompt-cache bindings, as well as
-/// encrypted-session ownership, are resolvable inputs to the hot routing
-/// snapshot and must not exclude the requests that need live forwarding most.
-/// The incremental pipeline keeps these root fields in its precommit set so
-/// the resolver receives their values before the first upstream byte.
+/// not positively required. The pipeline separately records whether that
+/// probe was finalized at EOF; EOF-finalized samples remain buffered for
+/// measurement even though the established route/failover path is reused.
 fn live_route_probe_can_start_before_eof(probe: &PoolReplayBodyKeyProbe) -> bool {
     probe.model.is_some() && probe.image_intent != ImageIntent::Yes
 }
@@ -2830,10 +2832,26 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
+    let route_finalized_at_eof =
+        live_route_finalization_measurement
+            .as_ref()
+            .is_some_and(|measurement| {
+                measurement.route_finalization_outcome == Some("buffered_eof_final_route")
+            });
     let live_request_streaming_decision = if let Some(decision) =
         prepared_live_request_streaming_decision
     {
-        decision
+        if route_finalized_at_eof && decision.transport_mode == RequestBodyTransportMode::LiveFirst
+        {
+            LiveRequestStreamingDecision {
+                transport_mode: RequestBodyTransportMode::Buffered,
+                eligible: false,
+                reason: "route_finalized_at_eof",
+                ..decision
+            }
+        } else {
+            decision
+        }
     } else if capture_target == ProxyCaptureTarget::Responses {
         match load_pool_routing_runtime_cache(state.as_ref()).await {
             Ok(snapshot) => decide_live_request_streaming(
