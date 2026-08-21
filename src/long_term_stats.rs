@@ -7422,7 +7422,19 @@ async fn refresh_long_term_stats_inner(
                         && !hourly.keys().any(|(bucket_start_epoch, _, _)| {
                             long_term_bucket_date(*bucket_start_epoch) == Some(*date)
                         });
-                    if scheduled_repair_date == Some(*date) && candidate_is_empty {
+                    let initial_complete_snapshot_without_hourly_proof = initial_materialization
+                        && oracle.hourly.is_empty()
+                        && !archive_read_failed
+                        && !terminal_proof_reconciliation_incomplete
+                        && *date >= reconstructable_start;
+                    if initial_complete_snapshot_without_hourly_proof {
+                        // An empty canonical table is not a zero-value proof. During the first
+                        // complete source scan, however, the snapshot itself is the bootstrap
+                        // evidence until hourly canonical rows are generated.
+                        if scheduled_repair_date == Some(*date) {
+                            completed_integrity_repairs.insert(*date);
+                        }
+                    } else if scheduled_repair_date == Some(*date) && candidate_is_empty {
                         // A durable repair queue represents an explicitly invalidated date. A
                         // complete empty source is a valid replacement even when the prior
                         // canonical proof still contains the stale pre-repair totals.
@@ -16111,6 +16123,7 @@ mod tests {
             .await
             .expect("long-term schema");
         create_long_term_test_invocations(&pool).await;
+        create_long_term_integrity_oracle(&pool).await;
         let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
         insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
 

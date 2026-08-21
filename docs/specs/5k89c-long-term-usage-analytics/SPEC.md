@@ -43,6 +43,8 @@
 - 归档删除的阶段化和收尾都必须绑定同一个 `id`、dataset、路径、SHA-256 与 `delete_pending` 身份。收尾在 SQLite `BEGIN IMMEDIATE` 事务中再次验证文件哈希；旧月度归档写入必须在同一 `BEGIN IMMEDIATE` 区间内撤销待删除状态并替换文件。因而重写先于收尾时保留新文件和新 manifest，收尾先于重写时写入随后可安全创建新的 manifest。
 - 完整性对账、targeted date repair、全量 rebuild、请求尝试 attribution 与 archive cleanup source-boundary 读取 completed archive 前后都必须验证文件 SHA-256 与当前 manifest 一致；可读但哈希不一致的文件同样是不可用来源，不得更新 attribution、发布 rollup、写入 replay marker 或持久化 cleanup boundary。replay marker 写入后必须立即再次校验已扫描 SHA、文件与 manifest，并仅在持久化 file identity 仍与当前 source 一致时跳过重读；若其间变更，必须删除 marker 并使刷新进入既有 error/retry，不得由 replay cache 掩盖该替换。来源安全下界仅可跨越连续已退役前缀推进：若仍保留的调用或请求尝试 archive 可能覆盖候选日期之前，候选边界必须持久化等待，直到连续条件成立后再原子发布。
 
+- 首次完整 source snapshot 的后端 SQLite 回归需覆盖 `invocation_rollup_hourly` 表存在但目标日无 canonical hourly 行：快照可作为 bootstrap evidence 发布且进入既有 archive cleanup marker 门禁；后续 refresh 或任何非完整来源情形仍不得将空 oracle 认证为零值 proof。
+
 ## API 合同
 
 ### `GET /api/stats/long-term/overview?range=7d|30d|180d|365d`
