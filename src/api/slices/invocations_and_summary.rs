@@ -8244,18 +8244,18 @@ fn summary_projection_all_time_materialized_scope_coverage(
         if !archive.has_materialized_historical_rollups() {
             continue;
         }
+        let replay = summary_projection_effective_replay_coverage(
+            archive,
+            replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default(),
+        );
         let Some(range) = summary_projection_archive_coverage_range(archive) else {
             // Legacy manifests lack a finite durable coverage range. Their materialization flag
             // remains the established proof for the global compact baseline. Account coverage
             // cannot be inferred without a bounded manifest, so retain that legacy response
             // only when its independent account replay marker exists.
-            let replay = summary_projection_effective_replay_coverage(
-                archive,
-                replay_coverage
-                    .get(archive.file_path())
-                    .copied()
-                    .unwrap_or_default(),
-            );
             accounts_covered &= replay.account_stats;
             continue;
         };
@@ -8270,11 +8270,15 @@ fn summary_projection_all_time_materialized_scope_coverage(
         let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
         let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
         while bucket <= last_bucket {
-            global_covered &= hourly_rollup_totals.contains_key(&(bucket, None));
+            // An aggregate row alone can represent an interrupted replay prefix. Its durable
+            // replay marker is the completion proof, so require both before replacing the
+            // exact archive source outside the bounded raw horizon.
+            global_covered &= replay.overall && hourly_rollup_totals.contains_key(&(bucket, None));
             if let Some(account_ids) = account_ids.filter(|account_ids| !account_ids.is_empty()) {
-                accounts_covered &= account_ids.iter().all(|account_id| {
-                    hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
-                });
+                accounts_covered &= replay.account_stats
+                    && account_ids.iter().all(|account_id| {
+                        hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
+                    });
             }
             if !global_covered && !accounts_covered {
                 return Ok((false, false));
@@ -26825,6 +26829,30 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("record archive account manifest");
+
+        // A durable bucket key is not proof of a completed archive replay. Until every scope's
+        // replay marker exists, all-time must retain last-good/unavailable rather than serve the
+        // partial compact prefix from an archive outside the raw exact horizon.
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with incomplete archive replay");
+        for upstream_account_id in [None, Some(42)] {
+            let response = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some("all".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await;
+            assert!(
+                matches!(response, Err(ApiError::Unavailable(_))),
+                "missing replay marker must fail closed for {upstream_account_id:?}"
+            );
+        }
+
         for target in [
             HOURLY_ROLLUP_TARGET_INVOCATIONS,
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
