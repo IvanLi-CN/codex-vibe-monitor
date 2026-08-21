@@ -480,6 +480,19 @@ async fn load_long_term_archive_attempt_accounts(
             path_end >= start && path_start <= end
         })
     }) {
+        ensure_long_term_archive_source_identity(
+            pool,
+            "pool_upstream_request_attempts",
+            &archive_path.file_path,
+            &archive_path.sha256,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "{LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR}: {}",
+                archive_path.file_path
+            )
+        })?;
         let attempt_archive = open_pool_upstream_request_attempt_archive_batch_pool(
             &ArchiveBatchPathRow::from_file_path(archive_path.file_path.clone()),
             "long-term-stats-attempt-fallback",
@@ -517,6 +530,19 @@ async fn load_long_term_archive_attempt_accounts(
         let rows = statement.fetch_all(&archive_pool).await;
         archive_pool.close().await;
         drop(cleanup);
+        ensure_long_term_archive_source_identity(
+            pool,
+            "pool_upstream_request_attempts",
+            &archive_path.file_path,
+            &archive_path.sha256,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "{LONG_TERM_ATTEMPT_ARCHIVE_UNAVAILABLE_ERROR}: {}",
+                archive_path.file_path
+            )
+        })?;
         match rows {
             Ok(rows) => {
                 for row in rows {
@@ -779,9 +805,18 @@ async fn load_long_term_archive_sha256(
     pool: &Pool<Sqlite>,
     file_path: &str,
 ) -> Result<Option<String>> {
+    load_long_term_archive_sha256_for_dataset(pool, "codex_invocations", file_path).await
+}
+
+async fn load_long_term_archive_sha256_for_dataset(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    file_path: &str,
+) -> Result<Option<String>> {
     sqlx::query_scalar(
-        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path = ?1 ORDER BY id DESC LIMIT 1",
+        "SELECT sha256 FROM archive_batches WHERE dataset = ?1 AND status = 'completed' AND file_path = ?2 ORDER BY id DESC LIMIT 1",
     )
+    .bind(dataset)
     .bind(file_path)
     .fetch_optional(pool)
     .await
@@ -874,6 +909,28 @@ fn long_term_archive_scan_identity_matches_manifest(
     manifest_sha256: Option<&str>,
 ) -> bool {
     current_file_sha256 == Some(scanned_sha256) && manifest_sha256 == Some(scanned_sha256)
+}
+
+async fn ensure_long_term_archive_source_identity(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    file_path: &str,
+    expected_sha256: &str,
+) -> Result<()> {
+    let file_sha256 = crate::maintenance::sha256_hex_file(std::path::Path::new(file_path))?;
+    let manifest_sha256 =
+        load_long_term_archive_sha256_for_dataset(pool, dataset, file_path).await?;
+    if long_term_archive_scan_identity_matches_manifest(
+        expected_sha256,
+        Some(&file_sha256),
+        manifest_sha256.as_deref(),
+    ) {
+        Ok(())
+    } else {
+        bail!(
+            "long-term archive source identity does not match its completed manifest: {file_path}"
+        )
+    }
 }
 
 async fn long_term_archive_pool_fingerprint(pool: &Pool<Sqlite>) -> Result<String> {
@@ -3983,6 +4040,16 @@ async fn load_long_term_projection_rows_for_date(
         if !overlaps {
             continue;
         }
+        let archive_sha256 = load_long_term_archive_sha256(pool, archive_path.file_path())
+            .await?
+            .context("completed invocation archive has no manifest sha256")?;
+        ensure_long_term_archive_source_identity(
+            pool,
+            "codex_invocations",
+            archive_path.file_path(),
+            &archive_sha256,
+        )
+        .await?;
         let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-projection-targeted-repair",
@@ -4026,6 +4093,13 @@ async fn load_long_term_projection_rows_for_date(
         archive_pool.close().await;
         drop(cleanup);
         let archive_rows = archive_rows?;
+        ensure_long_term_archive_source_identity(
+            pool,
+            "codex_invocations",
+            archive_path.file_path(),
+            &archive_sha256,
+        )
+        .await?;
         for mut row in archive_rows {
             if row.upstream_account_id.is_none()
                 && let Some(invoke_id) = row.invoke_id.as_ref()
@@ -7349,6 +7423,16 @@ async fn refresh_long_term_stats_inner(
             if !overlaps {
                 continue;
             }
+            let archive_sha256 = load_long_term_archive_sha256(pool, archive_path.file_path())
+                .await?
+                .context("completed invocation archive has no manifest sha256")?;
+            ensure_long_term_archive_source_identity(
+                pool,
+                "codex_invocations",
+                archive_path.file_path(),
+                &archive_sha256,
+            )
+            .await?;
             let Some((archive_pool, cleanup)) =
                 open_invocation_archive_batch_pool(&archive_path, "long-term-stats-rebuild")
                     .await?
@@ -7361,6 +7445,13 @@ async fn refresh_long_term_stats_inner(
                 .await?;
             archive_pool.close().await;
             drop(cleanup);
+            ensure_long_term_archive_source_identity(
+                pool,
+                "codex_invocations",
+                archive_path.file_path(),
+                &archive_sha256,
+            )
+            .await?;
             for mut row in archive_rows {
                 hydrate_long_term_archive_attempt_account(&mut row, &archive_attempt_accounts);
                 if rebuild_seen_ids.insert(row.id) {
@@ -7857,30 +7948,14 @@ async fn persist_long_term_refresh_archive_markers_with_control(
         attempt_archive_markers,
     } = markers;
     for (file_path, archive_sha256) in archive_markers {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        sqlx::query(
-            r#"
-            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256)
-            SELECT ?1, 'codex_invocations', ?2, ?3
-            WHERE EXISTS (
-                SELECT 1
-                FROM archive_batches
-                WHERE dataset = 'codex_invocations'
-                  AND status = 'completed'
-                  AND file_path = ?2
-                  AND sha256 = ?3
-            )
-            ON CONFLICT(target, dataset, file_path) DO UPDATE SET
-                archive_sha256 = excluded.archive_sha256,
-                replayed_at = datetime('now')
-            "#,
+        persist_long_term_refresh_archive_marker_with_control(
+            pool,
+            "codex_invocations",
+            file_path,
+            archive_sha256,
+            control,
         )
-        .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
-        .bind(file_path)
-        .bind(archive_sha256)
-        .execute(&mut *transaction)
         .await?;
-        control.commit(transaction, permit).await?;
     }
 
     if archive_read_failed {
@@ -7937,19 +8012,51 @@ async fn persist_long_term_refresh_archive_markers_with_control(
         }
     } else {
         for (file_path, archive_sha256) in attempt_archive_markers {
-            let (mut transaction, permit) = control.begin(pool).await?;
-            sqlx::query(
-                "INSERT OR REPLACE INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, ?3)",
+            persist_long_term_refresh_archive_marker_with_control(
+                pool,
+                "pool_upstream_request_attempts",
+                file_path,
+                archive_sha256,
+                control,
             )
-            .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
-            .bind(file_path)
-            .bind(archive_sha256)
-            .execute(&mut *transaction)
             .await?;
-            control.commit(transaction, permit).await?;
         }
     }
     Ok(())
+}
+
+async fn persist_long_term_refresh_archive_marker_with_control(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    file_path: &str,
+    archive_sha256: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256)
+        SELECT ?1, ?2, ?3, ?4
+        WHERE EXISTS (
+            SELECT 1
+            FROM archive_batches
+            WHERE dataset = ?2
+              AND status = 'completed'
+              AND file_path = ?3
+              AND sha256 = ?4
+        )
+        ON CONFLICT(target, dataset, file_path) DO UPDATE SET
+            archive_sha256 = excluded.archive_sha256,
+            replayed_at = datetime('now')
+        "#,
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(archive_sha256)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await
 }
 
 async fn delete_long_term_refresh_replay_markers_with_control(
@@ -9986,6 +10093,61 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn archive_source_identity_rejects_a_valid_file_with_a_stale_manifest() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("full schema");
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-stale-archive-manifest-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::write(&archive_path, b"valid replacement archive bytes")
+            .expect("write replacement archive");
+        let archive_path_text = archive_path.to_string_lossy().to_string();
+        let archive_sha256 =
+            crate::maintenance::sha256_hex_file(&archive_path).expect("hash replacement archive");
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('pool_upstream_request_attempts', '2026-08', ?1, 'stale-sha', 1, 'completed', datetime('now'))",
+        )
+        .bind(&archive_path_text)
+        .execute(&pool)
+        .await
+        .expect("record stale manifest");
+
+        let error = ensure_long_term_archive_source_identity(
+            &pool,
+            "pool_upstream_request_attempts",
+            &archive_path_text,
+            "stale-sha",
+        )
+        .await
+        .expect_err("a valid replacement must not satisfy its stale manifest");
+        assert!(error.to_string().contains("does not match"));
+
+        sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+            .bind(&archive_sha256)
+            .bind(&archive_path_text)
+            .execute(&pool)
+            .await
+            .expect("update manifest to replacement identity");
+        ensure_long_term_archive_source_identity(
+            &pool,
+            "pool_upstream_request_attempts",
+            &archive_path_text,
+            &archive_sha256,
+        )
+        .await
+        .expect("matching manifest accepts the source");
+        let _ = fs::remove_file(&archive_path);
+    }
+
     #[test]
     fn long_term_projection_repair_retries_deferred_and_persisted_dirty_work() {
         let now = Instant::now();
@@ -11310,17 +11472,19 @@ mod tests {
         archive_pool.close().await;
         crate::maintenance::deflate_sqlite_file_to_gzip(&readable_db_path, &readable_archive_path)
             .expect("compress readable invocation archive");
+        let readable_archive_sha256 = crate::maintenance::sha256_hex_file(&readable_archive_path)
+            .expect("hash readable invocation archive");
 
         for (id, file_path, sha256) in [
             (
                 1_i64,
                 missing_archive_path.to_string_lossy().to_string(),
-                "missing-invocation-sha",
+                "missing-invocation-sha".to_string(),
             ),
             (
                 2_i64,
                 readable_archive_path.to_string_lossy().to_string(),
-                "readable-invocation-sha",
+                readable_archive_sha256,
             ),
         ] {
             sqlx::query(
@@ -11389,6 +11553,14 @@ mod tests {
         restored_pool.close().await;
         crate::maintenance::deflate_sqlite_file_to_gzip(&restored_db_path, &missing_archive_path)
             .expect("compress restored invocation archive");
+        let restored_archive_sha256 = crate::maintenance::sha256_hex_file(&missing_archive_path)
+            .expect("hash restored invocation archive");
+        sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+            .bind(restored_archive_sha256)
+            .bind(missing_archive_path.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .expect("restore invocation archive manifest identity");
 
         refresh_long_term_stats(&pool, 400)
             .await
@@ -11798,6 +11970,8 @@ mod tests {
         archive_pool.close().await;
         crate::maintenance::deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
             .expect("compress attempt archive");
+        let archive_sha256 =
+            crate::maintenance::sha256_hex_file(&archive_path).expect("hash attempt archive");
         sqlx::query(
             r#"
             INSERT INTO archive_batches (
@@ -11811,11 +11985,12 @@ mod tests {
                 coverage_end_at,
                 created_at
             )
-            VALUES ('pool_upstream_request_attempts', ?1, ?2, 'repair-attempt-sha', 1, 'completed', ?3, ?3, datetime('now'))
+            VALUES ('pool_upstream_request_attempts', ?1, ?2, ?3, 1, 'completed', ?4, ?4, datetime('now'))
             "#,
         )
         .bind(month_key)
         .bind(archive_path.to_string_lossy().to_string())
+        .bind(archive_sha256)
         .bind(&occurred_at)
         .execute(&pool)
         .await
