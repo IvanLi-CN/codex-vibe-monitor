@@ -28,11 +28,12 @@
 
 ### `/v1/responses` live request body
 
-- `/v1/responses` 可在 pool 的首轮选路完成后把请求体 live-first 发送给上游；原始下游字节同时持续写入同一份 replay snapshot，failover 从该 snapshot 重建请求体。
-- live-first 只在 runtime setting 显式启用、且增量 probe 已确定 model、image intent、sticky/prompt-cache key 与 encrypted-content 后生效。启用后对所有满足这些选路条件的 `/v1/responses` 请求生效；缺少任一影响选路的信息时继续读取，不得为提前发送改变选路。
+- `/v1/responses` 只可在首轮最终路由已经冻结后向上游发送首个请求体字节；原始下游字节同时持续写入同一份 replay snapshot，failover 从该 snapshot 重建请求体。不得先发送再因晚到路由字段取消该次上游请求。
+- 请求级路由快照在请求开始时冻结。model、有效 sticky/prompt-cache 绑定、已启用的加密会话 owner 以及实际存在图片能力差异时的图片意图都必须确定；`tools` 与 `tool_choice` 只在后者为真时构成依赖。根对象字段顺序和重复键不构成客户端限制，无法在有界解析预算内安全最终化时走既有完整缓冲路径。
+- 高基数 prompt-cache/encrypted-owner 路由键使用容量 16,384 的 LRU，缓存空结果；冷 miss 以单飞加载，绑定写入精确失效对应键。低基数设置、模型映射、压缩、超时与实验开关作为版本化 runtime snapshot 发布。热请求不得有固定 SQLite 读取；snapshot 或键缓存不可用时保守缓冲。
 - 逻辑 JSON 的增量变换覆盖 `stream_options.include_usage` 和 OAuth `/v1/responses` 的既有 rewrite 规则。输出以 JSON 语义等价为边界，不承诺字段顺序、空白或压缩字节相同；已经发送前缀后发现非法 JSON 时取消上游并向下游返回现有 `400`。
 - live-first 支持现有 `follow`、`identity`、`gzip`、`deflate` 与 `zstd` 请求压缩策略。变换或重新编码的 body 不携带旧 `Content-Length`；不支持的 inbound encoding 沿用现有拒绝行为。
-- 设置默认关闭。启用后使用 `hash(invoke_id + live_first_revision) % 100` 固定按 treatment 百分比分配 control/treatment；control 保持完整缓冲，跨账号重试不改变 variant。现有 failover 语义不因该实验改变，但不确定上游交付必须单独记录。
+- 设置默认关闭。启用后使用 `hash(invoke_id + live_first_revision) % 100` 固定按 treatment 百分比分配 control/treatment；control 保持完整缓冲，跨账号重试不改变 variant。`responses-live-request-body-v2` 与 v1 故障样本隔离；功能关闭时不运行新的路由分析或写入新指标。现有 failover 语义不因该实验改变，但仅实际开始消费上游 body 后的失败才记为不确定交付。
 
 ### Projection
 
@@ -71,7 +72,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
 - 现有 pool routing settings additive 暴露 `liveRequestStreaming: { enabled, treatmentPercent }`；默认值为 `false` 和 `50`，启用后对所有符合其他请求条件的 `/v1/responses` 生效。
-- `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts`。cohort 使用 `buffered`、`live_first`、`unknown` 三种 transport mode；历史缺字段只能归入 `unknown`。
+- `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts` 与 `routeFinalization`。cohort 使用 `buffered`、`live_first`、`unknown` 三种 transport mode；性能面板默认只比较 v2，历史缺字段只能归入 `unknown`。
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
@@ -89,7 +90,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 - projection: `projection`, `trigger`, `revision`, `render_elapsed_ms`, `live_path_db_read_count`, `snapshot_origin`, `last_good_age_ms`。
 - request pipeline: `snapshot_kind`, `body_size_bytes`, `semantic_parse_count`, `whole_body_materialization_count`, `rewrite_buffer_peak_bytes`, `fallback_reason`。
-- live request body: `request_body_transport_mode`, `live_first_revision`, `live_first_experiment_variant`, eligibility/reason、raw/logical body bytes、`upstream_request_first_byte_ms`、`request_body_capture_complete_ms`、`request_upstream_overlap_ms`、直接测得的 `first_response_byte_total_ms` 与 `first_token_ms`。所有值共用请求 body 消费起点；不得由互相重叠的阶段耗时相加推导首响应。
+- live request body: `request_body_transport_mode`, `live_first_revision`, `live_first_experiment_variant`, eligibility/reason、raw/logical body bytes、`route_finalization_{raw,logical}_bytes`、比例、耗时、结果、依赖因素及 hot-cache/cold-load 状态、`upstream_request_first_byte_ms`、`request_body_capture_complete_ms`、`request_upstream_overlap_ms`、直接测得的 `first_response_byte_total_ms` 与 `first_token_ms`。所有值共用请求 body 消费起点；不得由互相重叠的阶段耗时相加推导首响应。
 - effectiveness 仅以最终成功 invocation 为分母；首尝试失败、capture failure、retry/fallback、client abort 与 `ambiguous_upstream_delivery` 作为独立风险计数。持久化不得包含正文或凭据。
 - delivery: `topic_key`, `active_subscriber_count`, `builder_count`, `serialization_count`, `frame_bytes`, `frame_reused`, `cursor_advanced`。
 - accounting/memory: `pending_depth`, `pending_bytes`, `accounting_transfer_bytes`, `accounting_invariant`, `rss_anon_bytes`, `swap_bytes`, `managed_bytes`, `unattributed_anon_bytes`。
@@ -105,7 +106,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - P2 pressure defer 不是执行失败，不得增加 retry 计数。健康派生写采用固定 250ms 合并；cooldown 到期或 background eligibility generation 变化负责唤醒，P1 的 20ms admission ticker 不得轮询 P2。
 - 高频 Prompt Cache topic 必须使用 active-topic scoped projection。任意 Records 广播不得触发 full-window hydrate；topic delta 500ms 合并，last-good baseline 最多每 60 秒 pressure-gated reconcile 一次。
 - 生产受控 A/B 中新增 Dashboard tab 的 CPU 增量不超过 10 个百分点，subscription lag/skipped 为零；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。该 A/B 是架构完成门槛，不能由“零 SQL”或单 topic Arc 复用测试替代。
-- 阻塞 `/v1/responses` 的下游尾部 body 后，符合条件的 treatment 必须已向上游提供首个请求 chunk；control 与 metadata 晚到请求不得提前发送。
+- 阻塞 `/v1/responses` 的下游尾部 body 后，treatment 不得在最终路由前向上游提供首个请求 chunk；control、metadata/tools/图片/加密字段晚到与重复 root key 都不得触发“已发送再取消”。EOF、冷缓存或解析预算退化保留完整缓冲。
 - API Key 与 OAuth、`follow|identity|gzip|deflate|zstd`、重复 key、嵌套 metadata、malformed body、cancel、early upstream return 与 replay/failover 均有回归覆盖。
 - 性能比较必须给出每 cohort 的成功样本数及首响应、首 token、overlap 的 p50/p90/p99；每组少于 200 个成功样本时 UI 不得宣称收益结论。
 

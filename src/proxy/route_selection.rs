@@ -1277,7 +1277,7 @@ pub(crate) async fn confirm_prompt_cache_encrypted_session_owner_success_if_enab
     )
     .await?;
     if updated {
-        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
     Ok(updated)
 }
@@ -1308,20 +1308,13 @@ pub(crate) async fn load_via_pool_effective_routing_constraint(
     prompt_cache_key: Option<&str>,
     request_contains_encrypted_content: bool,
 ) -> Result<(Option<PromptCacheConversationBindingConstraint>, bool), (StatusCode, String)> {
-    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
-    resolve_prompt_cache_effective_routing_constraint(
-        &state.pool,
+    load_via_pool_effective_routing_with_cache(
+        state,
         prompt_cache_key,
         request_contains_encrypted_content,
-        encrypted_owner_routing_enabled,
     )
     .await
-    .map_err(|err| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("failed to resolve prompt cache conversation binding: {err}"),
-        )
-    })
+    .map(|(constraint, owner_auto_guard_active, _, _)| (constraint, owner_auto_guard_active))
 }
 
 pub(crate) async fn load_via_pool_effective_routing(
@@ -1336,14 +1329,83 @@ pub(crate) async fn load_via_pool_effective_routing(
     ),
     (StatusCode, String),
 > {
-    let (constraint, owner_auto_guard_active) = load_via_pool_effective_routing_constraint(
+    load_via_pool_effective_routing_with_cache(
         state,
         prompt_cache_key,
         request_contains_encrypted_content,
     )
-    .await?;
+    .await
+    .map(
+        |(constraint, owner_auto_guard_active, conversation_override, _)| {
+            (constraint, owner_auto_guard_active, conversation_override)
+        },
+    )
+}
+
+pub(crate) async fn load_via_pool_effective_routing_with_cache(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+    request_contains_encrypted_content: bool,
+) -> Result<
+    (
+        Option<PromptCacheConversationBindingConstraint>,
+        bool,
+        Option<ConversationRoutingOverride>,
+        bool,
+    ),
+    (StatusCode, String),
+> {
+    let encrypted_owner_routing_enabled = encrypted_session_owner_routing_enabled(state).await;
+    let Some(prompt_cache_key) = prompt_cache_key
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return Ok((None, false, None, true));
+    };
+    let key = PoolRoutingPromptRouteCacheKey {
+        prompt_cache_key: prompt_cache_key.to_string(),
+        request_contains_encrypted_content,
+        encrypted_session_owner_routing_enabled: encrypted_owner_routing_enabled,
+    };
+    let runtime_cache = load_pool_routing_runtime_cache(state)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to load pool routing runtime cache: {err}"),
+            )
+        })?;
+    if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
+        && let Some(value) = cache.get(&key)
+    {
+        return Ok(pool_routing_prompt_route_cache_value(value, true));
+    }
+
+    // A miss holds the existing routing writer lock, so concurrent requests for
+    // the same absent or evicted key share one database load and cache negative
+    // results as well.
+    let _cold_load_guard = state.pool_model_routing_cache_write_lock.lock().await;
+    if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
+        && let Some(value) = cache.get(&key)
+    {
+        return Ok(pool_routing_prompt_route_cache_value(value, true));
+    }
+    let (binding_constraint, owner_auto_guard_active) =
+        resolve_prompt_cache_effective_routing_constraint(
+            &state.pool,
+            Some(prompt_cache_key),
+            request_contains_encrypted_content,
+            encrypted_owner_routing_enabled,
+        )
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("failed to resolve prompt cache conversation binding: {err}"),
+            )
+        })?;
     let conversation_override =
-        load_prompt_cache_conversation_routing_override(&state.pool, prompt_cache_key)
+        load_prompt_cache_conversation_routing_override(&state.pool, Some(prompt_cache_key))
             .await
             .map_err(|err| {
                 (
@@ -1351,7 +1413,42 @@ pub(crate) async fn load_via_pool_effective_routing(
                     format!("failed to resolve prompt cache conversation overrides: {err}"),
                 )
             })?;
-    Ok((constraint, owner_auto_guard_active, conversation_override))
+    let value = if binding_constraint.is_none()
+        && !owner_auto_guard_active
+        && conversation_override.is_none()
+    {
+        None
+    } else {
+        Some(PoolRoutingPromptRouteCacheValue {
+            binding_constraint: binding_constraint.clone(),
+            owner_auto_guard_active,
+            conversation_override: conversation_override.clone(),
+        })
+    };
+    if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock() {
+        cache.insert(key, value.clone());
+    }
+    Ok(pool_routing_prompt_route_cache_value(value, false))
+}
+
+fn pool_routing_prompt_route_cache_value(
+    value: Option<PoolRoutingPromptRouteCacheValue>,
+    cache_hit: bool,
+) -> (
+    Option<PromptCacheConversationBindingConstraint>,
+    bool,
+    Option<ConversationRoutingOverride>,
+    bool,
+) {
+    match value {
+        Some(value) => (
+            value.binding_constraint,
+            value.owner_auto_guard_active,
+            value.conversation_override,
+            cache_hit,
+        ),
+        None => (None, false, None, cache_hit),
+    }
 }
 
 pub(crate) fn pool_account_supports_live_request_body(

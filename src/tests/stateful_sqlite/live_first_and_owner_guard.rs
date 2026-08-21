@@ -73,6 +73,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
@@ -358,7 +359,7 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
 }
 
 #[tokio::test]
-async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routing() {
+async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_sticky_routing() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -430,12 +431,15 @@ async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routi
         .await
     });
 
-    timeout(
-        Duration::from_secs(1),
-        wait_for_pool_upstream_request_attempts(&state.pool, 1),
-    )
-    .await
-    .expect("live treatment should start an upstream attempt before request eof");
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            wait_for_pool_upstream_request_attempts(&state.pool, 1),
+        )
+        .await
+        .is_err(),
+        "the final-route gate must not reserve or start an upstream attempt before EOF"
+    );
     let _ = release_tail_tx.send(());
     body_task.await.expect("request body task should join");
     let response = request_task
@@ -445,41 +449,41 @@ async fn live_first_capture_responses_streams_with_prompt_cache_and_sticky_routi
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read capture response body");
-    let (transport_mode, upstream_first_byte_ms, overlap_ms) =
-        timeout(Duration::from_secs(1), async {
-            loop {
-                let row = sqlx::query_as::<_, (Option<String>, Option<f64>, Option<f64>)>(
-                    r#"
+    let (transport_mode, finalization_outcome) = timeout(Duration::from_secs(1), async {
+        loop {
+            let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                r#"
                 SELECT
                     json_extract(payload, '$.requestBodyTransportMode'),
-                    json_extract(payload, '$.upstreamRequestFirstByteMs'),
-                    json_extract(payload, '$.requestUpstreamOverlapMs')
+                    json_extract(payload, '$.routeFinalizationOutcome')
                 FROM codex_invocations
                 WHERE json_extract(payload, '$.liveFirstExperimentVariant') = 'treatment'
                 ORDER BY id DESC
                 LIMIT 1
                 "#,
-                )
-                .fetch_optional(&state.pool)
-                .await
-                .expect("query live treatment invocation");
-                if let Some(row) = row {
-                    break row;
-                }
-                tokio::task::yield_now().await;
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("query live treatment invocation");
+            if let Some(row) = row {
+                break row;
             }
-        })
-        .await
-        .expect("live treatment invocation should persist");
-    assert_eq!(transport_mode.as_deref(), Some("live_first"));
-    assert!(upstream_first_byte_ms.is_some_and(|value| value >= 0.0));
-    assert!(overlap_ms.is_some_and(|value| value > 0.0));
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("live treatment invocation should persist");
+    assert_eq!(transport_mode.as_deref(), Some("buffered"));
+    assert_eq!(
+        finalization_outcome.as_deref(),
+        Some("buffered_eof_final_route")
+    );
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_response() {
+async fn final_route_gate_rejects_malformed_tail_without_upstream_delivery() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -534,23 +538,26 @@ async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_re
         .await
         .expect("send valid live request prefix");
 
-    timeout(Duration::from_secs(1), async {
-        loop {
-            let response_received = attempts
-                .lock()
-                .expect("lock provisional upstream attempts")
-                .get("Bearer upstream-primary")
-                .copied()
-                .unwrap_or_default()
-                > 0;
-            if response_received {
-                break;
+    assert!(
+        timeout(Duration::from_millis(100), async {
+            loop {
+                if attempts
+                    .lock()
+                    .expect("lock upstream attempts")
+                    .get("Bearer upstream-primary")
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("upstream should respond before malformed tail arrives");
+        })
+        .await
+        .is_err(),
+        "malformed input must not reach an upstream before the final route is known"
+    );
     body_tx
         .send(Ok(Bytes::from_static(b"}")))
         .await
@@ -572,37 +579,7 @@ async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_re
             .is_some_and(|message| message.contains("request body must be valid JSON"))
     );
 
-    let attempt = timeout(Duration::from_secs(1), async {
-        loop {
-            let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<String>)>(
-                r#"
-                SELECT status, http_status, downstream_http_status, failure_kind
-                FROM pool_upstream_request_attempts
-                ORDER BY id DESC
-                LIMIT 1
-                "#,
-            )
-            .fetch_optional(&state.pool)
-            .await
-            .expect("query provisional pool attempt");
-            if let Some(row) = row.filter(|row| row.0 != "pending") {
-                break row;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("provisional pool attempt should be finalized");
-    assert_eq!(
-        attempt.0,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-    );
-    assert_eq!(attempt.1, Some(200));
-    assert_eq!(attempt.2, Some(400));
-    assert_eq!(
-        attempt.3.as_deref(),
-        Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     let invocation = timeout(Duration::from_secs(1), async {
         loop {
@@ -639,16 +616,13 @@ async fn live_first_capture_rejects_malformed_tail_after_provisional_upstream_re
             .expect("malformed live invocation payload"),
     )
     .expect("decode malformed live invocation payload");
-    assert_eq!(invocation_payload["liveFirstAttemptFailed"], true);
-    assert_eq!(invocation_payload["liveFirstFallbackOrRetry"], false);
-    assert_eq!(invocation_payload["liveFirstCaptureFailed"], true);
-    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn live_first_capture_rejects_downstream_read_error_after_provisional_upstream_response() {
+async fn final_route_gate_rejects_downstream_read_error_without_upstream_delivery() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -703,23 +677,26 @@ async fn live_first_capture_rejects_downstream_read_error_after_provisional_upst
         .await
         .expect("send valid live request prefix");
 
-    timeout(Duration::from_secs(1), async {
-        loop {
-            let response_received = attempts
-                .lock()
-                .expect("lock provisional upstream attempts")
-                .get("Bearer upstream-primary")
-                .copied()
-                .unwrap_or_default()
-                > 0;
-            if response_received {
-                break;
+    assert!(
+        timeout(Duration::from_millis(100), async {
+            loop {
+                if attempts
+                    .lock()
+                    .expect("lock upstream attempts")
+                    .get("Bearer upstream-primary")
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("upstream should respond before downstream body fails");
+        })
+        .await
+        .is_err(),
+        "a downstream read failure must not reach an upstream before the final route is known"
+    );
     body_tx
         .send(Err(io::Error::other("downstream request body failed")))
         .await
@@ -732,37 +709,7 @@ async fn live_first_capture_rejects_downstream_read_error_after_provisional_upst
         .expect("downstream body failure task should join");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let attempt = timeout(Duration::from_secs(1), async {
-        loop {
-            let row = sqlx::query_as::<_, (String, Option<i64>, Option<i64>, Option<String>)>(
-                r#"
-                SELECT status, http_status, downstream_http_status, failure_kind
-                FROM pool_upstream_request_attempts
-                ORDER BY id DESC
-                LIMIT 1
-                "#,
-            )
-            .fetch_optional(&state.pool)
-            .await
-            .expect("query provisional pool attempt");
-            if let Some(row) = row.filter(|row| row.0 != "pending") {
-                break row;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("provisional pool attempt should be finalized");
-    assert_eq!(
-        attempt.0,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-    );
-    assert_eq!(attempt.1, Some(200));
-    assert_eq!(attempt.2, Some(400));
-    assert_eq!(
-        attempt.3.as_deref(),
-        Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED)
-    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     let invocation_payload = timeout(Duration::from_secs(1), async {
         loop {
@@ -782,9 +729,7 @@ async fn live_first_capture_rejects_downstream_read_error_after_provisional_upst
     .expect("downstream body failure invocation should persist");
     let invocation_payload: Value =
         serde_json::from_str(&invocation_payload).expect("decode downstream body failure payload");
-    assert_eq!(invocation_payload["liveFirstAttemptFailed"], true);
-    assert_eq!(invocation_payload["liveFirstCaptureFailed"], true);
-    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
 
     upstream_handle.abort();
 }
@@ -858,7 +803,11 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
     let attempts = attempts
         .lock()
         .expect("lock live-first sticky failure attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(
+        attempts.get("Bearer upstream-primary").copied(),
+        Some(3),
+        "the buffered retry path preserves the existing same-account retry budget before failover"
+    );
     assert!(matches!(
         attempts.get("Bearer upstream-secondary").copied(),
         Some(count) if count >= 1
@@ -868,7 +817,7 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
 }
 
 #[tokio::test]
-async fn cancelling_live_first_request_releases_its_routing_reservation() {
+async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_secs(5);
     config.proxy_enforce_stream_include_usage = false;
@@ -926,20 +875,22 @@ async fn cancelling_live_first_request_releases_its_routing_reservation() {
         .await
     });
 
-    timeout(
-        Duration::from_secs(1),
-        wait_for_pool_upstream_request_attempts(&state.pool, 1),
-    )
-    .await
-    .expect("live-first request should reserve a route before upstream headers arrive");
+    assert!(
+        timeout(
+            Duration::from_millis(100),
+            wait_for_pool_upstream_request_attempts(&state.pool, 1),
+        )
+        .await
+        .is_err(),
+        "an incomplete request must not reserve an account or open an upstream request"
+    );
     assert!(
         state
             .pool_routing_reservations
             .lock()
             .expect("lock routing reservations")
-            .len()
-            == 1,
-        "live-first request should hold its reservation while waiting for upstream headers"
+            .is_empty(),
+        "an incomplete request must not hold a routing reservation"
     );
 
     request_task.abort();
@@ -963,6 +914,7 @@ async fn cancelling_live_first_request_releases_its_routing_reservation() {
     })
     .await
     .expect("cancelling a live-first request must release its routing reservation");
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     upstream_handle.abort();
 }
@@ -5982,6 +5934,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let request_state = state.clone();
@@ -6013,6 +5966,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     .await
     .expect("wait hook worker should join");
     set_test_account_status(&state.pool, delayed_id, "active").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     state.pool_routing_availability.publish();
 
     let response = request_task
@@ -6367,9 +6321,11 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
     )
     .await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let pool = state.pool.clone();
+    let cache_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let delayed_release_task = std::thread::spawn(move || {
         wait_started_rx
@@ -6378,6 +6334,7 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
         std::thread::sleep(Duration::from_millis(120));
         runtime_handle.block_on(async move {
             set_test_account_status(&pool, delayed_id, "active").await;
+            invalidate_pool_routing_runtime_cache(cache_state.as_ref()).await;
         });
     });
 
@@ -7871,6 +7828,7 @@ async fn proxy_openai_v1_chat_and_responses_use_independent_endpoint_capability_
     .execute(&state.pool)
     .await
     .expect("seed chat-only capability split");
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let mut chat_wait_deadline = None;
     let chat_resolution = resolve_pool_account_for_request_with_wait_and_image_intent(

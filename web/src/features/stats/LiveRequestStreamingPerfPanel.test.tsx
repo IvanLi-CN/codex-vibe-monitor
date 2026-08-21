@@ -20,6 +20,13 @@ vi.mock("../../i18n", () => ({
         "stats.liveRequestStreaming.responseBenefit": "First-response benefit",
         "stats.liveRequestStreaming.tokenBenefit": "First-token benefit",
         "stats.liveRequestStreaming.overlapBenefit": "Overlap benefit",
+        "stats.liveRequestStreaming.routeFinalization": "Route finalization",
+        "stats.liveRequestStreaming.routeRawBytes": "Raw bytes at route (P50 / P90 / P99)",
+        "stats.liveRequestStreaming.routeLogicalBytes": "Logical bytes at route (P50 / P90 / P99)",
+        "stats.liveRequestStreaming.routeFinalizationMs": "P50 route finalization",
+        "stats.liveRequestStreaming.routeEofBuffered": "EOF buffered",
+        "stats.liveRequestStreaming.routeCacheHit": "Routing cache hit",
+        "stats.liveRequestStreaming.routeColdLoad": "Routing cold load",
       };
       if (key === "stats.liveRequestStreaming.insufficient") {
         return `Insufficient samples: ${values?.count} / ${values?.minimum}`;
@@ -83,6 +90,20 @@ const data: LiveRequestStreamingPerf = {
       ambiguousUpstreamDeliveryRate: 0,
     },
   ],
+  routeFinalization: {
+    sampleCount: 200,
+    sufficientSamples: true,
+    rawBytes: { p50: 4096, p90: 8192, p99: 16384 },
+    logicalBytes: { p50: 4000, p90: 8000, p99: 16000 },
+    rawRatio: { p50: 1, p90: 1, p99: 1 },
+    logicalRatio: { p50: 1, p90: 1, p99: 1 },
+    finalizationMs: { p50Ms: 8, p90Ms: 12, p99Ms: 20 },
+    eofFinalizedRate: 1,
+    conservativeBufferedRate: 0.05,
+    dependencyFactorCounts: { model: 200, prompt_cache: 40 },
+    hotCacheHitRate: 0.995,
+    coldLoadRate: 0.005,
+  },
 };
 
 describe("LiveRequestStreamingPerfPanel", () => {
@@ -91,6 +112,8 @@ describe("LiveRequestStreamingPerfPanel", () => {
 
     expect(host?.textContent).toContain("+200 ms (+20.0%)");
     expect(host?.textContent).toContain("+300 ms (+21.4%)");
+    expect(host?.textContent).toContain("4096 / 8192 / 16384 B");
+    expect(host?.textContent).toContain("99.5%");
   });
 
   it("marks cohorts below the minimum successful sample count", () => {
@@ -106,5 +129,17 @@ describe("LiveRequestStreamingPerfPanel", () => {
     expect(host?.textContent).toContain("Insufficient samples: 8 / 200");
     expect(host?.textContent).not.toContain("+200 ms (+20.0%)");
     expect(host?.textContent).not.toContain("+300 ms (+21.4%)");
+  });
+
+  it("keeps the treatment cohort visible when final-route gating buffered it", () => {
+    render({
+      ...data,
+      cohorts: data.cohorts.map((cohort) =>
+        cohort.cohort === "treatment" ? { ...cohort, transportMode: "buffered" } : cohort,
+      ),
+    });
+
+    expect(host?.textContent).toContain("+200 ms (+20.0%)");
+    expect(host?.textContent).toContain("+300 ms (+21.4%)");
   });
 });

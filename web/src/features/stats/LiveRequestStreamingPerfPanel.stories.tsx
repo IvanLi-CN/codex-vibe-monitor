@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { type ReactNode, useEffect } from "react";
 import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { LiveRequestStreamingPerf } from "../../lib/api";
@@ -38,7 +39,44 @@ const measured: LiveRequestStreamingPerf = {
       ambiguousUpstreamDeliveryRate: 0.004,
     },
   ],
+  routeFinalization: {
+    sampleCount: 250,
+    sufficientSamples: true,
+    rawBytes: { p50: 4820, p90: 12400, p99: 30500 },
+    logicalBytes: { p50: 4750, p90: 12220, p99: 29900 },
+    rawRatio: { p50: 1, p90: 1, p99: 1 },
+    logicalRatio: { p50: 1, p90: 1, p99: 1 },
+    finalizationMs: { p50Ms: 8, p90Ms: 22, p99Ms: 57 },
+    eofFinalizedRate: 1,
+    conservativeBufferedRate: 0.08,
+    dependencyFactorCounts: {
+      model: 250,
+      sticky: 97,
+      prompt_cache: 81,
+      encrypted_owner: 12,
+      image_capability: 26,
+    },
+    hotCacheHitRate: 0.992,
+    coldLoadRate: 0.008,
+  },
 };
+const measuredRouteFinalization = measured.routeFinalization!;
+
+function ThemeRoot({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const previousTheme = document.documentElement.getAttribute("data-theme");
+    document.documentElement.setAttribute("data-theme", "vibe-dark");
+    return () => {
+      if (previousTheme) {
+        document.documentElement.setAttribute("data-theme", previousTheme);
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+      }
+    };
+  }, []);
+
+  return <div data-theme="vibe-dark">{children}</div>;
+}
 
 const meta = {
   title: "Stats/LiveRequestStreamingPerfPanel",
@@ -50,13 +88,15 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-5xl border border-base-content/40 bg-base-100 p-3">
-            <Story />
+      <ThemeRoot>
+        <I18nProvider>
+          <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+            <div className="mx-auto w-full max-w-5xl border border-base-content/40 bg-base-100 p-3">
+              <Story />
+            </div>
           </div>
-        </div>
-      </I18nProvider>
+        </I18nProvider>
+      </ThemeRoot>
     ),
   ],
 } satisfies Meta<typeof LiveRequestStreamingPerfPanel>;
@@ -86,11 +126,16 @@ export const InsufficientSamples: Story = {
         successSampleCount: 17,
         sufficientSamples: false,
       })),
+      routeFinalization: {
+        ...measuredRouteFinalization,
+        sampleCount: 17,
+        sufficientSamples: false,
+      },
     },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByText("样本不足：17 / 200")).toHaveLength(2);
+    await expect(canvas.getAllByText("样本不足：17 / 200")).toHaveLength(3);
     await expect(canvas.queryByText("+220 ms (+22.4%)")).not.toBeInTheDocument();
   },
 };

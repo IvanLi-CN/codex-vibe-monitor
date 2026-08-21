@@ -897,10 +897,18 @@ pub(crate) fn build_pool_routing_runtime_cache(
     };
 
     Ok(PoolRoutingRuntimeCache {
+        generation: 0,
+        invalidated: false,
+        #[cfg(test)]
+        sqlite_data_version: 0,
         api_key,
         request_compression: resolve_pool_request_compression_settings_from_row(row),
         timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
+        cache_hit_protection: resolve_cache_hit_protection_settings(row),
+        live_request_streaming: resolve_live_request_streaming_settings(row),
         model_routing: PoolModelRoutingRuntimeCache::default(),
+        prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
+        sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
     })
 }
 
@@ -908,10 +916,24 @@ pub(crate) async fn refresh_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {
     let _model_cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
+    refresh_pool_routing_runtime_cache_locked(state).await
+}
+
+async fn refresh_pool_routing_runtime_cache_locked(
+    state: &AppState,
+) -> Result<PoolRoutingRuntimeCache> {
     let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
     let mut cache = build_pool_routing_runtime_cache(state, &row)?;
     let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
+    #[cfg(test)]
+    {
+        cache.sqlite_data_version = pool_routing_sqlite_data_version(state).await?;
+    }
     let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    cache.generation = runtime_cache
+        .as_ref()
+        .map(|previous| previous.generation.saturating_add(1))
+        .unwrap_or(1);
     model_routing.generation = runtime_cache
         .as_ref()
         .map(|previous| previous.model_routing.generation.saturating_add(1))
@@ -924,14 +946,91 @@ pub(crate) async fn refresh_pool_routing_runtime_cache(
 pub(crate) async fn load_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {
-    {
+    Ok(load_pool_routing_runtime_cache_with_status(state).await?.0)
+}
+
+/// Returns the immutable routing snapshot and whether this request observed an
+/// already-warm snapshot. Cold loads are serialized by the shared write lock.
+pub(crate) async fn load_pool_routing_runtime_cache_with_status(
+    state: &AppState,
+) -> Result<(PoolRoutingRuntimeCache, bool)> {
+    let warm_cache = {
         let runtime_cache = state.pool_routing_runtime_cache.lock().await;
-        if let Some(cache) = runtime_cache.as_ref() {
-            return Ok(cache.clone());
-        }
+        runtime_cache
+            .as_ref()
+            .filter(|cache| !cache.invalidated)
+            .cloned()
+    };
+    #[cfg(test)]
+    if let Some(cache) = warm_cache
+        && pool_routing_sqlite_data_version(state).await? == cache.sqlite_data_version
+    {
+        return Ok((cache, true));
+    }
+    #[cfg(not(test))]
+    if let Some(cache) = warm_cache {
+        return Ok((cache, true));
     }
 
-    refresh_pool_routing_runtime_cache(state).await
+    // The first request after cold start performs one shared load. Later
+    // requests only clone the immutable runtime snapshot above.
+    let _model_cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
+    let warm_cache = {
+        let runtime_cache = state.pool_routing_runtime_cache.lock().await;
+        runtime_cache
+            .as_ref()
+            .filter(|cache| !cache.invalidated)
+            .cloned()
+    };
+    #[cfg(test)]
+    if let Some(cache) = warm_cache
+        && pool_routing_sqlite_data_version(state).await? == cache.sqlite_data_version
+    {
+        return Ok((cache, true));
+    }
+    #[cfg(not(test))]
+    if let Some(cache) = warm_cache {
+        return Ok((cache, true));
+    }
+    Ok((
+        refresh_pool_routing_runtime_cache_locked(state).await?,
+        false,
+    ))
+}
+
+/// Invalidates the current immutable routing snapshot without doing I/O in the
+/// failure path. The next route selection performs the serialized cold rebuild
+/// and receives a strictly newer generation.
+pub(crate) async fn invalidate_pool_routing_runtime_cache(state: &AppState) {
+    let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    if let Some(cache) = runtime_cache.as_mut() {
+        cache.invalidated = true;
+    }
+}
+
+#[cfg(test)]
+async fn pool_routing_sqlite_data_version(state: &AppState) -> Result<i64> {
+    // Test fixtures intentionally perform direct SQL writes. Keep one observer
+    // connection out of that writer pool so SQLite's per-connection data_version
+    // reliably detects those writes without changing production behavior.
+    let mut observer = state.pool_routing_test_data_version_connection.lock().await;
+    if observer.is_none() {
+        *observer = Some(
+            state
+                .pool
+                .acquire()
+                .await
+                .context("acquire SQLite routing test observer")?,
+        );
+    }
+    sqlx::query_scalar("PRAGMA data_version")
+        .fetch_one(
+            &mut **observer
+                .as_mut()
+                .expect("routing test observer is initialized"),
+        )
+        .await
+        .context("read SQLite data version for routing test snapshot")
 }
 
 pub(crate) struct PoolRoutingSettingsUpdate<'a> {
