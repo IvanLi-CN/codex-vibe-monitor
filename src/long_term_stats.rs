@@ -7134,6 +7134,16 @@ async fn refresh_long_term_stats_inner(
                         integrity_repair_failures.push(mismatch);
                     }
                 }
+                None if initial_materialization
+                    && !archive_read_failed
+                    && !terminal_proof_reconciliation_incomplete
+                    && *date >= reconstructable_start =>
+                {
+                    // The initial pass reads every retained live and archive source before
+                    // publishing. That complete snapshot is sufficient bootstrap evidence until
+                    // the canonical hourly proof is reconciled; retired source prefixes remain
+                    // outside the reconstructable window and cannot take this path.
+                }
                 None => {
                     // Historical source rows are not sufficient proof by themselves. This is
                     // especially important after archive cleanup, where an incomplete source
@@ -15187,7 +15197,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_rebuild_hides_completed_days_without_trusted_integrity_proof() {
+    async fn initial_full_rebuild_publishes_a_complete_source_snapshot_without_hourly_proof() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -15202,33 +15212,33 @@ mod tests {
 
         refresh_long_term_stats(&pool, 400)
             .await
-            .expect("defer full rebuild candidate without canonical proof");
+            .expect("publish a complete initial source snapshot without canonical hourly proof");
 
         let materialized_rows = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM long_term_usage_daily WHERE stats_date = ?1",
+            "SELECT COUNT(*) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
         )
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("count unpublished daily rollups");
+        .expect("count materialized daily rollups");
         let queued_repairs = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
         )
         .bind(date.to_string())
         .fetch_one(&pool)
         .await
-        .expect("count deferred repair");
+        .expect("count deferred repairs");
         let state = sqlx::query_as::<_, (String, Option<String>)>(
             "SELECT status, statistics_start_date FROM long_term_stats_state WHERE id = ?1",
         )
         .bind(LONG_TERM_STATE_ID)
         .fetch_one(&pool)
         .await
-        .expect("load failed full rebuild state");
+        .expect("load initial full rebuild state");
 
-        assert_eq!(materialized_rows, 0);
-        assert_eq!(queued_repairs, 1);
-        assert_eq!(state.0, LONG_TERM_STATUS_ERROR);
+        assert_eq!(materialized_rows, 1);
+        assert_eq!(queued_repairs, 0);
+        assert_eq!(state.0, LONG_TERM_STATUS_READY);
         let expected_start = date.to_string();
         assert_eq!(state.1.as_deref(), Some(expected_start.as_str()));
     }
