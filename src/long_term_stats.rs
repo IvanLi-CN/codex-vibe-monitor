@@ -911,6 +911,27 @@ fn long_term_archive_scan_identity_matches_manifest(
     current_file_sha256 == Some(scanned_sha256) && manifest_sha256 == Some(scanned_sha256)
 }
 
+fn long_term_archive_replay_marker_covers_modified_at(
+    modified_at: DateTime<Utc>,
+    replayed_at: &str,
+) -> bool {
+    NaiveDateTime::parse_from_str(replayed_at, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(replayed_at, "%Y-%m-%d %H:%M:%S"))
+        .ok()
+        .map(|replayed_at| modified_at <= Utc.from_utc_datetime(&replayed_at))
+        .unwrap_or(false)
+}
+
+fn long_term_archive_replay_marker_covers_current_file(file_path: &str, replayed_at: &str) -> bool {
+    std::fs::metadata(file_path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(DateTime::<Utc>::from)
+        .is_some_and(|modified_at| {
+            long_term_archive_replay_marker_covers_modified_at(modified_at, replayed_at)
+        })
+}
+
 async fn ensure_long_term_archive_source_identity(
     pool: &Pool<Sqlite>,
     dataset: &str,
@@ -6894,9 +6915,9 @@ async fn refresh_long_term_stats_inner(
     let replayed_archive_files = if !ready_state {
         HashSet::new()
     } else {
-        match sqlx::query_scalar::<_, String>(
+        match sqlx::query_as::<_, (String, String)>(
             r#"
-        SELECT replay.file_path
+        SELECT replay.file_path, replay.replayed_at
         FROM hourly_rollup_archive_replay replay
         INNER JOIN archive_batches batches
           ON batches.dataset = 'codex_invocations'
@@ -6909,7 +6930,13 @@ async fn refresh_long_term_stats_inner(
         .fetch_all(pool)
         .await
         {
-            Ok(rows) => rows.into_iter().collect::<HashSet<_>>(),
+            Ok(rows) => rows
+                .into_iter()
+                .filter(|(file_path, replayed_at)| {
+                    long_term_archive_replay_marker_covers_current_file(file_path, replayed_at)
+                })
+                .map(|(file_path, _)| file_path)
+                .collect::<HashSet<_>>(),
             Err(error) if error.to_string().contains("no such table") => HashSet::new(),
             Err(error) => return Err(error.into()),
         }
@@ -8121,8 +8148,8 @@ async fn persist_long_term_refresh_archive_marker_with_control(
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256)
-        SELECT ?1, ?2, ?3, ?4
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256, replayed_at)
+        SELECT ?1, ?2, ?3, ?4, strftime('%Y-%m-%d %H:%M:%f', 'now')
         WHERE EXISTS (
             SELECT 1
             FROM archive_batches
@@ -8133,7 +8160,7 @@ async fn persist_long_term_refresh_archive_marker_with_control(
         )
         ON CONFLICT(target, dataset, file_path) DO UPDATE SET
             archive_sha256 = excluded.archive_sha256,
-            replayed_at = datetime('now')
+            replayed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
         "#,
     )
     .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
@@ -10176,6 +10203,26 @@ mod tests {
             "scanned-sha",
             Some("scanned-sha"),
             Some("stale-manifest-sha"),
+        ));
+    }
+
+    #[test]
+    fn archive_replay_marker_only_skips_an_unchanged_file() {
+        let replayed_at = Utc
+            .with_ymd_and_hms(2026, 8, 21, 0, 0, 0)
+            .single()
+            .expect("fixed replay time");
+        assert!(long_term_archive_replay_marker_covers_modified_at(
+            replayed_at,
+            "2026-08-21 00:00:00"
+        ));
+        assert!(!long_term_archive_replay_marker_covers_modified_at(
+            replayed_at + ChronoDuration::seconds(1),
+            "2026-08-21 00:00:00"
+        ));
+        assert!(!long_term_archive_replay_marker_covers_modified_at(
+            replayed_at,
+            "invalid replay timestamp"
         ));
     }
 
