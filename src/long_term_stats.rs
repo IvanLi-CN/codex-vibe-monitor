@@ -8146,7 +8146,7 @@ async fn persist_long_term_refresh_archive_marker_with_control(
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<()> {
     let (mut transaction, permit) = control.begin(pool).await?;
-    sqlx::query(
+    let result = sqlx::query(
         r#"
         INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256, replayed_at)
         SELECT ?1, ?2, ?3, ?4, strftime('%Y-%m-%d %H:%M:%f', 'now')
@@ -8167,6 +8167,41 @@ async fn persist_long_term_refresh_archive_marker_with_control(
     .bind(dataset)
     .bind(file_path)
     .bind(archive_sha256)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await?;
+    if result.rows_affected() != 1 {
+        delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+            .await?;
+        bail!(
+            "long-term archive manifest changed before its replay marker could be persisted: {file_path}"
+        );
+    }
+    if let Err(error) =
+        ensure_long_term_archive_source_identity(pool, dataset, file_path, archive_sha256).await
+    {
+        delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+            .await?;
+        return Err(error.context(format!(
+            "long-term archive source changed before its replay marker could be persisted: {file_path}"
+        )));
+    }
+    Ok(())
+}
+
+async fn delete_long_term_refresh_archive_marker_with_control(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    file_path: &str,
+    control: &LongTermProjectionWriteControl<'_>,
+) -> Result<()> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(dataset)
+    .bind(file_path)
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await
@@ -11054,11 +11089,21 @@ mod tests {
         crate::schema::ensure_schema(&pool)
             .await
             .expect("full schema");
-        let archive_path = "rewritten-invocation-archive.sqlite.gz".to_string();
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-refresh-marker-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::write(&archive_path, b"scanned archive bytes").expect("write scanned archive");
+        let archive_path = archive_path.to_string_lossy().to_string();
+        let archive_sha256 =
+            crate::maintenance::sha256_hex_file(std::path::Path::new(&archive_path))
+                .expect("hash scanned archive");
         sqlx::query(
-            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('codex_invocations', '2026-08', ?1, 'rewritten-sha', 1, 'completed', datetime('now'))",
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('codex_invocations', '2026-08', ?1, ?2, 1, 'completed', datetime('now'))",
         )
         .bind(&archive_path)
+        .bind(&archive_sha256)
         .execute(&pool)
         .await
         .expect("record rewritten archive manifest");
@@ -11081,7 +11126,7 @@ mod tests {
             &control,
         )
         .await
-        .expect("defer stale archive marker");
+        .expect_err("stale manifest identity rejects a replay marker");
         let stale_marker_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
         )
@@ -11125,7 +11170,44 @@ mod tests {
         .expect("changed marker count");
         assert_eq!(changed_marker_count, 0);
 
-        let current_marker = vec![(archive_path.clone(), "rewritten-sha".to_string())];
+        fs::write(&archive_path, b"replacement archive bytes")
+            .expect("replace archive before marker persistence");
+        let replacement_sha256 =
+            crate::maintenance::sha256_hex_file(std::path::Path::new(&archive_path))
+                .expect("hash replacement archive");
+        let scanned_marker = vec![(archive_path.clone(), archive_sha256.clone())];
+        persist_long_term_refresh_archive_markers_with_control(
+            &pool,
+            LongTermRefreshArchiveMarkers {
+                archive_markers: &scanned_marker,
+                archive_read_failed: false,
+                failed_archive_paths: &no_failed_paths,
+                clear_all_attempt_markers: false,
+                failed_archive_ranges: &no_failed_ranges,
+                attempt_archive_markers: &no_attempt_markers,
+            },
+            &control,
+        )
+        .await
+        .expect_err("replacement before marker persistence must clear the marker");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+            )
+            .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+            .bind(&archive_path)
+            .fetch_one(&pool)
+            .await
+            .expect("replacement marker count"),
+            0
+        );
+        sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+            .bind(&replacement_sha256)
+            .bind(&archive_path)
+            .execute(&pool)
+            .await
+            .expect("update replacement manifest");
+        let current_marker = vec![(archive_path.clone(), replacement_sha256.clone())];
         persist_long_term_refresh_archive_markers_with_control(
             &pool,
             LongTermRefreshArchiveMarkers {
@@ -11148,7 +11230,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("matching marker sha");
-        assert_eq!(persisted_sha256, "rewritten-sha");
+        assert_eq!(persisted_sha256, replacement_sha256);
+        let _ = fs::remove_file(&archive_path);
     }
 
     #[tokio::test]
