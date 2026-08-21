@@ -363,7 +363,7 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
-    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
@@ -484,9 +484,15 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
         .await
         .expect("capture request task should join");
     assert_eq!(response.status(), StatusCode::OK);
-    let _ = to_bytes(response.into_body(), usize::MAX)
+    let response_body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read capture response body");
+    let response_payload: Value =
+        serde_json::from_slice(&response_body).expect("decode routed capture response body");
+    assert_eq!(response_payload["authorization"], "Bearer upstream-primary");
+    let attempts = attempts.lock().expect("lock route fixture attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
     let (transport_mode, finalization_outcome) = timeout(Duration::from_secs(1), async {
         loop {
             let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
@@ -572,7 +578,9 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
         .await
     });
     body_tx
-        .send(Ok(Bytes::from_static(br#"{"model":"gpt-5","input":[{}],"#)))
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","stream":true,"#,
+        )))
         .await
         .expect("send valid live request prefix");
 
@@ -654,7 +662,10 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
             .expect("malformed live invocation payload"),
     )
     .expect("decode malformed live invocation payload");
-    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
+    assert_eq!(
+        invocation_payload["ambiguousUpstreamDelivery"], true,
+        "a malformed tail after live body polling must retain ambiguous delivery evidence"
+    );
 
     upstream_handle.abort();
 }
@@ -953,6 +964,97 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
     .await
     .expect("cancelling a live-first request must release its routing reservation");
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_secs(5);
+    config.proxy_enforce_stream_include_usage = false;
+    let (upstream_base, upstream_handle) =
+        spawn_pool_delayed_headers_upstream(Duration::from_secs(5)).await;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","input":"ready"}"#),
+        )
+        .await
+    });
+
+    timeout(
+        Duration::from_secs(1),
+        wait_for_pool_upstream_request_attempts(&state.pool, 1),
+    )
+    .await
+    .expect("request must reach an active upstream before cancellation");
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("lock routing reservations")
+            .is_empty(),
+        "an active upstream request must hold a routing reservation"
+    );
+
+    request_task.abort();
+    let join_error = request_task
+        .await
+        .expect_err("cancelling an active live-first request should cancel its task");
+    assert!(join_error.is_cancelled());
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if state
+                .pool_routing_reservations
+                .lock()
+                .expect("lock routing reservations")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelling an active live-first request must release its reservation");
 
     upstream_handle.abort();
 }

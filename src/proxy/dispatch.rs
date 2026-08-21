@@ -1221,6 +1221,9 @@ async fn prepare_capture_request_body(
                                 { live_request_body_error_rx.borrow().clone() };
                             if let Some(request_body_error) = request_body_error {
                                 live_first_attempt_failed = true;
+                                live_first_request_body_first_byte_at =
+                                    live_first_request_body_first_byte_at
+                                        .or_else(|| *first_upstream_body_poll_at_rx.borrow());
                                 warn!(
                                     proxy_request_id,
                                     status = %request_body_error.status,
@@ -1306,6 +1309,8 @@ async fn prepare_capture_request_body(
         && let Some(mut response) = live_first_pool_response.take()
     {
         live_first_attempt_failed = true;
+        live_first_request_body_first_byte_at =
+            live_first_request_body_first_byte_at.or(response.live_request_body_first_byte_at);
         warn!(
             proxy_request_id,
             status = %request_body_error.status,

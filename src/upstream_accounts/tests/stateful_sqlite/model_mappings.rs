@@ -146,6 +146,77 @@ async fn routing_hot_cache_invalidation_rebuilds_once_with_a_new_generation() {
 }
 
 #[tokio::test]
+async fn routing_hot_cache_covers_production_negative_sticky_and_concurrent_misses() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    seed_pool_routing_api_key(&state, "pool-routing-hot-cache-production-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Hot cache production account",
+        "sk-hot-cache-production",
+        None,
+        Some("https://hot-cache-production.example.com/backend-api/codex"),
+    )
+    .await;
+    let sticky_key = "hot-cache-production-negative";
+    let already_tried = Vec::<i64>::new();
+    let excluded_route_keys = HashSet::new();
+
+    let (first, second, third, fourth) = tokio::join!(
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+        resolve_pool_account_for_request(
+            &state,
+            Some(sticky_key),
+            &already_tried,
+            &excluded_route_keys,
+        ),
+    );
+    for resolution in [first, second, third, fourth] {
+        assert!(
+            matches!(resolution, Ok(PoolAccountResolution::Resolved(_))),
+            "concurrent production route lookups should resolve a fallback account: {resolution:?}"
+        );
+    }
+
+    let cache_key = PoolRoutingStickyRouteCacheKey {
+        sticky_key: sticky_key.to_string(),
+        model_key: None,
+    };
+    let runtime_cache = state
+        .pool_routing_runtime_cache
+        .lock()
+        .await
+        .clone()
+        .expect("routing runtime cache should be initialized");
+    let cached_negative = runtime_cache
+        .sticky_route_cache
+        .lock()
+        .expect("lock sticky route cache")
+        .get(&cache_key)
+        .expect("concurrent cold misses should coalesce into one cached entry");
+    assert!(
+        cached_negative.route.is_none(),
+        "a missing sticky route must be retained as a bounded negative cache entry"
+    );
+}
+
+#[tokio::test]
 async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let api_key_account_id = insert_api_key_account(&state.pool, "Mapping API key").await;

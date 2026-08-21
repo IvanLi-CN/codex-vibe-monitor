@@ -203,10 +203,13 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         sticky_affinity_generation,
     )
     .await?;
-    if outcome.sticky_mutation.writes_conversation_operation()
-        && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
-    {
-        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+    if outcome.sticky_mutation.writes_conversation_operation() {
+        if let Some(sticky_key) = sticky_key {
+            invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
+        }
+        if let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key)) {
+            broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+        }
     }
     if let Some(previous_upstream_account_id) =
         outcome.sticky_mutation.previous_upstream_account_id()
@@ -540,10 +543,13 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         codex_imagegen_rewrite,
     )
     .await?;
-    if outcome.sticky_mutation.writes_conversation_operation()
-        && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
-    {
-        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+    if outcome.sticky_mutation.writes_conversation_operation() {
+        if let Some(sticky_key) = sticky_key {
+            invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
+        }
+        if let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key)) {
+            broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
+        }
     }
     if let Some(previous_upstream_account_id) =
         outcome.sticky_mutation.previous_upstream_account_id()

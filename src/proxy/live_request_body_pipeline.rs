@@ -543,11 +543,11 @@ fn is_precommit_routing_root_field(key: &str) -> bool {
     )
 }
 
-fn should_defer_route_commit(key: &str, value_start: u8) -> bool {
-    // Scalar input is cheap to validate before committing. This keeps the
-    // common late-metadata shape fully buffered while composite input can
-    // still overlap its upload through the incremental writer.
-    key == "input" && value_start == b'"'
+fn should_defer_route_commit(key: &str, _value_start: u8) -> bool {
+    // Input can contain nested image-generation or encrypted-content markers.
+    // Buffer the complete value before committing so route selection never
+    // starts from a model-only probe that can be invalidated by nested JSON.
+    key == "input"
 }
 
 struct LiveRootFieldTransformer {
@@ -1455,6 +1455,13 @@ mod tests {
             Body::from_stream(ReceiverStream::new(rx)),
             None,
         );
+        tx.send(Ok(Bytes::from_static(
+            br#"{"type":"input_text","text":"hello"}]}]}"#,
+        )))
+        .await
+        .expect("send nested input tail");
+        drop(tx);
+
         let probe = wait_for_replay_body_sticky_key_probe(
             &pipeline.routing_probe_rx,
             Duration::from_secs(1),
@@ -1472,13 +1479,6 @@ mod tests {
             codex_imagegen_protocol: None,
             model_mapping_target: None,
         }));
-
-        tx.send(Ok(Bytes::from_static(
-            br#"{"type":"input_text","text":"hello"}]}]}"#,
-        )))
-        .await
-        .expect("send nested input tail");
-        drop(tx);
 
         let output = collect_body(pipeline.body).await;
         assert_eq!(
