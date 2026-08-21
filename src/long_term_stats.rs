@@ -2271,6 +2271,9 @@ pub(crate) fn spawn_long_term_projection_supervisor(
         let mut flush_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
         flush_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         flush_ticker.tick().await;
+        let mut maintenance_ticker = interval(LONG_TERM_PROJECTION_FLUSH_INTERVAL);
+        maintenance_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        maintenance_ticker.tick().await;
         let mut repair_ticker = interval(LONG_TERM_PROJECTION_REPAIR_INTERVAL);
         repair_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         repair_ticker.tick().await;
@@ -2307,24 +2310,9 @@ pub(crate) fn spawn_long_term_projection_supervisor(
                     debug!(projection = "long_term", trigger = "terminal_p1_ack", "long-term projection marked dirty by terminal persistence");
                 }
                 _ = flush_ticker.tick() => {
-                    let trigger = if long_term_projection_terminal_flush_needed(&state).await {
-                        Some("terminal_deadline")
-                    } else {
-                        match long_term_projection_maintenance_needed(
-                            &state.pool,
-                            state.config.long_term_stats_hourly_retention_days,
-                        )
+                    let trigger = long_term_projection_terminal_flush_needed(&state)
                         .await
-                        {
-                            Ok(true) => Some("maintenance_deadline"),
-                            Ok(false) => None,
-                            Err(error) => {
-                                mark_long_term_projection_failure(&state, &error).await;
-                                warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "failed to inspect long-term projection maintenance work");
-                                None
-                            }
-                        }
-                    };
+                        .then_some("terminal_deadline");
                     if let Some(trigger) = trigger {
                         pressure_eligibility_generation = pressure_gate.eligibility_generation();
                         match flush_long_term_projection(&state, trigger).await {
@@ -2343,6 +2331,39 @@ pub(crate) fn spawn_long_term_projection_supervisor(
                         }
                     } else {
                         debug!(projection = "long_term", trigger = "terminal_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection flush");
+                    }
+                }
+                _ = maintenance_ticker.tick() => {
+                    match long_term_projection_maintenance_needed(
+                        &state.pool,
+                        state.config.long_term_stats_hourly_retention_days,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            pressure_eligibility_generation = pressure_gate.eligibility_generation();
+                            match flush_long_term_projection(&state, "maintenance_deadline").await {
+                                Ok(LongTermProjectionFlushOutcome::Completed) => {
+                                    pressure_retry_pending = false;
+                                    pressure_retry_at = None;
+                                }
+                                Ok(LongTermProjectionFlushOutcome::DeferredByPressure { retry_at }) => {
+                                    pressure_retry_pending = true;
+                                    pressure_retry_at = retry_at;
+                                }
+                                Err(error) => {
+                                    mark_long_term_projection_failure(&state, &error).await;
+                                    warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "long-term projection maintenance failed");
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            debug!(projection = "long_term", trigger = "maintenance_deadline", flush_outcome = "noop_suppressed", "skipping idle long-term projection maintenance");
+                        }
+                        Err(error) => {
+                            mark_long_term_projection_failure(&state, &error).await;
+                            warn!(error = %error, projection = "long_term", trigger = "maintenance_deadline", "failed to inspect long-term projection maintenance work");
+                        }
                     }
                 }
                 _ = repair_ticker.tick() => {
@@ -2449,6 +2470,70 @@ async fn long_term_projection_maintenance_needed(
             "SELECT EXISTS(SELECT 1 FROM {table} metadata WHERE NOT EXISTS (SELECT 1 FROM long_term_projection_interval_state state WHERE state.invocation_row_id = metadata.invocation_row_id) LIMIT 1)"
         );
         if sqlx::query_scalar::<_, i64>(&statement)
+            .fetch_one(pool)
+            .await?
+            != 0
+        {
+            return Ok(true);
+        }
+    }
+    for statement in [
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM long_term_projection_daily_backups backup
+            JOIN long_term_projection_bucket_state state
+              ON state.bucket_date = backup.stats_date
+             AND state.active_daily_backup_token IS NULL
+             AND state.publication_token = 'cleanup:' || backup.rebuild_token
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM long_term_projection_daily_backup_claims claim
+                WHERE claim.bucket_date = state.bucket_date
+                  AND claim.rebuild_token = backup.rebuild_token
+            )
+            LIMIT 1
+        )
+        "#,
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM long_term_projection_bucket_state state
+            WHERE state.active_daily_backup_token IS NULL
+              AND state.publication_token LIKE 'cleanup:%'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM long_term_projection_daily_backups backup
+                  WHERE backup.rebuild_token = substr(state.publication_token, 9)
+              )
+            LIMIT 1
+        )
+        "#,
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM long_term_projection_bucket_state state
+            JOIN long_term_projection_date_publications publication
+              ON publication.publication_token = state.publication_token
+            WHERE publication.published = 1
+              AND state.active_daily_backup_token IS NOT NULL
+            LIMIT 1
+        )
+        "#,
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM long_term_projection_date_publications publication
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM long_term_projection_bucket_state state
+                WHERE state.publication_token = publication.publication_token
+            )
+            LIMIT 1
+        )
+        "#,
+    ] {
+        if sqlx::query_scalar::<_, i64>(statement)
             .fetch_one(pool)
             .await?
             != 0
@@ -2601,32 +2686,52 @@ async fn queue_long_term_projection_daily_verify(state: &AppState) -> Result<Str
         &state.shutdown,
         crate::db_pressure::global_db_pressure_gate(),
     );
-    queue_long_term_projection_daily_verify_with_control(&state.pool, &today, &control).await?;
-    Ok(today)
+    queue_long_term_projection_daily_verify_with_control(&state.pool, &today, &control).await
 }
 
 async fn queue_long_term_projection_daily_verify_with_control(
     pool: &Pool<Sqlite>,
     daily_verify_date: &str,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
-    let pending = sqlx::query_scalar::<_, i64>(
-        "SELECT COALESCE(daily_verify_pending, 0) FROM long_term_projection_state WHERE consumer = ?1",
+) -> Result<String> {
+    let pending = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT COALESCE(daily_verify_pending, 0), daily_verify_bucket_date FROM long_term_projection_state WHERE consumer = ?1",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
     .fetch_optional(pool)
     .await?
-    .unwrap_or(0)
-        != 0;
-    if pending {
-        return Ok(());
+    .unwrap_or((0, None));
+    if pending.0 != 0 {
+        if let Some(pending_date) = pending.1 {
+            return Ok(pending_date);
+        }
+
+        // Databases created by the preceding schema revision can retain a pending bit without
+        // its bucket date. Recover the existing durable repair before using a new calendar date.
+        let recovered_date = sqlx::query_scalar::<_, String>(
+            "SELECT bucket_date FROM long_term_projection_dirty_buckets ORDER BY CASE repair_reason WHEN 'daily_verify' THEN 0 ELSE 1 END, queued_at ASC, bucket_date ASC LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_else(|| daily_verify_date.to_string());
+        let (mut tx, permit) = control.begin(pool).await?;
+        sqlx::query(
+            "UPDATE long_term_projection_state SET daily_verify_bucket_date = ?2, updated_at = datetime('now') WHERE consumer = ?1 AND daily_verify_pending = 1 AND daily_verify_bucket_date IS NULL",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .bind(&recovered_date)
+        .execute(&mut *tx)
+        .await?;
+        control.commit(tx, permit).await?;
+        return Ok(recovered_date);
     }
 
     let (mut tx, permit) = control.begin(pool).await?;
     let claimed = sqlx::query(
-        "UPDATE long_term_projection_state SET daily_verify_pending = 1, updated_at = datetime('now') WHERE consumer = ?1 AND daily_verify_pending = 0",
+        "UPDATE long_term_projection_state SET daily_verify_pending = 1, daily_verify_bucket_date = ?2, updated_at = datetime('now') WHERE consumer = ?1 AND daily_verify_pending = 0",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
+    .bind(daily_verify_date)
     .execute(&mut *tx)
     .await?
     .rows_affected();
@@ -2639,12 +2744,22 @@ async fn queue_long_term_projection_daily_verify_with_control(
         .await?;
     }
     control.commit(tx, permit).await?;
-    Ok(())
+    if claimed != 0 {
+        Ok(daily_verify_date.to_string())
+    } else {
+        sqlx::query_scalar::<_, String>(
+            "SELECT daily_verify_bucket_date FROM long_term_projection_state WHERE consumer = ?1 AND daily_verify_pending = 1",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .fetch_one(pool)
+        .await
+        .context("daily verification pending bucket disappeared while it was claimed")
+    }
 }
 
 async fn long_term_projection_daily_verify_due(pool: &Pool<Sqlite>) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM long_term_projection_state WHERE consumer = ?1 AND (daily_verify_pending = 1 OR last_daily_verify_at IS NULL OR datetime(last_daily_verify_at) <= datetime('now', '-1 day')))",
+        "SELECT EXISTS(SELECT 1 FROM long_term_projection_state WHERE consumer = ?1 AND (daily_verify_pending = 1 OR last_daily_verify_at IS NULL OR date(last_daily_verify_at, '+8 hours') < date('now', '+8 hours')))",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
     .fetch_one(pool)
@@ -3048,7 +3163,13 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
     );
 
     let started = Instant::now();
-    finish_long_term_projection_publication_cleanup(&state.pool, &control).await?;
+    if matches!(trigger, "daily_verify" | "maintenance_deadline")
+        && finish_long_term_projection_publication_cleanup(&state.pool, &control).await?
+    {
+        // Cleanup is independently durable maintenance. One 512-row batch is enough for this
+        // deadline; the next maintenance tick discovers the remaining publication work.
+        return Ok(0);
+    }
     let mut cursor = load_long_term_projection_cursor_with_control(&state.pool, &control).await?;
     let daily_verify_requested =
         trigger == "daily_verify" || long_term_projection_daily_verify_due(&state.pool).await?;
@@ -3508,12 +3629,14 @@ async fn complete_long_term_projection_daily_verify_with_control(
     if maintenance_pending {
         return Ok(());
     }
+    let today = Utc::now().with_timezone(&Shanghai).date_naive().to_string();
     let (mut transaction, permit) = control.begin(pool).await?;
     sqlx::query(
-        "UPDATE long_term_projection_state SET daily_verify_pending = 0, last_daily_verify_at = datetime('now'), updated_at = datetime('now') WHERE consumer = ?1 AND daily_verify_pending = 1 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?2)",
+        "UPDATE long_term_projection_state SET daily_verify_pending = 0, daily_verify_bucket_date = NULL, last_daily_verify_at = CASE WHEN ?2 = ?3 THEN datetime('now') ELSE last_daily_verify_at END, updated_at = datetime('now') WHERE consumer = ?1 AND daily_verify_pending = 1 AND daily_verify_bucket_date = ?2 AND NOT EXISTS (SELECT 1 FROM long_term_projection_dirty_buckets WHERE bucket_date = ?2)",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
     .bind(daily_verify_date)
+    .bind(&today)
     .execute(&mut *transaction)
     .await?;
     control.commit(transaction, permit).await
@@ -4066,11 +4189,10 @@ async fn clear_long_term_projection_daily_backup(
 async fn finish_long_term_projection_backup_cleanup(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
-    loop {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        let deleted = sqlx::query(
-            r#"
+) -> Result<bool> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    let deleted = sqlx::query(
+        r#"
             DELETE FROM long_term_projection_daily_backups
             WHERE rowid IN (
                 SELECT backup.rowid
@@ -4089,20 +4211,18 @@ async fn finish_long_term_projection_backup_cleanup(
                 LIMIT ?1
             )
             "#,
-        )
-        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
+    )
+    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if deleted != 0 {
         control.commit(transaction, permit).await?;
-        if deleted == 0 {
-            break;
-        }
+        return Ok(true);
     }
-    loop {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        let cleared = sqlx::query(
-            r#"
+
+    let cleared = sqlx::query(
+        r#"
             UPDATE long_term_projection_bucket_state
             SET publication_token = NULL, updated_at = datetime('now')
             WHERE rowid IN (
@@ -4119,16 +4239,13 @@ async fn finish_long_term_projection_backup_cleanup(
                 LIMIT ?1
             )
             "#,
-        )
-        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        control.commit(transaction, permit).await?;
-        if cleared == 0 {
-            return Ok(());
-        }
-    }
+    )
+    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    control.commit(transaction, permit).await?;
+    Ok(cleared != 0)
 }
 
 async fn release_long_term_projection_daily_backups(
@@ -4170,7 +4287,8 @@ async fn release_long_term_projection_daily_backups(
         query.build().execute(&mut *transaction).await?;
         control.commit(transaction, permit).await?;
     }
-    finish_long_term_projection_backup_cleanup(pool, control).await
+    let _ = finish_long_term_projection_backup_cleanup(pool, control).await?;
+    Ok(())
 }
 
 async fn ensure_long_term_projection_daily_backup(
@@ -4766,7 +4884,7 @@ async fn commit_long_term_projection_date_rebuild_chunk_with_control(
     .await?;
     control.commit(transaction, permit).await?;
     if publication.publication_token.is_none() {
-        finish_long_term_projection_backup_cleanup(pool, control).await?;
+        let _ = finish_long_term_projection_backup_cleanup(pool, control).await?;
     }
     Ok(())
 }
@@ -4794,7 +4912,8 @@ async fn release_long_term_projection_date_publication(
         )
         .await?;
     }
-    prune_long_term_projection_publications(pool, control).await
+    let _ = prune_long_term_projection_publications(pool, control).await?;
+    Ok(())
 }
 
 async fn release_long_term_projection_publication_member(
@@ -4859,7 +4978,6 @@ async fn release_long_term_projection_publication_member(
     if released != 0 {
         control.complete_backup_cleanup_marker();
         control.check()?;
-        finish_long_term_projection_backup_cleanup(pool, control).await?;
     }
     Ok(released != 0)
 }
@@ -4867,15 +4985,17 @@ async fn release_long_term_projection_publication_member(
 async fn finish_long_term_projection_publication_cleanup(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
-    finish_long_term_projection_backup_cleanup(pool, control).await?;
-    let members = sqlx::query_as::<_, LongTermProjectionPublicationMember>(
+) -> Result<bool> {
+    if finish_long_term_projection_backup_cleanup(pool, control).await? {
+        return Ok(true);
+    }
+    let member = sqlx::query_as::<_, LongTermProjectionPublicationMember>(
         "SELECT state.bucket_date, state.active_daily_backup_token AS rebuild_token, state.publication_token, state.publication_generation FROM long_term_projection_bucket_state state JOIN long_term_projection_date_publications publication ON publication.publication_token = state.publication_token WHERE publication.published = 1 AND state.active_daily_backup_token IS NOT NULL ORDER BY state.updated_at ASC, state.bucket_date ASC LIMIT ?1",
     )
-    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-    .fetch_all(pool)
+    .bind(1_i64)
+    .fetch_optional(pool)
     .await?;
-    for member in members {
+    if let Some(member) = member {
         let _released = release_long_term_projection_publication_member(
             pool,
             &member.bucket_date,
@@ -4885,6 +5005,7 @@ async fn finish_long_term_projection_publication_cleanup(
             control,
         )
         .await?;
+        return Ok(true);
     }
     prune_long_term_projection_publications(pool, control).await
 }
@@ -4892,11 +5013,10 @@ async fn finish_long_term_projection_publication_cleanup(
 async fn prune_long_term_projection_publications(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<()> {
-    loop {
-        let (mut transaction, permit) = control.begin(pool).await?;
-        let deleted = sqlx::query(
-            r#"
+) -> Result<bool> {
+    let (mut transaction, permit) = control.begin(pool).await?;
+    let deleted = sqlx::query(
+        r#"
             DELETE FROM long_term_projection_date_publications
             WHERE rowid IN (
                 SELECT publication.rowid
@@ -4910,16 +5030,13 @@ async fn prune_long_term_projection_publications(
                 LIMIT ?1
             )
             "#,
-        )
-        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        control.commit(transaction, permit).await?;
-        if deleted == 0 {
-            return Ok(());
-        }
-    }
+    )
+    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    control.commit(transaction, permit).await?;
+    Ok(deleted != 0)
 }
 
 async fn rebuild_long_term_projection_date(pool: &Pool<Sqlite>, bucket_date: &str) -> Result<()> {
@@ -8159,13 +8276,6 @@ fn projection_interval_key(
     }
 }
 
-fn projection_bucket_date_for_hour(bucket_start_epoch: i64) -> Option<String> {
-    Shanghai
-        .timestamp_opt(bucket_start_epoch, 0)
-        .single()
-        .map(|timestamp| timestamp.date_naive().to_string())
-}
-
 fn collect_long_term_projection_interval_segments(
     hourly: &HashMap<(i64, String, String), LongTermBucket>,
     daily: &HashMap<(String, String, String), LongTermBucket>,
@@ -8761,8 +8871,15 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
             runtime.loaded_interval_dates.clone(),
         )
     };
-    interval_index.retain(|key, _| !long_term_projection_interval_key_is_for_dates(key, &dates));
-    interval_index.extend(load_long_term_projection_interval_index(pool, &dates).await?);
+    let missing_dates = dates
+        .difference(&loaded_dates)
+        .cloned()
+        .collect::<HashSet<_>>();
+    if !missing_dates.is_empty() {
+        interval_index
+            .extend(load_long_term_projection_interval_index(pool, &missing_dates).await?);
+        loaded_dates.extend(missing_dates);
+    }
     let persisted_segment_ids =
         load_long_term_projection_interval_state_ids(pool, batch.segments).await?;
     for segment in batch
@@ -8783,8 +8900,6 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
             }
         }
     }
-    loaded_dates.extend(dates.iter().cloned());
-
     let (mut tx, permit) = control.begin(pool).await?;
     if long_term_projection_incremental_dates_are_dirty(&mut tx, &dates).await? {
         drop(tx);
@@ -8859,22 +8974,6 @@ async fn apply_long_term_projection_incremental_with_runtime_and_control(
     Ok(LongTermProjectionIncrementalOutcome::Published)
 }
 
-fn long_term_projection_interval_key_is_for_dates(
-    key: &LongTermProjectionIntervalKey,
-    dates: &HashSet<String>,
-) -> bool {
-    match key.bucket_kind {
-        "daily" => dates.contains(&key.bucket_key),
-        "hourly" => key
-            .bucket_key
-            .parse::<i64>()
-            .ok()
-            .and_then(projection_bucket_date_for_hour)
-            .is_some_and(|date| dates.contains(&date)),
-        _ => false,
-    }
-}
-
 async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
@@ -8884,6 +8983,7 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
             last_flush_at TEXT,
             last_daily_verify_at TEXT,
             daily_verify_pending INTEGER NOT NULL DEFAULT 0,
+            daily_verify_bucket_date TEXT,
             last_error TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -8907,6 +9007,16 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await;
     if let Err(error) = daily_verify_pending_migration
+        && !error.to_string().contains("duplicate column name")
+    {
+        return Err(error.into());
+    }
+    let daily_verify_bucket_date_migration = sqlx::query(
+        "ALTER TABLE long_term_projection_state ADD COLUMN daily_verify_bucket_date TEXT",
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = daily_verify_bucket_date_migration
         && !error.to_string().contains("duplicate column name")
     {
         return Err(error.into());
@@ -9154,6 +9264,12 @@ async fn ensure_long_term_projection_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure long-term projection interval date index")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_long_term_projection_intervals_invocation ON long_term_projection_intervals (invocation_row_id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure long-term projection interval invocation index")?;
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS long_term_projection_interval_state (
@@ -10179,6 +10295,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daily_verify_pending_bucket_survives_calendar_rollover() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 0)",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .execute(&pool)
+        .await
+        .expect("seed projection state");
+        let today = Utc::now().with_timezone(&Shanghai).date_naive();
+        let yesterday = today.pred_opt().expect("previous calendar date");
+        let today_text = today.to_string();
+        let yesterday_text = yesterday.to_string();
+        sqlx::query(
+            "UPDATE long_term_projection_state SET last_daily_verify_at = ?2 WHERE consumer = ?1",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .bind(format!("{yesterday_text} 15:59:59"))
+        .execute(&pool)
+        .await
+        .expect("seed a prior Shanghai calendar verification");
+        let control = LongTermProjectionWriteControl::unrestricted();
+        assert_eq!(
+            queue_long_term_projection_daily_verify_with_control(&pool, &yesterday_text, &control,)
+                .await
+                .expect("queue the original verification bucket"),
+            yesterday_text
+        );
+        assert_eq!(
+            queue_long_term_projection_daily_verify_with_control(&pool, &today_text, &control)
+                .await
+                .expect("recover the original pending verification bucket after midnight"),
+            yesterday_text
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT daily_verify_bucket_date FROM long_term_projection_state WHERE consumer = ?1",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_one(&pool)
+            .await
+            .expect("persisted pending bucket"),
+            yesterday_text
+        );
+
+        sqlx::query("DELETE FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1")
+            .bind(&yesterday_text)
+            .execute(&pool)
+            .await
+            .expect("simulate the original date rebuild finishing after midnight");
+        complete_long_term_projection_daily_verify_with_control(
+            &pool,
+            &yesterday_text,
+            false,
+            &control,
+        )
+        .await
+        .expect("complete only the original pending bucket");
+        assert!(
+            long_term_projection_daily_verify_due(&pool)
+                .await
+                .expect("the current Shanghai calendar day remains due")
+        );
+        assert_eq!(
+            queue_long_term_projection_daily_verify_with_control(&pool, &today_text, &control)
+                .await
+                .expect("queue the unverified current calendar day"),
+            today_text
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_dirty_buckets WHERE bucket_date = ?1",
+            )
+            .bind(&today_text)
+            .fetch_one(&pool)
+            .await
+            .expect("current day repair marker"),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn bounded_ready_refresh_keeps_last_good_rows_after_a_cancelled_write() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -10566,9 +10771,16 @@ mod tests {
             1
         );
 
-        finish_long_term_projection_publication_cleanup(&pool, &unrestricted)
-            .await
-            .expect("recover marked backup cleanup");
+        assert!(
+            finish_long_term_projection_publication_cleanup(&pool, &unrestricted)
+                .await
+                .expect("remove one bounded backup cleanup batch")
+        );
+        assert!(
+            finish_long_term_projection_publication_cleanup(&pool, &unrestricted)
+                .await
+                .expect("clear one bounded cleanup marker batch")
+        );
         assert_eq!(
             sqlx::query_scalar::<_, Option<String>>(
                 "SELECT publication_token FROM long_term_projection_bucket_state WHERE bucket_date = ?1",
@@ -10588,6 +10800,107 @@ mod tests {
             .await
             .expect("cleared orphaned backup"),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_cleanup_advances_one_cancelable_512_row_batch_per_maintenance_pass() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let rebuild_token = "bounded-publication-cleanup";
+        for index in 0..1_025 {
+            let bucket_date = format!("cleanup-date-{index:04}");
+            sqlx::query(
+                "INSERT INTO long_term_projection_bucket_state (bucket_date, publication_token) VALUES (?1, ?2)",
+            )
+            .bind(&bucket_date)
+            .bind(format!("cleanup:{rebuild_token}"))
+            .execute(&pool)
+            .await
+            .expect("seed cleanup marker");
+            sqlx::query(
+                "INSERT INTO long_term_projection_daily_backups (rebuild_token, stats_date, dimension, series_key, display_name) VALUES (?1, ?2, 'overall', 'overall', 'All')",
+            )
+            .bind(rebuild_token)
+            .bind(bucket_date)
+            .execute(&pool)
+            .await
+            .expect("seed backup cleanup row");
+        }
+        let control = LongTermProjectionWriteControl::unrestricted();
+        assert!(
+            finish_long_term_projection_publication_cleanup(&pool, &control)
+                .await
+                .expect("first bounded maintenance cleanup batch")
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_daily_backups WHERE rebuild_token = ?1",
+            )
+            .bind(rebuild_token)
+            .fetch_one(&pool)
+            .await
+            .expect("one bounded backup batch remaining"),
+            513
+        );
+        assert!(
+            long_term_projection_maintenance_needed(&pool, 366)
+                .await
+                .expect("durable cleanup backlog schedules the next maintenance pass")
+        );
+
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let cancelled = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let error = finish_long_term_projection_publication_cleanup(&pool, &cancelled)
+            .await
+            .expect_err("cancellation stops before the next cleanup write");
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_daily_backups WHERE rebuild_token = ?1",
+            )
+            .bind(rebuild_token)
+            .fetch_one(&pool)
+            .await
+            .expect("cancelled cleanup preserved the durable backlog"),
+            513
+        );
+
+        while finish_long_term_projection_publication_cleanup(&pool, &control)
+            .await
+            .expect("resume one bounded cleanup batch at a time")
+        {}
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_daily_backups WHERE rebuild_token = ?1",
+            )
+            .bind(rebuild_token)
+            .fetch_one(&pool)
+            .await
+            .expect("drained cleanup backups"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_bucket_state WHERE publication_token IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("drained cleanup markers"),
+            0
+        );
+        assert!(
+            !long_term_projection_maintenance_needed(&pool, 366)
+                .await
+                .expect("drained cleanup no longer schedules maintenance")
         );
     }
 
@@ -12894,6 +13207,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn incremental_projection_reuses_interval_index_across_micro_batches() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let date = NaiveDate::from_ymd_opt(2026, 7, 26).expect("projection date");
+        let (start_epoch, _) = long_term_day_epoch_bounds(date).expect("projection bounds");
+        let start_ms = start_epoch * 1_000;
+        let control = LongTermProjectionWriteControl::unrestricted();
+        upsert_long_term_projection_interval_segments(
+            &pool,
+            &[projection_interval_segment(1, start_ms, start_ms + 1_000)],
+            &control,
+        )
+        .await
+        .expect("seed existing interval state");
+        let runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+        let first_segment = projection_interval_segment(2, start_ms + 1_000, start_ms + 2_000);
+        let first_outcome = apply_long_term_projection_incremental_with_runtime_and_control(
+            &pool,
+            &runtime,
+            LongTermProjectionIncrementalBatch {
+                hourly: &HashMap::new(),
+                daily: &HashMap::new(),
+                segments: std::slice::from_ref(&first_segment),
+            },
+            2,
+            1,
+            &control,
+        )
+        .await
+        .expect("first incremental micro-batch");
+        assert_eq!(
+            first_outcome,
+            LongTermProjectionIncrementalOutcome::Published
+        );
+
+        // A same-date batch must reuse the loaded union. Clearing the backing rows makes an
+        // accidental reload observable while leaving the in-memory cache unchanged.
+        sqlx::query("DELETE FROM long_term_projection_interval_state")
+            .execute(&pool)
+            .await
+            .expect("remove persisted rows after first cache load");
+        let second_segment = projection_interval_segment(3, start_ms + 2_000, start_ms + 3_000);
+        let second_outcome = apply_long_term_projection_incremental_with_runtime_and_control(
+            &pool,
+            &runtime,
+            LongTermProjectionIncrementalBatch {
+                hourly: &HashMap::new(),
+                daily: &HashMap::new(),
+                segments: std::slice::from_ref(&second_segment),
+            },
+            3,
+            1,
+            &control,
+        )
+        .await
+        .expect("second incremental micro-batch");
+        assert_eq!(
+            second_outcome,
+            LongTermProjectionIncrementalOutcome::Published
+        );
+        let runtime = runtime.lock().await;
+        let daily_key = projection_interval_key(
+            "daily",
+            date.to_string(),
+            "overall".to_string(),
+            "overall".to_string(),
+        );
+        assert_eq!(
+            runtime
+                .interval_index
+                .get(&daily_key)
+                .expect("same-date cache entry")
+                .duration_ms,
+            3_000,
+            "the second micro-batch must not discard the prior same-date union"
+        );
+    }
+
+    #[tokio::test]
     async fn canonical_interval_lookup_seeks_from_interval_end() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -12943,6 +13341,43 @@ mod tests {
             index.get(&key).expect("current interval union").duration_ms,
             1_000
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_interval_migration_seeks_by_invocation_id() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+            r#"
+            EXPLAIN QUERY PLAN
+            SELECT legacy.invocation_row_id,
+                   MAX(CASE WHEN legacy.dimension = 'model' THEN legacy.series_key END),
+                   MAX(CASE WHEN legacy.dimension = 'upstream' THEN legacy.series_key END),
+                   MIN(legacy.interval_start_ms),
+                   MAX(legacy.interval_end_ms)
+            FROM long_term_projection_intervals legacy
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM long_term_projection_interval_state state
+                WHERE state.invocation_row_id = legacy.invocation_row_id
+            )
+            GROUP BY legacy.invocation_row_id
+            ORDER BY legacy.invocation_row_id ASC
+            LIMIT 512
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("legacy migration query plan");
+        assert!(plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_long_term_projection_intervals_invocation")
+        }));
     }
 
     #[tokio::test]
