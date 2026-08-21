@@ -1869,8 +1869,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    None,
-                    None,
+                    persisted_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1921,8 +1921,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    None,
-                    None,
+                    persisted_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -2166,26 +2166,20 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 context.live_first_request_body_first_byte_at.is_some(),
                                 err.attempt_summary.pool_attempt_count,
                             );
-                            LiveRequestStreamingMeasurement {
-                                first_attempt_failed: risk.first_attempt_failed,
-                                fallback_or_retry: risk.fallback_or_retry,
-                                ambiguous_upstream_delivery: risk.ambiguous_upstream_delivery,
-                                route_finalization_outcome: (context
-                                    .live_request_streaming_decision
-                                    .as_ref()
-                                    .is_some_and(|decision| {
-                                        decision.reason == "route_finalized_at_eof"
-                                    }))
-                                .then_some("buffered_eof_final_route"),
-                                upstream_account_group: err
-                                    .account
-                                    .as_ref()
-                                    .and_then(|account| account.group_name.clone()),
-                                experiment_account_group: context
-                                    .live_request_streaming_experiment_group
-                                    .clone(),
-                                ..LiveRequestStreamingMeasurement::default()
-                            }
+                            let mut measurement = live_route_finalization_measurement
+                                .clone()
+                                .unwrap_or_default();
+                            measurement.first_attempt_failed = risk.first_attempt_failed;
+                            measurement.fallback_or_retry = risk.fallback_or_retry;
+                            measurement.ambiguous_upstream_delivery =
+                                risk.ambiguous_upstream_delivery;
+                            measurement.upstream_account_group = err
+                                .account
+                                .as_ref()
+                                .and_then(|account| account.group_name.clone());
+                            measurement.experiment_account_group =
+                                context.live_request_streaming_experiment_group.clone();
+                            measurement
                         })
                     });
                 let mut record = ProxyCaptureRecord {
