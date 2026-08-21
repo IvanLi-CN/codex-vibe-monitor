@@ -819,6 +819,7 @@ async fn prepare_capture_request_body(
         .await
         .ok();
     let live_routing_hot_cache_hit = live_routing_snapshot.as_ref().map(|(_, hit)| *hit);
+    let live_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let live_settings = live_routing_snapshot
         .as_ref()
         .map(|(snapshot, _)| snapshot.live_request_streaming.clone());
@@ -962,7 +963,7 @@ async fn prepare_capture_request_body(
             )) => {
                 live_route_lookup_cache_hit = Some(cache_hit);
                 if prompt_cache_binding_constraint.is_some() || conversation_override.is_some() {
-                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request(
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                         state.as_ref(),
                         live_body_sticky_key.as_deref(),
                         live_body_key_probe.model.as_deref(),
@@ -977,15 +978,18 @@ async fn prepare_capture_request_body(
                         capture_target.endpoint(),
                         live_body_key_probe.image_intent,
                         codex_imagegen_protocol_from_headers(headers).is_some(),
+                        Some(live_routing_reservation_key.as_str()),
                     )
                     .await
                 } else {
-                    resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
                         state.as_ref(),
                         live_body_sticky_key.as_deref(),
                         live_body_key_probe.model.as_deref(),
                         &[],
                         &HashSet::new(),
+                        None,
+                        None,
                         None,
                         true,
                         &mut no_available_wait_deadline,
@@ -993,6 +997,7 @@ async fn prepare_capture_request_body(
                         capture_target.endpoint(),
                         live_body_key_probe.image_intent,
                         codex_imagegen_protocol_from_headers(headers).is_some(),
+                        Some(live_routing_reservation_key.as_str()),
                     )
                     .await
                 }
