@@ -5293,7 +5293,7 @@ pub(crate) async fn long_term_integrity_source_safe_start_for_archive_cleanup(
 ) -> Result<Option<NaiveDate>> {
     match dataset {
         HOURLY_ROLLUP_DATASET_INVOCATIONS => {
-            long_term_invocation_archive_safe_start(file_path).await
+            long_term_invocation_archive_safe_start(pool, file_path).await
         }
         "pool_upstream_request_attempts" => {
             long_term_attempt_archive_safe_start(pool, file_path, coverage_end_at).await
@@ -5302,9 +5302,17 @@ pub(crate) async fn long_term_integrity_source_safe_start_for_archive_cleanup(
     }
 }
 
-async fn long_term_invocation_archive_safe_start(file_path: &str) -> Result<Option<NaiveDate>> {
+async fn long_term_invocation_archive_safe_start(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+) -> Result<Option<NaiveDate>> {
+    let archive_sha256 = load_long_term_archive_sha256(pool, file_path)
+        .await?
+        .context("completed invocation archive has no manifest sha256")?;
     let rows = load_long_term_source_timing_rows_from_archive(
+        pool,
         file_path,
+        &archive_sha256,
         "long-term-stats-cleanup-invocation-boundary",
     )
     .await?;
@@ -5335,6 +5343,20 @@ async fn long_term_attempt_archive_safe_start(
     file_path: &str,
     _coverage_end_at: Option<&str>,
 ) -> Result<Option<NaiveDate>> {
+    let archive_sha256 = load_long_term_archive_sha256_for_dataset(
+        pool,
+        "pool_upstream_request_attempts",
+        file_path,
+    )
+    .await?
+    .context("completed attempt archive has no manifest sha256")?;
+    ensure_long_term_archive_source_identity(
+        pool,
+        "pool_upstream_request_attempts",
+        file_path,
+        &archive_sha256,
+    )
+    .await?;
     let Some((archive_pool, cleanup)) = open_pool_upstream_request_attempt_archive_batch_pool(
         &ArchiveBatchPathRow::from_file_path(file_path.to_string()),
         "long-term-stats-cleanup-attempt-boundary",
@@ -5355,6 +5377,13 @@ async fn long_term_attempt_archive_safe_start(
     .await;
     archive_pool.close().await;
     drop(cleanup);
+    ensure_long_term_archive_source_identity(
+        pool,
+        "pool_upstream_request_attempts",
+        file_path,
+        &archive_sha256,
+    )
+    .await?;
     let pairs = rows?
         .into_iter()
         .filter_map(|row| {
@@ -5383,9 +5412,13 @@ async fn long_term_attempt_archive_safe_start(
 }
 
 async fn load_long_term_source_timing_rows_from_archive(
+    pool: &Pool<Sqlite>,
     file_path: &str,
+    archive_sha256: &str,
     read_surface: &'static str,
 ) -> Result<Vec<LongTermSourceTimingRow>> {
+    ensure_long_term_archive_source_identity(pool, "codex_invocations", file_path, archive_sha256)
+        .await?;
     let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
         &ArchiveBatchPathRow::from_file_path(file_path.to_string()),
         read_surface,
@@ -5406,6 +5439,8 @@ async fn load_long_term_source_timing_rows_from_archive(
         .await;
     archive_pool.close().await;
     drop(cleanup);
+    ensure_long_term_archive_source_identity(pool, "codex_invocations", file_path, archive_sha256)
+        .await?;
     Ok(rows?)
 }
 
@@ -5433,6 +5468,16 @@ async fn long_term_match_attempt_pairs_to_invocation_sources(
         if !long_term_archive_may_contain_attempt_pairs(&archive_path, &unmatched_pairs) {
             continue;
         }
+        let archive_sha256 = load_long_term_archive_sha256(pool, archive_path.file_path())
+            .await?
+            .context("completed invocation archive has no manifest sha256")?;
+        ensure_long_term_archive_source_identity(
+            pool,
+            "codex_invocations",
+            archive_path.file_path(),
+            &archive_sha256,
+        )
+        .await?;
         let Some((archive_pool, cleanup)) = open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-stats-cleanup-attempt-invocation-match",
@@ -5457,6 +5502,13 @@ async fn long_term_match_attempt_pairs_to_invocation_sources(
         .await;
         archive_pool.close().await;
         drop(cleanup);
+        ensure_long_term_archive_source_identity(
+            pool,
+            "codex_invocations",
+            archive_path.file_path(),
+            &archive_sha256,
+        )
+        .await?;
         record_long_term_matched_attempt_source_rows(
             &mut unmatched_pairs,
             &mut latest_effective_date,
@@ -17225,15 +17277,6 @@ mod tests {
             &invocation_archive_path,
         )
         .expect("compress invocation archive");
-        assert_eq!(
-            long_term_invocation_archive_safe_start(
-                invocation_archive_path.to_string_lossy().as_ref()
-            )
-            .await
-            .expect("read invocation archive boundary"),
-            Some(expected_safe_start)
-        );
-
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -17242,6 +17285,53 @@ mod tests {
         crate::schema::ensure_schema(&pool)
             .await
             .expect("full schema");
+        let invocation_archive_sha256 =
+            crate::maintenance::sha256_hex_file(&invocation_archive_path)
+                .expect("hash invocation archive");
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('codex_invocations', '2026-07', ?1, ?2, 1, 'completed', datetime('now'))",
+        )
+        .bind(invocation_archive_path.to_string_lossy().to_string())
+        .bind(&invocation_archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("record invocation archive manifest");
+        assert_eq!(
+            long_term_integrity_source_safe_start_for_archive_cleanup(
+                &pool,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                invocation_archive_path.to_string_lossy().as_ref(),
+                None,
+            )
+            .await
+            .expect("read invocation archive boundary"),
+            Some(expected_safe_start)
+        );
+        sqlx::query(
+            "UPDATE archive_batches SET sha256 = 'stale-invocation-sha' WHERE file_path = ?1",
+        )
+        .bind(invocation_archive_path.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .expect("stale invocation manifest");
+        assert!(
+            long_term_integrity_source_safe_start_for_archive_cleanup(
+                &pool,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                invocation_archive_path.to_string_lossy().as_ref(),
+                None,
+            )
+            .await
+            .expect_err("mismatched invocation archive must not define a cleanup boundary")
+            .to_string()
+            .contains("does not match")
+        );
+        sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE file_path = ?2")
+            .bind(&invocation_archive_sha256)
+            .bind(invocation_archive_path.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .expect("restore invocation manifest");
         sqlx::query(
             "INSERT INTO codex_invocations (id, invoke_id, occurred_at, status, payload, raw_response, t_total_ms) VALUES (1, 'boundary-invoke', ?1, 'success', '{}', '{}', 0.001)",
         )
@@ -17280,9 +17370,20 @@ mod tests {
         attempt_archive_pool.close().await;
         crate::maintenance::deflate_sqlite_file_to_gzip(&attempt_db_path, &attempt_archive_path)
             .expect("compress attempt archive");
+        let attempt_archive_sha256 = crate::maintenance::sha256_hex_file(&attempt_archive_path)
+            .expect("hash attempt archive");
+        sqlx::query(
+            "INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at) VALUES ('pool_upstream_request_attempts', '2026-07', ?1, ?2, 1, 'completed', datetime('now'))",
+        )
+        .bind(attempt_archive_path.to_string_lossy().to_string())
+        .bind(&attempt_archive_sha256)
+        .execute(&pool)
+        .await
+        .expect("record attempt archive manifest");
         assert_eq!(
-            long_term_attempt_archive_safe_start(
+            long_term_integrity_source_safe_start_for_archive_cleanup(
                 &pool,
+                "pool_upstream_request_attempts",
                 attempt_archive_path.to_string_lossy().as_ref(),
                 None,
             )
