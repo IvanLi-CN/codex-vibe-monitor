@@ -7070,19 +7070,16 @@ fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
     let mut add_bucket = |timestamp: DateTime<Utc>| {
         buckets.insert(align_bucket_epoch(timestamp.timestamp(), 3_600, 0));
     };
-    // These are the finite rolling windows exposed by the stats UI and the dashboard
-    // bootstrap snapshots.  Keep their start/end partial hours exact even when the enclosing
-    // projection range is much wider and the middle is served from hourly rollups.
+    // Any legal duration through the 48-hour exact horizon can begin in an arbitrary partial
+    // hour. Keep every possible start bucket exact instead of enumerating a few UI presets;
+    // the middle of longer ranges still comes from compact hourly rollups.
+    for hours in 1..=SUMMARY_PROJECTION_MIN_EXACT_HORIZON.num_hours() {
+        add_bucket(end - ChronoDuration::hours(hours));
+    }
+    // Whole-day durations beyond the exact horizon are also part of the bounded public
+    // contract. Their partial boundary hours remain exact without retaining raw history.
     for days in 1..=30 {
         add_bucket(end - ChronoDuration::days(days));
-    }
-    for duration in [
-        ChronoDuration::minutes(30),
-        ChronoDuration::hours(1),
-        ChronoDuration::hours(6),
-        ChronoDuration::hours(12),
-    ] {
-        add_bucket(end - duration);
     }
     add_bucket(end);
 
@@ -7265,6 +7262,9 @@ pub(crate) struct SummaryProjection {
     // A failed account rebuild must not make a fresh global aggregate stale, and an old account
     // response must never borrow the global aggregate's freshness.
     all_time_account_refreshed_at: HashMap<i64, Instant>,
+    // Pre-computed at build time so the 250ms owner cadence never scans one timestamp per
+    // account merely to decide whether an all-time refresh is due.
+    all_time_oldest_account_refreshed_at: Option<Instant>,
     // This separates a caller-provided, unknown account (whose all-time aggregate is exactly
     // zero once the global projection is fresh) from an account whose durable history could not
     // be hydrated. The latter must retain the unavailable contract rather than become zero.
@@ -7277,11 +7277,6 @@ pub(crate) struct SummaryProjection {
     // immutable range with its account discovery cache so later all-time refreshes retain the
     // same exact-source proof instead of degrading a valid account response.
     archive_coverage_ranges_by_file: HashMap<String, ExactUtcRange>,
-    // An unreadable unmaterialized archive has no exact in-memory source. Keep its bounded
-    // overlap range so rolling/calendar requests fail closed instead of silently undercounting.
-    // Materialized archives are intentionally excluded: their durable rollups remain a valid
-    // source even when the raw file is unavailable.
-    unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
     // Closed calendar windows are immutable at a projection revision. Only the small global
     // bootstrap set is pre-rendered; account-scoped selections remain pure views over canonical
     // buckets so account count cannot multiply refresh allocations.
@@ -7297,6 +7292,18 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
+        let refresh_due = |refreshed_at: Option<Instant>| {
+            refreshed_at.is_none_or(|refreshed_at| {
+                refreshed_at.elapsed() >= SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
+            })
+        };
+        refresh_due(self.freshness.rolling_at(self.refreshed_at))
+            || (has_all_time_owner
+                && (refresh_due(self.all_time_refreshed_at)
+                    || refresh_due(self.all_time_oldest_account_refreshed_at)))
+    }
+
     fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
         let in_progress = self
             .in_progress_by_account
@@ -7339,16 +7346,6 @@ impl SummaryProjection {
             .map_err(ApiError::bad_request)?;
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
-        if let Some((start, end)) = range
-            && self
-                .unavailable_unmaterialized_archive_ranges
-                .iter()
-                .any(|unavailable| unavailable.start < end && start < unavailable.end)
-        {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary projection archive source is unavailable for the requested range"
-            )));
-        }
         if self
             .freshness
             .rolling_at(self.refreshed_at)
@@ -10048,6 +10045,16 @@ async fn build_summary_projection(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
+    if !unavailable_unmaterialized_archive_ranges.is_empty() {
+        // Do not publish a hybrid projection after an exact archive source failure. The hub
+        // retains its prior complete projection, which is the only exact last-good response
+        // available during the fifteen-second serving budget. Startup surfaces the failure
+        // instead of accepting readiness with a partial summary baseline.
+        return Err(anyhow!(
+            "summary projection exact archive source is unavailable for {} bounded range(s)",
+            unavailable_unmaterialized_archive_ranges.len()
+        ));
+    }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
     // coverage decision once every exact archive/live contribution is present.
     for record in records_by_invoke_id.values_mut() {
@@ -10216,7 +10223,11 @@ async fn build_summary_projection(
     );
     let mut batched_all_time_by_account = HashMap::<i64, StatsTotals>::new();
     let mut account_all_time_unavailable = all_time_account_exact_source_unavailable;
-    let previous_all_time_by_account = all_time_by_account.clone();
+    // Rolling-only rebuilds preserve the already-owned all-time map unchanged. Avoid a second
+    // high-cardinality clone on that path; a previous copy is needed only when an all-time
+    // rebuild may have to restore an exact last-good aggregate after a source failure.
+    let previous_all_time_by_account =
+        all_time_was_fully_rebuilt.then(|| all_time_by_account.clone());
     let all_time_built_at = Instant::now();
     if all_time_was_fully_rebuilt {
         // All-time must use the same bounded projection inputs as rolling windows. The generic
@@ -10259,10 +10270,6 @@ async fn build_summary_projection(
         // coverage can again be proven off-request.
         global_all_time_source_unavailable |= !global_rollup_coverage_proven;
         account_all_time_unavailable |= !account_rollup_coverage_proven;
-        // A global rollup in another hour does not cover an unreadable unmaterialized archive.
-        // Keep an exact prior all-time result only while its own freshness budget permits it;
-        // otherwise `all` must use the endpoint unavailable contract instead of a partial sum.
-        global_all_time_source_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -10291,10 +10298,13 @@ async fn build_summary_projection(
                     totals.add(*bucket_totals)
                 })
         };
-        let live_tail_ids = if !has_any_completed_archive {
-            HashSet::new()
+        let live_tail = if !has_any_completed_archive {
+            crate::stats::BoundedLiveInvocationIds {
+                ids: HashSet::new(),
+                upper_bound_id: rollup_live_cursor,
+            }
         } else {
-            crate::stats::load_live_invocation_ids_after_id_bounded(
+            crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
                 &state.pool,
                 InvocationSourceScope::All,
                 rollup_live_cursor,
@@ -10305,6 +10315,7 @@ async fn build_summary_projection(
                 anyhow!("summary projection live-tail id hydration failed: {error:?}")
             })?
         };
+        let live_tail_ids = &live_tail.ids;
         if has_any_completed_archive && !live_tail_ids.is_empty() {
             // A zero global cursor proves no live row is represented by the compact baseline.
             // It may be missing after an interrupted repair, so publishing that baseline would
@@ -10318,13 +10329,13 @@ async fn build_summary_projection(
                 account_all_time_unavailable = true;
             }
         }
-        account_all_time_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
         if has_any_completed_archive && rollup_live_cursor > 0 {
             global_totals = global_totals.add(
                 crate::stats::query_live_invocation_totals_after_id(
                     &state.pool,
                     InvocationSourceScope::All,
                     rollup_live_cursor,
+                    live_tail.upper_bound_id,
                 )
                 .await
                 .map_err(|error| {
@@ -10337,7 +10348,7 @@ async fn build_summary_projection(
                 &state.pool,
                 InvocationSourceScope::All,
                 None,
-                Some(&live_tail_ids),
+                Some(live_tail_ids),
                 SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
             )
             .await;
@@ -10369,7 +10380,10 @@ async fn build_summary_projection(
         if global_all_time_source_unavailable {
             // Retain only an exact prior aggregate, whose independent age still gates serving,
             // rather than publishing a zero or partial `all` response.
-            if let Some(previous_global) = previous_all_time_by_account.get(&None) {
+            if let Some(previous_global) = previous_all_time_by_account
+                .as_ref()
+                .and_then(|responses| responses.get(&None))
+            {
                 all_time_by_account.insert(None, previous_global.clone());
             } else {
                 all_time_by_account.remove(&None);
@@ -10408,7 +10422,7 @@ async fn build_summary_projection(
                 HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
                 InvocationSourceScope::All,
                 None,
-                Some(&live_tail_ids),
+                Some(live_tail_ids),
             )
             .await;
         let account_archive_totals = match account_archive_totals {
@@ -10424,7 +10438,11 @@ async fn build_summary_projection(
                 // within its own freshness budget instead of publishing a partial aggregate.
                 account_all_time_unavailable = true;
                 all_time_by_account.retain(|account_id, _| account_id.is_none());
-                for (account_id, response) in &previous_all_time_by_account {
+                for (account_id, response) in previous_all_time_by_account
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(HashMap::iter)
+                {
                     if account_id.is_some() {
                         all_time_by_account.insert(*account_id, response.clone());
                     }
@@ -10571,6 +10589,8 @@ async fn build_summary_projection(
             previous_account_all_time_eligible
         },
     };
+    let all_time_oldest_account_refreshed_at =
+        all_time_account_refreshed_at.values().copied().min();
     let mut projection = SummaryProjection {
         records,
         hourly_buckets,
@@ -10592,11 +10612,11 @@ async fn build_summary_projection(
             previous_all_time_refreshed_at
         },
         all_time_account_refreshed_at,
+        all_time_oldest_account_refreshed_at,
         all_time_account_ids_with_projection_data: account_ids_with_projection_data,
         known_account_ids: account_ids,
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
-        unavailable_unmaterialized_archive_ranges,
         closed_window_by_key: HashMap::new(),
         in_progress_by_account,
         maintenance: Some(maintenance),
@@ -10656,15 +10676,12 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                     if !state.subscription_hub.has_summary_owner().await {
                         None
                     } else {
+                    let has_all_time_owner = state.subscription_hub.has_summary_all_time_owner().await;
                     let needs_attention = state
                         .subscription_hub
                         .summary_projection()
                         .await
-                        .is_none_or(|projection| {
-                            projection.freshness.rolling_at(projection.refreshed_at).is_none_or(|refreshed_at| {
-                                refreshed_at.elapsed() >= SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
-                            })
-                        });
+                        .is_none_or(|projection| projection.needs_cadence_refresh(has_all_time_owner));
                         needs_attention.then_some(SummarySnapshotTrigger::Cadence)
                     }
                 },
@@ -25603,6 +25620,16 @@ mod request_compression_query_tests {
                 0,
             ))
         );
+        for hours in 1..=SUMMARY_PROJECTION_MIN_EXACT_HORIZON.num_hours() {
+            assert!(
+                summary_projection_boundary_buckets(end).contains(&align_bucket_epoch(
+                    (end - ChronoDuration::hours(hours)).timestamp(),
+                    3_600,
+                    0,
+                )),
+                "every legal <=48h duration start hour must retain exact archive detail"
+            );
+        }
         let exact_range = ExactUtcRange {
             start: end - ChronoDuration::hours(3),
             end,
@@ -26187,6 +26214,19 @@ mod request_compression_query_tests {
     }
 
     #[test]
+    fn summary_cadence_refreshes_stale_all_time_only_for_an_all_time_owner() {
+        let projection = SummaryProjection {
+            refreshed_at: Some(Instant::now()),
+            all_time_refreshed_at: Some(
+                Instant::now() - SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL - Duration::from_secs(1),
+            ),
+            ..SummaryProjection::default()
+        };
+        assert!(!projection.needs_cadence_refresh(false));
+        assert!(projection.needs_cadence_refresh(true));
+    }
+
+    #[test]
     fn summary_snapshot_failure_backoff_coalesces_retries() {
         let now = Instant::now();
         let retry_at = summary_snapshot_retry_not_before(now);
@@ -26592,6 +26632,52 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_live_tail_aggregate_stays_within_its_admitted_id_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        for id in [1_i64] {
+            sqlx::query(
+                "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+                 VALUES (?1, ?2, datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+            )
+            .bind(id)
+            .bind(format!("bounded-live-tail-{id}"))
+            .execute(&state.pool)
+            .await
+            .expect("insert admitted live tail row");
+        }
+        let admitted = crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
+            &state.pool,
+            InvocationSourceScope::All,
+            0,
+            SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+        )
+        .await
+        .expect("admit bounded live tail");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES (2, 'post-admission-live-tail', datetime('now'), 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert concurrent post-admission row");
+
+        let totals = crate::stats::query_live_invocation_totals_after_id(
+            &state.pool,
+            InvocationSourceScope::All,
+            0,
+            admitted.upper_bound_id,
+        )
+        .await
+        .expect("aggregate only admitted live tail ids");
+        assert_eq!(admitted.ids, HashSet::from([1]));
+        assert_eq!(totals.total_count, 1);
+        assert_eq!(totals.total_tokens, 17);
+    }
+
+    #[tokio::test]
     async fn summary_handler_rejects_an_expired_projection_after_idle_cadence() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -26716,18 +26802,9 @@ mod request_compression_query_tests {
         .await
         .expect("mark unavailable archive global scope as replayed");
 
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("hydrate projection with incomplete materialized replay metadata");
-        let incomplete = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("hydrated projection with incomplete replay metadata");
-        assert_eq!(
-            incomplete.unavailable_unmaterialized_archive_ranges.len(),
-            1,
-            "materialization alone cannot prove account or usage dimensions"
+        assert!(
+            hydrate_summary_snapshots(state.as_ref()).await.is_err(),
+            "incomplete replay metadata must reject a partial projection revision"
         );
         for target in [
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -26834,9 +26911,9 @@ mod request_compression_query_tests {
         .await
         .expect("record archive account manifest");
 
-        // A durable bucket key is not proof of a completed archive replay. Until every scope's
-        // replay marker exists, all-time must retain last-good/unavailable rather than serve the
-        // partial compact prefix from an archive outside the raw exact horizon.
+        // A durable bucket key is not proof of a completed archive replay. This archive is
+        // outside the finite raw horizon, so projection hydration remains available while the
+        // all-time selection itself preserves the established unavailable contract.
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate projection with incomplete archive replay");
@@ -27000,18 +27077,9 @@ mod request_compression_query_tests {
         .await
         .expect("mark only global replay coverage");
 
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("publish projection with unavailable archive metadata");
-        let projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("hydrated projection");
-        assert_eq!(
-            projection.unavailable_unmaterialized_archive_ranges.len(),
-            1,
-            "global-only replay cannot prove account or usage dimensions for a missing archive"
+        assert!(
+            hydrate_summary_snapshots(state.as_ref()).await.is_err(),
+            "global-only replay cannot publish a partial projection for a missing archive"
         );
         state.pool.close().await;
 

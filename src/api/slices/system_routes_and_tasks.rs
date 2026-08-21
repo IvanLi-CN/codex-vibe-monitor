@@ -840,7 +840,11 @@ pub(crate) async fn set_system_raw_metrics_health_override(
     if cache.raw_metrics_health_override == override_state {
         return;
     }
-    cache.raw_metrics_health_override = override_state;
+    cache.raw_metrics_health_override = override_state.clone();
+    if let Some(latest) = cache.latest.as_mut() {
+        latest.response.raw_metrics_health.state =
+            override_state.unwrap_or_else(|| latest.raw_metrics_inventory_state.clone());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -948,7 +952,9 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
     })
 }
 
-pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+async fn load_system_status_snapshot_uncached(
+    state: &AppState,
+) -> Result<(SystemStatusResponse, String)> {
     let runtime_pressure_health = load_runtime_pressure_health(state).await;
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
@@ -1018,72 +1024,80 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
         "system status invocation counts keep database rows separate from runtime memory records"
     );
 
-    Ok(SystemStatusResponse {
-        live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0) as u64,
-        success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
-        non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
-        completed_archive_batches_count: archived
-            .completed_archive_batches_count
-            .unwrap_or(0)
-            .max(0) as u64,
-        archived_bodies: SystemStatusMetric {
-            count: archived.archived_count.unwrap_or(0).max(0) as u64,
-            bytes: archive_bytes,
-        },
-        raw_bodies: SystemStatusMetric {
-            count: raw_metrics.raw_count.max(0) as u64,
-            bytes: raw_metrics.raw_bytes.max(0) as u64,
-        },
-        request_raw_bodies: SystemStatusMetric {
-            count: raw_metrics.request_raw_count.max(0) as u64,
-            bytes: raw_metrics.request_raw_bytes.max(0) as u64,
-        },
-        response_raw_bodies: SystemStatusMetric {
-            count: raw_metrics.response_raw_count.max(0) as u64,
-            bytes: raw_metrics.response_raw_bytes.max(0) as u64,
-        },
-        database_bytes,
-        other_files_bytes,
-        projection_health: SystemProjectionHealth {
-            terminal: SystemProjectionConsumerHealth {
-                state: if terminal_health.dirty_last_good {
-                    "dirty_last_good".to_string()
-                } else {
-                    "healthy".to_string()
+    Ok((
+        SystemStatusResponse {
+            live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0)
+                as u64,
+            success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
+            non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
+            completed_archive_batches_count: archived
+                .completed_archive_batches_count
+                .unwrap_or(0)
+                .max(0) as u64,
+            archived_bodies: SystemStatusMetric {
+                count: archived.archived_count.unwrap_or(0).max(0) as u64,
+                bytes: archive_bytes,
+            },
+            raw_bodies: SystemStatusMetric {
+                count: raw_metrics.raw_count.max(0) as u64,
+                bytes: raw_metrics.raw_bytes.max(0) as u64,
+            },
+            request_raw_bodies: SystemStatusMetric {
+                count: raw_metrics.request_raw_count.max(0) as u64,
+                bytes: raw_metrics.request_raw_bytes.max(0) as u64,
+            },
+            response_raw_bodies: SystemStatusMetric {
+                count: raw_metrics.response_raw_count.max(0) as u64,
+                bytes: raw_metrics.response_raw_bytes.max(0) as u64,
+            },
+            database_bytes,
+            other_files_bytes,
+            projection_health: SystemProjectionHealth {
+                terminal: SystemProjectionConsumerHealth {
+                    state: if terminal_health.dirty_last_good {
+                        "dirty_last_good".to_string()
+                    } else {
+                        "healthy".to_string()
+                    },
+                    cursor_lag: terminal_health
+                        .last_persisted_row_id
+                        .saturating_sub(terminal_health.long_term_cursor_row_id),
+                    dirty_bucket_count: 0,
+                    pending_event_count: terminal_health.pending_event_count as u64,
+                    last_flush_elapsed_ms: None,
+                    last_flush_age_ms: terminal_health.last_ack_age_ms,
+                    last_repair_scope: None,
+                    last_defer_reason: terminal_health.hard_limit_reason.map(str::to_string),
+                    last_error_kind: None,
                 },
-                cursor_lag: terminal_health
-                    .last_persisted_row_id
-                    .saturating_sub(terminal_health.long_term_cursor_row_id),
-                dirty_bucket_count: 0,
-                pending_event_count: terminal_health.pending_event_count as u64,
-                last_flush_elapsed_ms: None,
-                last_flush_age_ms: terminal_health.last_ack_age_ms,
-                last_repair_scope: None,
-                last_defer_reason: terminal_health.hard_limit_reason.map(str::to_string),
-                last_error_kind: None,
+                long_term: SystemProjectionConsumerHealth {
+                    state: long_term_health.state,
+                    cursor_lag: terminal_health
+                        .last_persisted_row_id
+                        .saturating_sub(long_term_health.cursor_row_id),
+                    dirty_bucket_count: long_term_health.dirty_bucket_count as u64,
+                    pending_event_count: long_term_health.pending_event_count as u64,
+                    last_flush_elapsed_ms: long_term_health.last_flush_elapsed_ms,
+                    last_flush_age_ms: long_term_health.last_flush_age_ms,
+                    last_repair_scope: long_term_health.last_repair_scope,
+                    last_defer_reason: long_term_health.last_defer_reason,
+                    last_error_kind: long_term_health.last_error_kind,
+                },
             },
-            long_term: SystemProjectionConsumerHealth {
-                state: long_term_health.state,
-                cursor_lag: terminal_health
-                    .last_persisted_row_id
-                    .saturating_sub(long_term_health.cursor_row_id),
-                dirty_bucket_count: long_term_health.dirty_bucket_count as u64,
-                pending_event_count: long_term_health.pending_event_count as u64,
-                last_flush_elapsed_ms: long_term_health.last_flush_elapsed_ms,
-                last_flush_age_ms: long_term_health.last_flush_age_ms,
-                last_repair_scope: long_term_health.last_repair_scope,
-                last_defer_reason: long_term_health.last_defer_reason,
-                last_error_kind: long_term_health.last_error_kind,
+            raw_metrics_health: SystemRawMetricsHealth {
+                state: raw_metrics_state,
+                inventory_cursor: raw_metrics.inventory_cursor,
+                updated_age_ms: None,
             },
+            runtime_pressure_health: Some(runtime_pressure_health),
+            refreshed_at: format_utc_iso(Utc::now()),
         },
-        raw_metrics_health: SystemRawMetricsHealth {
-            state: raw_metrics_state,
-            inventory_cursor: raw_metrics.inventory_cursor,
-            updated_age_ms: None,
-        },
-        runtime_pressure_health: Some(runtime_pressure_health),
-        refreshed_at: format_utc_iso(Utc::now()),
-    })
+        raw_metrics.inventory_state,
+    ))
+}
+
+pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+    Ok(load_system_status_snapshot_uncached(state).await?.0)
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
@@ -1124,11 +1138,16 @@ pub(crate) async fn hydrate_system_status_snapshot(state: &AppState) -> Result<(
 }
 
 async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
-    let response = load_system_status_uncached(state).await?;
+    let (mut response, raw_metrics_inventory_state) =
+        load_system_status_snapshot_uncached(state).await?;
     let mut cache = state.system_status_cache.lock().await;
+    if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
+        response.raw_metrics_health.state = override_state.to_string();
+    }
     cache.latest = Some(SystemStatusCacheEntry {
         cached_at: Instant::now(),
         response,
+        raw_metrics_inventory_state,
     });
     debug!(
         metrics_source = "system_status_memory_snapshot",

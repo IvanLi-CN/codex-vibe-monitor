@@ -1326,8 +1326,36 @@ pub(crate) async fn load_live_invocation_ids_after_id_bounded(
     start_after_id: i64,
     limit: usize,
 ) -> Result<HashSet<i64>> {
+    Ok(load_live_invocation_ids_after_id_bounded_snapshot(
+        executor,
+        source_scope,
+        start_after_id,
+        limit,
+    )
+    .await?
+    .ids)
+}
+
+/// A bounded live-tail admission together with the highest durable id it observed. Consumers
+/// fence follow-up aggregates at `upper_bound_id`, so concurrent inserts cannot turn a proven
+/// bounded tail into an unbounded aggregate.
+#[derive(Debug, Clone)]
+pub(crate) struct BoundedLiveInvocationIds {
+    pub(crate) ids: HashSet<i64>,
+    pub(crate) upper_bound_id: i64,
+}
+
+pub(crate) async fn load_live_invocation_ids_after_id_bounded_snapshot(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    source_scope: InvocationSourceScope,
+    start_after_id: i64,
+    limit: usize,
+) -> Result<BoundedLiveInvocationIds> {
     if start_after_id < 0 {
-        return Ok(HashSet::new());
+        return Ok(BoundedLiveInvocationIds {
+            ids: HashSet::new(),
+            upper_bound_id: start_after_id,
+        });
     }
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM codex_invocations WHERE id > ");
     query.push_bind(start_after_id);
@@ -1339,6 +1367,7 @@ pub(crate) async fn load_live_invocation_ids_after_id_bounded(
         id: i64,
     }
     let rows = query
+        .push(" ORDER BY id ASC")
         .push(" LIMIT ")
         .push_bind((limit.saturating_add(1)) as i64)
         .build_query_as::<IdRow>()
@@ -1347,7 +1376,11 @@ pub(crate) async fn load_live_invocation_ids_after_id_bounded(
     if rows.len() > limit {
         return Err(anyhow!("summary live-tail id budget exceeded ({})", limit));
     }
-    Ok(rows.into_iter().map(|row| row.id).collect())
+    let upper_bound_id = rows.last().map(|row| row.id).unwrap_or(start_after_id);
+    Ok(BoundedLiveInvocationIds {
+        ids: rows.into_iter().map(|row| row.id).collect(),
+        upper_bound_id,
+    })
 }
 
 pub(crate) async fn load_completed_invocation_archive_paths(
@@ -5440,12 +5473,15 @@ pub(crate) async fn query_live_invocation_totals_after_id(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     start_after_id: i64,
+    upper_bound_id: i64,
 ) -> Result<StatsTotals> {
     let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
     query.push(stats_success_failure_select_sql());
     query
         .push(" FROM codex_invocations WHERE id > ")
-        .push_bind(start_after_id);
+        .push_bind(start_after_id)
+        .push(" AND id <= ")
+        .push_bind(upper_bound_id);
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }

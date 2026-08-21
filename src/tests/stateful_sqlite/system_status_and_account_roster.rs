@@ -384,6 +384,37 @@ async fn system_status_surfaces_runtime_raw_metrics_deferral_without_a_db_write(
 }
 
 #[tokio::test]
+async fn system_status_cached_snapshot_applies_raw_metrics_override_without_io() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    hydrate_system_status_snapshot(state.as_ref())
+        .await
+        .expect("hydrate system status snapshot");
+    let baseline = load_system_status_cached(state.as_ref())
+        .await
+        .expect("load hydrated status snapshot");
+
+    set_system_raw_metrics_health_override(state.as_ref(), Some("deferred")).await;
+    state.pool.close().await;
+
+    let deferred = load_system_status_cached(state.as_ref())
+        .await
+        .expect("serve patched status cache without SQLite");
+    assert_eq!(deferred.raw_metrics_health.state, "deferred");
+
+    set_system_raw_metrics_health_override(state.as_ref(), None).await;
+    let restored = load_system_status_cached(state.as_ref())
+        .await
+        .expect("restore cached durable inventory state without SQLite");
+    assert_eq!(
+        restored.raw_metrics_health.state,
+        baseline.raw_metrics_health.state
+    );
+}
+
+#[tokio::test]
 async fn runtime_pressure_health_serializes_without_sql() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
