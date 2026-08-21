@@ -7011,6 +7011,40 @@ async fn refresh_long_term_stats_inner(
                 continue;
             }
         };
+        let archive_manifest_sha256 =
+            load_long_term_archive_sha256(pool, archive_path.file_path()).await?;
+        if !long_term_archive_scan_identity_matches_manifest(
+            &archive_sha256_before_open,
+            Some(&archive_sha256_before_open),
+            archive_manifest_sha256.as_deref(),
+        ) {
+            archive_read_failed = true;
+            failed_archive_paths.insert(archive_path.file_path().to_string());
+            let unreadable_start =
+                long_term_unreadable_source_start(&archive_path, retention_start);
+            unreadable_source_start_date = Some(
+                unreadable_source_start_date
+                    .map_or(unreadable_start, |current| current.min(unreadable_start)),
+            );
+            match (
+                archive_path
+                    .coverage_start_at()
+                    .and_then(long_term_archive_end_date),
+                archive_path
+                    .coverage_end_at()
+                    .and_then(long_term_archive_end_date),
+            ) {
+                (Some(start), Some(end)) => {
+                    failed_archive_ranges.push((start.to_string(), end.to_string()));
+                }
+                _ => clear_all_attempt_markers = true,
+            }
+            warn!(
+                file_path = archive_path.file_path(),
+                "long-term stats archive does not match its completed manifest; clearing its replay marker for retry"
+            );
+            continue;
+        }
         let Some((archive_pool, cleanup)) = (match open_invocation_archive_batch_pool(
             &archive_path,
             "long-term-stats",

@@ -74,7 +74,7 @@
 - 后端 SQLite 测试覆盖自然日窗口、模型回退、reasoning 分组、“其他”、null 样本、加权速度/平均耗时、墙时跨账号跨小时去重、回填幂等与起始日期截断。
 - 后端 SQLite 测试覆盖 canonical interval 行数不随三维日/小时展开而倍增、每个 interval state 写事务不超过 `512` 行、pressure 与 shutdown 在批次边界停止并保留 dirty work、兼容 state 的渐进清理、持久数据库重开后的 cursor/interval 恢复，以及生产 `occurred_at` 索引的 `EXPLAIN` 范围计划与 RFC3339 回退结果。
 - 后端 SQLite 测试覆盖部分候选不能覆盖完整行、终态证明不受活跃调用污染、有界增量在完整来源对账前保持未证明、完整来源对矛盾 canonical 桶的原子回写与来源缺失桶的删除重建、首次完整 source snapshot 在 canonical hourly proof 尚未生成时的 bootstrap 发布与 archive 清理 replay marker、旧 schema 升级时 retired canonical 历史的保留及所有 `ALTER TABLE` 完成后中断的续跑、archive/live 扫描的同一 SQLite 快照、已认证 archive 随后丢失时的小时审计降级、缺失调用或请求尝试 archive 时保留 manifest 作为不可用来源证据、缺失 archive 触发 `error` 后的清理收尾、旧 archive 缺少可选时间字段时的 canonical 证明重放、覆盖起点缺失的不可读 archive 全窗口阻断、旧 canonical 桶在源数据不完整时保持未证明、历史日/小时完整性审计与自动修复、canonical 零日清空任一非零维度残留、跨午夜墙时续段、修复日期扩展至前一日后对请求尝试 archive 的完整范围验证、不可读归档阻断候选发布、归档删除失败后的持久化重试和元数据事务回滚、源数据不足时保留旧值并以持久化退避持续暴露 `error`、补齐源数据后的恢复，以及 SQLite `BUSY/LOCKED` 有界重试。
-- 后端 SQLite 测试覆盖 archive 在长期扫描后、replay marker 持久化前被重写时的 SHA-256 身份绑定：扫描旧文件不得认证新 manifest，且只有与当前 manifest 匹配的扫描身份可进入清理门禁。同一覆盖也验证有效请求尝试 archive 在持有 stale manifest 时必须被拒绝，仅在 manifest 更新为实际 SHA-256 后可供 attribution 使用。
+- 后端 SQLite 测试覆盖 archive 在长期扫描后、replay marker 持久化前被重写时的 SHA-256 身份绑定：扫描旧文件不得认证新 manifest，且 full-refresh 必须在打开前拒绝 stale manifest；只有与当前 manifest 匹配的扫描身份可进入清理门禁。同一覆盖也验证有效请求尝试 archive 在持有 stale manifest 时必须被拒绝，仅在 manifest 更新为实际 SHA-256 后可供 attribution 使用。
 - 软删除测试证明凭据和路由状态清除、账号池隐藏、历史 ID/名称仍可统计，非 API Key 删除无回归。
 - API 测试覆盖 overview/series 对账、无数据补零、八项限制、非法参数 400、一年查询不读 archive。
 - 前端测试覆盖 60 秒刷新、范围选择保留、全局趋势 Token/成本/调用次数的指标化标签、搜索/全列排序/虚拟化、堆叠图跨数据岛的连续日期域、缺失日期与 `null` 的零值语义、tooltip 总计、固定总计行、模型身份状态及 loading/preparing/empty/error/窄屏不重叠，以及八个模型家族/账号的唯一主色、同模型思考程度样式和顺序无关的稳定映射。
