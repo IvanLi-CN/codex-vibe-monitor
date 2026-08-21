@@ -911,25 +911,37 @@ fn long_term_archive_scan_identity_matches_manifest(
     current_file_sha256 == Some(scanned_sha256) && manifest_sha256 == Some(scanned_sha256)
 }
 
-fn long_term_archive_replay_marker_covers_modified_at(
-    modified_at: DateTime<Utc>,
-    replayed_at: &str,
-) -> bool {
-    NaiveDateTime::parse_from_str(replayed_at, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(replayed_at, "%Y-%m-%d %H:%M:%S"))
-        .ok()
-        .map(|replayed_at| modified_at <= Utc.from_utc_datetime(&replayed_at))
-        .unwrap_or(false)
-}
-
-fn long_term_archive_replay_marker_covers_current_file(file_path: &str, replayed_at: &str) -> bool {
-    std::fs::metadata(file_path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .map(DateTime::<Utc>::from)
-        .is_some_and(|modified_at| {
-            long_term_archive_replay_marker_covers_modified_at(modified_at, replayed_at)
-        })
+fn long_term_archive_file_identity(file_path: &str) -> Result<String> {
+    let metadata = std::fs::metadata(file_path)
+        .with_context(|| format!("failed to stat long-term archive {file_path}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!(
+            "unix:{}:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let modified_at = metadata
+            .modified()
+            .with_context(|| format!("failed to read long-term archive timestamp {file_path}"))?
+            .duration_since(std::time::UNIX_EPOCH)
+            .with_context(|| {
+                format!("long-term archive timestamp predates the epoch {file_path}")
+            })?;
+        Ok(format!(
+            "portable:{}:{}:{}",
+            metadata.len(),
+            modified_at.as_secs(),
+            modified_at.subsec_nanos()
+        ))
+    }
 }
 
 async fn ensure_long_term_archive_source_identity(
@@ -1606,6 +1618,7 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             file_path TEXT NOT NULL,
             replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
             archive_sha256 TEXT,
+            source_identity TEXT,
             PRIMARY KEY (target, dataset, file_path)
         )
         "#,
@@ -1619,6 +1632,12 @@ pub(crate) async fn ensure_long_term_stats_schema(pool: &Pool<Sqlite>) -> Result
             .execute(pool)
             .await
             .context("failed to add archive hash to replay markers")?;
+    }
+    if !replay_columns.contains("source_identity") {
+        sqlx::query("ALTER TABLE hourly_rollup_archive_replay ADD COLUMN source_identity TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add archive file identity to replay markers")?;
     }
     ensure_long_term_projection_schema(pool).await?;
     ensure_long_term_projection_source_indexes(pool).await?;
@@ -6915,9 +6934,9 @@ async fn refresh_long_term_stats_inner(
     let replayed_archive_files = if !ready_state {
         HashSet::new()
     } else {
-        match sqlx::query_as::<_, (String, String)>(
+        match sqlx::query_as::<_, (String, Option<String>)>(
             r#"
-        SELECT replay.file_path, replay.replayed_at
+        SELECT replay.file_path, replay.source_identity
         FROM hourly_rollup_archive_replay replay
         INNER JOIN archive_batches batches
           ON batches.dataset = 'codex_invocations'
@@ -6932,8 +6951,11 @@ async fn refresh_long_term_stats_inner(
         {
             Ok(rows) => rows
                 .into_iter()
-                .filter(|(file_path, replayed_at)| {
-                    long_term_archive_replay_marker_covers_current_file(file_path, replayed_at)
+                .filter(|(file_path, source_identity)| {
+                    source_identity.as_deref().is_some_and(|source_identity| {
+                        long_term_archive_file_identity(file_path).ok().as_deref()
+                            == Some(source_identity)
+                    })
                 })
                 .map(|(file_path, _)| file_path)
                 .collect::<HashSet<_>>(),
@@ -7386,6 +7408,19 @@ async fn refresh_long_term_stats_inner(
                         completed_integrity_repairs.insert(*date);
                     }
                 }
+                None if initial_materialization
+                    && !archive_read_failed
+                    && !terminal_proof_reconciliation_incomplete
+                    && *date >= reconstructable_start =>
+                {
+                    // The initial pass reads every retained live and archive source before
+                    // publishing. That complete snapshot is sufficient bootstrap evidence until
+                    // the canonical hourly proof is reconciled; retired source prefixes remain
+                    // outside the reconstructable window and cannot take this path.
+                    if scheduled_repair_date == Some(*date) {
+                        completed_integrity_repairs.insert(*date);
+                    }
+                }
                 None if scheduled_repair_date == Some(*date) => {
                     blocked_recomputed_dates.insert(*date);
                     if let Some(mismatch) = queued_long_term_repair_mismatch(
@@ -7399,16 +7434,6 @@ async fn refresh_long_term_stats_inner(
                         blocked_recomputed_dates.insert(*date);
                         integrity_repair_failures.push(mismatch);
                     }
-                }
-                None if initial_materialization
-                    && !archive_read_failed
-                    && !terminal_proof_reconciliation_incomplete
-                    && *date >= reconstructable_start =>
-                {
-                    // The initial pass reads every retained live and archive source before
-                    // publishing. That complete snapshot is sufficient bootstrap evidence until
-                    // the canonical hourly proof is reconciled; retired source prefixes remain
-                    // outside the reconstructable window and cannot take this path.
                 }
                 None => {
                     // Historical source rows are not sufficient proof by themselves. This is
@@ -8148,8 +8173,8 @@ async fn persist_long_term_refresh_archive_marker_with_control(
     let (mut transaction, permit) = control.begin(pool).await?;
     let result = sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256, replayed_at)
-        SELECT ?1, ?2, ?3, ?4, strftime('%Y-%m-%d %H:%M:%f', 'now')
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256, source_identity, replayed_at)
+        SELECT ?1, ?2, ?3, ?4, NULL, strftime('%Y-%m-%d %H:%M:%f', 'now')
         WHERE EXISTS (
             SELECT 1
             FROM archive_batches
@@ -8160,6 +8185,7 @@ async fn persist_long_term_refresh_archive_marker_with_control(
         )
         ON CONFLICT(target, dataset, file_path) DO UPDATE SET
             archive_sha256 = excluded.archive_sha256,
+            source_identity = NULL,
             replayed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
         "#,
     )
@@ -8177,6 +8203,16 @@ async fn persist_long_term_refresh_archive_marker_with_control(
             "long-term archive manifest changed before its replay marker could be persisted: {file_path}"
         );
     }
+    let source_identity_before = match long_term_archive_file_identity(file_path) {
+        Ok(source_identity) => source_identity,
+        Err(error) => {
+            delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+                .await?;
+            return Err(error.context(format!(
+                "long-term archive source changed before its replay marker could be persisted: {file_path}"
+            )));
+        }
+    };
     if let Err(error) =
         ensure_long_term_archive_source_identity(pool, dataset, file_path, archive_sha256).await
     {
@@ -8185,6 +8221,58 @@ async fn persist_long_term_refresh_archive_marker_with_control(
         return Err(error.context(format!(
             "long-term archive source changed before its replay marker could be persisted: {file_path}"
         )));
+    }
+    let source_identity_after = match long_term_archive_file_identity(file_path) {
+        Ok(source_identity) => source_identity,
+        Err(error) => {
+            delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+                .await?;
+            return Err(error.context(format!(
+                "long-term archive source changed before its replay marker could be persisted: {file_path}"
+            )));
+        }
+    };
+    if source_identity_before != source_identity_after {
+        delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+            .await?;
+        bail!(
+            "long-term archive source changed before its replay marker could be persisted: {file_path}"
+        );
+    }
+    let (mut transaction, permit) = control.begin(pool).await?;
+    let result = sqlx::query(
+        r#"
+        UPDATE hourly_rollup_archive_replay
+        SET source_identity = ?1,
+            replayed_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+        WHERE target = ?2
+          AND dataset = ?3
+          AND file_path = ?4
+          AND archive_sha256 = ?5
+          AND EXISTS (
+              SELECT 1
+              FROM archive_batches
+              WHERE dataset = ?3
+                AND status = 'completed'
+                AND file_path = ?4
+                AND sha256 = ?5
+          )
+        "#,
+    )
+    .bind(&source_identity_after)
+    .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
+    .bind(dataset)
+    .bind(file_path)
+    .bind(archive_sha256)
+    .execute(&mut *transaction)
+    .await?;
+    control.commit(transaction, permit).await?;
+    if result.rows_affected() != 1 {
+        delete_long_term_refresh_archive_marker_with_control(pool, dataset, file_path, control)
+            .await?;
+        bail!(
+            "long-term archive manifest changed before its replay marker could be finalized: {file_path}"
+        );
     }
     Ok(())
 }
@@ -10241,24 +10329,28 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn archive_replay_marker_only_skips_an_unchanged_file() {
-        let replayed_at = Utc
-            .with_ymd_and_hms(2026, 8, 21, 0, 0, 0)
-            .single()
-            .expect("fixed replay time");
-        assert!(long_term_archive_replay_marker_covers_modified_at(
-            replayed_at,
-            "2026-08-21 00:00:00"
+    fn archive_file_identity_changes_when_a_prepared_replacement_is_renamed() {
+        let archive_path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-replay-identity-{}-{}.sqlite.gz",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
         ));
-        assert!(!long_term_archive_replay_marker_covers_modified_at(
-            replayed_at + ChronoDuration::seconds(1),
-            "2026-08-21 00:00:00"
-        ));
-        assert!(!long_term_archive_replay_marker_covers_modified_at(
-            replayed_at,
-            "invalid replay timestamp"
-        ));
+        let replacement_path = archive_path.with_extension("replacement");
+        fs::write(&archive_path, b"scanned archive bytes").expect("write scanned archive");
+        let scanned_identity =
+            long_term_archive_file_identity(archive_path.to_string_lossy().as_ref())
+                .expect("read scanned archive identity");
+        fs::write(&replacement_path, b"prepared replacement archive bytes")
+            .expect("write prepared replacement archive");
+        fs::rename(&replacement_path, &archive_path).expect("rename prepared replacement");
+        let replacement_identity =
+            long_term_archive_file_identity(archive_path.to_string_lossy().as_ref())
+                .expect("read replacement archive identity");
+
+        assert_ne!(scanned_identity, replacement_identity);
+        let _ = fs::remove_file(&archive_path);
     }
 
     #[tokio::test]
@@ -15845,6 +15937,58 @@ mod tests {
         assert_eq!(state.0, LONG_TERM_STATUS_READY);
         let expected_start = date.to_string();
         assert_eq!(state.1.as_deref(), Some(expected_start.as_str()));
+    }
+
+    #[tokio::test]
+    async fn initial_full_rebuild_recovers_a_queued_repair_from_a_complete_source_snapshot() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        create_long_term_test_invocations(&pool).await;
+        let date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(3);
+        insert_long_term_test_invocation(&pool, 1, format!("{date}T10:00:00+08:00")).await;
+        sqlx::query(
+            "INSERT INTO long_term_stats_repair_queue (stats_date, expected_calls, expected_token_total, expected_cost_total, observed_calls, observed_token_total, observed_cost_total, last_error) VALUES (?1, 2, 200, 0.2, 1, 100, 0.1, 'untrusted hourly proof')",
+        )
+        .bind(date.to_string())
+        .execute(&pool)
+        .await
+        .expect("queue repair without canonical hourly proof");
+
+        refresh_long_term_stats(&pool, 400)
+            .await
+            .expect("complete initial source snapshot resolves the queued repair");
+
+        let materialized_rows = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_usage_daily WHERE stats_date = ?1 AND dimension = 'overall'",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count materialized daily rollups");
+        let queued_repairs = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_stats_repair_queue WHERE stats_date = ?1",
+        )
+        .bind(date.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count resolved repairs");
+        let status = sqlx::query_scalar::<_, String>(
+            "SELECT status FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(&pool)
+        .await
+        .expect("load completed initial materialization state");
+
+        assert_eq!(materialized_rows, 1);
+        assert_eq!(queued_repairs, 0);
+        assert_eq!(status, LONG_TERM_STATUS_READY);
     }
 
     #[tokio::test]
