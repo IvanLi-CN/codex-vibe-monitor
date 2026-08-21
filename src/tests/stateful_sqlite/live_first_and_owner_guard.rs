@@ -527,11 +527,11 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
 }
 
 #[tokio::test]
-async fn final_route_gate_cancels_upstream_after_malformed_tail() {
+async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
-    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
@@ -582,28 +582,7 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
             br#"{"model":"gpt-5","stream":true,"input":"hello","foo":1,"#,
         )))
         .await
-        .expect("send valid live request prefix with finalized input");
-
-    assert!(
-        timeout(Duration::from_secs(1), async {
-            loop {
-                if attempts
-                    .lock()
-                    .expect("lock upstream attempts")
-                    .get("Bearer upstream-primary")
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .is_ok(),
-        "live-first should start after all route-affecting fields are finalized"
-    );
+        .expect("send malformed live request prefix");
     body_tx
         .send(Ok(Bytes::from_static(b"}")))
         .await
@@ -625,7 +604,7 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
             .is_some_and(|message| message.contains("request body must be valid JSON"))
     );
 
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     let invocation = timeout(Duration::from_secs(1), async {
         loop {
@@ -663,8 +642,8 @@ async fn final_route_gate_cancels_upstream_after_malformed_tail() {
     )
     .expect("decode malformed live invocation payload");
     assert_eq!(
-        invocation_payload["ambiguousUpstreamDelivery"], true,
-        "a malformed tail after live body polling must retain ambiguous delivery evidence"
+        invocation_payload["ambiguousUpstreamDelivery"], false,
+        "malformed JSON must not report ambiguous delivery when EOF gating sent no body"
     );
 
     upstream_handle.abort();

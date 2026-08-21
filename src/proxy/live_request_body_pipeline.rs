@@ -549,11 +549,13 @@ fn is_precommit_routing_root_field(key: &str) -> bool {
     )
 }
 
-fn should_defer_route_commit(key: &str, _value_start: u8) -> bool {
-    // Input can contain nested image-generation or encrypted-content markers.
-    // Buffer the complete value before committing so route selection never
-    // starts from a model-only probe that can be invalidated by nested JSON.
-    key == "input"
+fn should_defer_route_commit(_key: &str, _value_start: u8) -> bool {
+    // JSON object fields are unordered and optional. After any ordinary field
+    // there may still be a later input, tools, metadata, sticky, prompt-cache,
+    // or encrypted-content field that changes the route. Without a schema-level
+    // end marker, EOF is the only proof that the route-affecting root set is
+    // complete, so the live encoder must stay uncommitted until root EOF.
+    true
 }
 
 struct LiveRootFieldTransformer {
