@@ -20579,3 +20579,150 @@ async fn dashboard_activity_response_duration_includes_success_without_cost() {
         750.0,
     );
 }
+
+#[tokio::test]
+async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let record = api_invocation_from_runtime_record(&test_proxy_capture_record(
+        "timeseries-projection-p1-priority",
+        "2026-08-21 12:00:12",
+    ));
+    state
+        .terminal_projection_hub
+        .activate_timeseries_consumer(0);
+    let event_id = state
+        .terminal_projection_hub
+        .register_pending(&record, None)
+        .expect("terminal event should fit in the projection journal");
+    state.terminal_projection_hub.acknowledge_persisted(
+        Some(event_id),
+        &record.invoke_id,
+        &record.occurred_at,
+        91_001,
+    );
+
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let p1_write = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let outcome = crate::api::flush_timeseries_minute_projection_with_coordinator(
+        state.as_ref(),
+        "stateful_p1_priority",
+        &coordinator,
+    )
+    .await
+    .expect("flush should yield without a database error");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Deferred
+    );
+    assert_eq!(
+        state
+            .terminal_projection_hub
+            .pending_timeseries_deltas(10)
+            .len(),
+        1,
+        "the P1 preemption path must leave the delta available for retry"
+    );
+    let projection_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count minute projections before retry");
+    assert_eq!(
+        projection_count, 0,
+        "deferred work must not open a write transaction"
+    );
+
+    drop(p1_write);
+    let outcome = crate::api::flush_timeseries_minute_projection_with_coordinator(
+        state.as_ref(),
+        "stateful_p1_priority_retry",
+        &coordinator,
+    )
+    .await
+    .expect("flush should succeed after P1 completes");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed
+    );
+    assert!(
+        state
+            .terminal_projection_hub
+            .pending_timeseries_deltas(10)
+            .is_empty(),
+        "the retried flush should acknowledge the terminal delta"
+    );
+    let projection_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count minute projections after retry");
+    assert!(
+        projection_count > 0,
+        "retry should persist the minute projections"
+    );
+}
+
+#[tokio::test]
+async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_deltas() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state
+        .terminal_projection_hub
+        .activate_timeseries_consumer(0);
+
+    // Each proxy terminal event with an upstream account contributes four selection keys.
+    // Seventeen events therefore cross the 64-key transaction boundary.
+    for minute in 0..17_i64 {
+        let occurred_at = format!("2026-08-21 12:{minute:02}:12");
+        let record = api_invocation_from_runtime_record(&test_proxy_capture_record(
+            &format!("timeseries-projection-slice-{minute}"),
+            &occurred_at,
+        ));
+        let event_id = state
+            .terminal_projection_hub
+            .register_pending(&record, None)
+            .expect("terminal event should fit in the projection journal");
+        state.terminal_projection_hub.acknowledge_persisted(
+            Some(event_id),
+            &record.invoke_id,
+            &record.occurred_at,
+            92_000 + minute,
+        );
+    }
+
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let outcome = crate::api::flush_timeseries_minute_projection_with_coordinator(
+        state.as_ref(),
+        "stateful_key_slices",
+        &coordinator,
+    )
+    .await
+    .expect("flush should commit every bounded slice");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed
+    );
+    assert!(
+        state
+            .terminal_projection_hub
+            .pending_timeseries_deltas(100)
+            .is_empty(),
+        "deltas are acknowledged only after all committed key slices succeed"
+    );
+    let projection_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM timeseries_minute_projection_v2 WHERE coverage_state = 'ready'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count all committed minute projection keys");
+    assert_eq!(projection_count, 68);
+}

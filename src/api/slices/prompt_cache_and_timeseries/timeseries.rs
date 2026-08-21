@@ -1,8 +1,11 @@
 use super::prompt_cache_and_timeseries_shared as prompt_shared;
 use super::*;
 use anyhow::anyhow;
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 use tokio::{
     task::JoinHandle,
     time::{MissedTickBehavior, interval},
@@ -27,6 +30,26 @@ struct TimeseriesMinuteProjectionV2Row {
     first_token_samples_json: String,
     max_row_id: i64,
     coverage_state: String,
+}
+
+const TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT: usize = 64;
+const TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT: i64 = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeseriesMinuteProjectionFlushOutcome {
+    Flushed,
+    Deferred,
+}
+
+struct TimeseriesMinuteProjectionWriteAdmission {
+    _write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
+    _pressure_permit: crate::db_pressure::DbBackgroundPermit,
+}
+
+#[derive(Debug, Default)]
+struct TimeseriesMinuteProjectionCoverageInvalidationStats {
+    row_count: u64,
+    transaction_count: u64,
 }
 
 fn fold_minute_projection_aggregates(
@@ -1253,10 +1276,142 @@ fn timeseries_projection_requires_exact_rebuild(
         .any(|(row_id, _)| *row_id <= existing_max_row_id || !seen_row_ids.insert(*row_id))
 }
 
+async fn try_acquire_timeseries_minute_projection_write(
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+    trigger: &'static str,
+    transaction_phase: &'static str,
+    pending_event_count: usize,
+) -> Option<TimeseriesMinuteProjectionWriteAdmission> {
+    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+    let observed_eligibility_generation = pressure_gate.eligibility_generation();
+    let Some(mut write_permit) = coordinator
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    else {
+        let snapshot = coordinator.snapshot().await;
+        debug!(
+            route = "timeseries_projection",
+            builder = "minute_projection_v2",
+            trigger,
+            transaction_phase,
+            admission_outcome = "deferred",
+            defer_reason = "coordinator_priority",
+            active_write_class = snapshot.active_write_class.as_deref().unwrap_or("none"),
+            p1_waiter_count = snapshot.p1_waiter_count,
+            interactive_waiter_count = snapshot.interactive_waiter_count,
+            p2_waiter_count = snapshot.p2_waiter_count,
+            pending_event_count,
+            "minute projection deferred before opening a P2 write transaction"
+        );
+        return None;
+    };
+
+    match pressure_gate.try_begin_background("timeseries_minute_projection_flush") {
+        Ok(pressure_permit) => Some(TimeseriesMinuteProjectionWriteAdmission {
+            _write_permit: write_permit,
+            _pressure_permit: pressure_permit,
+        }),
+        Err(reason) => {
+            if matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            ) {
+                write_permit.suppress_background_eligibility_wakeup();
+            }
+            drop(write_permit);
+            debug!(
+                route = "timeseries_projection",
+                builder = "minute_projection_v2",
+                trigger,
+                transaction_phase,
+                admission_outcome = "deferred",
+                defer_reason = "writer_pressure",
+                observed_eligibility_generation,
+                pending_event_count,
+                %reason,
+                "minute projection deferred before opening a P2 write transaction"
+            );
+            None
+        }
+    }
+}
+
+async fn invalidate_timeseries_minute_projection_coverage(
+    state: &AppState,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+    trigger: &'static str,
+    pending_event_count: usize,
+) -> Result<Option<TimeseriesMinuteProjectionCoverageInvalidationStats>, ApiError> {
+    let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
+    loop {
+        let row_ids = sqlx::query_scalar::<_, i64>(
+            "SELECT rowid FROM timeseries_minute_projection_v2 WHERE coverage_state <> 'warming' ORDER BY rowid LIMIT ?1",
+        )
+        .bind(TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT)
+        .fetch_all(&state.pool)
+        .await?;
+        if row_ids.is_empty() {
+            return Ok(Some(stats));
+        }
+
+        let Some(admission) = try_acquire_timeseries_minute_projection_write(
+            coordinator,
+            trigger,
+            "coverage_invalidation",
+            pending_event_count,
+        )
+        .await
+        else {
+            return Ok(None);
+        };
+
+        let started = Instant::now();
+        let mut tx = state.pool.begin().await?;
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming' WHERE rowid IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for row_id in &row_ids {
+                separated.push_bind(row_id);
+            }
+        }
+        query.push(")");
+        let updated_rows = query.build().execute(tx.as_mut()).await?.rows_affected();
+        tx.commit().await?;
+        stats.row_count = stats.row_count.saturating_add(updated_rows);
+        stats.transaction_count = stats.transaction_count.saturating_add(1);
+        debug!(
+            route = "timeseries_projection",
+            builder = "minute_projection_v2",
+            trigger,
+            transaction_phase = "coverage_invalidation",
+            transaction_row_limit = TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT,
+            transaction_row_count = updated_rows,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "invalidated a bounded minute projection coverage slice"
+        );
+        drop(admission);
+        tokio::task::yield_now().await;
+    }
+}
+
 pub(crate) async fn flush_timeseries_minute_projection(
     state: &AppState,
     trigger: &'static str,
-) -> Result<(), ApiError> {
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    flush_timeseries_minute_projection_with_coordinator(
+        state,
+        trigger,
+        &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+    )
+    .await
+}
+
+pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
+    state: &AppState,
+    trigger: &'static str,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
     let pending = state
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000);
@@ -1264,27 +1419,11 @@ pub(crate) async fn flush_timeseries_minute_projection(
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending();
     if pending.is_empty() && coverage_invalidation_generation.is_none() {
-        return Ok(());
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
     }
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
     let mut loaded_row_count = 0u64;
-    let result: Result<(), ApiError> = async {
-        let gate = crate::db_pressure::global_db_pressure_gate();
-        let _permit = match gate.try_begin_background("timeseries_minute_projection_flush") {
-            Ok(permit) => permit,
-            Err(reason) => {
-                debug!(
-                    route = "timeseries_projection",
-                    builder = "minute_projection_v2",
-                    trigger,
-                    gate_outcome = "deferred",
-                    defer_reason = "writer_pressure",
-                    %reason,
-                    "minute projection flush deferred by database pressure"
-                );
-                return Ok(());
-            }
-        };
+    let result: Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> = async {
         let started = Instant::now();
         let mut grouped = HashMap::new();
         let mut flushed_event_ids = Vec::with_capacity(pending.len());
@@ -1292,59 +1431,107 @@ pub(crate) async fn flush_timeseries_minute_projection(
             flushed_event_ids.push(event_id);
             add_timeseries_delta_projection_keys(&mut grouped, row_id, delta);
         }
-        let mut tx = state.pool.begin().await?;
-        if coverage_invalidation_generation.is_some() {
-            // A Hub admission rejection may have omitted a terminal update for an existing
-            // row. Never keep any minute marked ready until exact fallback has rebuilt it.
-            sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
-                .execute(tx.as_mut())
-                .await?;
-        }
+
+        let coverage_invalidation = if coverage_invalidation_generation.is_some() {
+            match invalidate_timeseries_minute_projection_coverage(
+                state,
+                coordinator,
+                trigger,
+                flushed_event_ids.len(),
+            )
+            .await?
+            {
+                Some(stats) => stats,
+                None => return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred),
+            }
+        } else {
+            TimeseriesMinuteProjectionCoverageInvalidationStats::default()
+        };
+
+        let mut grouped = grouped.into_iter().collect::<Vec<_>>();
+        grouped.sort_by_key(|(key, _)| {
+            (
+                key.minute_start_epoch,
+                key.source_scope,
+                key.upstream_account_key,
+            )
+        });
         let mut written_key_count = 0usize;
         let mut exact_fallback_minute_count = 0usize;
-        for (key, mut deltas) in grouped {
-            deltas.sort_by_key(|(row_id, _)| *row_id);
-            let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
-                load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
-            {
-                if timeseries_projection_requires_exact_rebuild(&deltas, existing_max_row_id) {
-                    // A terminal record can update an older running row. Its row ID is not a
-                    // change cursor, and repeated pending events can share the same row ID.
-                    // Either case needs an exact rebuild rather than another incremental add.
+        let mut transaction_count = 0usize;
+        for key_batch in grouped.chunks_mut(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
+            let Some(admission) = try_acquire_timeseries_minute_projection_write(
+                coordinator,
+                trigger,
+                "minute_projection_keys",
+                flushed_event_ids.len(),
+            )
+            .await
+            else {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+            };
+
+            let transaction_started = Instant::now();
+            let mut tx = state.pool.begin().await?;
+            for (key, deltas) in &mut *key_batch {
+                deltas.sort_by_key(|(row_id, _)| *row_id);
+                let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
+                    load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key).await?
+                {
+                    if timeseries_projection_requires_exact_rebuild(deltas, existing_max_row_id) {
+                        // A terminal record can update an older running row. Its row ID is not a
+                        // change cursor, and repeated pending events can share the same row ID.
+                        // Either case needs an exact rebuild rather than another incremental add.
+                        exact_fallback_minute_count += 1;
+                        let (aggregate, max_row_id, source_row_count) =
+                            rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key)
+                                .await?;
+                        loaded_row_count = loaded_row_count.saturating_add(source_row_count);
+                        (aggregate, max_row_id)
+                    } else {
+                        let mut aggregate = aggregate;
+                        let mut max_row_id = existing_max_row_id;
+                        for (row_id, delta) in deltas {
+                            add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta);
+                            max_row_id = max_row_id.max(*row_id);
+                        }
+                        (aggregate, max_row_id)
+                    }
+                } else {
+                    // A delta alone cannot prove that a minute is complete: a process can start
+                    // mid-minute or recover after an earlier terminal write. Rebuild only this
+                    // minute before publishing it as ready, rather than storing a partial total.
                     exact_fallback_minute_count += 1;
                     let (aggregate, max_row_id, source_row_count) =
-                        rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?;
+                        rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key).await?;
                     loaded_row_count = loaded_row_count.saturating_add(source_row_count);
                     (aggregate, max_row_id)
-                } else {
-                    let mut aggregate = aggregate;
-                    let mut max_row_id = existing_max_row_id;
-                    for (row_id, delta) in deltas {
-                        add_timeseries_terminal_delta_to_aggregate(&mut aggregate, &delta);
-                        max_row_id = max_row_id.max(row_id);
-                    }
-                    (aggregate, max_row_id)
-                }
-            } else {
-                // A delta alone cannot prove that a minute is complete: a process can start
-                // mid-minute or recover after an earlier terminal write. Rebuild only this
-                // minute before publishing it as ready, rather than storing a partial total.
-                exact_fallback_minute_count += 1;
-                let (aggregate, max_row_id, source_row_count) =
-                    rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?;
-                loaded_row_count = loaded_row_count.saturating_add(source_row_count);
-                (aggregate, max_row_id)
-            };
-            upsert_timeseries_minute_projection_v2_key_tx(
-                tx.as_mut(),
-                &key,
-                &aggregate,
-                max_row_id,
-            )
-            .await?;
-            written_key_count += 1;
+                };
+                upsert_timeseries_minute_projection_v2_key_tx(
+                    tx.as_mut(),
+                    key,
+                    &aggregate,
+                    max_row_id,
+                )
+                .await?;
+                written_key_count += 1;
+            }
+            tx.commit().await?;
+            transaction_count += 1;
+            debug!(
+                route = "timeseries_projection",
+                builder = "minute_projection_v2",
+                trigger,
+                transaction_phase = "minute_projection_keys",
+                transaction_key_limit = TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT,
+                transaction_key_count = key_batch.len(),
+                elapsed_ms = transaction_started.elapsed().as_millis() as u64,
+                "flushed a bounded minute projection key slice"
+            );
+            drop(admission);
+            tokio::task::yield_now().await;
         }
-        tx.commit().await?;
+
         if let Some(generation) = coverage_invalidation_generation {
             state
                 .terminal_projection_hub
@@ -1362,11 +1549,14 @@ pub(crate) async fn flush_timeseries_minute_projection(
             minute_rollup_count = written_key_count,
             exact_fallback_minute_count,
             raw_row_count = loaded_row_count,
+            coverage_invalidation_row_count = coverage_invalidation.row_count,
+            coverage_invalidation_transaction_count = coverage_invalidation.transaction_count,
+            write_transaction_count = transaction_count,
             coverage_invalidation_pending = coverage_invalidation_generation.is_some(),
             elapsed_ms = started.elapsed().as_millis() as u64,
             "flushed terminal deltas into minute projection"
         );
-        Ok(())
+        Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed)
     }
     .await;
     state
@@ -1406,14 +1596,26 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             tokio::select! {
                 _ = cancel.cancelled() => return,
                 _ = ticker.tick() => {
-                    if let Err(error) = flush_timeseries_minute_projection(state.as_ref(), "terminal_deadline").await {
-                        warn!(
-                            route = "timeseries_projection",
-                            builder = "minute_projection_v2",
-                            trigger = "terminal_deadline",
-                            ?error,
-                            "minute projection flush failed"
-                        );
+                    match flush_timeseries_minute_projection(state.as_ref(), "terminal_deadline").await {
+                        Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => {}
+                        Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
+                            debug!(
+                                route = "timeseries_projection",
+                                builder = "minute_projection_v2",
+                                trigger = "terminal_deadline",
+                                flush_outcome = "deferred",
+                                "minute projection flush yielded to higher-priority database work"
+                            );
+                        }
+                        Err(error) => {
+                            warn!(
+                                route = "timeseries_projection",
+                                builder = "minute_projection_v2",
+                                trigger = "terminal_deadline",
+                                ?error,
+                                "minute projection flush failed"
+                            );
+                        }
                     }
                 }
             }

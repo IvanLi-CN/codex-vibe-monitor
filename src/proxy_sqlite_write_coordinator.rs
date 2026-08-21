@@ -114,6 +114,15 @@ pub(crate) struct ProxySqliteWriteCoordinator {
 }
 
 impl ProxySqliteWriteCoordinator {
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Arc<Self> {
+        Arc::new(Self {
+            coordinated: true,
+            state: Mutex::new(CoordinatorState::default()),
+            notify: Notify::new(),
+        })
+    }
+
     fn from_env() -> Self {
         let coordinated = !matches!(
             std::env::var(PROXY_SQLITE_WRITE_COORDINATOR_MODE_ENV),
