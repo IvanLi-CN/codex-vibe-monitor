@@ -933,10 +933,13 @@ async fn prepare_capture_request_body(
     let mut live_first_experiment_group = None;
     let mut live_route_lookup_cache_hit = live_routing_hot_cache_hit;
 
-    if !live_route_probe_can_start_before_eof(&live_body_key_probe) {
-        // The probe did not reach a safe pre-EOF commit point (for example a
-        // positively identified image route). Let the established replay path
-        // make the final request instead.
+    if live_body_key_probe.root_object_complete
+        || !live_route_probe_can_start_before_eof(&live_body_key_probe)
+    {
+        // An EOF-complete probe has no overlap left to provide. Keep it on the
+        // established replay path so buffered requests retain the existing
+        // failover and retry semantics. A future pre-EOF probe may still take
+        // the live-first branch when its route is proven safe.
         prepared_live_request_streaming_decision = Some(LiveRequestStreamingDecision {
             transport_mode: RequestBodyTransportMode::Buffered,
             eligible: false,
