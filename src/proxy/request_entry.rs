@@ -6841,22 +6841,14 @@ mod tests {
         assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
 
         let mut status_rx = replay.status_rx.clone();
-        assert!(
-            timeout(Duration::from_millis(50), async {
-                loop {
-                    if !matches!(*status_rx.borrow(), PoolReplayBodyStatus::Reading) {
-                        break;
-                    }
-                    status_rx
-                        .changed()
-                        .await
-                        .expect("replay worker should stay alive");
-                }
-            })
-            .await
-            .is_err(),
-            "the bounded replay channel should wait for the live consumer"
-        );
+        // The final-route gate may consume the complete root object while it
+        // waits for route configuration, so the producer can legitimately
+        // finish before the transformed body has a consumer. In the older
+        // provisional path it remained Reading behind the bounded channel.
+        assert!(matches!(
+            *status_rx.borrow(),
+            PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Complete(_)
+        ));
 
         drop(pipeline);
         let snapshot = timeout(Duration::from_secs(1), async {

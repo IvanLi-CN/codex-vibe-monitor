@@ -329,15 +329,21 @@ async fn run_live_responses_request_body_pipeline(
             return Err(invalid_live_json("request object value is missing"));
         };
 
-        // Once the required model and all enabled route metadata seen so far
-        // are buffered, commit the route before consuming the next ordinary
-        // value. The value itself is then copied through the incremental JSON
-        // writer, so a large/nested input overlaps the upstream upload.
+        // Once the required model, all enabled route metadata seen so far, and
+        // the potentially route-affecting input field are buffered, commit the
+        // route before consuming the next ordinary value. Until `input` has
+        // been observed, a later field may still introduce image capability or
+        // encrypted-content requirements, so an ordinary field must remain in
+        // the prefix buffer even when the model is already known.
+        let input_seen = pending_fields
+            .iter()
+            .any(|(pending_key, _)| pending_key == "input");
         if selected_writer.is_none()
             && pending_fields
                 .iter()
                 .any(|(pending_key, _)| pending_key == "model")
             && !is_precommit_routing_root_field(&key)
+            && input_seen
             && !should_defer_route_commit(&key, value_start)
         {
             let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
@@ -1919,6 +1925,39 @@ mod tests {
                 .map(|error| error.status),
             Some(StatusCode::BAD_REQUEST)
         );
+    }
+
+    #[tokio::test]
+    async fn final_route_gate_waits_for_late_input_after_ordinary_fields() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","stream":true,"#,
+        )))
+        .await
+        .expect("send ordinary prefix before input");
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(matches!(
+            *pipeline.routing_probe_rx.borrow(),
+            PoolReplayBodyStickyKeyProbeStatus::Pending
+        ));
+
+        tx.send(Ok(Bytes::from_static(
+            br#""input":[{"type":"input_text","text":"hello"}]}"#,
+        )))
+        .await
+        .expect("send late route-affecting input");
+        drop(tx);
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
     }
 
     #[tokio::test]
