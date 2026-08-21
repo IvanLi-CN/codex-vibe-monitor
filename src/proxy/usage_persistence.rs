@@ -4183,7 +4183,7 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
             if outcome.availability_increased && account_allows_publish {
                 state
                     .pool_routing_snapshot
-                    .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
+                    .request_recovery_refresh_and_defer_availability_wake();
             } else if outcome.snapshot_changed {
                 state.pool_routing_snapshot.request_refresh();
             }

@@ -4023,6 +4023,11 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
     websocket_record.usage.input_tokens = Some(3_840);
     websocket_record.usage.cache_input_tokens = Some(384);
     observe_successful_proxy_capture_model_route_cache(&state, &websocket_record).await;
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "cache recovery must install its replacement snapshot before waking pool waiters"
+    );
     assert!(
         snapshot_refreshes
             .has_changed()
