@@ -910,12 +910,9 @@ async fn prepare_capture_request_body(
         runtime_timeouts.request_read_timeout,
     )
     .await;
-    let live_resolved_content_encoding = live_pipeline.as_ref().and_then(|pipeline| {
-        pipeline
-            .resolved_request_content_encoding_rx
-            .borrow()
-            .clone()
-    });
+    let live_resolved_content_encoding = live_pipeline
+        .as_ref()
+        .and_then(|pipeline| *pipeline.resolved_request_content_encoding_rx.borrow());
     let live_route_finalization_ms = elapsed_ms(req_read_started);
     let response_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &Method::POST);
@@ -1047,7 +1044,6 @@ async fn prepare_capture_request_body(
                     request_model: live_body_key_probe.model.clone(),
                 };
                 let target_encoding = live_resolved_content_encoding
-                    .clone()
                     .map(|resolved| {
                         live_responses_target_request_content_encoding_with_resolved(
                             resolved,
