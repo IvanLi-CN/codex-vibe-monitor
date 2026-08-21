@@ -138,7 +138,7 @@ PR: include
   margin_policy: require_margin
   evidence_surface: component
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-confirmed
   state: 两个 cohort 均达到 200 个成功样本
   evidence_note: 验证 buffered-control 与 live-first-treatment 并列呈现 P50 首响应、首 token、上传重叠、重试风险，以及首响应和首 token 的绝对/相对收益。
 
@@ -155,7 +155,7 @@ PR: include
   margin_policy: require_margin
   evidence_surface: component
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-confirmed
   state: 两个 cohort 均少于 200 个成功样本
   evidence_note: 验证样本不足时在两个 cohort 明确显示 17 / 200，三项收益固定为 -，界面不将对照数值作为可用的收益结论。
 
