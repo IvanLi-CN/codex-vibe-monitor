@@ -40,6 +40,7 @@ enum PoolRouteFailureScope {
 struct PoolRouteFailureOutcome {
     sticky_route_cleared: bool,
     scope: PoolRouteFailureScope,
+    capability_changed: bool,
 }
 
 fn committed_failure_scope(
@@ -187,6 +188,76 @@ impl UpstreamCapabilityAxis {
             Self::StandaloneSearch => "standalone search endpoint request succeeded",
         }
     }
+
+    fn is_unsupported_in_snapshot(self, account: &UpstreamAccountRow) -> bool {
+        let (observed, policy_override) = match self {
+            Self::ResponseEndpoint => (
+                account.response_endpoint_capability.as_deref(),
+                account
+                    .policy_response_endpoint_capability_override
+                    .as_deref(),
+            ),
+            Self::ChatCompletionsEndpoint => (
+                account.chat_completions_capability.as_deref(),
+                account
+                    .policy_chat_completions_capability_override
+                    .as_deref(),
+            ),
+            Self::ImageEndpoint => (
+                account.image_endpoint_capability.as_deref(),
+                account.policy_image_endpoint_capability_override.as_deref(),
+            ),
+            Self::ResponseImageTool => (
+                account.response_image_tool_capability.as_deref(),
+                account
+                    .policy_response_image_tool_capability_override
+                    .as_deref(),
+            ),
+            Self::CodexImagegen => (
+                account.codex_imagegen_capability.as_deref(),
+                account.policy_codex_imagegen_capability_override.as_deref(),
+            ),
+            Self::StandaloneSearch => (account.standalone_search_capability.as_deref(), None),
+        };
+        effective_capability_support(
+            decode_capability_support(observed),
+            decode_capability_override(policy_override),
+        ) == CapabilitySupport::Unsupported
+    }
+}
+
+fn snapshot_has_unsupported_success_capability(
+    state: &AppState,
+    account_id: i64,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
+) -> bool {
+    let requirements =
+        RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
+    let uses_codex_imagegen =
+        crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite);
+    state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .is_some_and(|account| {
+            (requirements.response_endpoint
+                && UpstreamCapabilityAxis::ResponseEndpoint.is_unsupported_in_snapshot(&account))
+                || (requirements.chat_completions_endpoint
+                    && UpstreamCapabilityAxis::ChatCompletionsEndpoint
+                        .is_unsupported_in_snapshot(&account))
+                || (requirements.image_endpoint
+                    && UpstreamCapabilityAxis::ImageEndpoint.is_unsupported_in_snapshot(&account))
+                || (requirements.response_image_tool
+                    && UpstreamCapabilityAxis::ResponseImageTool
+                        .is_unsupported_in_snapshot(&account))
+                || (requirements.standalone_search
+                    && UpstreamCapabilityAxis::StandaloneSearch
+                        .is_unsupported_in_snapshot(&account))
+                || (uses_codex_imagegen
+                    && UpstreamCapabilityAxis::CodexImagegen.is_unsupported_in_snapshot(&account))
+        })
 }
 
 pub(crate) async fn record_pool_route_success(
@@ -595,6 +666,13 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
+    let capability_recovered = snapshot_has_unsupported_success_capability(
+        state,
+        account_id,
+        endpoint,
+        image_intent,
+        codex_imagegen_rewrite,
+    );
     let capability_changed = record_pool_route_success_capability_observations(
         &state.pool,
         account_id,
@@ -606,7 +684,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     let snapshot_changed = capability_changed
         || outcome.availability_increased
         || outcome.sticky_mutation != RuntimeStickyMutation::Unchanged;
-    if outcome.availability_increased {
+    if outcome.availability_increased || (capability_changed && capability_recovered) {
         if pool_route_success_allows_reservation_release_publish(state, account_id).await {
             state
                 .pool_routing_snapshot
@@ -938,11 +1016,12 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         .await;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
+    let mut capability_changed = false;
     if requirements.response_endpoint
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
@@ -955,7 +1034,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_chat_completions_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
@@ -968,7 +1047,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_image_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
@@ -981,7 +1060,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_response_image_tool_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
@@ -994,7 +1073,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_standalone_search_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        capability_changed |= record_capability_observation(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
@@ -1025,6 +1104,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     model_failure_recorded,
                     PoolRouteFailureScope::ExactModel,
                 ),
+                capability_changed,
             });
         }
         let scope = record_pool_route_retryable_overload_failure_scope(
@@ -1040,6 +1120,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         return Ok(PoolRouteFailureOutcome {
             sticky_route_cleared: false,
             scope,
+            capability_changed,
         });
     }
 
@@ -1090,6 +1171,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 model_failure_recorded,
                 PoolRouteFailureScope::ExactModel,
             ),
+            capability_changed,
         });
     }
 
@@ -1117,6 +1199,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     model_failure_recorded,
                     PoolRouteFailureScope::ExactModel,
                 ),
+                capability_changed,
             });
         } else {
             let now_iso = format_utc_iso_millis(Utc::now());
@@ -1137,6 +1220,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         return Ok(PoolRouteFailureOutcome {
             sticky_route_cleared: false,
             scope: PoolRouteFailureScope::Diagnostic,
+            capability_changed,
         });
     }
     match classification.disposition {
@@ -1166,6 +1250,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 return Ok(PoolRouteFailureOutcome {
                     sticky_route_cleared: false,
                     scope: PoolRouteFailureScope::Diagnostic,
+                    capability_changed,
                 });
             }
             if is_scope_permission_error_message(error_message)
@@ -1230,6 +1315,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             Ok(PoolRouteFailureOutcome {
                 sticky_route_cleared,
                 scope: PoolRouteFailureScope::Account,
+                capability_changed,
             })
         }
         UpstreamAccountFailureDisposition::RateLimited
@@ -1287,6 +1373,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     applied_status_change,
                     PoolRouteFailureScope::Account,
                 ),
+                capability_changed,
             })
         }
     }
@@ -1804,6 +1891,13 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
     apply_committed_pool_route_failure(state, account_id, outcome.scope, model);
+    if outcome.capability_changed {
+        // Capability support participates in candidate eligibility for every
+        // model. A model/account fence alone cannot safely represent this
+        // endpoint-wide transition, so fence the old snapshot until a
+        // replacement captures the persisted capability observation.
+        state.pool_routing_snapshot.request_refresh();
+    }
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);

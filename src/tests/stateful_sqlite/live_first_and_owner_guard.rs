@@ -3592,6 +3592,90 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
 }
 
 #[tokio::test]
+async fn endpoint_capability_recovery_replaces_snapshot_before_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Endpoint Capability Recovery",
+        "endpoint-capability-recovery-key",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET response_endpoint_capability = 'unsupported' WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark response endpoint unavailable in the persisted account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unsupported endpoint snapshot");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
+    let before_recovery = *availability.borrow();
+
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("endpoint-capability-recovery"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("record the endpoint capability recovery");
+
+    assert_eq!(
+        *availability.borrow(),
+        before_recovery,
+        "capability recovery must not wake waiters against the old unsupported snapshot"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "capability recovery must request an immediate replacement snapshot"
+    );
+    let stale_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("the established snapshot remains available until replacement");
+    assert_eq!(
+        stale_account.response_endpoint_capability.as_deref(),
+        Some("unsupported"),
+        "selection must not observe the recovered endpoint before replacement"
+    );
+
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the endpoint capability recovery snapshot");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("the replacement snapshot must retain the account");
+    assert_eq!(
+        recovered_account.response_endpoint_capability.as_deref(),
+        Some("supported")
+    );
+    assert_ne!(
+        *availability.borrow(),
+        before_recovery,
+        "the installed capability recovery must wake waiting selectors"
+    );
+}
+
+#[tokio::test]
 async fn endpoint_capability_persistence_error_releases_without_publishing_availability() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

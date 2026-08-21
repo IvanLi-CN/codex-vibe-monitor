@@ -280,6 +280,7 @@ pub(crate) struct PoolRoutingSnapshotStore {
 struct PoolRoutingSnapshotRefreshState {
     pending: bool,
     wake_waiters: bool,
+    defer_availability_until_replacement: bool,
 }
 
 const REFRESH_PENDING_BIT: u64 = 1 << 63;
@@ -405,6 +406,10 @@ impl PoolRoutingSnapshotStore {
             .refresh_state
             .lock()
             .expect("pool routing snapshot refresh lock poisoned");
+        // A recovery keeps the established view routable until its replacement
+        // is ready. Releases in this interval must not wake waiters against
+        // that pre-recovery view.
+        refresh_state.defer_availability_until_replacement = true;
         let epoch = self
             .refresh_epoch
             .load(std::sync::atomic::Ordering::Acquire);
@@ -653,6 +658,7 @@ impl PoolRoutingSnapshotStore {
             .expect("pool routing snapshot lock poisoned") = Some(Arc::new(snapshot));
         let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
+        refresh_state.defer_availability_until_replacement = false;
         self.refresh_epoch
             .store(refresh_generation, std::sync::atomic::Ordering::Release);
         drop(refresh_state);
@@ -706,6 +712,16 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl Fn()) {
+        if self
+            .refresh_state
+            .lock()
+            .expect("pool routing snapshot refresh lock poisoned")
+            .defer_availability_until_replacement
+        {
+            self.deferred_availability_wake
+                .store(true, std::sync::atomic::Ordering::Release);
+            return;
+        }
         loop {
             let epoch = self
                 .refresh_epoch
@@ -1339,6 +1355,11 @@ mod snapshot_store_tests {
         assert!(
             !published_availability.get(),
             "waiters must not wake against the pre-recovery snapshot"
+        );
+        store.publish_availability_if_ready(|| published_availability.set(true));
+        assert!(
+            !published_availability.get(),
+            "a release must defer its wake until the recovery replacement installs"
         );
 
         let recovery_generation = store

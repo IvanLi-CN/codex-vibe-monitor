@@ -3251,7 +3251,7 @@ pub(crate) async fn persist_ws_usage_event(
             )
             .await?;
         } else if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-            if let Some((reason_code, http_status)) =
+            let failure_result = if let Some((reason_code, http_status)) =
                 ws_terminal_temporary_classification(raw_event)
             {
                 record_api_key_temporary_model_failure_or_diagnostic(
@@ -3265,7 +3265,7 @@ pub(crate) async fn persist_ws_usage_event(
                     Some(trace.invoke_id.as_str()),
                     Some(attempt_id),
                 )
-                .await?;
+                .await
             } else {
                 record_model_route_failure_from_attempt_with_start(
                     &state.pool,
@@ -3276,7 +3276,18 @@ pub(crate) async fn persist_ws_usage_event(
                     failure_kind,
                     request_started_at,
                 )
-                .await?;
+                .await
+                .map(|_| ())
+            };
+            if let Err(error) = failure_result {
+                // The model-route mutation can commit before its audit write.
+                // Keep request routing fail-closed whenever the persistence
+                // operation reports an error rather than leaving its snapshot
+                // to the periodic reconcile.
+                state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+                return Err(error);
             }
         }
         if !is_completed_terminal_event {
