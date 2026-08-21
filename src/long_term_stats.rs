@@ -868,6 +868,14 @@ fn long_term_archive_file_fingerprint(file_path: &str) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn long_term_archive_scan_identity_matches_manifest(
+    scanned_sha256: &str,
+    current_file_sha256: Option<&str>,
+    manifest_sha256: Option<&str>,
+) -> bool {
+    current_file_sha256 == Some(scanned_sha256) && manifest_sha256 == Some(scanned_sha256)
+}
+
 async fn long_term_archive_pool_fingerprint(pool: &Pool<Sqlite>) -> Result<String> {
     let databases = sqlx::query_as::<_, (i64, String, String)>("PRAGMA database_list")
         .fetch_all(pool)
@@ -6975,10 +6983,13 @@ async fn refresh_long_term_stats_inner(
                 let archive_sha256_after_read = crate::maintenance::sha256_hex_file(
                     std::path::Path::new(archive_path.file_path()),
                 );
-                if archive_sha256_after_read
-                    .as_ref()
-                    .is_ok_and(|value| value == &archive_sha256_before_open)
-                {
+                let archive_manifest_sha256 =
+                    load_long_term_archive_sha256(pool, archive_path.file_path()).await?;
+                if long_term_archive_scan_identity_matches_manifest(
+                    &archive_sha256_before_open,
+                    archive_sha256_after_read.as_deref().ok(),
+                    archive_manifest_sha256.as_deref(),
+                ) {
                     archive_markers.push((
                         archive_path.file_path().to_string(),
                         archive_sha256_before_open,
@@ -9953,6 +9964,25 @@ mod tests {
             LONG_TERM_STATUS_RUNNING,
             Some(LONG_TERM_INITIAL_MATERIALIZATION_PENDING_ERROR),
             true,
+        ));
+    }
+
+    #[test]
+    fn archive_scan_identity_requires_stable_bytes_and_matching_manifest() {
+        assert!(long_term_archive_scan_identity_matches_manifest(
+            "scanned-sha",
+            Some("scanned-sha"),
+            Some("scanned-sha"),
+        ));
+        assert!(!long_term_archive_scan_identity_matches_manifest(
+            "scanned-sha",
+            Some("rewritten-sha"),
+            Some("scanned-sha"),
+        ));
+        assert!(!long_term_archive_scan_identity_matches_manifest(
+            "scanned-sha",
+            Some("scanned-sha"),
+            Some("stale-manifest-sha"),
         ));
     }
 
