@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.65.8",
+  "base_stable_version": "2.65.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-21T07:22:54Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.65.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8966ff0fe1e008c47e94fcd94ce42f54e54761aa",
+  "pr_number": 826,
+  "pr_title": "fix(long-term): bound projection recovery writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.65.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.65.8",
+  "target_sha": "e55ebc032889473a5759b7e69fc4a4be9bf64c22",
+  "type_label": "type:patch"
+}
