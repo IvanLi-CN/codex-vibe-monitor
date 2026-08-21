@@ -934,11 +934,9 @@ async fn prepare_capture_request_body(
     let mut live_route_lookup_cache_hit = live_routing_hot_cache_hit;
 
     if !live_route_probe_can_start_before_eof(&live_body_key_probe) {
-        // The generic JSON contract accepts arbitrary field order and duplicate
-        // keys. This probe is published only after the root object's EOF check,
-        // so forwarding it as a chunked body would be buffered in practice and
-        // would not provide a real overlap benefit. Let the established replay
-        // path make the final request instead.
+        // The probe did not reach a safe pre-EOF commit point (for example a
+        // positively identified image route). Let the established replay path
+        // make the final request instead.
         prepared_live_request_streaming_decision = Some(LiveRequestStreamingDecision {
             transport_mode: RequestBodyTransportMode::Buffered,
             eligible: false,
@@ -1335,6 +1333,15 @@ async fn prepare_capture_request_body(
         .await;
     }
 
+    let route_finalization_outcome = match prepared_live_request_streaming_decision
+        .as_ref()
+        .map(|decision| decision.transport_mode)
+    {
+        Some(RequestBodyTransportMode::LiveFirst) => "live_first_model_ready",
+        _ if live_candidate => "buffered_eof_final_route",
+        _ => "buffered_no_model",
+    };
+
     PreparedCaptureRequestBody {
         request_body_snapshot_result,
         live_first_pool_response,
@@ -1345,11 +1352,7 @@ async fn prepare_capture_request_body(
         live_first_experiment_group,
         live_route_finalization_measurement: Some(LiveRequestStreamingMeasurement {
             route_finalization_ms: Some(live_route_finalization_ms),
-            route_finalization_outcome: Some(if live_candidate {
-                "buffered_eof_final_route"
-            } else {
-                "buffered_no_model"
-            }),
+            route_finalization_outcome: Some(route_finalization_outcome),
             route_dependency_factors: live_route_dependency_factors(
                 &live_body_key_probe,
                 encrypted_owner_routing_enabled,
@@ -1384,16 +1387,14 @@ fn live_route_dependency_factors(
     factors
 }
 
-/// A live probe is safe to commit only when the currently enabled routing
-/// factors are absent from the unread portion. Sticky/prompt-cache ownership,
-/// encrypted-session ownership, and known image intent remain buffered; the
-/// incremental pipeline keeps those root fields in its precommit set.
+/// A live probe is safe to commit once the model is known and image routing is
+/// not positively required. Sticky and prompt-cache bindings, as well as
+/// encrypted-session ownership, are resolvable inputs to the hot routing
+/// snapshot and must not exclude the requests that need live forwarding most.
+/// The incremental pipeline keeps these root fields in its precommit set so
+/// the resolver receives their values before the first upstream byte.
 fn live_route_probe_can_start_before_eof(probe: &PoolReplayBodyKeyProbe) -> bool {
-    probe.model.is_some()
-        && probe.sticky_key.is_none()
-        && probe.prompt_cache_key.is_none()
-        && !probe.contains_encrypted_content
-        && probe.image_intent != ImageIntent::Yes
+    probe.model.is_some() && probe.image_intent != ImageIntent::Yes
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4822,7 +4823,7 @@ mod dispatch_tests {
     use super::*;
 
     #[test]
-    fn final_route_gate_starts_only_for_model_only_routes() {
+    fn final_route_gate_allows_resolvable_binding_routes() {
         assert!(!live_route_probe_can_start_before_eof(
             &PoolReplayBodyKeyProbe::default()
         ));
@@ -4832,10 +4833,25 @@ mod dispatch_tests {
                 ..PoolReplayBodyKeyProbe::default()
             }
         ));
-        assert!(!live_route_probe_can_start_before_eof(
+        assert!(live_route_probe_can_start_before_eof(
             &PoolReplayBodyKeyProbe {
                 model: Some("gpt-5.6".to_string()),
                 sticky_key: Some("sticky".to_string()),
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                prompt_cache_key: Some("prompt".to_string()),
+                contains_encrypted_content: true,
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(!live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                image_intent: ImageIntent::Yes,
                 ..PoolReplayBodyKeyProbe::default()
             }
         ));

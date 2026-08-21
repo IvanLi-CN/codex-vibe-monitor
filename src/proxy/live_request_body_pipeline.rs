@@ -550,12 +550,11 @@ fn is_precommit_routing_root_field(key: &str) -> bool {
 }
 
 fn should_defer_route_commit(_key: &str, _value_start: u8) -> bool {
-    // JSON object fields are unordered and optional. After any ordinary field
-    // there may still be a later input, tools, metadata, sticky, prompt-cache,
-    // or encrypted-content field that changes the route. Without a schema-level
-    // end marker, EOF is the only proof that the route-affecting root set is
-    // complete, so the live encoder must stay uncommitted until root EOF.
-    true
+    // Route-affecting root fields are kept in `pending_fields` and are handled
+    // before this check. Once model/input and those fields are known, an
+    // ordinary field is the first safe commit point; later route fields still
+    // remain deferred because they are classified by `is_precommit...`.
+    false
 }
 
 struct LiveRootFieldTransformer {
