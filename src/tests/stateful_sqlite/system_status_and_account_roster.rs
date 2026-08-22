@@ -2469,15 +2469,7 @@ pub(crate) async fn set_test_account_local_limits(
 pub(crate) trait TestRoutingMutationTarget {
     fn test_pool(&self) -> &SqlitePool;
 
-    fn test_state(&self) -> Option<&AppState> {
-        None
-    }
-}
-
-impl TestRoutingMutationTarget for SqlitePool {
-    fn test_pool(&self) -> &SqlitePool {
-        self
-    }
+    fn test_state(&self) -> &AppState;
 }
 
 impl TestRoutingMutationTarget for AppState {
@@ -2485,8 +2477,8 @@ impl TestRoutingMutationTarget for AppState {
         &self.pool
     }
 
-    fn test_state(&self) -> Option<&AppState> {
-        Some(self)
+    fn test_state(&self) -> &AppState {
+        self
     }
 }
 
@@ -2495,15 +2487,15 @@ impl TestRoutingMutationTarget for Arc<AppState> {
         &self.pool
     }
 
-    fn test_state(&self) -> Option<&AppState> {
-        Some(self.as_ref())
+    fn test_state(&self) -> &AppState {
+        self.as_ref()
     }
 }
 
 async fn refresh_test_routing_snapshot(target: &impl TestRoutingMutationTarget, reason: &str) {
-    if let Some(state) = target.test_state() {
-        refresh_pool_routing_snapshot(state).await.expect(reason);
-    }
+    refresh_pool_routing_snapshot(target.test_state())
+        .await
+        .expect(reason);
 }
 
 pub(crate) async fn set_test_account_status(
@@ -3165,7 +3157,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     .execute(&state.pool)
     .await
     .expect("mark alpha working");
-    set_test_account_rate_limited_cooldown(&state.pool, beta_id, 600).await;
+    set_test_account_rate_limited_cooldown(&state, beta_id, 600).await;
     sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
         .bind(beta_id)
         .execute(&state.pool)
@@ -3181,7 +3173,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     .execute(&state.pool)
     .await
     .expect("seed beta stale disabled syncing state");
-    set_test_account_rate_limited_cooldown(&state.pool, gamma_id, 600).await;
+    set_test_account_rate_limited_cooldown(&state, gamma_id, 600).await;
 
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
@@ -3607,7 +3599,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let generic_cooldown_id =
         insert_test_pool_api_key_account(&state, "Generic Cooldown", "upstream-generic").await;
 
-    set_test_account_generic_route_cooldown(&state.pool, generic_cooldown_id, 600).await;
+    set_test_account_generic_route_cooldown(&state, generic_cooldown_id, 600).await;
 
     let Json(response) = list_upstream_accounts(
         State(state),

@@ -1964,6 +1964,52 @@ pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
     .await
 }
 
+#[cfg(test)]
+struct PoolRoutingFailurePostPersistHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_routing_failure_post_persist_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolRoutingFailurePostPersistHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolRoutingFailurePostPersistHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_routing_failure_post_persist_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_routing_failure_post_persist_hooks()
+        .lock()
+        .expect("lock routing failure post-persist hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolRoutingFailurePostPersistHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_routing_failure_post_persist_hook(state: &AppState) {
+    let hook = pool_routing_failure_post_persist_hooks()
+        .lock()
+        .expect("lock routing failure post-persist hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
 struct PoolRoutingFailureReleaseOnCancel<'a> {
     state: &'a AppState,
     reservation_key: &'a str,
@@ -2013,12 +2059,16 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     } else {
         persist_failure.await
     };
-    if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
-        cancellation_release_guard.disarm();
+    #[cfg(test)]
+    if result.is_ok() {
+        wait_for_pool_routing_failure_post_persist_hook(state).await;
     }
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
+            if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
+                cancellation_release_guard.disarm();
+            }
             release_pool_routing_reservation_with_availability(state, reservation_key, true);
             Ok(value)
         }
@@ -2029,6 +2079,9 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
             state
                 .pool_routing_snapshot
                 .request_refresh_and_defer_availability_wake();
+            if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
+                cancellation_release_guard.disarm();
+            }
             release_pool_routing_reservation_without_availability(state, reservation_key);
             Err(err)
         }

@@ -72,7 +72,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -106,10 +106,10 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -264,7 +264,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -1665,7 +1665,7 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-live-first-replay-owner-guard";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -2283,7 +2283,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-bodyless-header-encrypted-owner-lock";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -2622,7 +2622,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-websocket-encrypted-owner-lock";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -6200,7 +6200,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -6274,7 +6274,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let rate_limited_id =
         insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
-    set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, rate_limited_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
         &state,
@@ -6589,7 +6589,7 @@ fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_fa
             insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
         let replacement_id =
             insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+        set_test_account_status(&state, blocked_id, "needs_reauth").await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(&state, "header-stale-sticky", blocked_id, &sticky_seen_at)
             .await;
@@ -6681,7 +6681,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
@@ -6760,7 +6760,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
@@ -6792,7 +6792,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     })
     .await
     .expect("wait hook worker should join");
-    set_test_account_status(&state.pool, delayed_id, "active").await;
+    set_test_account_status(&state, delayed_id, "active").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     refresh_pool_routing_snapshot(state.as_ref())
         .await
@@ -6835,7 +6835,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -6989,7 +6989,7 @@ fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from_reque
         seed_pool_routing_api_key(&state, "pool-live-key").await;
         let blocked_id =
             insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+        set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
         let request_body = br#"{"model":"gpt-5","input":"hello"}"#.to_vec();
         let content_length =
@@ -7150,12 +7150,11 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
         Some(upstream_base.as_str()),
     )
     .await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
-    let cache_state = state.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let delayed_release_task = std::thread::spawn(move || {
         wait_started_rx
@@ -7163,8 +7162,8 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
             .expect("request should signal once the bounded wait starts");
         std::thread::sleep(Duration::from_millis(120));
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-            invalidate_pool_routing_runtime_cache(cache_state.as_ref()).await;
+            set_test_account_status(&release_state, delayed_id, "active").await;
+            invalidate_pool_routing_runtime_cache(release_state.as_ref()).await;
         });
     });
 
@@ -7315,7 +7314,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     request_started.notified().await;
-    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
+    set_test_account_status(&state, primary_id, "needs_reauth").await;
     release_tx
         .send(())
         .expect("release delayed sticky upstream response");
@@ -7355,7 +7354,7 @@ fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_header(
             insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
         let replacement_id =
             insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-        set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
+        set_test_account_rate_limited_cooldown(&state, rate_limited_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
             &state,
@@ -7467,7 +7466,7 @@ fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_termina
             None,
         )
         .await;
-        set_test_account_rate_limited_cooldown(&state.pool, sticky_account_id, 120).await;
+        set_test_account_rate_limited_cooldown(&state, sticky_account_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
             &state,
@@ -9666,7 +9665,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let body = Body::from_stream(tokio_stream::iter(vec![Ok::<Bytes, io::Error>(
         Bytes::from_static(
@@ -9728,7 +9727,7 @@ fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account()
             insert_test_pool_api_key_account(&state, "Initial", "upstream-initial").await;
         let delayed_id =
             insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-        set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+        set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
@@ -9745,19 +9744,19 @@ fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account()
                 .await;
         });
 
-        let pool = state.pool.clone();
+        let initial_block_state = state.clone();
         let initial_block_task = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            set_test_account_status(&pool, initial_id, "needs_reauth").await;
+            set_test_account_status(&initial_block_state, initial_id, "needs_reauth").await;
         });
 
-        let pool = state.pool.clone();
+        let delayed_release_state = state.clone();
         let delayed_release_task = tokio::spawn(async move {
             body_reroute_rx
                 .await
                 .expect("body reroute signal should arrive");
             tokio::time::sleep(Duration::from_millis(20)).await;
-            set_test_account_status(&pool, delayed_id, "active").await;
+            set_test_account_status(&delayed_release_state, delayed_id, "active").await;
         });
 
         let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -9825,8 +9824,8 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
     let body = Body::from_stream(futures_util::stream::unfold(
@@ -9854,13 +9853,13 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         },
     ));
 
-    let pool = state.pool.clone();
+    let delayed_release_state = state.clone();
     let delayed_release_task = tokio::spawn(async move {
         body_reroute_rx
             .await
             .expect("body reroute signal should arrive");
         tokio::time::sleep(Duration::from_millis(120)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&delayed_release_state, delayed_id, "active").await;
     });
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)

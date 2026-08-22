@@ -73,7 +73,7 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     )
     .await;
     for sticky_key in ["sticky-free-001", "sticky-free-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, free_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, free_id, &recent_seen_at).await;
     }
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
@@ -127,7 +127,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, preferred_id, &recent_seen_at).await;
     }
     reserve_test_pool_routing_account(&state, "reservation-001", preferred_id).await;
 
@@ -246,7 +246,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, preferred_id, &recent_seen_at).await;
     }
     state
         .pool_routing_reservations
@@ -312,13 +312,7 @@ async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window
     )
     .await;
     for sticky_key in ["sticky-legacy-001", "sticky-legacy-002"] {
-        upsert_test_sticky_route_at(
-            &state.pool,
-            sticky_key,
-            legacy_long_only_id,
-            &recent_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, sticky_key, legacy_long_only_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
@@ -359,8 +353,7 @@ async fn resolve_pool_account_for_request_preserves_local_long_limit_without_sam
     )
     .await;
     for sticky_key in ["sticky-local-001", "sticky-local-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, locally_limited_id, &recent_seen_at)
-            .await;
+        upsert_test_sticky_route_at(&state, sticky_key, locally_limited_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
@@ -613,10 +606,10 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
+    set_test_account_status(&state, secondary_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let release_task = std::thread::spawn(move || {
         wait_started_rx
@@ -624,7 +617,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
             .expect("request should signal once the bounded wait starts");
         std::thread::sleep(Duration::from_millis(40));
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, secondary_id, "active").await;
+            set_test_account_status(&release_state, secondary_id, "active").await;
         });
     });
 
@@ -1798,8 +1791,8 @@ async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_coold
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, primary_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -1838,8 +1831,8 @@ async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_r
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let missing_credentials_id =
         insert_test_pool_api_key_account(&state, "Missing Credentials", "upstream-missing").await;
-    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
-    clear_test_account_credentials(&state.pool, missing_credentials_id).await;
+    set_test_account_rate_limited_cooldown(&state, primary_id, 120).await;
+    clear_test_account_credentials(&state, missing_credentials_id).await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -1878,11 +1871,11 @@ async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_status(&state, primary_id, "needs_reauth").await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-429-stale-binding",
         primary_id,
         &sticky_seen_at,
@@ -1926,11 +1919,11 @@ async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_4
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    clear_test_account_credentials(&state.pool, primary_id).await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    clear_test_account_credentials(&state, primary_id).await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-429-missing-creds-binding",
         primary_id,
         &sticky_seen_at,
@@ -1976,7 +1969,7 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
+    set_test_account_status(&state, secondary_id, "needs_reauth").await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -2029,7 +2022,7 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
@@ -2052,10 +2045,10 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let response = request_task
@@ -2096,7 +2089,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let mutation_state = state.clone();
@@ -2107,7 +2100,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
             .expect("request should signal once the bounded wait starts");
         std::thread::sleep(Duration::from_millis(40));
         runtime_handle.block_on(async move {
-            set_test_account_status(&mutation_state.pool, delayed_id, "active").await;
+            set_test_account_status(&mutation_state, delayed_id, "active").await;
             mutation_state
                 .pool_routing_snapshot
                 .request_refresh_and_wake_waiters(|| {
@@ -2172,14 +2165,14 @@ async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_up
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-wait-recovered",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
@@ -2200,10 +2193,10 @@ async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_up
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let response = request_task.await.expect("request task should join");
@@ -2254,7 +2247,7 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let started = Instant::now();
@@ -2314,7 +2307,7 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(
@@ -2370,7 +2363,7 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
     )
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let mut wait_deadline = None;
@@ -3017,6 +3010,78 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
 }
 
 #[tokio::test]
+async fn cancelling_orphan_failure_release_after_persistence_does_not_leak_reservation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Orphan Cancellation", "orphan-cancel-key").await;
+    let reservation_key = "orphan-post-persist-cancellation";
+    let model = "gpt-orphan-cancellation";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed orphan-cancellation model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before orphan failure cancellation");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+
+    let (post_persist_rx, _resume) =
+        crate::proxy::register_pool_routing_failure_post_persist_hook(&state);
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let _ =
+            persist_pool_route_failure_then_release(task_state.as_ref(), reservation_key, async {
+                Ok::<(), ()>(())
+            })
+            .await;
+    });
+
+    tokio::task::spawn_blocking(move || {
+        post_persist_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("orphan release should pause after failure persistence")
+    })
+    .await
+    .expect("join post-persist hook waiter");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling post-persist orphan cleanup should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "post-persist cancellation must release the orphan reservation"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "post-persist cancellation must fence the snapshot before releasing capacity"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "post-persist cancellation must leave stale candidates unavailable"
+    );
+}
+
+#[tokio::test]
 async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_waiters() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -3309,18 +3374,18 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let delayed_release_task = std::thread::spawn(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("helper should signal once the bounded wait starts");
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
+            set_test_account_status(&release_state, delayed_id, "active").await;
         });
     });
 
@@ -4427,13 +4492,13 @@ async fn resolve_pool_account_for_request_with_wait_rejects_recovery_after_exter
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let delayed_release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(70)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let started = Instant::now();
@@ -4484,7 +4549,7 @@ async fn pool_route_wait_timeout_overrides_stale_upstream_failure_with_503() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(
@@ -4548,13 +4613,13 @@ async fn pool_route_existing_sticky_owner_retries_before_cutting_out_to_healthy_
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-cutout",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -4629,15 +4694,15 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let unusable_id =
         insert_test_pool_api_key_account(&state, "Unusable", "upstream-secondary").await;
-    clear_test_account_credentials(&state.pool, unusable_id).await;
+    clear_test_account_credentials(&state, unusable_id).await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-last-error",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),

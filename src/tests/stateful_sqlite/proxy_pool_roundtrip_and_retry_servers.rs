@@ -2080,7 +2080,7 @@ async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_sou
         "sticky-bound-extra-002",
         "sticky-bound-extra-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, primary_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, primary_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(
@@ -2143,7 +2143,7 @@ async fn resolver_keeps_existing_sticky_owner_reusable_during_temporary_cooldown
         insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
     let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
     let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, "sticky-degraded", degraded_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, "sticky-degraded", degraded_id, &sticky_seen_at).await;
     set_test_account_degraded_route_state(
         &state,
         degraded_id,
@@ -2171,7 +2171,7 @@ async fn resolver_keeps_existing_sticky_owner_reusable_during_temporary_cooldown
         PoolRoutingSelectionSource::StickyReuse
     );
 
-    set_test_account_generic_route_cooldown(&state.pool, degraded_id, 120).await;
+    set_test_account_generic_route_cooldown(&state, degraded_id, 120).await;
 
     let sticky_account_during_cooldown = match resolve_pool_account_for_request(
         state.as_ref(),
@@ -2248,7 +2248,7 @@ async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_
         "sticky-overloaded-002",
         "sticky-overloaded-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, overloaded_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, overloaded_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(
@@ -2289,14 +2289,14 @@ async fn resolve_pool_account_for_request_falls_back_to_over_soft_limit_bucket_w
         "sticky-preferred-002",
         "sticky-preferred-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, preferred_id, &recent_seen_at).await;
     }
     for sticky_key in [
         "sticky-fallback-001",
         "sticky-fallback-002",
         "sticky-fallback-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, fallback_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, fallback_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(
@@ -2329,8 +2329,8 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
     let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now_iso = format_utc_iso(Utc::now());
 
-    upsert_test_sticky_route_at(&state.pool, "sticky-transfer", source_id, &recent_seen_at).await;
-    set_test_account_status(&state.pool, source_id, "error").await;
+    upsert_test_sticky_route_at(&state, "sticky-transfer", source_id, &recent_seen_at).await;
+    set_test_account_status(&state, source_id, "error").await;
     set_test_account_local_limits(&state.pool, guarded_id, Some(100.0), Some(100.0)).await;
     set_test_account_local_limits(&state.pool, overloaded_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, guarded_id, Some(5.0), Some(5.0)).await;
@@ -2340,7 +2340,7 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
         "sticky-overloaded-cut-in-002",
         "sticky-overloaded-cut-in-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, overloaded_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, overloaded_id, &recent_seen_at).await;
     }
 
     let disallow_cut_in_tag_id: i64 = sqlx::query_scalar(
@@ -2415,13 +2415,7 @@ async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_r
     let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now_iso = format_utc_iso(Utc::now());
 
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "sticky-timeout-cut-out",
-        source_id,
-        &recent_seen_at,
-    )
-    .await;
+    upsert_test_sticky_route_at(&state, "sticky-timeout-cut-out", source_id, &recent_seen_at).await;
 
     let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
         r#"
@@ -2508,7 +2502,7 @@ async fn resolve_pool_account_for_request_blocks_timeout_failover_past_cut_out_r
     let now_iso = format_utc_iso(Utc::now());
 
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-timeout-invalid-group",
         source_id,
         &recent_seen_at,
@@ -2600,7 +2594,7 @@ async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_
         "sticky-exempt-002",
         "sticky-exempt-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, exempt_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(
@@ -2640,7 +2634,7 @@ async fn resolve_pool_account_for_request_does_not_soft_deprioritize_stale_stick
         "sticky-stale-exempt-002",
         "sticky-stale-exempt-003",
     ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &stale_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, exempt_id, &stale_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(
