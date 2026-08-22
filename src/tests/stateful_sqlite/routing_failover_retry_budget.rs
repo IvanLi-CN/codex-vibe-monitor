@@ -2058,7 +2058,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     .await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(180),
+        Duration::from_secs(2),
         Duration::from_millis(10),
     )
     .await;
@@ -2067,6 +2067,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         proxy_openai_v1(
@@ -2086,18 +2087,26 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
         .await
     });
 
-    let pool = state.pool.clone();
-    let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
-    });
+    let wait_started_at = tokio::task::spawn_blocking(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should signal once the bounded wait starts");
+        Instant::now()
+    })
+    .await
+    .expect("wait hook worker should join");
+    set_test_account_status(&state.pool, delayed_id, "active").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
+    state.pool_routing_availability.publish();
 
     let response = request_task.await.expect("request task should join");
-    release_task
-        .await
-        .expect("delayed account release task should join");
+    let elapsed = wait_started_at.elapsed();
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "availability publication should wake the bounded wait before its timeout, elapsed={elapsed:?}"
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read proxy response");
