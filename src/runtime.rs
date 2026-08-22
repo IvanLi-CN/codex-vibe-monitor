@@ -255,19 +255,22 @@ pub(crate) fn spawn_pool_routing_snapshot_reconcile(state: Arc<AppState>) {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         // Tokio intervals tick immediately; startup has already warmed the snapshot.
         ticker.tick().await;
+        // A startup warm failure can fence the snapshot before this task has
+        // subscribed to the watch. Inspect the durable pending state first so
+        // that one bounded retry is not lost to watch subscription timing.
+        let mut refresh_pending = state.pool_routing_snapshot.refresh_pending();
         loop {
-            let refresh_pending = tokio::select! {
+            if refresh_pending
+                && let Err(err) = reconcile_pool_routing_snapshot(state.as_ref()).await
+            {
+                state.pool_routing_snapshot.invalidate();
+                warn!(error = %err, "failed to reconcile pool routing snapshot");
+            }
+            refresh_pending = tokio::select! {
                 _ = state.shutdown.cancelled() => break,
                 _ = refreshes.changed() => state.pool_routing_snapshot.refresh_pending(),
                 _ = ticker.tick() => true,
             };
-            if !refresh_pending {
-                continue;
-            }
-            if let Err(err) = reconcile_pool_routing_snapshot(state.as_ref()).await {
-                state.pool_routing_snapshot.invalidate();
-                warn!(error = %err, "failed to reconcile pool routing snapshot");
-            }
         }
     });
 }
