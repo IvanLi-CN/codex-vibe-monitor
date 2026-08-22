@@ -7277,6 +7277,11 @@ pub(crate) struct SummaryProjection {
     // immutable range with its account discovery cache so later all-time refreshes retain the
     // same exact-source proof instead of degrading a valid account response.
     archive_coverage_ranges_by_file: HashMap<String, ExactUtcRange>,
+    // An unreadable archive without complete durable replay has no exact in-memory source.
+    // Keep its bounded overlap so only affected rolling/calendar selections fail closed rather
+    // than publishing an undercount or turning a selection-level unavailability into an HTTP
+    // builder failure.
+    unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
     // Closed calendar windows are immutable at a projection revision. Only the small global
     // bootstrap set is pre-rendered; account-scoped selections remain pure views over canonical
     // buckets so account count cannot multiply refresh allocations.
@@ -7346,6 +7351,16 @@ impl SummaryProjection {
             .map_err(ApiError::bad_request)?;
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
+        if let Some((start, end)) = range
+            && self
+                .unavailable_unmaterialized_archive_ranges
+                .iter()
+                .any(|unavailable| unavailable.start < end && start < unavailable.end)
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary projection archive source is unavailable for the requested range"
+            )));
+        }
         if self
             .freshness
             .rolling_at(self.refreshed_at)
@@ -9031,6 +9046,7 @@ async fn refresh_summary_snapshots_with_deadline(
                 projection.freshness.account_all_time_eligible.clone(),
             )
         });
+    let had_previous_projection = previous_all_time.is_some();
     let build = build_summary_projection(state, include_all_time, previous_all_time);
     let projection = match deadline {
         Some(deadline) => tokio::time::timeout(deadline, build)
@@ -9038,6 +9054,19 @@ async fn refresh_summary_snapshots_with_deadline(
             .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
         None => build.await?,
     };
+    if had_previous_projection
+        && !projection
+            .unavailable_unmaterialized_archive_ranges
+            .is_empty()
+    {
+        // A background failure must never replace a complete revision with a partial one.  The
+        // existing revision remains the exact last-good response until its own freshness budget
+        // expires; startup still records the affected selection as unavailable below.
+        return Err(anyhow!(
+            "summary projection archive source is unavailable for {} bounded range(s)",
+            projection.unavailable_unmaterialized_archive_ranges.len()
+        ));
+    }
     state
         .subscription_hub
         .store_summary_projection(projection)
@@ -10045,16 +10074,6 @@ async fn build_summary_projection(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
-    if !unavailable_unmaterialized_archive_ranges.is_empty() {
-        // Do not publish a hybrid projection after an exact archive source failure. The hub
-        // retains its prior complete projection, which is the only exact last-good response
-        // available during the fifteen-second serving budget. Startup surfaces the failure
-        // instead of accepting readiness with a partial summary baseline.
-        return Err(anyhow!(
-            "summary projection exact archive source is unavailable for {} bounded range(s)",
-            unavailable_unmaterialized_archive_ranges.len()
-        ));
-    }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
     // coverage decision once every exact archive/live contribution is present.
     for record in records_by_invoke_id.values_mut() {
@@ -10270,6 +10289,10 @@ async fn build_summary_projection(
         // coverage can again be proven off-request.
         global_all_time_source_unavailable |= !global_rollup_coverage_proven;
         account_all_time_unavailable |= !account_rollup_coverage_proven;
+        // An unreadable archive without replay coverage cannot contribute to either compact
+        // all-time aggregate. Preserve last-good/unavailable for `all`; range selections use
+        // the bounded marker carried by this projection.
+        global_all_time_source_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -10329,6 +10352,7 @@ async fn build_summary_projection(
                 account_all_time_unavailable = true;
             }
         }
+        account_all_time_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
         if has_any_completed_archive && rollup_live_cursor > 0 {
             global_totals = global_totals.add(
                 crate::stats::query_live_invocation_totals_after_id(
@@ -10617,6 +10641,7 @@ async fn build_summary_projection(
         known_account_ids: account_ids,
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
+        unavailable_unmaterialized_archive_ranges,
         closed_window_by_key: HashMap::new(),
         in_progress_by_account,
         maintenance: Some(maintenance),
@@ -26802,9 +26827,18 @@ mod request_compression_query_tests {
         .await
         .expect("mark unavailable archive global scope as replayed");
 
-        assert!(
-            hydrate_summary_snapshots(state.as_ref()).await.is_err(),
-            "incomplete replay metadata must reject a partial projection revision"
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with incomplete materialized replay metadata");
+        let incomplete = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection with incomplete replay metadata");
+        assert_eq!(
+            incomplete.unavailable_unmaterialized_archive_ranges.len(),
+            1,
+            "materialization alone cannot prove account or usage dimensions"
         );
         for target in [
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -27077,9 +27111,18 @@ mod request_compression_query_tests {
         .await
         .expect("mark only global replay coverage");
 
-        assert!(
-            hydrate_summary_snapshots(state.as_ref()).await.is_err(),
-            "global-only replay cannot publish a partial projection for a missing archive"
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish projection with unavailable archive metadata");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert_eq!(
+            projection.unavailable_unmaterialized_archive_ranges.len(),
+            1,
+            "global-only replay cannot prove account or usage dimensions for a missing archive"
         );
         state.pool.close().await;
 

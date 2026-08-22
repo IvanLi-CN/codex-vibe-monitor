@@ -9093,6 +9093,69 @@ async fn all_time_summary_fails_closed_when_unreadable_replay_lacks_usage_and_ac
 }
 
 #[tokio::test]
+async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('summary-last-good-live', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert initial exact summary row");
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate initial exact summary projection");
+
+    let archived_at = format_naive(
+        ((Utc::now() - ChronoDuration::days(10)) + ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-last-good-unreadable-refresh",
+        &[(
+            1_i64,
+            "summary-last-good-unreadable-archive",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt newly discovered archive");
+
+    assert!(
+        hydrate_summary_snapshots(state.as_ref()).await.is_err(),
+        "a refresh with an unreadable exact archive must not publish a partial revision"
+    );
+
+    let Json(response) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the exact nonzero last-good all-time snapshot");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 17);
+    assert_eq!(response.total_cost, 1.25);
+}
+
+#[tokio::test]
 async fn all_time_stats_tolerate_unreadable_pending_archives_while_summary_fails_closed() {
     let mut config = test_config();
     config.openai_upstream_base_url =
