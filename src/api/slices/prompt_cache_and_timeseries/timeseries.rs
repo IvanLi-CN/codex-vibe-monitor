@@ -125,6 +125,31 @@ fn timeseries_projection_scope(source_scope: InvocationSourceScope) -> &'static 
     }
 }
 
+pub(crate) fn timeseries_minute_projection_has_uncovered_terminal_delta(
+    terminal_projection_hub: &TerminalProjectionHub,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> bool {
+    let (full_minute_start_epoch, full_minute_end_epoch) = complete_minute_bounds(start, end);
+    if full_minute_start_epoch >= full_minute_end_epoch {
+        return false;
+    }
+    let selection = TimeseriesProjectionSelection {
+        source_scope: timeseries_projection_scope(source_scope),
+        upstream_account_id,
+    };
+    // A cursor does not version a row replacement. A persisted terminal delta that has not been
+    // committed into this selection's warm snapshot makes its covered minute unsafe to reuse.
+    terminal_projection_hub.has_pending_timeseries_delta_for_selection(selection, |delta| {
+        parse_to_utc_datetime(&delta.occurred_at).is_none_or(|occurred| {
+            let occurred_epoch = occurred.timestamp();
+            occurred_epoch >= full_minute_start_epoch && occurred_epoch < full_minute_end_epoch
+        })
+    })
+}
+
 fn complete_minute_bounds(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64) {
     let start_epoch = (start.timestamp() + 59).div_euclid(60) * 60;
     let end_epoch = end.timestamp().div_euclid(60) * 60;
@@ -977,12 +1002,22 @@ impl TimeseriesTopicMaterializedBase {
             (baseline.snapshot_id, baseline.aggregates)
         } else {
             let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-            let use_minute_projection = bucket_seconds < 3_600
-                && range_window.duration <= ChronoDuration::days(1)
+            let minute_projection_candidate =
+                bucket_seconds < 3_600 && range_window.duration <= ChronoDuration::days(1);
+            let uncovered_terminal_delta = minute_projection_candidate
+                && timeseries_minute_projection_has_uncovered_terminal_delta(
+                    state.terminal_projection_hub.as_ref(),
+                    source_scope,
+                    params.upstream_account_id,
+                    start,
+                    end,
+                );
+            let use_minute_projection = minute_projection_candidate
                 && state
                     .terminal_projection_hub
                     .timeseries_coverage_invalidation_pending()
-                    .is_none();
+                    .is_none()
+                && !uncovered_terminal_delta;
             let aggregates = if use_minute_projection {
                 if let Some(TimeseriesMinuteProjectionV2Load {
                     aggregates: minute_aggregates,
@@ -1098,6 +1133,14 @@ impl TimeseriesTopicMaterializedBase {
                     .await?
                 }
             } else {
+                if uncovered_terminal_delta {
+                    debug!(
+                        route = "timeseries_topic",
+                        builder = "minute_projection_v2",
+                        response_source = "exact_fallback_pending_terminal_delta",
+                        "minute projection deferred until an uncovered terminal delta is warmed"
+                    );
+                }
                 build_exact_timeseries_topic_baseline(
                     state,
                     start,
@@ -1107,7 +1150,7 @@ impl TimeseriesTopicMaterializedBase {
                     params.upstream_account_id,
                     bucket_seconds,
                     reporting_tz,
-                    false,
+                    uncovered_terminal_delta,
                 )
                 .await?
             };

@@ -352,6 +352,21 @@ impl TerminalProjectionHub {
         deltas
     }
 
+    fn pending_timeseries_delta_matching_selection(
+        event: &TerminalProjectionEvent,
+        selection: TimeseriesProjectionSelection,
+    ) -> Option<(i64, &TimeseriesTerminalDelta)> {
+        let row_id = event.persisted_row_id?;
+        let delta = event.timeseries.as_ref()?;
+        (!event.timeseries_flushed
+            && !event.timeseries_warm_coverage.contains(&selection)
+            && (selection.source_scope != "proxy_only" || delta.source == SOURCE_PROXY)
+            && selection
+                .upstream_account_id
+                .is_none_or(|account_id| delta.upstream_account_id == Some(account_id)))
+        .then_some((row_id, delta))
+    }
+
     pub(crate) fn pending_timeseries_deltas_for_selection(
         &self,
         selection: TimeseriesProjectionSelection,
@@ -365,20 +380,32 @@ impl TerminalProjectionHub {
             .pending
             .iter()
             .filter_map(|event| {
-                let row_id = event.persisted_row_id?;
-                let delta = event.timeseries.as_ref()?;
-                (!event.timeseries_flushed
-                    && !event.timeseries_warm_coverage.contains(&selection)
-                    && (selection.source_scope != "proxy_only" || delta.source == SOURCE_PROXY)
-                    && selection
-                        .upstream_account_id
-                        .is_none_or(|account_id| delta.upstream_account_id == Some(account_id)))
-                .then(|| (event.id, row_id, delta.clone()))
+                Self::pending_timeseries_delta_matching_selection(event, selection)
+                    .map(|(row_id, delta)| (event.id, row_id, delta.clone()))
             })
             .collect::<Vec<_>>();
         deltas.sort_by_key(|(event_id, row_id, _)| (*row_id, *event_id));
         deltas.truncate(limit);
         deltas
+    }
+
+    pub(crate) fn has_pending_timeseries_delta_for_selection(
+        &self,
+        selection: TimeseriesProjectionSelection,
+        mut matches_delta: impl FnMut(&TimeseriesTerminalDelta) -> bool,
+    ) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pending.iter().any(|event| {
+            let Some((_, delta)) =
+                Self::pending_timeseries_delta_matching_selection(event, selection)
+            else {
+                return false;
+            };
+            matches_delta(delta)
+        })
     }
 
     pub(crate) fn mark_timeseries_warm_coverage(
@@ -561,6 +588,7 @@ impl TerminalProjectionHub {
 mod tests {
     use super::*;
     use crate::RuntimeMutationKind;
+    use chrono::{TimeZone, Utc};
 
     fn timeseries_delta() -> TimeseriesTerminalDelta {
         TimeseriesTerminalDelta {
@@ -740,6 +768,73 @@ mod tests {
         let pending = hub.pending_timeseries_deltas_for_selection(selection, 10);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, second);
+    }
+
+    #[test]
+    fn minute_projection_hot_topic_defers_same_cursor_terminal_replacement_until_warmed() {
+        let hub = TerminalProjectionHub::default();
+        let selection = TimeseriesProjectionSelection {
+            source_scope: "all",
+            upstream_account_id: None,
+        };
+        let delta = timeseries_delta();
+        let first = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &delta.occurred_at,
+                128,
+                Some(delta.clone()),
+            )
+            .expect("first event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(first), "invoke", &delta.occurred_at, 17);
+        hub.mark_timeseries_warm_coverage(
+            selection,
+            &[TimeseriesProjectionSnapshotRecord {
+                row_id: 17,
+                invoke_id: "invoke".to_string(),
+                occurred_at: delta.occurred_at.clone(),
+            }],
+        );
+
+        let start = Utc
+            .with_ymd_and_hms(2026, 7, 30, 1, 59, 0)
+            .single()
+            .unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 7, 30, 2, 1, 0).single().unwrap();
+        assert!(
+            !crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &hub,
+                crate::api::InvocationSourceScope::All,
+                None,
+                start,
+                end,
+            ),
+            "a warm selection can reuse its current minute projection"
+        );
+
+        let mut updated_delta = delta;
+        updated_delta.status = Some("failure".to_string());
+        let updated_occurred_at = updated_delta.occurred_at.clone();
+        let second = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &updated_occurred_at,
+                128,
+                Some(updated_delta),
+            )
+            .expect("same-row terminal replacement fits in the projection journal");
+        hub.acknowledge_persisted(Some(second), "invoke", "2026-07-30 10:00:00", 17);
+
+        assert!(
+            crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &hub,
+                crate::api::InvocationSourceScope::All,
+                None,
+                start,
+                end,
+            ),
+            "an un-warmed replacement at the existing projection cursor must force exact reads"
+        );
     }
 
     #[test]
