@@ -29,6 +29,9 @@ async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -68,7 +71,13 @@ async fn resolver_allows_existing_sticky_reuse_for_no_new_priority_account() {
     upsert_sticky_route(&state.pool, "blocked-sticky-reuse", blocked, &now_iso)
         .await
         .expect("upsert sticky route");
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after sticky route setup");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("blocked-sticky-reuse"),
@@ -118,6 +127,9 @@ async fn resolver_demotes_recent_timeout_for_same_upstream_route_and_proxy_bindi
     .await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -170,6 +182,9 @@ async fn resolver_does_not_demote_successful_or_non_timeout_route_proxy_history(
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -255,6 +270,9 @@ async fn resolver_reuses_sticky_account_when_cut_out_is_forbidden_despite_recent
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-penalty-cut-out-forbidden"),
@@ -329,6 +347,9 @@ async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-hard-block-cut-out-forbidden"),
@@ -376,6 +397,9 @@ async fn resolver_applies_prompt_cache_group_binding_as_hard_constraint() {
     insert_limit_sample_with_usage(&state.pool, preferred, &now_iso, Some(20.0), Some(20.0)).await;
     insert_limit_sample_with_usage(&state.pool, other, &now_iso, Some(1.0), Some(1.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         None,
@@ -445,6 +469,9 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let sticky_resolution = resolve_pool_account_for_request(
         &state,
         Some("non-explicit-escaped-key"),
@@ -462,6 +489,9 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
         PoolRoutingSelectionSource::FreshAssignment
     );
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let already_tried_resolution = resolve_pool_account_for_request(
         &state,
         Some("non-explicit-escaped-key"),
@@ -475,6 +505,9 @@ async fn resolver_non_explicit_sticky_escape_cuts_out_after_two_recent_upstream_
     };
     assert_eq!(already_tried_account.account_id, healthy);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let fresh_resolution = resolve_pool_account_for_request(
         &state,
         Some("non-explicit-fresh-key"),
@@ -657,6 +690,9 @@ async fn resolver_applies_prompt_cache_account_binding_over_sticky_route() {
         .await
         .expect("upsert sticky source");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-bound-key"),
@@ -730,6 +766,9 @@ async fn resolver_prompt_cache_group_binding_reselects_within_group_after_recent
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-group-escape-key"),
@@ -802,6 +841,9 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_target_cut_in_pol
     .await
     .expect("upsert sticky source");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-no-cut-in-key"),
@@ -872,6 +914,9 @@ async fn resolver_explicit_prompt_cache_account_binding_keeps_operator_override_
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-explicit-override-key"),
@@ -939,6 +984,9 @@ async fn resolver_forced_prompt_cache_account_binding_bypasses_source_cut_out_po
     .await
     .expect("upsert sticky source");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-cut-out-key"),
@@ -994,6 +1042,9 @@ async fn resolver_prompt_cache_group_binding_bypasses_source_cut_out_policy() {
     .await
     .expect("upsert sticky source");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-group-source-cut-out-key"),
@@ -1053,6 +1104,9 @@ async fn resolver_blocks_cut_out_when_sticky_route_key_is_excluded_by_failover()
         &Url::parse(sticky_route).expect("valid sticky route"),
     )]);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-excluded-no-cut-out-key"),
@@ -1115,6 +1169,9 @@ async fn resolver_blocks_cut_out_when_sticky_source_is_hard_blocked() {
     .await
     .expect("upsert hard-blocked sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-hard-blocked-no-cut-out-key"),
@@ -1170,6 +1227,9 @@ async fn resolver_forced_prompt_cache_account_binding_reuses_blocked_sticky_owne
     .await
     .expect("upsert forced binding sticky owner");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-blocked-sticky-owner-key"),
@@ -1232,6 +1292,9 @@ async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() 
     .expect("upsert active target sticky");
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-concurrency-source-key"),
@@ -1282,6 +1345,9 @@ async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit_af
     .await
     .expect("upsert other active target sticky");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-forced-sticky-concurrency-key"),
@@ -1348,6 +1414,9 @@ async fn resolver_prompt_cache_group_binding_does_not_bypass_cut_in_policy() {
     .await
     .expect("upsert sticky source");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
         Some("prompt-cache-group-cut-in-key"),
@@ -1382,6 +1451,9 @@ async fn resolver_prompt_cache_group_binding_bypasses_requested_model_filter() {
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, bound, &now_iso, Some(20.0), Some(20.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
         &state,
         Some("prompt-cache-group-model-bypass-key"),
@@ -1570,6 +1642,9 @@ async fn resolver_returns_specific_group_proxy_error_when_only_bad_groups_remain
     .await;
     set_test_account_group_name(&state.pool, account, Some("missing-bindings")).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -1601,6 +1676,9 @@ async fn resolver_returns_specific_group_proxy_error_when_only_ungrouped_account
     .await;
     set_test_account_group_name(&state.pool, account, None).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -1643,6 +1721,9 @@ async fn resolver_prefers_group_proxy_error_over_rate_limited_pool_when_no_healt
         .await;
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -1699,6 +1780,9 @@ async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() 
             .expect("valid excluded route"),
     )]);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
             .await
@@ -1737,6 +1821,9 @@ async fn resolver_treats_excluded_rate_limited_routes_as_unavailable() {
             .expect("valid excluded route"),
     )]);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
             .await
@@ -1826,6 +1913,9 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
         &Url::parse("https://route-a.example.com/backend-api/codex").expect("valid excluded route"),
     )]);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-excluded-cut-in-reject"),
@@ -1896,6 +1986,9 @@ async fn resolver_prefers_group_proxy_error_over_degraded_pool_when_no_healthy_c
     .expect("set degraded pool account state");
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -1947,6 +2040,9 @@ async fn resolver_summarizes_multiple_group_proxy_errors_when_only_bad_groups_re
         .await;
     insert_limit_sample_with_usage(&state.pool, unselectable, &now_iso, Some(5.0), Some(1.0)).await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve pool account");
@@ -1954,8 +2050,8 @@ async fn resolver_summarizes_multiple_group_proxy_errors_when_only_bad_groups_re
         panic!("expected summarized group proxy error");
     };
     assert!(message.contains(
-            "upstream account group \"group-a\" has no bound forward proxy nodes; bind at least one proxy node to the group"
-        ));
+        "upstream account group \"group-a\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+    ), "unexpected routing summary: {message}");
     assert!(
         message.contains("plus 1 additional upstream account group routing configuration issue(s)")
     );
@@ -1997,6 +2093,9 @@ async fn resolver_can_cut_out_from_group_proxy_blocked_sticky_account_when_allow
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-group-proxy-blocked"),
@@ -2047,6 +2146,9 @@ async fn resolver_can_cut_out_from_ungrouped_sticky_account_when_allowed() {
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-ungrouped-account"),
@@ -2116,6 +2218,9 @@ async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_f
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-group-proxy-locked"),
@@ -2193,6 +2298,9 @@ async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_for
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-ungrouped-locked"),
@@ -2279,6 +2387,9 @@ async fn resolver_preserves_sticky_account_when_cut_out_is_forbidden_by_tag_poli
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-cut-out-forbidden-policy"),
@@ -2348,6 +2459,9 @@ async fn resolver_keeps_node_shunt_unassigned_fresh_candidate_assignable_for_liv
     .expect("save node shunt live metadata");
     drop(conn);
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[occupying_account], &HashSet::new())
             .await
@@ -2422,6 +2536,9 @@ async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
     .await
     .expect("upsert sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-cut-in-policy-first"),

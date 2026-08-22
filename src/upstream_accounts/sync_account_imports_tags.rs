@@ -355,17 +355,8 @@ pub(crate) async fn sync_upstream_account_by_id(
         _ => bail!("unsupported account kind: {}", row.kind),
     };
     sync_result?;
+    state.pool_routing_snapshot.request_refresh();
     refresh_pool_model_routing_runtime_cache(state).await?;
-
-    let refreshed_row = load_upstream_account_row(&state.pool, id)
-        .await?
-        .ok_or_else(|| anyhow!("account not found after sync"))?;
-    let now = Utc::now();
-    if !is_account_selectable_for_fresh_assignment(&row, false, now)
-        && is_account_selectable_for_fresh_assignment(&refreshed_row, false, now)
-    {
-        publish_pool_routing_availability(state);
-    }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await?
@@ -1045,7 +1036,9 @@ pub(crate) async fn apply_imported_oauth_probe_result(
             .await?
             .is_some_and(|row| is_account_selectable_for_fresh_assignment(&row, false, Utc::now()));
         if !was_selectable && became_selectable {
-            publish_pool_routing_availability(state);
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
         }
     }
     Ok(probe.usage_snapshot_warning.clone())
@@ -1057,7 +1050,9 @@ pub(crate) async fn publish_new_account_routing_availability_if_selectable(
 ) {
     match load_upstream_account_row(&state.pool, account_id).await {
         Ok(Some(row)) if is_account_selectable_for_fresh_assignment(&row, false, Utc::now()) => {
-            publish_pool_routing_availability(state);
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| state.pool_routing_availability.publish());
         }
         Ok(_) => {}
         Err(err) => {

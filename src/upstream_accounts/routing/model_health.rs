@@ -34,6 +34,7 @@ struct CacheHitRouteEvent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ModelRouteCacheObservationOutcome {
     pub(crate) observed: bool,
+    pub(crate) snapshot_changed: bool,
     pub(crate) availability_increased: bool,
 }
 
@@ -726,18 +727,14 @@ async fn mark_model_route_cache_usage_missing(
     }
     let first_missing_sample = row.cache_usage_missing_since.is_none();
     let (state_before, priority_before, _) = effective_row_state(&row, Utc::now());
-    let cooling_is_active = row.state == MODEL_ROUTE_STATE_COOLING_DOWN
-        && row
-            .cooldown_until
-            .as_deref()
-            .and_then(parse_to_utc_datetime)
-            .is_some_and(|until| until > Utc::now());
-    let state_after = if cooling_is_active {
+    let cooling_or_probe =
+        row.state == MODEL_ROUTE_STATE_COOLING_DOWN && row.cooldown_until.is_some();
+    let state_after = if cooling_or_probe {
         MODEL_ROUTE_STATE_COOLING_DOWN
     } else {
         MODEL_ROUTE_STATE_DEGRADED
     };
-    let priority_after = if cooling_is_active {
+    let priority_after = if cooling_or_probe {
         MODEL_ROUTE_PRIORITY_EXCLUDED
     } else {
         MODEL_ROUTE_PRIORITY_DEMOTED
@@ -754,7 +751,7 @@ async fn mark_model_route_cache_usage_missing(
     .bind(priority_after)
     .bind(if changed { 1 } else { 0 })
     .bind(&now)
-    .bind(if cooling_is_active { 1 } else { 0 })
+    .bind(if cooling_or_probe { 1 } else { 0 })
     .bind(reason)
     .execute(&mut *tx)
     .await?;
@@ -791,6 +788,7 @@ async fn mark_model_route_cache_usage_missing(
     }
     Ok(ModelRouteCacheObservationOutcome {
         observed: true,
+        snapshot_changed: changed,
         availability_increased: false,
     })
 }
@@ -895,6 +893,7 @@ pub(crate) async fn observe_model_route_cache_hit(
         tx.commit().await?;
         return Ok(ModelRouteCacheObservationOutcome {
             observed: true,
+            snapshot_changed: false,
             availability_increased: false,
         });
     }
@@ -1067,11 +1066,13 @@ pub(crate) async fn observe_model_route_cache_hit(
     let availability_increased = event
         .as_ref()
         .is_some_and(|event| event.action == UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED);
+    let snapshot_changed = event.is_some();
     if let Some(event) = event {
         persist_cache_hit_route_event(pool, account_id, model, event).await?;
     }
     Ok(ModelRouteCacheObservationOutcome {
         observed: true,
+        snapshot_changed,
         availability_increased,
     })
 }
@@ -1603,7 +1604,7 @@ pub(crate) async fn record_model_route_failure_from_attempt(
     status: StatusCode,
     error_message: Option<&str>,
     failure_kind: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     record_model_route_failure_from_attempt_with_start(
         pool,
         account_id,
@@ -1697,7 +1698,7 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
     error_message: Option<&str>,
     failure_kind: Option<&str>,
     request_started_at: Option<&str>,
-) -> Result<()> {
+) -> Result<bool> {
     record_model_route_failure_from_attempt_inner(
         pool,
         account_id,
@@ -1710,7 +1711,6 @@ pub(crate) async fn record_model_route_failure_from_attempt_with_start(
         None,
     )
     .await
-    .map(|_| ())
 }
 
 #[expect(

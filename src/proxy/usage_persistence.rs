@@ -1908,22 +1908,26 @@ pub(crate) async fn clean_up_pool_route_after_orphan_recovery(
             persist_pool_route_failure_then_release(
                 state,
                 reservation_key,
-                record_pool_route_transport_failure(
-                    &state.pool,
+                record_pool_route_transport_failure_for_attempt_and_broadcast(
+                    state,
                     account_id,
                     sticky_key,
                     &error_message,
                     Some(invoke_id),
+                    None,
+                    None,
                 ),
             )
             .await
         } else {
-            record_pool_route_transport_failure(
-                &state.pool,
+            record_pool_route_transport_failure_for_attempt_and_broadcast(
+                state,
                 account_id,
                 sticky_key,
                 &error_message,
                 Some(invoke_id),
+                None,
+                None,
             )
             .await
         };
@@ -4152,8 +4156,8 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                     .subscription_hub
                     .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
             }
-            if outcome.availability_increased {
-                let account_allows_publish = match metadata.upstream_account_id {
+            let account_allows_publish = if outcome.availability_increased {
+                match metadata.upstream_account_id {
                     Some(account_id) => match pool_account_allows_model_route_availability_publish(
                         &state.pool,
                         account_id,
@@ -4172,16 +4176,23 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
                         }
                     },
                     None => false,
-                };
-                if account_allows_publish {
-                    publish_pool_routing_availability(state);
-                } else {
-                    debug!(
-                        invoke_id = %record.invoke_id,
-                        upstream_account_id = metadata.upstream_account_id,
-                        "model cache observation increased capacity without publishing because the account remains fenced"
-                    );
                 }
+            } else {
+                false
+            };
+            if outcome.availability_increased && account_allows_publish {
+                state
+                    .pool_routing_snapshot
+                    .request_recovery_refresh_and_defer_availability_wake();
+            } else if outcome.snapshot_changed {
+                state.pool_routing_snapshot.request_refresh();
+            }
+            if outcome.availability_increased && !account_allows_publish {
+                debug!(
+                    invoke_id = %record.invoke_id,
+                    upstream_account_id = metadata.upstream_account_id,
+                    "model cache observation increased capacity without publishing because the account remains fenced"
+                );
             }
         }
         Err(err) => {

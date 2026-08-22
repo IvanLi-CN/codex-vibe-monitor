@@ -1424,6 +1424,7 @@ pub(crate) struct PoolRoutingReservation {
     pub(crate) account_id: i64,
     pub(crate) model: Option<String>,
     pub(crate) proxy_key: Option<String>,
+    pub(crate) snapshot_generation: Option<u64>,
     #[allow(dead_code)]
     pub(crate) created_at: Instant,
 }
@@ -1519,9 +1520,20 @@ impl PoolRoutingReservationDropGuard {
                 self.restore_availability_on_drop();
                 Ok(value)
             }
-            // A failed write never establishes a routing fence. Keep the eventual
-            // guard release silent so a waiter cannot immediately reselect it.
-            Err(err) => Err(err),
+            // An error can be returned after the durable health mutation but
+            // before its audit append. Fence the old snapshot before silently
+            // releasing capacity so either outcome remains fail closed.
+            Err(err) => {
+                self.active = false;
+                self.state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+                release_pool_routing_reservation_without_availability(
+                    self.state.as_ref(),
+                    &self.reservation_key,
+                );
+                Err(err)
+            }
         }
     }
 }
@@ -1529,6 +1541,14 @@ impl PoolRoutingReservationDropGuard {
 impl Drop for PoolRoutingReservationDropGuard {
     fn drop(&mut self) {
         if self.active {
+            if !self.publish_on_drop {
+                // A task can be cancelled after its durable failure mutation
+                // commits but before the caller installs the in-memory fence.
+                // Fence the old snapshot before silently releasing capacity.
+                self.state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+            }
             release_pool_routing_reservation_with_availability(
                 self.state.as_ref(),
                 &self.reservation_key,
@@ -1670,9 +1690,24 @@ pub(crate) fn reserve_pool_routing_account_for_model(
     reservation_key: &str,
     account: &PoolResolvedAccount,
     model: Option<&str>,
-) {
-    let _ =
-        try_reserve_pool_routing_account_for_model(state, reservation_key, account, model, None);
+) -> bool {
+    // This is also used after a live-first handoff. A mutation may have fenced
+    // the snapshot since the account was selected, so a missing snapshot must
+    // not turn a configured model limit into an unlimited reservation.
+    let Some((snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        return false;
+    };
+    let model_concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, model);
+    try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+        snapshot_generation,
+    )
 }
 
 /// Atomically checks a model-route cap and records the request reservation.
@@ -1688,6 +1723,129 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
     model: Option<&str>,
     model_concurrency_limit: Option<i64>,
 ) -> bool {
+    try_reserve_pool_routing_account_for_model_inner(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+        None,
+    )
+}
+
+/// Atomically verifies the snapshot generation, checks a model-route cap, and
+/// records the request reservation.
+pub(crate) fn try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+    snapshot_generation: u64,
+) -> bool {
+    try_reserve_pool_routing_account_for_model_inner(
+        state,
+        reservation_key,
+        account,
+        model,
+        model_concurrency_limit,
+        Some(snapshot_generation),
+    )
+}
+
+pub(crate) fn pool_routing_reservation_generation_is_current(
+    state: &AppState,
+    reservation_key: &str,
+) -> bool {
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let Some(snapshot_generation) = reservations
+        .get(reservation_key)
+        .and_then(|reservation| reservation.snapshot_generation)
+    else {
+        return false;
+    };
+    state
+        .pool_routing_snapshot
+        .generation_is_current(snapshot_generation)
+}
+
+/// Revalidates an existing WebSocket reservation against the current in-memory
+/// snapshot before a `response.create` frame is forwarded upstream.
+///
+/// This deliberately never creates a reservation. An upgraded connection must
+/// retain the source generation established by selection; a missing or cold
+/// snapshot therefore fails closed rather than admitting a model without its
+/// configured cap.
+pub(crate) fn revalidate_pool_routing_reservation_for_model(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: &str,
+) -> bool {
+    let model = model.trim();
+    let mut reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let Some(existing) = reservations.get(reservation_key) else {
+        return false;
+    };
+    if existing.account_id != account.account_id || existing.snapshot_generation.is_none() {
+        return false;
+    }
+
+    // Keep the snapshot read and reservation update in one critical section.
+    // A completed failure fence removes the candidate or model route before a
+    // later response.create can renew this connection's admission generation.
+    let Some((snapshot, snapshot_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        return false;
+    };
+    if snapshot.candidate(account.account_id).is_none()
+        || snapshot
+            .model_route_penalties(&[account.account_id], Some(model))
+            .get(&account.account_id)
+            .is_some_and(|penalty| *penalty == ModelRoutePenalty::Excluded)
+    {
+        return false;
+    }
+    if let Some(limit) = snapshot.model_route_concurrency_limit(account.account_id, Some(model)) {
+        let active = reservations
+            .iter()
+            .filter(|(key, reservation)| {
+                key.as_str() != reservation_key
+                    && reservation.account_id == account.account_id
+                    && reservation
+                        .model
+                        .as_deref()
+                        .is_some_and(|value| value.eq_ignore_ascii_case(model))
+            })
+            .count() as i64;
+        if active >= limit.max(1) {
+            return false;
+        }
+    }
+
+    let reservation = reservations
+        .get_mut(reservation_key)
+        .expect("existing websocket reservation must remain present");
+    reservation.model = Some(model.to_string());
+    reservation.snapshot_generation = Some(snapshot_generation);
+    true
+}
+
+fn try_reserve_pool_routing_account_for_model_inner(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+    model: Option<&str>,
+    model_concurrency_limit: Option<i64>,
+    snapshot_generation: Option<u64>,
+) -> bool {
     let proxy_key = match &account.forward_proxy_scope {
         ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
         _ => None,
@@ -1696,17 +1854,44 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
+    let existing_snapshot_generation = reservations
+        .get(reservation_key)
+        .and_then(|reservation| reservation.snapshot_generation);
     let model = model.map(str::trim).map(ToOwned::to_owned).or_else(|| {
         reservations
             .get(reservation_key)
             .and_then(|reservation| reservation.model.clone())
     });
-    if account.routing_source == PoolRoutingSelectionSource::StickyReuse
-        && proxy_key.is_none()
-        && model.is_none()
-    {
-        return true;
+    // Validate the candidate and its exact model health while holding the
+    // accounting mutex. A fence that won before this point cannot be bypassed
+    // by a preferred or sticky account retry.
+    let Some((snapshot, current_generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        return false;
+    };
+    if snapshot_generation.is_some_and(|generation| generation != current_generation) {
+        return false;
     }
+    if let (Some(expected_generation), Some(existing_generation)) =
+        (snapshot_generation, existing_snapshot_generation)
+        && expected_generation != existing_generation
+    {
+        return false;
+    }
+    if snapshot.candidate(account.account_id).is_none() {
+        return false;
+    }
+    if model.as_deref().is_some_and(|model| {
+        snapshot
+            .model_route_penalties(&[account.account_id], Some(model))
+            .get(&account.account_id)
+            .is_some_and(|penalty| *penalty == ModelRoutePenalty::Excluded)
+    }) {
+        return false;
+    }
+    // A model-less sticky route is still an active request. It needs a tracked
+    // generation so cancellation and pre-send fences can invalidate it.
     if let (Some(limit), Some(model)) = (model_concurrency_limit, model.as_deref()) {
         let active = reservations
             .iter()
@@ -1729,6 +1914,7 @@ pub(crate) fn try_reserve_pool_routing_account_for_model(
             account_id: account.account_id,
             model,
             proxy_key,
+            snapshot_generation: snapshot_generation.or(existing_snapshot_generation),
             created_at: Instant::now(),
         },
     );
@@ -1758,7 +1944,9 @@ fn release_pool_routing_reservation_with_availability(
     let released = reservations.remove(reservation_key).is_some();
     drop(reservations);
     if released && publish_availability {
-        state.pool_routing_availability.publish();
+        state
+            .pool_routing_snapshot
+            .publish_availability_if_ready(|| state.pool_routing_availability.publish());
     }
 }
 
@@ -1776,26 +1964,124 @@ pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
     .await
 }
 
+#[cfg(test)]
+struct PoolRoutingFailurePostPersistHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_routing_failure_post_persist_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolRoutingFailurePostPersistHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolRoutingFailurePostPersistHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_routing_failure_post_persist_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_routing_failure_post_persist_hooks()
+        .lock()
+        .expect("lock routing failure post-persist hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolRoutingFailurePostPersistHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_routing_failure_post_persist_hook(state: &AppState) {
+    let hook = pool_routing_failure_post_persist_hooks()
+        .lock()
+        .expect("lock routing failure post-persist hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+struct PoolRoutingFailureReleaseOnCancel<'a> {
+    state: &'a AppState,
+    reservation_key: &'a str,
+    armed: bool,
+}
+
+impl<'a> PoolRoutingFailureReleaseOnCancel<'a> {
+    fn new(state: &'a AppState, reservation_key: &'a str) -> Self {
+        Self {
+            state,
+            reservation_key,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoolRoutingFailureReleaseOnCancel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // Orphan recovery has no request-owned drop guard. Cancellation
+            // while its durable failure/audit sequence is in flight must
+            // still release capacity, but only after cold-fencing the old
+            // snapshot so the release cannot revive a stale route.
+            self.state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
+            release_pool_routing_reservation_without_availability(self.state, self.reservation_key);
+        }
+    }
+}
+
 pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     state: &AppState,
     reservation_key: &str,
     reservation_guard: Option<&mut PoolRoutingReservationDropGuard>,
     persist_failure: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
+    let has_reservation_drop_guard = reservation_guard.is_some();
+    let mut cancellation_release_guard = (!has_reservation_drop_guard)
+        .then(|| PoolRoutingFailureReleaseOnCancel::new(state, reservation_key));
     let result = if let Some(guard) = reservation_guard {
         guard.fence_failure(persist_failure).await
     } else {
         persist_failure.await
     };
+    #[cfg(test)]
+    if result.is_ok() {
+        wait_for_pool_routing_failure_post_persist_hook(state).await;
+    }
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;
-            release_pool_routing_reservation(state, reservation_key);
+            if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
+                cancellation_release_guard.disarm();
+            }
+            release_pool_routing_reservation_with_availability(state, reservation_key, true);
             Ok(value)
         }
         Err(err) => {
-            // The failed write did not fence this route. Release its slot so it cannot leak,
-            // but do not wake waiters into an immediate unfenced retry.
+            // A persistence error may arrive after the durable health mutation but before its
+            // in-memory fence/audit completes. Cold-fence conservatively before releasing so
+            // no caller, including orphan recovery without a drop guard, can reuse stale state.
+            state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
+            if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
+                cancellation_release_guard.disarm();
+            }
             release_pool_routing_reservation_without_availability(state, reservation_key);
             Err(err)
         }

@@ -84,6 +84,9 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
         .execute(&state.pool)
         .await
         .expect("mark broken alternate-route account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout broken alternate setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -242,6 +245,9 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live timeout replay setup");
 
     let chunks = stream::iter(vec![Ok::<Bytes, io::Error>(Bytes::from_static(
         br#"{"model":"gpt-5","input":"hello"}"#,
@@ -705,7 +711,7 @@ async fn capture_target_pool_route_total_timeout_can_succeed_on_second_route() {
 
     let sticky_key = "sticky-timeout-budget-success-004";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_one_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_one_id, &sticky_seen_at).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -1930,6 +1936,9 @@ async fn pool_openai_v1_responses_overload_prefers_same_route_before_alternate_r
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after same-route overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2066,6 +2075,9 @@ async fn pool_openai_v1_responses_overload_falls_back_to_alternate_route_after_s
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after alternate-route overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2197,6 +2209,9 @@ async fn pool_openai_v1_compact_overload_falls_back_to_alternate_route_before_bo
     )
     .await
     .expect("seed compact sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after compact overload sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -2518,6 +2533,9 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after oauth scope sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3191,6 +3209,9 @@ async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_bloc
     )
     .await
     .expect("seed sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after sticky preflight setup");
 
     let err = send_pool_request_with_failover(
         state.clone(),

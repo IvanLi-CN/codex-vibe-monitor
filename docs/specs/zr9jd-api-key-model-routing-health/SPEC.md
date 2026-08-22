@@ -67,6 +67,8 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - 成功终态的缓存观测可以独立更新模型证据；仅当关联账号当前仍为 `active`、已启用、未软删除，且账号 route failure、cooldown 与连续失败 fence 均已清除时，模型容量增加才可发布全局 pool availability 信号。
 - 任一会持久化账号或模型路由 failure 的终态，必须先完成该持久化操作，再释放 combination reservation 或发布由释放产生的 pool availability 信号；持久化报错也必须在该操作返回后才允许释放，但该无 fence 的释放不得发布 availability，避免等待者在 failure fence 前重选同一路由。
 - 终态在 failure fence 持久化期间被取消时，必须释放 combination reservation 防止容量泄漏，但不得发布 availability；只有已完成并确认的 fence 或非 failure 的正常容量释放才能唤醒等待者。
+- 候选账号、模型健康与 reservation 状态必须以进程内路由快照提供给请求路径；账号、模型健康与路由设置变更事件必须触发刷新，后台 reconcile 最多每 60 秒执行一次。冷快照或不可用快照必须 fail closed，严禁在请求期回退查询候选 SQL。
+- 仅处于 `NoCandidate` 等待阶段的请求计入 32 个 waiter hard bulkhead；第 33 个请求必须立即返回既有 `503 pool_no_available_account`、`Retry-After: 10`，并在审计中记录 `capacitySaturated`。健康路由和已建立流不受此上限约束，容量释放必须立即唤醒等待者。
 
 ### SHOULD
 
@@ -136,6 +138,8 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 - Given cache protection is enabled but an expired model cooldown originated from an ordinary upstream failure, When the first successful HTTP or WebSocket terminal arrives, Then the route atomically returns to `available/normal`, clears the cooldown and concurrency clamp, and wakes waiting routing requests.
 - Given a cache-owned route lacks usable cache usage at a successful terminal, When the observation is first missing or below the minimum sample threshold, Then it remains constrained, persists `cacheUsageMissingSince` and `cacheUsageMissingReason`, and emits one `model_route_cache_observation_missing` event; a valid sample, manual reset, or protection disable clears both fields.
+- Given a candidate snapshot is cold or unavailable, When a pooled request reaches selection, Then it fails closed without querying candidate SQL on the request path.
+- Given 32 requests are waiting at `NoCandidate`, When a 33rd request arrives, Then it immediately receives `503 pool_no_available_account` with `Retry-After: 10` and a `capacitySaturated` audit, while 100 healthy parallel routes remain locally admissible.
 - Given an account failure is committed after a request starts, including within the same wall-clock second, When that request later succeeds, Then the success leaves the newer failure intact and does not publish pool availability; an ambiguous legacy second-precision timestamp in that same second also fails closed.
 - Given an HTTP or WebSocket success terminal contains valid cache usage that increases model capacity, When the associated account still has a route failure fence, Then the model observation may persist but no global pool availability signal is published.
 

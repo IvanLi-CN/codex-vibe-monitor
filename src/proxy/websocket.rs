@@ -1,6 +1,104 @@
 use super::*;
 use std::sync::{Arc as StdArc, Mutex as StdMutex};
 
+#[cfg(test)]
+struct PoolWebSocketPreConnectHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_websocket_pre_connect_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreConnectHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreConnectHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_websocket_pre_connect_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_websocket_pre_connect_hooks()
+        .lock()
+        .expect("lock websocket pre-connect hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolWebSocketPreConnectHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_websocket_pre_connect_hook(state: &AppState) {
+    let hook = pool_websocket_pre_connect_hooks()
+        .lock()
+        .expect("lock websocket pre-connect hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_websocket_pre_connect_hook(_state: &AppState) {}
+
+#[cfg(test)]
+struct PoolWebSocketPreSendHook {
+    reached: std::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+fn pool_websocket_pre_send_hooks()
+-> &'static std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreSendHook>> {
+    static HOOKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<usize, PoolWebSocketPreSendHook>>,
+    > = std::sync::OnceLock::new();
+    HOOKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn register_pool_websocket_pre_send_hook(
+    state: &Arc<AppState>,
+) -> (std::sync::mpsc::Receiver<()>, Arc<tokio::sync::Notify>) {
+    let (reached, receiver) = std::sync::mpsc::channel();
+    let resume = Arc::new(tokio::sync::Notify::new());
+    pool_websocket_pre_send_hooks()
+        .lock()
+        .expect("lock websocket pre-send hooks")
+        .insert(
+            Arc::as_ptr(state) as usize,
+            PoolWebSocketPreSendHook {
+                reached,
+                resume: resume.clone(),
+            },
+        );
+    (receiver, resume)
+}
+
+#[cfg(test)]
+async fn wait_for_pool_websocket_pre_send_hook(state: &AppState) {
+    let hook = pool_websocket_pre_send_hooks()
+        .lock()
+        .expect("lock websocket pre-send hooks")
+        .remove(&(state as *const AppState as usize));
+    if let Some(hook) = hook {
+        let _ = hook.reached.send(());
+        hook.resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn wait_for_pool_websocket_pre_send_hook(_state: &AppState) {}
+
 pub(crate) trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -318,7 +416,7 @@ pub(crate) struct PoolRoutingReservationGuard {
     state: Arc<AppState>,
     reservation_key: String,
     armed: bool,
-    publish_availability: bool,
+    publish_availability_on_drop: bool,
 }
 
 impl PoolRoutingReservationGuard {
@@ -327,19 +425,33 @@ impl PoolRoutingReservationGuard {
             state,
             reservation_key,
             armed: true,
-            publish_availability: true,
+            publish_availability_on_drop: true,
         }
     }
 
-    fn suppress_availability_publish(&mut self) {
-        self.publish_availability = false;
+    #[cfg(test)]
+    pub(crate) fn new_for_test(state: Arc<AppState>, reservation_key: String) -> Self {
+        Self::new(state, reservation_key)
     }
 
-    fn set_availability_publish(&mut self, publish_availability: bool) {
-        self.publish_availability = publish_availability;
+    #[cfg(test)]
+    pub(crate) fn suppress_availability_on_drop_for_test(&mut self) {
+        self.suppress_availability_on_drop();
     }
 
-    fn release_after_persisted_failure(&mut self) {
+    fn suppress_availability_on_drop(&mut self) {
+        self.publish_availability_on_drop = false;
+    }
+
+    fn restore_availability_on_drop(&mut self) {
+        self.publish_availability_on_drop = true;
+    }
+
+    fn generation_is_current(&self) -> bool {
+        pool_routing_reservation_generation_is_current(self.state.as_ref(), &self.reservation_key)
+    }
+
+    fn release(&mut self) {
         if !self.armed {
             return;
         }
@@ -347,25 +459,63 @@ impl PoolRoutingReservationGuard {
         self.armed = false;
     }
 
-    fn release(&mut self) {
+    fn release_without_availability(&mut self) {
         if !self.armed {
             return;
         }
-        if self.publish_availability {
-            release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
-        } else {
-            release_pool_routing_reservation_without_availability(
-                self.state.as_ref(),
-                &self.reservation_key,
-            );
-        }
+        release_pool_routing_reservation_without_availability(
+            self.state.as_ref(),
+            &self.reservation_key,
+        );
         self.armed = false;
+    }
+
+    fn release_after_failed_fence(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.state
+            .pool_routing_snapshot
+            .request_refresh_and_defer_availability_wake();
+        self.release_without_availability();
     }
 }
 
 impl Drop for PoolRoutingReservationGuard {
     fn drop(&mut self) {
-        self.release();
+        if self.publish_availability_on_drop {
+            self.release();
+        } else {
+            self.release_after_failed_fence();
+        }
+    }
+}
+
+struct WebSocketFailureFenceOnCancel<'a> {
+    state: &'a AppState,
+    armed: bool,
+}
+
+impl<'a> WebSocketFailureFenceOnCancel<'a> {
+    fn new(state: &'a AppState) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WebSocketFailureFenceOnCancel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A terminal failure can commit its model mutation before the
+            // following audit write completes. The reservation guard releases
+            // separately on task cancellation, so fence the snapshot first.
+            self.state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
+        }
     }
 }
 
@@ -434,7 +584,7 @@ pub(crate) async fn prepare_upstream_websocket(
         }
 
         let mut no_available_wait_deadline = None;
-        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation(
+        let account = match resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_reservation_without_no_candidate_bulkhead(
             state.as_ref(),
             sticky_key,
             requested_model,
@@ -443,6 +593,9 @@ pub(crate) async fn prepare_upstream_websocket(
             None,
             binding_constraint.as_ref(),
             conversation_override.as_ref(),
+            // The downstream WebSocket is already upgraded. It still waits
+            // for an availability wake, but does not occupy the HTTP
+            // NoCandidate waiter bulkhead it can no longer reject through.
             true,
             &mut no_available_wait_deadline,
             None,
@@ -683,11 +836,14 @@ pub(crate) async fn prepare_upstream_websocket(
                 });
             }
         };
-        let reservation_guard =
+        // Selection reserves the account/model combination. Arm its cleanup
+        // before any capability or timeout lookup can await or be cancelled.
+        let mut reservation_guard =
             PoolRoutingReservationGuard::new(state.clone(), reservation_key.clone());
         match account_supports_upstream_websocket(state.as_ref(), &account).await {
             Ok(true) => {}
             Ok(false) => {
+                reservation_guard.release();
                 excluded_account_ids.push(account.account_id);
                 last_failure = Some(WsAttemptFailure {
                     status: StatusCode::SERVICE_UNAVAILABLE,
@@ -701,6 +857,7 @@ pub(crate) async fn prepare_upstream_websocket(
                 continue;
             }
             Err(err) => {
+                reservation_guard.release();
                 return Err(WsPrepareError {
                     status: StatusCode::BAD_GATEWAY,
                     message: format!("failed to inspect websocket support tag: {err}"),
@@ -712,18 +869,25 @@ pub(crate) async fn prepare_upstream_websocket(
             state.clone(),
             original_uri,
             headers,
-            &load_effective_request_path_timeouts_for_account(
+            &match load_effective_request_path_timeouts_for_account(
                 &state.pool,
                 &state.config,
                 account.account_id,
                 prompt_cache_key,
             )
             .await
-            .map_err(|err| WsPrepareError {
-                status: StatusCode::BAD_GATEWAY,
-                message: format!("failed to resolve effective request-path timeouts: {err}"),
-            })?
-            .2,
+            {
+                Ok(timeouts) => timeouts.2,
+                Err(err) => {
+                    reservation_guard.release();
+                    return Err(WsPrepareError {
+                        status: StatusCode::BAD_GATEWAY,
+                        message: format!(
+                            "failed to resolve effective request-path timeouts: {err}"
+                        ),
+                    });
+                }
+            },
             trace,
             prompt_cache_key,
             reservation_guard,
@@ -947,6 +1111,31 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         }
     };
 
+    wait_for_pool_websocket_pre_connect_hook(state.as_ref()).await;
+    if !reservation_guard.generation_is_current() {
+        finalize_ws_attempt(
+            state.as_ref(),
+            pending_attempt_record.as_ref(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+            Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE),
+            None,
+            None,
+            None,
+        )
+        .await;
+        complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
+        reservation_guard.release();
+        return Err(WsAttemptFailure {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+            retryable: false,
+            account_id: Some(account.account_id),
+            upstream_route_key: Some(account.upstream_route_key()),
+        });
+    }
+
     let socket_meter = UpstreamSocketByteMeter::default();
     let traffic_reporter = UpstreamTrafficReporter::new(
         state.clone(),
@@ -955,7 +1144,6 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         Some(account.account_id),
         upstream_url.host_str(),
     );
-    let connect_started_at_utc = Utc::now();
     let connect_started = Instant::now();
     let connect_timeout = runtime_timeouts.default_send_timeout;
     let connect_result = timeout(
@@ -1006,30 +1194,33 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            reservation_guard.suppress_availability_publish();
-            let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
-                &state.pool,
-                account.account_id,
-                trace.sticky_key.as_deref(),
-                &message,
-                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                Some(trace.invoke_id.as_str()),
-                pending_attempt_record
-                    .as_ref()
-                    .and_then(|pending| pending.attempt_id),
-            )
-            .await;
-            if let Err(ref err) = failure_recorded {
-                warn!(
-                    invoke_id = %trace.invoke_id,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to record websocket pool route transport failure"
-                );
-            }
-            if failure_recorded.is_ok() {
-                reservation_guard.release_after_persisted_failure();
-            }
+            reservation_guard.suppress_availability_on_drop();
+            let failure_recorded =
+                match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                    state.as_ref(),
+                    account.account_id,
+                    trace.sticky_key.as_deref(),
+                    &message,
+                    PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                    Some(trace.invoke_id.as_str()),
+                    pending_attempt_record
+                        .as_ref()
+                        .and_then(|pending| pending.attempt_id),
+                    trace.request_model.as_deref(),
+                )
+                .await
+                {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            invoke_id = %trace.invoke_id,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to record websocket pool route transport failure"
+                        );
+                        false
+                    }
+                };
             if should_mark_ws_unsupported
                 && let Err(err) =
                     ensure_account_has_websocket_unsupported_tag(&state.pool, account.account_id)
@@ -1042,7 +1233,12 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                     "failed to mark upstream account as websocket unsupported"
                 );
             }
-            reservation_guard.release();
+            if failure_recorded {
+                reservation_guard.restore_availability_on_drop();
+                reservation_guard.release();
+            } else {
+                reservation_guard.release_after_failed_fence();
+            }
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
@@ -1074,31 +1270,39 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
                 ForwardProxyRouteResultKind::NetworkFailure,
             )
             .await;
-            reservation_guard.suppress_availability_publish();
-            let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
-                &state.pool,
-                account.account_id,
-                trace.sticky_key.as_deref(),
-                &message,
-                PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                Some(trace.invoke_id.as_str()),
-                pending_attempt_record
-                    .as_ref()
-                    .and_then(|pending| pending.attempt_id),
-            )
-            .await;
-            if let Err(ref err) = failure_recorded {
-                warn!(
-                    invoke_id = %trace.invoke_id,
-                    account_id = account.account_id,
-                    error = %err,
-                    "failed to record websocket pool route timeout failure"
-                );
+            reservation_guard.suppress_availability_on_drop();
+            let failure_recorded =
+                match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                    state.as_ref(),
+                    account.account_id,
+                    trace.sticky_key.as_deref(),
+                    &message,
+                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                    Some(trace.invoke_id.as_str()),
+                    pending_attempt_record
+                        .as_ref()
+                        .and_then(|pending| pending.attempt_id),
+                    trace.request_model.as_deref(),
+                )
+                .await
+                {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            invoke_id = %trace.invoke_id,
+                            account_id = account.account_id,
+                            error = %err,
+                            "failed to record websocket pool route timeout failure"
+                        );
+                        false
+                    }
+                };
+            if failure_recorded {
+                reservation_guard.restore_availability_on_drop();
+                reservation_guard.release();
+            } else {
+                reservation_guard.release_after_failed_fence();
             }
-            if failure_recorded.is_ok() {
-                reservation_guard.release_after_persisted_failure();
-            }
-            reservation_guard.release();
             return Err(WsAttemptFailure {
                 status: StatusCode::BAD_GATEWAY,
                 message,
@@ -1133,31 +1337,39 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         )
         .await;
         complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-        reservation_guard.suppress_availability_publish();
-        let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
-            &state.pool,
-            account.account_id,
-            trace.sticky_key.as_deref(),
-            &message,
-            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            Some(trace.invoke_id.as_str()),
-            pending_attempt_record
-                .as_ref()
-                .and_then(|pending| pending.attempt_id),
-        )
-        .await;
-        if let Err(ref err) = failure_recorded {
-            warn!(
-                invoke_id = %trace.invoke_id,
-                account_id = account.account_id,
-                error = %err,
-                "failed to record websocket subprotocol mismatch route failure"
-            );
+        reservation_guard.suppress_availability_on_drop();
+        let failure_recorded =
+            match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+                state.as_ref(),
+                account.account_id,
+                trace.sticky_key.as_deref(),
+                &message,
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                Some(trace.invoke_id.as_str()),
+                pending_attempt_record
+                    .as_ref()
+                    .and_then(|pending| pending.attempt_id),
+                trace.request_model.as_deref(),
+            )
+            .await
+            {
+                Ok(()) => true,
+                Err(err) => {
+                    warn!(
+                        invoke_id = %trace.invoke_id,
+                        account_id = account.account_id,
+                        error = %err,
+                        "failed to record websocket subprotocol mismatch route failure"
+                    );
+                    false
+                }
+            };
+        if failure_recorded {
+            reservation_guard.restore_availability_on_drop();
+            reservation_guard.release();
+        } else {
+            reservation_guard.release_after_failed_fence();
         }
-        if failure_recorded.is_ok() {
-            reservation_guard.release_after_persisted_failure();
-        }
-        reservation_guard.release();
         return Err(WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message,
@@ -1190,10 +1402,10 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
         ForwardProxyRouteResultKind::CompletedRequest,
     )
     .await;
-    match record_pool_route_success_with_affinity_generation_and_broadcast(
+    if let Err(err) = record_pool_route_success_with_affinity_generation_and_broadcast(
         state.as_ref(),
         account.account_id,
-        connect_started_at_utc,
+        Utc::now(),
         trace.sticky_key.as_deref(),
         websocket_effective_prompt_cache_key(prompt_cache_key),
         Some(trace.invoke_id.as_str()),
@@ -1204,18 +1416,12 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     )
     .await
     {
-        Ok(publish_availability) => {
-            reservation_guard.set_availability_publish(publish_availability);
-        }
-        Err(err) => {
-            reservation_guard.suppress_availability_publish();
-            warn!(
-                invoke_id = %trace.invoke_id,
-                account_id = account.account_id,
-                error = %err,
-                "failed to record websocket pool route success"
-            );
-        }
+        warn!(
+            invoke_id = %trace.invoke_id,
+            account_id = account.account_id,
+            error = %err,
+            "failed to record websocket pool route success"
+        );
     }
 
     Ok(PreparedUpstreamWebSocket {
@@ -1303,11 +1509,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                 received_at_rfc3339,
             } = timestamped_message;
             let close_seen = matches!(message, AxumWsMessage::Close(_));
-            if ws_message_starts_response_create_turn(&message) {
+            let starts_response_create_turn = ws_message_starts_response_create_turn(&message);
+            if starts_response_create_turn {
                 if active_turn_waiting_terminal {
                     usage_tracker
                         .persist_interrupted_turn(
                             state.as_ref(),
+                            &mut reservation_guard,
                             "websocket turn superseded by a new response.create",
                         )
                         .await;
@@ -1401,6 +1609,22 @@ pub(crate) async fn proxy_websocket_tunnel(
                 drain_upstream_after_downstream_close = true;
                 break;
             }
+            if starts_response_create_turn {
+                wait_for_pool_websocket_pre_send_hook(state.as_ref()).await;
+            }
+            if starts_response_create_turn && !reservation_guard.generation_is_current() {
+                failure_kind_override = Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
+                failure = Some(
+                    "websocket model route changed before upstream send; retry later".to_string(),
+                );
+                let _ = downstream_tx
+                    .send(AxumWsMessage::Close(Some(axum::extract::ws::CloseFrame {
+                        code: axum::extract::ws::close_code::AGAIN,
+                        reason: "model_route_unavailable; retry".into(),
+                    })))
+                    .await;
+                break;
+            }
             if let Some(message) = axum_to_tungstenite_message(message)
                 && let Err(err) = upstream_tx.send(message).await
             {
@@ -1422,11 +1646,14 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let timestamped_message = TimestampedWsDownstreamMessage::now(message);
                         let mut message = timestamped_message.message;
                         let close_seen = matches!(message, AxumWsMessage::Close(_));
-                        if ws_message_starts_response_create_turn(&message) {
+                        let starts_response_create_turn =
+                            ws_message_starts_response_create_turn(&message);
+                        if starts_response_create_turn {
                             if active_turn_waiting_terminal {
                                 usage_tracker
                                     .persist_interrupted_turn(
                                         state.as_ref(),
+                                        &mut reservation_guard,
                                         "websocket turn superseded by a new response.create",
                                     )
                                     .await;
@@ -1534,6 +1761,25 @@ pub(crate) async fn proxy_websocket_tunnel(
                             drain_upstream_after_downstream_close = true;
                             break;
                         }
+                        if starts_response_create_turn {
+                            wait_for_pool_websocket_pre_send_hook(state.as_ref()).await;
+                        }
+                        if starts_response_create_turn && !reservation_guard.generation_is_current() {
+                            failure_kind_override = Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
+                            failure = Some(
+                                "websocket model route changed before upstream send; retry later"
+                                    .to_string(),
+                            );
+                            let _ = downstream_tx
+                                .send(AxumWsMessage::Close(Some(
+                                    axum::extract::ws::CloseFrame {
+                                        code: axum::extract::ws::close_code::AGAIN,
+                                        reason: "model_route_unavailable; retry".into(),
+                                    },
+                                )))
+                                .await;
+                            break;
+                        }
                         if let Some(message) = axum_to_tungstenite_message(message)
                             && let Err(err) = upstream_tx.send(message).await {
                                 let message = format!("failed to forward downstream websocket frame upstream: {err}");
@@ -1577,7 +1823,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                             .as_deref()
                             .is_some_and(ws_text_event_is_terminal);
                         if let Some(text) = upstream_text.as_deref() {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
+                            usage_tracker
+                                .observe_upstream_text(
+                                    state.as_ref(),
+                                    &mut reservation_guard,
+                                    text,
+                                )
+                                .await;
                         }
                         if terminal_for_message {
                             saw_terminal_upstream_event = true;
@@ -1687,7 +1939,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
                         usage_tracker
-                            .observe_upstream_text(state.as_ref(), text)
+                            .observe_upstream_text(state.as_ref(), &mut reservation_guard, text)
                             .await;
                         if terminal_for_message {
                             saw_terminal_upstream_event = true;
@@ -1731,6 +1983,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         usage_tracker
             .persist_interrupted_turn(
                 state.as_ref(),
+                &mut reservation_guard,
                 failure
                     .as_deref()
                     .unwrap_or("websocket turn ended before terminal event"),
@@ -1756,10 +2009,12 @@ pub(crate) async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
-    if let Some(message) = upstream_route_failure.as_deref() {
-        reservation_guard.suppress_availability_publish();
-        let failure_recorded = record_pool_route_transport_failure_for_attempt_with_kind(
-            &state.pool,
+    if upstream_route_failure.is_some() || usage_tracker.failure_fence_pending {
+        reservation_guard.suppress_availability_on_drop();
+    }
+    let failure_recorded = if let Some(message) = upstream_route_failure.as_deref() {
+        match record_pool_route_transport_failure_for_attempt_with_kind_and_broadcast(
+            state.as_ref(),
             usage_tracker.account.account_id,
             usage_tracker.trace.sticky_key.as_deref(),
             message,
@@ -1768,20 +2023,24 @@ pub(crate) async fn proxy_websocket_tunnel(
             pending_attempt_record
                 .as_ref()
                 .and_then(|pending| pending.attempt_id),
+            usage_tracker.trace.request_model.as_deref(),
         )
-        .await;
-        if let Err(ref err) = failure_recorded {
-            warn!(
-                invoke_id = %usage_tracker.trace.invoke_id,
-                account_id = usage_tracker.account.account_id,
-                error = %err,
-                "failed to record post-upgrade websocket pool route transport failure"
-            );
+        .await
+        {
+            Ok(()) => true,
+            Err(err) => {
+                warn!(
+                    invoke_id = %usage_tracker.trace.invoke_id,
+                    account_id = usage_tracker.account.account_id,
+                    error = %err,
+                    "failed to record post-upgrade websocket pool route transport failure"
+                );
+                false
+            }
         }
-        if failure_recorded.is_ok() {
-            reservation_guard.release_after_persisted_failure();
-        }
-    }
+    } else {
+        true
+    };
     if mark_account_ws_unsupported_after_close
         && let Err(err) = ensure_account_has_websocket_unsupported_tag(
             &state.pool,
@@ -1797,7 +2056,12 @@ pub(crate) async fn proxy_websocket_tunnel(
         );
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-    reservation_guard.release();
+    if failure_recorded && !usage_tracker.failure_fence_pending {
+        reservation_guard.restore_availability_on_drop();
+        reservation_guard.release();
+    } else {
+        reservation_guard.release_after_failed_fence();
+    }
 }
 
 pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
@@ -2132,6 +2396,7 @@ pub(crate) struct WsUsageTracker {
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
+    failure_fence_pending: bool,
 }
 
 impl WsUsageTracker {
@@ -2158,6 +2423,7 @@ impl WsUsageTracker {
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
+            failure_fence_pending: false,
         }
     }
 
@@ -2201,7 +2467,12 @@ impl WsUsageTracker {
         true
     }
 
-    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+    async fn observe_upstream_text(
+        &mut self,
+        state: &AppState,
+        reservation_guard: &mut PoolRoutingReservationGuard,
+        text: &str,
+    ) {
         if self.turn_stream_started_at.is_none() {
             self.turn_stream_started_at = Some(Instant::now());
         }
@@ -2216,18 +2487,30 @@ impl WsUsageTracker {
                 && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
                 && self.account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && let Err(err) = record_api_key_temporary_model_failure_or_diagnostic(
-                    &state.pool,
-                    self.account.account_id,
-                    self.trace.sticky_key.as_deref(),
-                    text,
-                    PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                    reason_code,
-                    http_status,
-                    Some(self.trace.invoke_id.as_str()),
-                    Some(attempt_id),
-                )
-                .await
+                && let Err(err) = {
+                    self.failure_fence_pending = true;
+                    reservation_guard.suppress_availability_on_drop();
+                    let mut cancellation_fence = WebSocketFailureFenceOnCancel::new(state);
+                    let result = record_api_key_temporary_model_failure_or_diagnostic(
+                        &state.pool,
+                        self.account.account_id,
+                        self.trace.sticky_key.as_deref(),
+                        text,
+                        PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        reason_code,
+                        http_status,
+                        Some(self.trace.invoke_id.as_str()),
+                        Some(attempt_id),
+                    )
+                    .await;
+                    cancellation_fence.disarm();
+                    if result.is_err() {
+                        state
+                            .pool_routing_snapshot
+                            .request_refresh_and_defer_availability_wake();
+                    }
+                    result
+                }
             {
                 warn!(
                     invoke_id = %self.trace.invoke_id,
@@ -2244,6 +2527,10 @@ impl WsUsageTracker {
         let stream_duration_ms = ws_usage_event_is_terminal(&event)
             .then(|| self.stream_duration_ms())
             .flatten();
+        if !ws_usage_event_is_completed_success(&event) {
+            self.failure_fence_pending = true;
+            reservation_guard.suppress_availability_on_drop();
+        }
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
@@ -2330,7 +2617,12 @@ impl WsUsageTracker {
         }
     }
 
-    async fn persist_interrupted_turn(&mut self, state: &AppState, reason: &str) {
+    async fn persist_interrupted_turn(
+        &mut self,
+        state: &AppState,
+        reservation_guard: &mut PoolRoutingReservationGuard,
+        reason: &str,
+    ) {
         let Some(first_token_ms) = self.first_token_ms else {
             return;
         };
@@ -2350,6 +2642,8 @@ impl WsUsageTracker {
         })
         .to_string();
         let ordinal = self.ordinal.saturating_add(1);
+        self.failure_fence_pending = true;
+        reservation_guard.suppress_availability_on_drop();
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
@@ -2715,26 +3009,11 @@ pub(crate) async fn apply_ws_downstream_payload_guard(
                 .clone()
                 .or_else(|| usage_tracker.trace.request_model.clone());
             if let Some(model) = requested_model.as_deref() {
-                if model_route_penalty(&state.pool, usage_tracker.account.account_id, Some(model))
-                    .await?
-                    == ModelRoutePenalty::Excluded
-                {
-                    return Err(anyhow!(
-                        "websocket model route is cooling down for {model}; retry after cooldown"
-                    ));
-                }
-                let concurrency_limit = model_route_concurrency_limit(
-                    &state.pool,
-                    usage_tracker.account.account_id,
-                    Some(model),
-                )
-                .await?;
-                if !try_reserve_pool_routing_account_for_model(
+                if !revalidate_pool_routing_reservation_for_model(
                     state,
                     reservation_key,
                     &usage_tracker.account,
-                    Some(model),
-                    concurrency_limit,
+                    model,
                 ) {
                     return Err(anyhow!(
                         "websocket model route is at its concurrency limit for {model}; retry later"
@@ -3039,7 +3318,8 @@ pub(crate) async fn persist_ws_usage_event(
             )
             .await?;
         } else if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-            if let Some((reason_code, http_status)) =
+            let mut cancellation_fence = WebSocketFailureFenceOnCancel::new(state);
+            let failure_result = if let Some((reason_code, http_status)) =
                 ws_terminal_temporary_classification(raw_event)
             {
                 record_api_key_temporary_model_failure_or_diagnostic(
@@ -3053,7 +3333,7 @@ pub(crate) async fn persist_ws_usage_event(
                     Some(trace.invoke_id.as_str()),
                     Some(attempt_id),
                 )
-                .await?;
+                .await
             } else {
                 record_model_route_failure_from_attempt_with_start(
                     &state.pool,
@@ -3064,9 +3344,27 @@ pub(crate) async fn persist_ws_usage_event(
                     failure_kind,
                     request_started_at,
                 )
-                .await?;
+                .await
+                .map(|_| ())
+            };
+            cancellation_fence.disarm();
+            if let Err(error) = failure_result {
+                // The model-route mutation can commit before its audit write.
+                // Keep request routing fail-closed whenever the persistence
+                // operation reports an error rather than leaving its snapshot
+                // to the periodic reconcile.
+                state
+                    .pool_routing_snapshot
+                    .request_refresh_and_defer_availability_wake();
+                return Err(error);
             }
         }
+        if !is_completed_terminal_event {
+            state.pool_routing_snapshot.request_refresh();
+        }
+        state
+            .subscription_hub
+            .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
     }
     if is_completed_terminal_event
         && let Some(prompt_cache_key) = websocket_effective_prompt_cache_key(prompt_cache_key)
@@ -3711,163 +4009,6 @@ pub(crate) fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option
 #[cfg(test)]
 mod websocket_tests {
     use super::*;
-
-    #[tokio::test]
-    async fn cancelling_websocket_failure_fence_releases_without_waking_waiters() {
-        let state = crate::tests::test_state_with_openai_base(
-            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        )
-        .await;
-        let reservation_key = "websocket-cancelled-fence";
-        state
-            .pool_routing_reservations
-            .lock()
-            .expect("pool routing reservations mutex poisoned")
-            .insert(
-                reservation_key.to_string(),
-                PoolRoutingReservation {
-                    account_id: 42,
-                    model: Some("gpt-ws-cancelled-fence".to_string()),
-                    proxy_key: None,
-                    created_at: Instant::now(),
-                },
-            );
-        let availability = state.pool_routing_availability.subscribe();
-        let initial_generation = *availability.borrow();
-        let (fence_started_tx, fence_started_rx) = tokio::sync::oneshot::channel();
-        let task_state = state.clone();
-        let task = tokio::spawn(async move {
-            let mut reservation_guard =
-                PoolRoutingReservationGuard::new(task_state, reservation_key.to_string());
-            reservation_guard.suppress_availability_publish();
-            let _ = fence_started_tx.send(());
-            std::future::pending::<()>().await;
-        });
-
-        fence_started_rx
-            .await
-            .expect("pending websocket failure fence should begin before cancellation");
-        task.abort();
-        let join_error = task
-            .await
-            .expect_err("cancelling the websocket failure fence should cancel its task");
-        assert!(join_error.is_cancelled());
-        assert!(
-            !state
-                .pool_routing_reservations
-                .lock()
-                .expect("pool routing reservations mutex poisoned")
-                .contains_key(reservation_key),
-            "cancellation must release the websocket reservation"
-        );
-        assert_eq!(
-            *availability.borrow(),
-            initial_generation,
-            "websocket cancellation before a failure fence commits must not wake waiters"
-        );
-    }
-
-    #[tokio::test]
-    async fn cancelling_websocket_selection_handoff_releases_reservation_and_wakes_waiters() {
-        let state = crate::tests::test_state_with_openai_base(
-            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        )
-        .await;
-        let reservation_key = "websocket-selection-handoff-cancelled";
-        state
-            .pool_routing_reservations
-            .lock()
-            .expect("pool routing reservations mutex poisoned")
-            .insert(
-                reservation_key.to_string(),
-                PoolRoutingReservation {
-                    account_id: 42,
-                    model: Some("gpt-ws-selection-handoff".to_string()),
-                    proxy_key: None,
-                    created_at: Instant::now(),
-                },
-            );
-        let availability = state.pool_routing_availability.subscribe();
-        let initial_generation = *availability.borrow();
-        let (handoff_started_tx, handoff_started_rx) = tokio::sync::oneshot::channel();
-        let task_state = state.clone();
-        let task = tokio::spawn(async move {
-            // The production path creates this guard immediately after selection,
-            // before awaiting the websocket-capability query.
-            let _reservation_guard =
-                PoolRoutingReservationGuard::new(task_state, reservation_key.to_string());
-            let _ = handoff_started_tx.send(());
-            std::future::pending::<()>().await;
-        });
-
-        handoff_started_rx
-            .await
-            .expect("selection handoff guard should be active before cancellation");
-        task.abort();
-        let join_error = task
-            .await
-            .expect_err("cancelling the selection handoff should cancel its task");
-        assert!(join_error.is_cancelled());
-        assert!(
-            !state
-                .pool_routing_reservations
-                .lock()
-                .expect("pool routing reservations mutex poisoned")
-                .contains_key(reservation_key),
-            "cancelling before websocket capability resolution must release the reservation"
-        );
-        assert_ne!(
-            *availability.borrow(),
-            initial_generation,
-            "cancelling a healthy websocket selection handoff must wake waiters"
-        );
-    }
-
-    #[tokio::test]
-    async fn websocket_success_guard_releases_stale_account_without_waking_waiters() {
-        let state = crate::tests::test_state_with_openai_base(
-            Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        )
-        .await;
-        let reservation_key = "websocket-stale-success";
-        state
-            .pool_routing_reservations
-            .lock()
-            .expect("pool routing reservations mutex poisoned")
-            .insert(
-                reservation_key.to_string(),
-                PoolRoutingReservation {
-                    account_id: 42,
-                    model: Some("gpt-ws-stale-success".to_string()),
-                    proxy_key: None,
-                    created_at: Instant::now(),
-                },
-            );
-        let availability = state.pool_routing_availability.subscribe();
-        let initial_generation = *availability.borrow();
-
-        {
-            let mut reservation_guard =
-                PoolRoutingReservationGuard::new(state.clone(), reservation_key.to_string());
-            // A success record returns false when a newer account failure fences
-            // the request. WebSocket cleanup must release without publishing.
-            reservation_guard.set_availability_publish(false);
-        }
-
-        assert!(
-            !state
-                .pool_routing_reservations
-                .lock()
-                .expect("pool routing reservations mutex poisoned")
-                .contains_key(reservation_key),
-            "stale websocket success must release its reservation"
-        );
-        assert_eq!(
-            *availability.borrow(),
-            initial_generation,
-            "stale websocket success must not wake pool waiters"
-        );
-    }
 
     fn api_key_account(upstream_base_url: Url) -> PoolResolvedAccount {
         PoolResolvedAccount {

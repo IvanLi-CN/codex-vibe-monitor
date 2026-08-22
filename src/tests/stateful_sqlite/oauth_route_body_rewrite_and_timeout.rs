@@ -103,6 +103,9 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
     )
     .await
     .expect("seed oauth sticky route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after oauth sticky setup");
 
     let request_body = serde_json::to_vec(&json!({
         "messages": [{
@@ -802,7 +805,7 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
     .await;
     let sticky_last_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-oauth-timeout-switch",
         oauth_id,
         &sticky_last_seen_at,
@@ -1532,6 +1535,9 @@ fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
         )
         .await
         .expect("seed sticky route");
+        refresh_pool_routing_snapshot(state.as_ref())
+            .await
+            .expect("refresh routing snapshot after body sticky setup");
         let request_body =
             br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-body-001"}"#.to_vec();
 
@@ -2707,6 +2713,8 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),

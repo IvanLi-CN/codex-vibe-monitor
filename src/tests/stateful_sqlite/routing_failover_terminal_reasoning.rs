@@ -26,13 +26,13 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_al
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-after-cutout-failure",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(state.as_ref(), primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -128,13 +128,13 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_after_distinct_
     let tertiary_id =
         insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-after-distinct-budget",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(state.as_ref(), primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -281,6 +281,9 @@ async fn pool_route_skips_ungrouped_account_when_grouped_alternate_exists() {
         .execute(&state.pool)
         .await
         .expect("clear ungrouped account group");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after ungrouped alternate setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -335,6 +338,9 @@ async fn pool_route_returns_specific_ungrouped_error_when_all_candidates_are_ung
         .execute(&state.pool)
         .await
         .expect("clear ungrouped account group");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after all-ungrouped setup");
 
     let response = proxy_openai_v1(
         State(state),
@@ -389,12 +395,15 @@ async fn pool_route_cuts_out_from_ungrouped_sticky_account_when_allowed() {
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-ungrouped-cut-out",
         sticky_source_id,
         &sticky_seen_at,
     )
     .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after ungrouped sticky cut-out setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -459,7 +468,7 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-ungrouped-forbidden",
         sticky_source_id,
         &sticky_seen_at,
@@ -494,6 +503,9 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
     .execute(&state.pool)
     .await
     .expect("attach no-cut-out tag");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after forbidden ungrouped sticky setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -1870,6 +1882,9 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     .execute(&state.pool)
     .await
     .expect("attach fill-missing tag");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after fast-mode failover setup");
 
     let request_body = serde_json::to_vec(&json!({
         "model": "gpt-5.3-codex",
@@ -2851,7 +2866,10 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
 
     let sticky_key = "sticky-timeout-switch-001";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_id, &sticky_seen_at).await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout no-cut-out setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3005,7 +3023,10 @@ async fn capture_target_pool_route_timeout_does_not_cut_out_from_no_cut_out_stic
 
     let sticky_key = "sticky-timeout-no-cut-out-owner";
     let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
-    upsert_test_sticky_route_at(&state.pool, sticky_key, slow_id, &sticky_seen_at).await;
+    upsert_test_sticky_route_at(&state, sticky_key, slow_id, &sticky_seen_at).await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout no-cut-out setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3192,6 +3213,9 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
     )
     .await;
     insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout no-alternate setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3329,6 +3353,9 @@ async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
         .execute(&state.pool)
         .await
         .expect("clear ungrouped alternate group");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout blocked-policy setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3479,6 +3506,9 @@ async fn capture_target_pool_route_timeout_ignores_broken_same_route_groups() {
     )
     .await;
     insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after timeout invalid-group setup");
 
     let response = proxy_openai_v1(
         State(state.clone()),

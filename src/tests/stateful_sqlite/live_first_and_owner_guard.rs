@@ -72,7 +72,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -106,10 +106,10 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -140,6 +140,121 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
 }
 
 #[tokio::test]
+async fn live_first_pre_send_fence_prevents_stale_upstream_dispatch() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account(&state, "Fenced", "upstream-fenced").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial live-first routing snapshot");
+
+    let (pre_send_rx, resume_pre_send) =
+        crate::proxy::register_pool_live_first_pre_send_hook(&state);
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    // Keep the body stream open until the pre-send generation fence is reached.
+    body_tx
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","input":"pending"}"#,
+        )))
+        .await
+        .expect("send live-first request body");
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        pre_send_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("live-first request should reach the pre-send fence")
+    })
+    .await
+    .expect("join pre-send fence receiver");
+    // The pre-send hook proves the live stream already owns the reservation. End the
+    // downstream body so the capture fallback cannot turn the local fence into a 408.
+    drop(body_tx);
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement snapshot before releasing the pre-send fence");
+    resume_pre_send.notify_one();
+
+    let response = request_task
+        .await
+        .expect("live-first request task should join");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let (status, failure_kind, finished_at): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT status, failure_kind, finished_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fenced live-first attempt");
+    assert_eq!(status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        "a pre-send fence is a local availability rejection, not a transport failure"
+    );
+    assert!(
+        finished_at.is_some(),
+        "the pre-send fence must terminate its attempt instead of leaving orphan recovery armed"
+    );
+    assert_eq!(
+        attempts
+            .lock()
+            .expect("lock upstream attempts")
+            .get("Bearer upstream-fenced")
+            .copied(),
+        None,
+        "the stale live-first lease must not create an upstream request"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -149,7 +264,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -424,6 +539,9 @@ async fn final_route_gate_waits_for_eof_before_upstream_with_prompt_cache_and_st
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
@@ -555,6 +673,9 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
     let request_state = state.clone();
@@ -678,6 +799,9 @@ async fn final_route_gate_rejects_downstream_read_error_without_upstream_deliver
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
     let request_state = state.clone();
@@ -792,6 +916,9 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let sticky_key = "live-first-sticky-failure";
     upsert_sticky_route(
@@ -874,6 +1001,9 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
     body_tx
@@ -1036,6 +1166,108 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
     .expect("cancelling an active live-first request must release its reservation");
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn cancelling_live_first_before_model_mapping_releases_its_routing_reservation() {
+    let mut config = test_config();
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    config.proxy_enforce_stream_include_usage = false;
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+        "liveRequestStreaming": {
+            "enabled": true,
+            "treatmentPercent": 100,
+        },
+    }))
+    .expect("deserialize live request streaming settings");
+    let _ =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
+            .await
+            .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the candidate snapshot before exercising live-first cancellation");
+    let (post_reservation_rx, _resume_post_reservation) =
+        crate::proxy::register_pool_live_first_post_reservation_hook(&state);
+    let (body_tx, body_rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(1);
+    // Keep the body stream open until selection has reserved the route.
+    body_tx
+        .send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5","input":"pending"}"#,
+        )))
+        .await
+        .expect("send live-first request body");
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid responses uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_rx)),
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        post_reservation_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("selection should reserve before model mapping is allowed to complete")
+    })
+    .await
+    .expect("join post-reservation fence receiver");
+    assert_eq!(
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("lock routing reservations")
+            .len(),
+        1,
+        "post-reservation fence must observe the owned routing reservation"
+    );
+
+    request_task.abort();
+    let join_error = request_task
+        .await
+        .expect_err("cancelling the request should cancel its task");
+    assert!(join_error.is_cancelled());
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if state
+                .pool_routing_reservations
+                .lock()
+                .expect("lock routing reservations")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelling before model mapping must release the routing reservation");
 }
 
 #[test]
@@ -1433,7 +1665,7 @@ async fn proxy_openai_v1_responses_waits_for_body_before_encrypted_owner_guard()
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-live-first-replay-owner-guard";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -2051,7 +2283,7 @@ async fn proxy_openai_v1_bodyless_header_prompt_cache_key_preserves_encrypted_ow
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-bodyless-header-encrypted-owner-lock";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -2390,7 +2622,7 @@ async fn websocket_prepare_preserves_encrypted_owner_lock() {
         None,
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(&state, owner_account_id, "needs_reauth").await;
     let prompt_cache_key = "pck-websocket-encrypted-owner-lock";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, prompt_cache_key, owner_account_id)
         .await
@@ -2576,6 +2808,129 @@ async fn websocket_prepare_rate_limited_owner_returns_owner_unavailable() {
 }
 
 #[tokio::test]
+async fn websocket_pre_connect_fence_prevents_stale_upstream_dispatch() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Fence",
+        "upstream-websocket-fence",
+        None,
+        None,
+        Some(&upstream_base),
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial websocket routing snapshot");
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve websocket runtime timeouts");
+    let (pre_connect_rx, resume_pre_connect) =
+        crate::proxy::register_pool_websocket_pre_connect_hook(&state);
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pool-ws-pre-connect-fence".to_string(),
+        occurred_at: shanghai_now_string(),
+        endpoint: "/v1/realtime".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: Some("gpt-5-realtime".to_string()),
+    };
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        prepare_upstream_websocket(
+            request_state,
+            5357,
+            &"/v1/realtime?model=gpt-5-realtime"
+                .parse()
+                .expect("valid uri"),
+            &HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            &runtime_timeouts,
+            None,
+            Some("gpt-5-realtime"),
+            None,
+            None,
+            None,
+            false,
+            &trace,
+            None,
+        )
+        .await
+    });
+
+    tokio::task::spawn_blocking(move || {
+        pre_connect_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("websocket request should reach the pre-connect fence")
+    })
+    .await
+    .expect("join websocket pre-connect fence receiver");
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement snapshot before releasing websocket pre-connect fence");
+    resume_pre_connect.notify_one();
+
+    let result = request_task
+        .await
+        .expect("websocket prepare task should join");
+    let Err(err) = result else {
+        panic!("fenced websocket account should fail closed");
+    };
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE);
+    let (status, failure_kind, finished_at): (String, Option<String>, Option<String>) =
+        sqlx::query_as(
+            "SELECT status, failure_kind, finished_at FROM pool_upstream_request_attempts WHERE upstream_account_id = ?1 ORDER BY id DESC LIMIT 1",
+        )
+        .bind(account_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fenced websocket attempt");
+    assert_eq!(status, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE);
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+        "a websocket pre-connect fence is a local availability rejection"
+    );
+    assert!(finished_at.is_some());
+    assert_eq!(
+        attempts
+            .lock()
+            .expect("lock websocket upstream attempts")
+            .get("Bearer upstream-websocket-fence")
+            .copied(),
+        None,
+        "the stale websocket lease must not open an upstream connection"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attempt() {
     let (upstream_base, _attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let mut config = test_config();
@@ -2586,7 +2941,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
         config,
         true,
         PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(80),
+            timeout: Duration::from_secs(1),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -2642,6 +2997,12 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     .await
     .expect("reserve only websocket candidate");
     assert!(matches!(reservation, PoolAccountResolution::Resolved(_)));
+    let http_waiter_capacity = state
+        .pool_no_candidate_waiters
+        .clone()
+        .acquire_many_owned(POOL_NO_CANDIDATE_WAITER_LIMIT as u32)
+        .await
+        .expect("occupy every HTTP NoCandidate waiter slot");
 
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: "pool-ws-no-candidate-audit".to_string(),
@@ -2652,6 +3013,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
         upstream_base_url_host: None,
         request_model: Some(model.to_string()),
     };
+    let started = Instant::now();
     let result = prepare_upstream_websocket(
         state.clone(),
         5354,
@@ -2678,7 +3040,16 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     let Err(err) = result else {
         panic!("websocket capacity conflict should not connect upstream");
     };
+    assert!(
+        started.elapsed() >= Duration::from_millis(750),
+        "an upgraded websocket must retain its availability wait instead of returning a saturated HTTP bulkhead result"
+    );
     assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        state.pool_no_candidate_waiters.available_permits(),
+        0,
+        "an upgraded websocket must not acquire an HTTP NoCandidate waiter slot"
+    );
 
     let payload: String =
         sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
@@ -2701,6 +3072,7 @@ async fn websocket_prepare_no_candidate_persists_invocation_audit_without_attemp
     .expect("count websocket no-candidate attempts");
     assert_eq!(attempt_count, 0);
 
+    drop(http_waiter_capacity);
     release_pool_routing_reservation(&state, "websocket-no-candidate-holder");
     upstream_handle.abort();
 }
@@ -2759,6 +3131,9 @@ async fn websocket_owner_guard_no_candidate_persists_invocation_audit_without_at
     .execute(&state.pool)
     .await
     .expect("limit websocket owner model route to one reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish websocket owner capacity fixture");
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
         None,
@@ -2947,8 +3322,11 @@ fn http_prebuffered_no_candidate_persists_invocation_audit_without_attempt() {
         .bind(account_id)
         .bind(model)
         .execute(&state.pool)
-        .await
-        .expect("limit HTTP model route to one reservation");
+    .await
+    .expect("limit HTTP model route to one reservation");
+        refresh_pool_routing_snapshot(state.as_ref())
+            .await
+            .expect("refresh routing snapshot after HTTP capacity setup");
         let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
             &state,
             None,
@@ -3054,7 +3432,11 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     let account_id =
         insert_test_pool_api_key_account(&state, "Availability Gate", "availability-gate-key")
             .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish initial healthy routing snapshot");
     let availability = state.pool_routing_availability.subscribe();
+    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
 
     record_pool_route_success_with_affinity_generation_and_broadcast(
@@ -3084,6 +3466,24 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record healthy HTTP-style success");
+    assert!(
+        !snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "ordinary success observations must not create event-driven reconciliation work"
+    );
+    assert!(
+        !state.pool_routing_snapshot.refresh_pending(),
+        "success observations must not fence an established route while the bounded reconcile catches up"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "a pending snapshot refresh must not wake pool waiters before replacement"
+    );
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after endpoint capability observation");
     assert_eq!(
         *availability.borrow(),
         initial_generation,
@@ -3099,6 +3499,9 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     .execute(&state.pool)
     .await
     .expect("mark account unavailable before websocket-style recovery");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unavailable snapshot before websocket-style recovery");
     record_pool_route_success_with_affinity_generation_and_broadcast(
         state.as_ref(),
         account_id,
@@ -3111,6 +3514,28 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record websocket-style account recovery");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "recovery must install a selectable snapshot before waking waiters"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after websocket-style recovery");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("recovery must replace the routing snapshot before it wakes waiters");
+    assert_eq!(recovered_account.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(recovered_account.last_route_failure_at.is_none());
     let websocket_recovery_generation = *availability.borrow();
     assert_ne!(websocket_recovery_generation, initial_generation);
 
@@ -3123,6 +3548,9 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     .execute(&state.pool)
     .await
     .expect("mark account unavailable before HTTP-style recovery");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unavailable snapshot before HTTP-style recovery");
     record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
         state.as_ref(),
         account_id,
@@ -3138,7 +3566,113 @@ async fn healthy_pool_success_does_not_publish_availability_but_recovery_does() 
     )
     .await
     .expect("record HTTP-style account recovery");
+    assert_eq!(
+        *availability.borrow(),
+        websocket_recovery_generation,
+        "endpoint recovery must install a selectable snapshot before waking waiters"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "endpoint recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after HTTP-style recovery");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("endpoint recovery must replace the routing snapshot before it wakes waiters");
+    assert_eq!(recovered_account.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+    assert!(recovered_account.last_route_failure_at.is_none());
     assert_ne!(*availability.borrow(), websocket_recovery_generation);
+}
+
+#[tokio::test]
+async fn endpoint_capability_recovery_replaces_snapshot_before_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Endpoint Capability Recovery",
+        "endpoint-capability-recovery-key",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET response_endpoint_capability = 'unsupported' WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark response endpoint unavailable in the persisted account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the unsupported endpoint snapshot");
+
+    let availability = state.pool_routing_availability.subscribe();
+    let snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
+    let before_recovery = *availability.borrow();
+
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        Utc::now(),
+        None,
+        None,
+        Some("endpoint-capability-recovery"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("record the endpoint capability recovery");
+
+    assert_eq!(
+        *availability.borrow(),
+        before_recovery,
+        "capability recovery must not wake waiters against the old unsupported snapshot"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "capability recovery must request an immediate replacement snapshot"
+    );
+    let stale_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("the established snapshot remains available until replacement");
+    assert_eq!(
+        stale_account.response_endpoint_capability.as_deref(),
+        Some("unsupported"),
+        "selection must not observe the recovered endpoint before replacement"
+    );
+
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the endpoint capability recovery snapshot");
+    let recovered_account = state
+        .pool_routing_snapshot
+        .current()
+        .and_then(|snapshot| snapshot.account(account_id).cloned())
+        .expect("the replacement snapshot must retain the account");
+    assert_eq!(
+        recovered_account.response_endpoint_capability.as_deref(),
+        Some("supported")
+    );
+    assert_ne!(
+        *availability.borrow(),
+        before_recovery,
+        "the installed capability recovery must wake waiting selectors"
+    );
 }
 
 #[tokio::test]
@@ -3506,6 +4040,7 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
     .expect("make route cache-owned");
 
     let availability = state.pool_routing_availability.subscribe();
+    let mut snapshot_refreshes = state.pool_routing_snapshot.subscribe_refresh();
     let initial_generation = *availability.borrow();
     let metadata_free_record =
         test_proxy_capture_record("proxy-cache-observer-metadata-free", &shanghai_now_string());
@@ -3535,6 +4070,21 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
         initial_generation,
         "missing cache usage constrains capacity and must not wake pool waiters"
     );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "cache health degradation must request a snapshot replacement"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after missing cache usage");
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "constraining cache health must not wake pool waiters after replacement"
+    );
 
     let missing_route = load_model_routing_states(&state.pool, account_id)
         .await
@@ -3557,6 +4107,21 @@ async fn shared_terminal_observer_handles_http_and_websocket_shaped_capture_reco
     websocket_record.usage.input_tokens = Some(3_840);
     websocket_record.usage.cache_input_tokens = Some(384);
     observe_successful_proxy_capture_model_route_cache(&state, &websocket_record).await;
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "cache recovery must install its replacement snapshot before waking pool waiters"
+    );
+    assert!(
+        snapshot_refreshes
+            .has_changed()
+            .expect("snapshot refresh channel must remain open"),
+        "cache recovery must request a snapshot replacement before waking waiters"
+    );
+    snapshot_refreshes.borrow_and_update();
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after cache recovery");
     assert_ne!(
         *availability.borrow(),
         initial_generation,
@@ -4029,6 +4594,9 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
     )
     .await
     .expect("seed sticky route toward secondary");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket owner and sticky routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -4382,6 +4950,9 @@ async fn websocket_response_create_turns_persist_usage_per_terminal() {
         Some(&format!("http://{upstream_addr}")),
     )
     .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket multi-turn routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -4458,6 +5029,147 @@ async fn websocket_response_create_turns_persist_usage_per_terminal() {
     assert_eq!(rows[1].0, Some(12));
     assert_eq!(rows[1].1, Some(4));
     assert!(rows[1].2.contains("resp_ws_turn_2"));
+
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn websocket_response_create_fence_before_send_prevents_stale_dispatch() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+    use tungstenite::Message as TungsteniteMessage;
+
+    async fn websocket_counting_upstream(
+        ws: WebSocketUpgrade,
+        State(frames): State<Arc<AtomicUsize>>,
+    ) -> Response {
+        ws.on_upgrade(move |mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, AxumWsMessage::Text(_) | AxumWsMessage::Binary(_)) {
+                    frames.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        })
+        .into_response()
+    }
+
+    let frames = Arc::new(AtomicUsize::new(0));
+    let upstream_app = Router::new()
+        .route("/v1/responses", get(websocket_counting_upstream))
+        .with_state(frames.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket upstream");
+    let upstream_addr = upstream_listener
+        .local_addr()
+        .expect("websocket upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream_app)
+            .await
+            .expect("websocket upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{upstream_addr}")).expect("valid websocket upstream base url");
+    config.openai_proxy_websocket_enabled = true;
+    config.openai_proxy_upstream_websocket_default_enabled = true;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(80),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    {
+        let mut settings = state.proxy_model_settings.write().await;
+        settings.websocket_enabled = true;
+        settings.upstream_websocket_default_enabled = true;
+    }
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "WebSocket Pre-send Fence",
+        "upstream-websocket-pre-send-fence",
+        None,
+        None,
+        Some(&format!("http://{upstream_addr}")),
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket routing snapshot");
+    let (pre_send_rx, resume_pre_send) =
+        crate::proxy::register_pool_websocket_pre_send_hook(&state);
+
+    let proxy_app = Router::new()
+        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .with_state(state.clone());
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind websocket proxy server");
+    let proxy_addr = proxy_listener
+        .local_addr()
+        .expect("websocket proxy server addr");
+    let proxy_handle = tokio::spawn(async move {
+        axum::serve(proxy_listener, proxy_app)
+            .await
+            .expect("websocket proxy server should run");
+    });
+
+    let mut request = format!("ws://{proxy_addr}/v1/responses")
+        .into_client_request()
+        .expect("websocket client request");
+    request.headers_mut().insert(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-live-key"),
+    );
+    let (mut client, response) = connect_async(request)
+        .await
+        .expect("connect websocket proxy");
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    client
+        .send(TungsteniteMessage::Text(
+            json!({
+                "type": "response.create",
+                "model": "gpt-5-realtime",
+                "input": []
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send websocket response.create");
+    tokio::task::spawn_blocking(move || {
+        pre_send_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("response.create should reach the pre-send fence")
+    })
+    .await
+    .expect("join websocket pre-send fence receiver");
+    set_test_account_status(state.as_ref(), account_id, "needs_reauth").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install replacement websocket routing snapshot");
+    resume_pre_send.notify_one();
+
+    let close = client
+        .next()
+        .await
+        .expect("receive websocket close")
+        .expect("websocket close frame");
+    let TungsteniteMessage::Close(Some(frame)) = close else {
+        panic!("expected websocket close frame, got {close:?}");
+    };
+    assert!(frame.reason.contains("model_route_unavailable"));
+    assert_eq!(
+        frames.load(Ordering::SeqCst),
+        0,
+        "the stale response.create frame must not be dispatched upstream"
+    );
 
     proxy_handle.abort();
     upstream_handle.abort();
@@ -4930,6 +5642,9 @@ async fn websocket_handshake_failure_retries_next_candidate_with_retained_first_
     )
     .await
     .expect("seed sticky route toward failing account");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install websocket failover routing snapshot");
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -5279,7 +5994,7 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
         Some("https://websocket-capacity-holder.example.com/backend-api/codex"),
     )
     .await;
-    set_test_account_status(&state.pool, owner_account_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), owner_account_id, "needs_reauth").await;
     let sticky_only_key = "sticky-only-websocket-key";
     let model = "gpt-5-realtime";
     upsert_prompt_cache_encrypted_session_owner(&state.pool, sticky_only_key, owner_account_id)
@@ -5310,6 +6025,9 @@ async fn websocket_prepare_does_not_treat_sticky_key_as_prompt_cache_key() {
     .execute(&state.pool)
     .await
     .expect("limit capacity-holder model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after websocket retry setup");
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
         None,
@@ -5482,7 +6200,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -5556,10 +6274,10 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let rate_limited_id =
         insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
-    set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, rate_limited_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-rate-limited-sticky",
         rate_limited_id,
         &sticky_seen_at,
@@ -5644,7 +6362,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-blocked-policy-sticky",
         sticky_source_id,
         &sticky_seen_at,
@@ -5760,7 +6478,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         .expect("clear sticky source group");
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "header-blocked-policy-sticky",
         sticky_source_id,
         &sticky_seen_at,
@@ -5871,22 +6589,12 @@ fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_fa
             insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
         let replacement_id =
             insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+        set_test_account_status(&state, blocked_id, "needs_reauth").await;
         let sticky_seen_at = format_utc_iso(Utc::now());
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "header-stale-sticky",
-            blocked_id,
-            &sticky_seen_at,
-        )
-        .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "header-stale-sticky", blocked_id, &sticky_seen_at)
+            .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -5973,7 +6681,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
@@ -6052,7 +6760,7 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
@@ -6084,8 +6792,11 @@ async fn proxy_openai_v1_header_sticky_recovers_after_wait_starts() {
     })
     .await
     .expect("wait hook worker should join");
-    set_test_account_status(&state.pool, delayed_id, "active").await;
+    set_test_account_status(&state, delayed_id, "active").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install recovered routing snapshot before waking the waiter");
     state.pool_routing_availability.publish();
 
     let response = request_task
@@ -6124,7 +6835,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -6278,7 +6989,7 @@ fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from_reque
         seed_pool_routing_api_key(&state, "pool-live-key").await;
         let blocked_id =
             insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-        set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+        set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
         let request_body = br#"{"model":"gpt-5","input":"hello"}"#.to_vec();
         let content_length =
@@ -6439,12 +7150,11 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
         Some(upstream_base.as_str()),
     )
     .await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
-    let cache_state = state.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let delayed_release_task = std::thread::spawn(move || {
         wait_started_rx
@@ -6452,8 +7162,8 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
             .expect("request should signal once the bounded wait starts");
         std::thread::sleep(Duration::from_millis(120));
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-            invalidate_pool_routing_runtime_cache(cache_state.as_ref()).await;
+            set_test_account_status(&release_state, delayed_id, "active").await;
+            invalidate_pool_routing_runtime_cache(release_state.as_ref()).await;
         });
     });
 
@@ -6560,13 +7270,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
     let sticky_seen_at = format_utc_iso(Utc::now());
-    upsert_test_sticky_route_at(
-        &state.pool,
-        "header-stale-sticky",
-        primary_id,
-        &sticky_seen_at,
-    )
-    .await;
+    upsert_test_sticky_route_at(&state, "header-stale-sticky", primary_id, &sticky_seen_at).await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
@@ -6610,7 +7314,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
 
     wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
     request_started.notified().await;
-    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
+    set_test_account_status(&state, primary_id, "needs_reauth").await;
     release_tx
         .send(())
         .expect("release delayed sticky upstream response");
@@ -6650,22 +7354,17 @@ fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_header(
             insert_test_pool_api_key_account(&state, "Rate Limited", "upstream-rate-limited").await;
         let replacement_id =
             insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
-        set_test_account_rate_limited_cooldown(&state.pool, rate_limited_id, 120).await;
+        set_test_account_rate_limited_cooldown(&state, rate_limited_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-rate-limited-sticky",
             rate_limited_id,
             &sticky_seen_at,
         )
         .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -6767,10 +7466,10 @@ fn proxy_openai_v1_header_prompt_cache_binding_beats_rate_limited_sticky_termina
             None,
         )
         .await;
-        set_test_account_rate_limited_cooldown(&state.pool, sticky_account_id, 120).await;
+        set_test_account_rate_limited_cooldown(&state, sticky_account_id, 120).await;
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-binding-rate-limited-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -6887,7 +7586,7 @@ fn proxy_openai_v1_header_sticky_rechecks_model_before_reusing_header_resolution
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-model-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -6981,7 +7680,7 @@ fn proxy_openai_v1_header_sticky_rechecks_image_intent_before_reusing_header_res
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-image-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -7082,7 +7781,7 @@ fn proxy_openai_v1_header_sticky_rechecks_codex_imagegen_capability_before_reuse
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-codex-imagegen-sensitive-sticky",
             sticky_account_id,
             &sticky_seen_at,
@@ -8873,19 +9572,14 @@ fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_heade
 
         let sticky_seen_at = format_utc_iso(Utc::now());
         upsert_test_sticky_route_at(
-            &state.pool,
+            &state,
             "header-blocked-policy-sticky",
             blocked_id,
             &sticky_seen_at,
         )
         .await;
-        upsert_test_sticky_route_at(
-            &state.pool,
-            "body-live-sticky",
-            replacement_id,
-            &sticky_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, "body-live-sticky", replacement_id, &sticky_seen_at)
+            .await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         tokio::spawn(async move {
@@ -8971,7 +9665,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let body = Body::from_stream(tokio_stream::iter(vec![Ok::<Bytes, io::Error>(
         Bytes::from_static(
@@ -9033,7 +9727,7 @@ fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account()
             insert_test_pool_api_key_account(&state, "Initial", "upstream-initial").await;
         let delayed_id =
             insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-        set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+        set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
         let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
@@ -9050,19 +9744,19 @@ fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_account()
                 .await;
         });
 
-        let pool = state.pool.clone();
+        let initial_block_state = state.clone();
         let initial_block_task = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            set_test_account_status(&pool, initial_id, "needs_reauth").await;
+            set_test_account_status(&initial_block_state, initial_id, "needs_reauth").await;
         });
 
-        let pool = state.pool.clone();
+        let delayed_release_state = state.clone();
         let delayed_release_task = tokio::spawn(async move {
             body_reroute_rx
                 .await
                 .expect("body reroute signal should arrive");
             tokio::time::sleep(Duration::from_millis(20)).await;
-            set_test_account_status(&pool, delayed_id, "active").await;
+            set_test_account_status(&delayed_release_state, delayed_id, "active").await;
         });
 
         let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -9130,8 +9824,8 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let (body_reroute_tx, body_reroute_rx) = tokio::sync::oneshot::channel::<()>();
     let body = Body::from_stream(futures_util::stream::unfold(
@@ -9159,13 +9853,13 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         },
     ));
 
-    let pool = state.pool.clone();
+    let delayed_release_state = state.clone();
     let delayed_release_task = tokio::spawn(async move {
         body_reroute_rx
             .await
             .expect("body reroute signal should arrive");
         tokio::time::sleep(Duration::from_millis(120)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&delayed_release_state, delayed_id, "active").await;
     });
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -9474,6 +10168,365 @@ fn pool_account_supports_live_request_body_transforms_codex_rewrite() {
         &Method::POST,
         &headers,
     ));
+}
+
+#[tokio::test]
+async fn pool_no_candidate_wait_bulkhead_rejects_the_thirty_third_waiter() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let started = Instant::now();
+    let mut wait_deadline = None;
+    let result = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        true,
+        &mut wait_deadline,
+        None,
+    )
+    .await
+    .expect("resolve saturated pool wait");
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "the thirty-third waiter must fail immediately"
+    );
+    assert!(matches!(
+        result,
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(audit))
+            if audit.terminal_reason_code == "capacitySaturated"
+    ));
+
+    for waiter in waiters {
+        waiter.abort();
+    }
+}
+
+#[tokio::test]
+async fn pool_no_candidate_bulkhead_does_not_limit_healthy_parallel_resolutions() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(1),
+        Duration::ZERO,
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Healthy", "healthy-upstream-key").await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh healthy routing snapshot");
+
+    let mut requests = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let state = state.clone();
+        requests.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    for request in requests {
+        assert!(matches!(
+            request
+                .await
+                .expect("healthy request task should join")
+                .expect("resolve healthy pool"),
+            PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(_))
+        ));
+    }
+    assert_eq!(
+        state.pool_no_candidate_waiters.available_permits(),
+        POOL_NO_CANDIDATE_WAITER_LIMIT,
+        "healthy resolutions must not acquire NoCandidate waiter capacity"
+    );
+}
+
+#[tokio::test]
+async fn cold_routing_snapshot_fails_closed_without_candidate_sql() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    state.pool_routing_snapshot.invalidate();
+    state.pool.close().await;
+
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+        false,
+        &mut wait_deadline,
+        None,
+    )
+    .await
+    .expect("cold snapshot must fail closed without querying the closed database");
+
+    assert!(matches!(
+        resolution,
+        PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::NoCandidate(_))
+    ));
+}
+
+#[tokio::test]
+async fn snapshot_reconciler_recovers_pending_startup_snapshot_without_watch_notification() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    // Model the startup warm failure: the refresh notification precedes the
+    // reconciler's watch subscription, but the pending fence is durable.
+    state.pool_routing_snapshot.invalidate();
+    spawn_pool_routing_snapshot_reconcile(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while state.pool_routing_snapshot.current().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("pending startup snapshot should recover without waiting for the ticker");
+
+    state.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let refresh_state = state.clone();
+    let refresh_storm = tokio::spawn(async move {
+        for _ in 0..8 {
+            refresh_state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| {
+                    refresh_state.pool_routing_availability.publish()
+                });
+            reconcile_pool_routing_snapshot(refresh_state.as_ref())
+                .await
+                .expect("rebuild no-candidate routing snapshot");
+        }
+    });
+
+    let (response, status) = tokio::join!(
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            get_model_routing_live(
+                State(state.clone()),
+                Query(ModelRoutingLiveQuery {
+                    window: Some("1h".to_string()),
+                    model: None,
+                    state: None,
+                    limit: Some(100),
+                }),
+            ),
+        ),
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch_system_status(State(state.clone()))
+        )
+    );
+    let response = response
+        .expect("model-routing-live must not wait for NoCandidate routes or snapshot rebuilds")
+        .expect("model-routing-live should remain available");
+    let _ = status
+        .expect("system status must not wait for NoCandidate routes or snapshot rebuilds")
+        .expect("system status should remain available");
+    assert!(response.0.records.is_empty());
+    refresh_storm
+        .await
+        .expect("no-candidate snapshot rebuild storm should join");
+
+    for waiter in waiters {
+        waiter.abort();
+    }
+}
+
+#[tokio::test]
+async fn header_sticky_capacity_saturation_returns_before_the_body_finishes() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(5),
+        Duration::ZERO,
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+
+    let mut waiters = Vec::with_capacity(POOL_NO_CANDIDATE_WAITER_LIMIT);
+    for _ in 0..POOL_NO_CANDIDATE_WAITER_LIMIT {
+        let state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            let mut wait_deadline = None;
+            resolve_pool_account_for_request_with_wait(
+                state.as_ref(),
+                None,
+                &[],
+                &HashSet::new(),
+                None,
+                true,
+                &mut wait_deadline,
+                None,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while state.pool_no_candidate_waiters.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all thirty-two waiters should enter the bulkhead");
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(2);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let proxy_request_id = 7855;
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        proxy_request_id,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("bulkhead-header-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let err = response.expect_err("capacity saturation should fail immediately");
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        err.retry_after_secs,
+        Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+    );
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "the saturated request must not wait for the trailing body chunk, elapsed={elapsed:?}"
+    );
+    let invoke_id = format!("{POOL_VIA_INVOKE_ID_PREFIX}{proxy_request_id}");
+    let payload: String = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(payload) =
+                sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+                    .bind(&invoke_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .expect("query capacity-saturated invocation payload")
+            {
+                break payload;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("capacity-saturated audit must persist without delaying the 503");
+    let payload: Value = serde_json::from_str(&payload).expect("decode invocation payload");
+    assert_eq!(
+        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
+        "capacitySaturated"
+    );
+
+    for waiter in waiters {
+        waiter.abort();
+    }
 }
 
 #[test]

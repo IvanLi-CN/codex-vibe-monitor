@@ -187,7 +187,10 @@ pub(crate) fn account_accepts_requested_model_or_mapping(
     }
 }
 
-fn mapped_target_model_is_allowed(target_model: &str, rule: &EffectiveRoutingRule) -> bool {
+pub(crate) fn mapped_target_model_is_allowed(
+    target_model: &str,
+    rule: &EffectiveRoutingRule,
+) -> bool {
     if requested_model_is_system_denied(Some(target_model), rule) {
         return false;
     }
@@ -288,11 +291,10 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
                 .collect::<Vec<_>>();
         warmed_model_account_ids.insert(model.to_ascii_lowercase(), account_ids);
     }
-    let routing_candidates = load_account_routing_candidates(pool, &HashSet::new()).await?;
-    let routing_candidate_ids = routing_candidates
-        .iter()
-        .map(|candidate| candidate.id)
-        .collect::<Vec<_>>();
+    // Candidate rows belong exclusively to the published routing snapshot.
+    // This runtime cache is also read by request setup, so its cold rebuild
+    // must never turn into a request-time candidate query.
+    let routing_candidate_ids = routing_account_ids.clone();
     let group_names = rows
         .iter()
         .filter_map(|row| normalize_optional_text(row.group_name.clone()))
@@ -317,7 +319,7 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
         generation: 0,
         mappings_by_account,
         routing_account_rows_by_id,
-        routing_candidates,
+        routing_candidates: Vec::new(),
         effective_rules_by_account: effective_rules,
         group_metadata_by_name,
         route_binding_failure_penalties,
@@ -333,12 +335,12 @@ pub(crate) async fn load_model_mapping_for_account(
     account_id: i64,
     requested_model: Option<&str>,
 ) -> Result<Option<ResolvedModelMapping>> {
-    let runtime_cache = load_pool_routing_runtime_cache(state).await?;
-    Ok(runtime_cache
-        .model_routing
-        .mappings_by_account
-        .get(&account_id)
-        .and_then(|mappings| resolve_compiled_model_mapping(mappings, requested_model)))
+    let Some((routing_snapshot, _generation)) =
+        state.pool_routing_snapshot.current_with_generation()
+    else {
+        bail!("pool routing snapshot is unavailable")
+    };
+    Ok(routing_snapshot.model_mapping_for_account(account_id, requested_model))
 }
 
 pub(crate) async fn account_accepts_requested_model_or_cached_mapping(

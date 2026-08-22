@@ -395,6 +395,7 @@ async fn raw_overflow_spool_rotates_segments_and_recovers_the_capture_in_order()
     drop(writer);
 
     let spool_dir = state.config.resolved_proxy_raw_dir().join(".spool");
+    fs::create_dir_all(&spool_dir).expect("create spool dir");
     let segment_count = fs::read_dir(&spool_dir)
         .expect("read spool directory")
         .flatten()

@@ -1804,6 +1804,8 @@ pub(crate) async fn file_backed_test_state_with_busy_timeout(
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
@@ -2480,6 +2482,8 @@ async fn quota_latest_returns_degraded_when_empty() {
         system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),

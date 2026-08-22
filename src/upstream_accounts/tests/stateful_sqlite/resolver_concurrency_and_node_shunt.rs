@@ -57,7 +57,13 @@ async fn resolver_skips_account_when_effective_concurrency_limit_is_reached() {
     upsert_sticky_route(&state.pool, "load-seed", limited_account_id, &now_iso)
         .await
         .expect("seed active sticky route");
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after concurrency setup");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
             .await
@@ -259,6 +265,7 @@ async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reser
                 account_id: reserved_account_id,
                 model: None,
                 proxy_key: Some(secondary_proxy_key.clone()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -378,6 +385,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
             account_id: reserved_account_id,
             model: None,
             proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+            snapshot_generation: None,
             created_at: Instant::now(),
         },
     );
@@ -387,6 +395,7 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
             account_id: reserved_account_id,
             model: None,
             proxy_key: Some(secondary_proxy_key.clone()),
+            snapshot_generation: None,
             created_at: Instant::now(),
         },
     );
@@ -576,6 +585,7 @@ async fn node_shunt_assignments_keep_globally_reserved_proxy_keys_occupied() {
                 account_id: 0,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -744,10 +754,14 @@ async fn node_shunt_sticky_reuse_preserves_slot_for_in_flight_account() {
                 account_id: reserved_account_id,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("node-shunt-sticky-reuse"),
@@ -1148,6 +1162,7 @@ async fn provisioning_scope_skips_proxy_keys_reserved_by_other_accounts() {
                 account_id: 0,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -1267,6 +1282,7 @@ async fn provisioning_scope_reuses_live_reserved_proxy_key_for_same_account() {
                 account_id,
                 model: None,
                 proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -1401,7 +1417,7 @@ async fn provisioning_scope_rejects_existing_account_without_node_shunt_slot_whe
 }
 
 #[tokio::test]
-async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
+async fn node_shunt_refresh_failure_uses_snapshot_fallback_until_reconcile() {
     let (usage_base_url, oauth_issuer, token_requests, server) = spawn_token_failure_oauth_server(
         StatusCode::BAD_REQUEST,
         json!({
@@ -1473,6 +1489,9 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
         .expect("resolve node shunt request after refresh failure");
@@ -1485,10 +1504,15 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
         account.routing_source,
         PoolRoutingSelectionSource::FreshAssignment
     );
-    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &account.forward_proxy_scope else {
-        panic!("expected fallback account to receive a pinned node shunt proxy key");
-    };
-    assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    assert!(
+        matches!(
+            account.forward_proxy_scope,
+            ForwardProxyRouteScope::BoundGroup { ref group_name, ref bound_proxy_keys }
+                if group_name == "node-shunt-refresh-failover"
+                    && bound_proxy_keys == &test_required_group_bound_proxy_keys()
+        ),
+        "the request must use the published binding rather than rebuild node-shunt assignments from SQLite"
+    );
 
     let failing_after = load_upstream_account_row(&state.pool, failing_account_id)
         .await
@@ -1496,9 +1520,14 @@ async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
         .expect("failing account exists after routing");
     assert_eq!(failing_after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
 
-    let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+    refresh_pool_routing_snapshot(&state)
         .await
-        .expect("build refreshed node shunt assignments");
+        .expect("reconcile routing snapshot after the routing mutation");
+    let assignments = state
+        .pool_routing_snapshot
+        .current()
+        .expect("routing snapshot after reconcile")
+        .node_shunt_assignments();
     assert!(
         !assignments
             .account_proxy_keys
@@ -1578,6 +1607,9 @@ async fn resolver_ignores_stale_sticky_routes_when_applying_concurrency_limit() 
     .await
     .expect("seed stale sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution =
         resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
             .await
@@ -1642,6 +1674,9 @@ async fn resolver_allows_sticky_reuse_even_when_concurrency_limit_is_reached() {
         .await
         .expect("seed sticky route");
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-reuse"),
@@ -1724,6 +1759,9 @@ async fn resolver_hands_off_fallback_sticky_to_higher_priority_account() {
     )
     .await;
 
+    refresh_pool_routing_snapshot(&state)
+        .await
+        .expect("refresh routing snapshot after resolver setup");
     let resolution = resolve_pool_account_for_request(
         &state,
         Some("sticky-priority-reuse"),
@@ -2133,6 +2171,7 @@ async fn automatic_single_rotation_429_clear_broadcasts_conversation_change() {
         None,
         None,
         Some(prompt_cache_key),
+        None,
     )
     .await
     .expect("record single-account rotation 429");

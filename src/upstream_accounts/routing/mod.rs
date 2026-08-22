@@ -13,6 +13,7 @@ mod model_health;
 )]
 mod selection;
 mod settings_runtime;
+mod snapshot;
 mod sticky_routes;
 
 pub(crate) use candidate_loading::*;
@@ -20,4 +21,5 @@ pub(crate) use failure_recording::*;
 pub(crate) use model_health::*;
 pub(crate) use selection::*;
 pub(crate) use settings_runtime::*;
+pub(crate) use snapshot::*;
 pub(crate) use sticky_routes::*;

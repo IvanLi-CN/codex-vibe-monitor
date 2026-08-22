@@ -21,6 +21,22 @@ where
         .expect("join large-stack test worker")
 }
 
+async fn await_pool_route_selection_task(
+    task: tokio_util::task::AbortOnDropHandle<(
+        Result<PoolAccountResolutionWithWait>,
+        Option<Instant>,
+    )>,
+    fallback_deadline: Option<Instant>,
+) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
+    match task.await {
+        Ok(result) => result,
+        Err(err) => (
+            Err(anyhow::anyhow!("pool route selection task failed: {err}")),
+            fallback_deadline,
+        ),
+    }
+}
+
 #[tokio::test]
 async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     let state = test_state_with_openai_base(
@@ -57,7 +73,7 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     )
     .await;
     for sticky_key in ["sticky-free-001", "sticky-free-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, free_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, free_id, &recent_seen_at).await;
     }
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
@@ -111,7 +127,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, preferred_id, &recent_seen_at).await;
     }
     reserve_test_pool_routing_account(&state, "reservation-001", preferred_id).await;
 
@@ -128,7 +144,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 }
 
 #[tokio::test]
-async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
+async fn reserve_pool_routing_account_tracks_model_less_sticky_reuse_generation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -147,9 +163,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         routing_selection_audit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
-        forward_proxy_scope: ForwardProxyRouteScope::PinnedProxyKey(
-            FORWARD_PROXY_DIRECT_KEY.to_string(),
-        ),
+        forward_proxy_scope: ForwardProxyRouteScope::Automatic,
         single_account_rotation_enabled: false,
         upstream_429_retry_enabled: false,
         upstream_429_max_retries: 0,
@@ -173,11 +187,24 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         .expect("pool routing reservations mutex poisoned");
     let reservation = reservations
         .get("sticky-reservation")
-        .expect("sticky reuse reservation should be recorded");
+        .expect("model-less sticky reuse reservation should be recorded");
     assert_eq!(reservation.account_id, account_id);
-    assert_eq!(
-        reservation.proxy_key.as_deref(),
-        Some(FORWARD_PROXY_DIRECT_KEY)
+    assert!(reservation.model.is_none());
+    assert!(reservation.proxy_key.is_none());
+    assert!(
+        reservation.snapshot_generation.is_some(),
+        "a model-less sticky request must retain its selection generation"
+    );
+    drop(reservations);
+
+    assert!(
+        pool_routing_reservation_generation_is_current(state.as_ref(), "sticky-reservation"),
+        "the fresh sticky reservation should be admitted by its source snapshot"
+    );
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        !pool_routing_reservation_generation_is_current(state.as_ref(), "sticky-reservation"),
+        "a mutation fence must invalidate a model-less sticky reservation"
     );
 }
 
@@ -219,7 +246,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
     )
     .await;
     for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+        upsert_test_sticky_route_at(&state, sticky_key, preferred_id, &recent_seen_at).await;
     }
     state
         .pool_routing_reservations
@@ -231,6 +258,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
                 account_id: preferred_id,
                 model: None,
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
             },
         );
@@ -284,13 +312,7 @@ async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window
     )
     .await;
     for sticky_key in ["sticky-legacy-001", "sticky-legacy-002"] {
-        upsert_test_sticky_route_at(
-            &state.pool,
-            sticky_key,
-            legacy_long_only_id,
-            &recent_seen_at,
-        )
-        .await;
+        upsert_test_sticky_route_at(&state, sticky_key, legacy_long_only_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
@@ -331,8 +353,7 @@ async fn resolve_pool_account_for_request_preserves_local_long_limit_without_sam
     )
     .await;
     for sticky_key in ["sticky-local-001", "sticky-local-002"] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, locally_limited_id, &recent_seen_at)
-            .await;
+        upsert_test_sticky_route_at(&state, sticky_key, locally_limited_id, &recent_seen_at).await;
     }
 
     let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
@@ -585,10 +606,10 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
+    set_test_account_status(&state, secondary_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let release_task = std::thread::spawn(move || {
         wait_started_rx
@@ -596,7 +617,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
             .expect("request should signal once the bounded wait starts");
         std::thread::sleep(Duration::from_millis(40));
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, secondary_id, "active").await;
+            set_test_account_status(&release_state, secondary_id, "active").await;
         });
     });
 
@@ -1523,6 +1544,9 @@ async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt(
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
             .await
             .expect("enable live request streaming treatment");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("refresh routing snapshot after live request streaming settings");
 
     let request_payload = json!({
         "model": "gpt-5.4",
@@ -1767,8 +1791,8 @@ async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_coold
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, primary_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -1807,8 +1831,8 @@ async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_r
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let missing_credentials_id =
         insert_test_pool_api_key_account(&state, "Missing Credentials", "upstream-missing").await;
-    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
-    clear_test_account_credentials(&state.pool, missing_credentials_id).await;
+    set_test_account_rate_limited_cooldown(&state, primary_id, 120).await;
+    clear_test_account_credentials(&state, missing_credentials_id).await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -1847,11 +1871,11 @@ async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_status(&state, primary_id, "needs_reauth").await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-429-stale-binding",
         primary_id,
         &sticky_seen_at,
@@ -1895,11 +1919,11 @@ async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_4
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    clear_test_account_credentials(&state.pool, primary_id).await;
-    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    clear_test_account_credentials(&state, primary_id).await;
+    set_test_account_rate_limited_cooldown(&state, secondary_id, 120).await;
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-429-missing-creds-binding",
         primary_id,
         &sticky_seen_at,
@@ -1945,7 +1969,7 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
+    set_test_account_status(&state, secondary_id, "needs_reauth").await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -1998,7 +2022,7 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
@@ -2021,10 +2045,10 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let response = request_task
@@ -2065,36 +2089,46 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
-    let request_state = state.clone();
-    let request_task = tokio::spawn(async move {
-        proxy_openai_v1(
-            State(request_state),
-            OriginalUri("/v1/responses".parse().expect("valid uri")),
-            Method::POST,
-            HeaderMap::from_iter([(
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-live-key"),
-            )]),
-            Body::from(
-                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
-                    .as_bytes()
-                    .to_vec(),
-            ),
-        )
-        .await
+    let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
+    let mutation_state = state.clone();
+    let runtime_handle = tokio::runtime::Handle::current();
+    let release_task = std::thread::spawn(move || {
+        wait_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request should signal once the bounded wait starts");
+        std::thread::sleep(Duration::from_millis(40));
+        runtime_handle.block_on(async move {
+            set_test_account_status(&mutation_state, delayed_id, "active").await;
+            mutation_state
+                .pool_routing_snapshot
+                .request_refresh_and_wake_waiters(|| {
+                    mutation_state.pool_routing_availability.publish()
+                });
+            refresh_pool_routing_snapshot(mutation_state.as_ref())
+                .await
+                .expect("install recovered-account snapshot before waking the waiter");
+        });
     });
 
-    let pool = state.pool.clone();
-    let release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
-    });
-
-    let response = request_task.await.expect("request task should join");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
     release_task
-        .await
+        .join()
         .expect("delayed account release task should join");
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -2131,14 +2165,14 @@ async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_up
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-wait-recovered",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
@@ -2159,10 +2193,10 @@ async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_up
         .await
     });
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let response = request_task.await.expect("request task should join");
@@ -2213,7 +2247,7 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
     invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let started = Instant::now();
@@ -2273,7 +2307,7 @@ async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(
@@ -2329,7 +2363,7 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
     )
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let mut wait_deadline = None;
@@ -2365,7 +2399,7 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
 }
 
 #[tokio::test]
-async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
+async fn pool_route_selection_task_join_error_preserves_fallback_deadline() {
     let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async {
         panic!("synthetic pool route selection panic");
         #[allow(unreachable_code)]
@@ -2378,12 +2412,6 @@ async fn pool_route_selection_task_join_error_keeps_retryable_error_mapping() {
     let err = resolution.expect_err("panicked selection task should surface as an error");
     assert!(err.to_string().contains("pool route selection task failed"));
     assert_eq!(wait_deadline, fallback_deadline);
-
-    let mapped = build_pool_route_selection_failure_error(&err, 0, 0);
-    assert_eq!(mapped.status, StatusCode::BAD_GATEWAY);
-    assert_eq!(mapped.failure_kind, PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT);
-    assert_eq!(mapped.attempt_summary.pool_attempt_count, 0);
-    assert!(mapped.message.contains("pool route selection task failed"));
 }
 
 #[test]
@@ -2418,25 +2446,19 @@ async fn failover_route_selection_task_preserves_the_external_deadline() {
     )
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
-    let (resolution, wait_deadline) = resolve_pool_account_for_failover_on_fresh_task(
-        state,
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
         None,
-        None,
-        Vec::new(),
-        HashSet::new(),
-        None,
-        None,
+        &[],
+        &HashSet::new(),
         None,
         true,
-        None,
+        &mut wait_deadline,
         Some(Instant::now() + Duration::from_millis(40)),
-        "/v1/responses".to_string(),
-        crate::ImageIntent::Unknown,
-        false,
-        "deadline-selection-task".to_string(),
     )
     .await;
     let elapsed = started.elapsed();
@@ -2514,6 +2536,7 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
                 account_id,
                 model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2565,6 +2588,9 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
     task.await
         .expect("failure persistence task should join")
         .expect("failure persistence should succeed");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("reconcile routing snapshot after failure fence commit");
     assert!(
         !state
             .pool_routing_reservations
@@ -2590,14 +2616,21 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
-async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
+async fn cancelled_unguarded_failure_persistence_releases_and_cold_fences_the_snapshot() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let account_id =
-        insert_test_pool_api_key_account(&state, "Failed Failure Fence", "failed-fence-key").await;
-    let reservation_key = "failed-fence-reservation";
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Cancelled Orphan Failure Fence",
+        "cancelled-orphan-fence-key",
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before cancellation");
+    let reservation_key = "cancelled-orphan-failure-reservation";
     state
         .pool_routing_reservations
         .lock()
@@ -2606,8 +2639,164 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
             reservation_key.to_string(),
             PoolRoutingReservation {
                 account_id,
-                model: Some("gpt-failed-fence".to_string()),
+                model: Some("gpt-cancelled-orphan".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let availability_before = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        persist_pool_route_failure_then_release(task_state.as_ref(), reservation_key, async move {
+            started_tx
+                .send(())
+                .expect("failure persistence should begin before cancellation");
+            std::future::pending::<Result<(), anyhow::Error>>().await
+        })
+        .await
+    });
+
+    started_rx
+        .await
+        .expect("failure persistence should be pending before cancellation");
+    task.abort();
+    assert!(
+        task.await
+            .expect_err("cancelling unguarded failure persistence should abort the task")
+            .is_cancelled()
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "cancelling orphan-style failure persistence must not leak its reservation"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        availability_before,
+        "cancelling an unfenced failure must not publish an immediate availability wake"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "cancelling an unguarded failure must request a replacement snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "cancelling an unguarded failure must leave request-time routing fail-closed"
+    );
+}
+
+#[tokio::test]
+async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_model_fence_installs() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Guarded Broadcast Failure",
+        "guarded-broadcast-failure-key",
+    )
+    .await;
+    let reservation_key = "guarded-broadcast-failure-reservation";
+    let model = "gpt-guarded-broadcast-failure";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed guarded broadcast model route");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_transport_failure = 1 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("enable transport-failure model health mutation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install initial routing snapshot");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "upstream transport failure",
+                Some("guarded-broadcast-failure-invoke"),
+                Some(model),
+            ))
+            .await
+            .expect("persist and broadcast the failure fence");
+    }
+
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "the committed in-memory model fence must wake waiters"
+    );
+    assert!(matches!(
+        crate::upstream_accounts::resolve_pool_account_for_request(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve from the in-memory failure fence"),
+        PoolAccountResolution::DegradedOnly
+    ));
+}
+
+#[tokio::test]
+async fn failed_failure_persistence_releases_reservation_without_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Failed Failure Fence", "failed-fence-key").await;
+    let reservation_key = "failed-fence-reservation";
+    let model = "gpt-failed-fence";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed failed-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before partially committed failure persistence");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2615,7 +2804,17 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
     let initial_generation = *availability.borrow();
 
     let result = persist_pool_route_failure_then_release(state.as_ref(), reservation_key, async {
-        Err::<(), _>("simulated persistence failure")
+        record_pool_route_transport_failure_for_model(
+            &state.pool,
+            account_id,
+            None,
+            "durable failure before an audit error",
+            Some("partially-committed-failure-fence-invoke"),
+            Some(model),
+        )
+        .await
+        .expect("durable health mutation must commit before the simulated audit error");
+        Err::<(), _>("simulated post-mutation audit failure")
     })
     .await;
 
@@ -2636,6 +2835,14 @@ async fn failed_failure_persistence_releases_reservation_without_waking_waiters(
         initial_generation,
         "unfenced release must not wake waiters into an immediate retry"
     );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "a post-mutation persistence error must request a replacement snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "a post-mutation persistence error must fail closed instead of retaining stale candidates"
+    );
 }
 
 #[tokio::test]
@@ -2651,6 +2858,9 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
     )
     .await;
     let reservation_key = "guarded-failed-fence-reservation";
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before failed failure persistence");
     state
         .pool_routing_reservations
         .lock()
@@ -2661,6 +2871,7 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
                 account_id,
                 model: Some("gpt-guarded-failed-fence".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2692,6 +2903,10 @@ async fn guarded_failed_failure_persistence_releases_reservation_without_waking_
         initial_generation,
         "a failed failure fence must not wake waiters into an immediate retry"
     );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "a persistence error must fail closed in case a health mutation committed before audit"
+    );
 }
 
 #[tokio::test]
@@ -2704,6 +2919,13 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
         insert_test_pool_api_key_account(&state, "Cancelled Failure Fence", "cancelled-fence-key")
             .await;
     let reservation_key = "cancelled-fence-reservation";
+    let model = "gpt-cancelled-fence";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed cancelled-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before durable failure cancellation");
     state
         .pool_routing_reservations
         .lock()
@@ -2712,8 +2934,9 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
             reservation_key.to_string(),
             PoolRoutingReservation {
                 account_id,
-                model: Some("gpt-cancelled-fence".to_string()),
+                model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2723,10 +2946,21 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
     let task_state = state.clone();
     let task = tokio::spawn(async move {
         let mut reservation_guard =
-            PoolRoutingReservationDropGuard::new(task_state, reservation_key.to_string());
-        let _ = fence_started_tx.send(());
+            PoolRoutingReservationDropGuard::new(task_state.clone(), reservation_key.to_string());
         let _ = reservation_guard
-            .fence_failure(async { std::future::pending::<Result<(), ()>>().await })
+            .fence_failure(async {
+                record_pool_route_transport_failure_for_model(
+                    &task_state.pool,
+                    account_id,
+                    None,
+                    "durable failure before cancellation",
+                    Some("cancelled-fence-invoke"),
+                    Some(model),
+                )
+                .await?;
+                let _ = fence_started_tx.send(());
+                std::future::pending::<Result<(), anyhow::Error>>().await
+            })
             .await;
     });
 
@@ -2751,6 +2985,100 @@ async fn cancelling_pending_route_failure_releases_without_an_unfenced_wake() {
         initial_generation,
         "cancellation before a failure fence commits must not wake waiters into an unfenced retry"
     );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "cancelling after a durable failure must fence the stale snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "the durable failure cancellation window must fail closed"
+    );
+    assert!(matches!(
+        resolve_pool_account_for_request_with_route_requirement(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+        )
+        .await
+        .expect("resolve while the cancellation fence is pending"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
+}
+
+#[tokio::test]
+async fn cancelling_orphan_failure_release_after_persistence_does_not_leak_reservation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Orphan Cancellation", "orphan-cancel-key").await;
+    let reservation_key = "orphan-post-persist-cancellation";
+    let model = "gpt-orphan-cancellation";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed orphan-cancellation model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before orphan failure cancellation");
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+
+    let (post_persist_rx, _resume) =
+        crate::proxy::register_pool_routing_failure_post_persist_hook(&state);
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let _ =
+            persist_pool_route_failure_then_release(task_state.as_ref(), reservation_key, async {
+                Ok::<(), ()>(())
+            })
+            .await;
+    });
+
+    tokio::task::spawn_blocking(move || {
+        post_persist_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("orphan release should pause after failure persistence")
+    })
+    .await
+    .expect("join post-persist hook waiter");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling post-persist orphan cleanup should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "post-persist cancellation must release the orphan reservation"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "post-persist cancellation must fence the snapshot before releasing capacity"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "post-persist cancellation must leave stale candidates unavailable"
+    );
 }
 
 #[tokio::test]
@@ -2773,6 +3101,7 @@ async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_wait
                 account_id,
                 model: Some("gpt-live-first-handoff".to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2814,6 +3143,155 @@ async fn cancelling_live_first_handoff_owner_releases_reservation_and_wakes_wait
 }
 
 #[tokio::test]
+async fn cancelling_websocket_reservation_guard_releases_and_wakes_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "WebSocket Cancellation", "ws-cancel-key").await;
+    let reservation_key = "websocket-cancellation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-websocket-cancellation".to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let _reservation_guard =
+            PoolRoutingReservationGuard::new_for_test(task_state, reservation_key.to_string());
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    started_rx
+        .await
+        .expect("websocket reservation must be owned before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the websocket request should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "ordinary websocket cancellation must release its routing reservation"
+    );
+    assert_ne!(
+        *availability.borrow(),
+        initial_generation,
+        "ordinary websocket cancellation must wake waiters for released capacity"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_websocket_failure_fence_guard_cools_snapshot_without_waking_waiters() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "WebSocket Failure Fence Cancellation",
+        "ws-failure-fence-cancel-key",
+    )
+    .await;
+    let model = "gpt-websocket-failure-fence-cancellation";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed websocket failure-fence model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before websocket failure-fence cancellation");
+
+    let reservation_key = "websocket-failure-fence-cancellation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let initial_generation = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let mut reservation_guard =
+            PoolRoutingReservationGuard::new_for_test(task_state, reservation_key.to_string());
+        reservation_guard.suppress_availability_on_drop_for_test();
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+
+    started_rx
+        .await
+        .expect("websocket failure fence must begin before cancellation");
+    task.abort();
+    let join_error = task
+        .await
+        .expect_err("cancelling the websocket failure fence should cancel its task");
+    assert!(join_error.is_cancelled());
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "failure-fence cancellation must release websocket model capacity"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        initial_generation,
+        "failure-fence cancellation must not wake waiters into the stale snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "failure-fence cancellation must request a snapshot refresh"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "failure-fence cancellation must fail closed while the stale snapshot is replaced"
+    );
+    assert!(matches!(
+        resolve_pool_account_for_request_with_route_requirement(
+            state.as_ref(),
+            None,
+            Some(model),
+            &[],
+            &HashSet::new(),
+            None,
+            None,
+        )
+        .await
+        .expect("resolve while the websocket failure fence is pending"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
+}
+
+#[tokio::test]
 async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -2824,6 +3302,9 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
     let invoke_id = "proxy-98765-orphan-failure-fence";
     let reservation_key = pool_routing_reservation_key_for_invoke_id(invoke_id)
         .expect("legacy proxy invoke id should map to its reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before orphan recovery");
     state
         .pool_routing_reservations
         .lock()
@@ -2834,6 +3315,7 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
                 account_id,
                 model: None,
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -2874,6 +3356,12 @@ async fn orphan_recovery_persists_route_failure_before_releasing_reservation() {
         initial_generation,
         "reservation release should notify waiting routing requests"
     );
+    assert!(matches!(
+        resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve after in-memory orphan fence"),
+        PoolAccountResolution::NoCandidate(_)
+    ));
 }
 
 #[tokio::test]
@@ -2886,18 +3374,18 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let runtime_handle = tokio::runtime::Handle::current();
     let delayed_release_task = std::thread::spawn(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("helper should signal once the bounded wait starts");
         runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
+            set_test_account_status(&release_state, delayed_id, "active").await;
         });
     });
 
@@ -3005,6 +3493,546 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_a_routable_accoun
 }
 
 #[tokio::test]
+async fn committed_model_failure_fence_keeps_another_model_on_the_same_account_selectable() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Per Model Failure Fence",
+        "per-model-failure-fence-key",
+    )
+    .await;
+    let failed_model = "gpt-failure-fence-a";
+    let healthy_model = "gpt-failure-fence-b";
+    observe_model_route_seen(&state.pool, account_id, Some(failed_model))
+        .await
+        .expect("seed failed model route");
+    observe_model_route_seen(&state.pool, account_id, Some(healthy_model))
+        .await
+        .expect("seed healthy model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install model route snapshot");
+
+    let reservation_key = "per-model-failure-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some(failed_model.to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "model-a upstream transport failure",
+                Some("per-model-failure-fence-invoke"),
+                Some(failed_model),
+            ))
+            .await
+            .expect("persist the exact-model failure fence");
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(healthy_model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve the unaffected model immediately");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn stale_explicit_model_failure_does_not_fence_newer_successful_snapshot_route() {
+    async fn insert_attempt(
+        state: &AppState,
+        account_id: i64,
+        model: &str,
+        invoke_id: &str,
+        started_at: &str,
+        status: &str,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, started_at, status) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'route', 1, 1, 0, ?5, ?6)",
+        )
+        .bind(invoke_id)
+        .bind(format_utc_iso(Utc::now()))
+        .bind(model)
+        .bind(account_id)
+        .bind(started_at)
+        .bind(status)
+        .execute(&state.pool)
+        .await
+        .expect("insert model route attempt")
+        .last_insert_rowid()
+    }
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Stale Explicit Model Failure",
+        "stale-explicit-model-failure-key",
+    )
+    .await;
+    let model = "gpt-stale-explicit-model-failure";
+    let now = Utc::now();
+    let old_started_at = format_utc_iso(now - ChronoDuration::seconds(5));
+    let newer_started_at = format_utc_iso(now - ChronoDuration::seconds(1));
+    let old_attempt = insert_attempt(
+        &state,
+        account_id,
+        model,
+        "stale-explicit-model-old",
+        &old_started_at,
+        "failed",
+    )
+    .await;
+    let newer_attempt = insert_attempt(
+        &state,
+        account_id,
+        model,
+        "stale-explicit-model-newer",
+        &newer_started_at,
+        "pending",
+    )
+    .await;
+
+    record_model_route_success_from_attempt(
+        &state.pool,
+        account_id,
+        newer_attempt,
+        Some(&newer_started_at),
+    )
+    .await
+    .expect("record newer successful model attempt");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot after newer model success");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::BAD_REQUEST,
+        "model unavailable",
+        Some("stale-explicit-model-old"),
+        "/v1/responses",
+        ImageIntent::Unknown,
+        Some(old_attempt),
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record stale explicit model failure without replacing newer success");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve newer-successful model from the in-memory snapshot");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn committed_oauth_failure_fence_excludes_every_model_on_that_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Account Scoped Failure Fence", "scope-fence-token")
+            .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install oauth account snapshot");
+
+    let reservation_key = "account-scoped-failure-fence-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("model-a".to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    {
+        let mut reservation_guard =
+            PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.to_string());
+        reservation_guard
+            .fence_failure(record_pool_route_transport_failure_for_model_and_broadcast(
+                state.as_ref(),
+                account_id,
+                None,
+                "oauth upstream transport failure",
+                Some("account-scoped-failure-fence-invoke"),
+                Some("model-a"),
+            ))
+            .await
+            .expect("persist the account-scoped failure fence");
+    }
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some("model-b"),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve after account-scoped fence");
+    assert!(matches!(resolution, PoolAccountResolution::NoCandidate(_)));
+}
+
+#[tokio::test]
+async fn committed_api_key_hard_failure_excludes_every_model_on_that_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Hard Account Scoped Failure Fence",
+        "hard-account-scope-fence-key",
+    )
+    .await;
+    let failed_model = "gpt-hard-failure-a";
+    let other_model = "gpt-hard-failure-b";
+    observe_model_route_seen(&state.pool, account_id, Some(failed_model))
+        .await
+        .expect("seed failed model route");
+    observe_model_route_seen(&state.pool, account_id, Some(other_model))
+        .await
+        .expect("seed other model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install api key snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::UNAUTHORIZED,
+        "pool upstream responded with 401: invalid api key",
+        Some("hard-account-scope-fence-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(failed_model),
+    )
+    .await
+    .expect("persist the account-scoped hard failure fence");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(other_model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after hard account failure fence");
+    assert!(matches!(resolution, PoolAccountResolution::NoCandidate(_)));
+}
+
+#[tokio::test]
+async fn api_key_413_diagnostic_does_not_exclude_its_model() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Diagnostic Only Failure",
+        "diagnostic-only-failure-key",
+    )
+    .await;
+    let model = "gpt-diagnostic-only";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed diagnostic model route");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install diagnostic snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "pool upstream responded with 413: request payload too large",
+        Some("diagnostic-only-failure-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record diagnostic-only failure");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after diagnostic-only failure");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn disabled_api_key_401_policy_does_not_exclude_its_account() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Disabled Hard Failure Policy",
+        "disabled-hard-failure-policy-key",
+    )
+    .await;
+    let model = "gpt-disabled-hard-policy";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed policy diagnostic model route");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_status_change_upstream_http_401 = 0 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .execute(&state.pool)
+    .await
+    .expect("disable hard-failure policy");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install policy diagnostic snapshot");
+
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+        state.as_ref(),
+        account_id,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+        false,
+        None,
+        StatusCode::UNAUTHORIZED,
+        "pool upstream responded with 401: invalid api key",
+        Some("disabled-hard-failure-policy-invoke"),
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        None,
+        None,
+        None,
+        Some(model),
+    )
+    .await
+    .expect("record policy-disabled diagnostic");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement(
+        state.as_ref(),
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+    )
+    .await
+    .expect("resolve after policy-disabled diagnostic");
+    assert!(matches!(
+        resolution,
+        PoolAccountResolution::Resolved(account) if account.account_id == account_id
+    ));
+}
+
+#[tokio::test]
+async fn delayed_model_reservation_fails_closed_while_failure_fence_is_pending() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Fenced Model", "upstream-fenced-model").await;
+    let model = "gpt-fenced-model";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("seed model route");
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET cache_concurrency_limit = 1 WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .execute(&state.pool)
+    .await
+    .expect("limit the model route to one reservation");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish model reservation fixture");
+
+    let account = match resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        Some("fenced-model-holder"),
+    )
+    .await
+    .expect("reserve the published model route")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("expected a model route reservation, got {other:?}"),
+    };
+
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "the mutation fence must make the route snapshot unavailable"
+    );
+    assert!(
+        !reserve_pool_routing_account_for_model(
+            state.as_ref(),
+            "fenced-model-retry",
+            &account,
+            Some(model),
+        ),
+        "a delayed preferred-account reservation must not bypass a cold snapshot's cap"
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key("fenced-model-retry"),
+        "the rejected retry must not create a second model reservation"
+    );
+
+    release_pool_routing_reservation(&state, "fenced-model-holder");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("republish the snapshot before racing fresh selection");
+
+    let (snapshot, snapshot_generation) = state
+        .pool_routing_snapshot
+        .current_with_generation()
+        .expect("selection should capture a published snapshot before the race");
+    let concurrency_limit = snapshot.model_route_concurrency_limit(account.account_id, Some(model));
+    assert!(
+        try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+            state.as_ref(),
+            "fenced-model-live-first",
+            &account,
+            Some(model),
+            concurrency_limit,
+            snapshot_generation,
+        )
+    );
+    state.pool_routing_snapshot.request_refresh();
+    assert!(
+        !try_reserve_pool_routing_account_for_model_at_snapshot_generation(
+            state.as_ref(),
+            "fenced-model-fresh-selection",
+            &account,
+            Some(model),
+            concurrency_limit,
+            snapshot_generation,
+        ),
+        "a mutation after fresh selection but before reservation must fence the stale candidate"
+    );
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install the replacement snapshot before the delayed send check");
+    assert!(
+        !pool_routing_reservation_generation_is_current(state.as_ref(), "fenced-model-live-first",),
+        "a completed replacement snapshot must invalidate the live-first lease"
+    );
+    release_pool_routing_reservation(&state, "fenced-model-live-first");
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key("fenced-model-fresh-selection"),
+        "the fenced fresh selection must not write a reservation"
+    );
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation_is_released() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -3030,8 +4058,11 @@ async fn resolve_pool_account_for_request_with_wait_wakes_when_model_reservation
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
     )
         .execute(&state.pool)
+    .await
+    .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
         .await
-        .expect("enable queue overflow mode");
+        .expect("publish model reservation capacity fixture");
 
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
@@ -3141,6 +4172,9 @@ async fn expired_model_cooldown_probe_conflict_has_a_distinct_no_candidate_reaso
         .execute(&state.pool)
         .await
         .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish expired cooldown probe fixture");
 
     let holder = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
         &state,
@@ -3217,6 +4251,9 @@ async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish queued model capacity fixture");
     {
         let mut reservations = state
             .pool_routing_reservations
@@ -3232,6 +4269,7 @@ async fn queued_model_capacity_audit_counts_every_conflicting_candidate() {
                     account_id,
                     model: Some(model.to_string()),
                     proxy_key: None,
+                    snapshot_generation: None,
                     created_at: Instant::now(),
                 },
             );
@@ -3278,7 +4316,7 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
         insert_test_pool_api_key_account(&state, "Other Capacity", "other-capacity").await;
     let sticky_key = "sticky-queue-capacity-audit";
     let model = "gpt-sticky-queued-capacity-audit";
-    upsert_test_sticky_route_at(&state.pool, sticky_key, sticky_id, &shanghai_now_string()).await;
+    upsert_test_sticky_route_at(&state, sticky_key, sticky_id, &shanghai_now_string()).await;
     for account_id in [sticky_id, other_id] {
         observe_model_route_seen(&state.pool, account_id, Some(model))
             .await
@@ -3298,6 +4336,9 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish queued sticky capacity fixture");
     {
         let mut reservations = state
             .pool_routing_reservations
@@ -3313,6 +4354,7 @@ async fn queued_sticky_capacity_audit_counts_remaining_conflicting_candidates_wi
                     account_id,
                     model: Some(model.to_string()),
                     proxy_key: None,
+                    snapshot_generation: None,
                     created_at: Instant::now(),
                 },
             );
@@ -3392,13 +4434,16 @@ async fn queued_model_capacity_audit_ignores_unrelated_cooldown_expiry() {
     .execute(&state.pool)
     .await
     .expect("seed unrelated cooldown");
-    set_test_account_status(&state.pool, unrelated_id, "needs_reauth").await;
+    set_test_account_status(state.as_ref(), unrelated_id, "needs_reauth").await;
     sqlx::query(
         "UPDATE pool_routing_settings SET cache_hit_protection_enabled = 1, cache_hit_overflow_mode = 'queue' WHERE id = 1",
     )
     .execute(&state.pool)
     .await
     .expect("enable queue overflow mode");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("publish unrelated cooldown capacity fixture");
     state
         .pool_routing_reservations
         .lock()
@@ -3409,6 +4454,7 @@ async fn queued_model_capacity_audit_ignores_unrelated_cooldown_expiry() {
                 account_id: capacity_id,
                 model: Some(model.to_string()),
                 proxy_key: None,
+                snapshot_generation: None,
                 created_at: Instant::now(),
             },
         );
@@ -3446,13 +4492,13 @@ async fn resolve_pool_account_for_request_with_wait_rejects_recovery_after_exter
     .await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
     let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
-    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, delayed_id, "needs_reauth").await;
 
-    let pool = state.pool.clone();
+    let release_state = state.clone();
     let delayed_release_task = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(70)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+        set_test_account_status(&release_state, delayed_id, "active").await;
     });
 
     let started = Instant::now();
@@ -3503,7 +4549,7 @@ async fn pool_route_wait_timeout_overrides_stale_upstream_failure_with_503() {
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
-    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
     let response = proxy_openai_v1(
@@ -3567,13 +4613,13 @@ async fn pool_route_existing_sticky_owner_retries_before_cutting_out_to_healthy_
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-cutout",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -3648,15 +4694,15 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let unusable_id =
         insert_test_pool_api_key_account(&state, "Unusable", "upstream-secondary").await;
-    clear_test_account_credentials(&state.pool, unusable_id).await;
+    clear_test_account_credentials(&state, unusable_id).await;
     upsert_test_sticky_route_at(
-        &state.pool,
+        &state,
         "sticky-existing-owner-preserve-last-error",
         primary_id,
         &format_utc_iso(Utc::now()),
     )
     .await;
-    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_generic_route_cooldown(&state, primary_id, 120).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
