@@ -10311,6 +10311,29 @@ async fn cold_routing_snapshot_fails_closed_without_candidate_sql() {
 }
 
 #[tokio::test]
+async fn snapshot_reconciler_recovers_pending_startup_snapshot_without_watch_notification() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    // Model the startup warm failure: the refresh notification precedes the
+    // reconciler's watch subscription, but the pending fence is durable.
+    state.pool_routing_snapshot.invalidate();
+    spawn_pool_routing_snapshot_reconcile(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while state.pool_routing_snapshot.current().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("pending startup snapshot should recover without waiting for the ticker");
+
+    state.shutdown.cancel();
+}
+
+#[tokio::test]
 async fn pool_no_candidate_wait_bulkhead_leaves_model_routing_live_responsive() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
