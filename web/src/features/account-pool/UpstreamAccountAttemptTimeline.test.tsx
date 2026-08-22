@@ -11,7 +11,6 @@ import {
   fetchInvocationAttemptResponseBody,
   fetchInvocationRequestBody,
   fetchInvocationResponseBody,
-  fetchUpstreamAccountAttempts,
   locateUpstreamAccountAttempt,
   type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
@@ -28,7 +27,6 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   fetchInvocationRequestBody: vi.fn(),
   fetchInvocationAttemptResponseBody: vi.fn(),
   fetchInvocationResponseBody: vi.fn(),
-  fetchUpstreamAccountAttempts: vi.fn(),
   locateUpstreamAccountAttempt: vi.fn(),
 }));
 
@@ -36,7 +34,21 @@ vi.mock("../../hooks/useSubscriptionTopic", () => ({
   useSubscriptionTopic: vi.fn(),
 }));
 
-const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
+type TopicSnapshotRequest = {
+  type?: "normal" | "remote_v2" | "compact" | "image";
+  model?: string;
+  stickyKey?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+const topicSnapshotMock =
+  vi.fn<
+    (
+      accountId: number,
+      request: TopicSnapshotRequest,
+    ) => Promise<UpstreamAccountAttemptListResponse>
+  >();
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 const fetchRequestBodyMock = vi.mocked(fetchInvocationRequestBody);
 const fetchAttemptResponseBodyMock = vi.mocked(fetchInvocationAttemptResponseBody);
@@ -78,7 +90,7 @@ function useMockSubscriptionTopic(descriptor: SubscriptionTopicDescriptor | null
     topicListeners.set(descriptorKey, listeners);
     if (!cached) {
       const params = descriptor.params ?? {};
-      void fetchAttemptsMock(Number(params.accountId), {
+      void topicSnapshotMock(Number(params.accountId), {
         type: params.type as "normal" | "remote_v2" | "compact" | "image" | undefined,
         model: typeof params.model === "string" ? params.model : undefined,
         stickyKey: typeof params.stickyKey === "string" ? params.stickyKey : undefined,
@@ -124,11 +136,13 @@ function renderTimeline({
   focusVersion = 0,
   onFocusRequestHandled,
   boundary = null,
+  visible = true,
 }: {
   focusedAttemptId?: string | null;
   focusVersion?: number;
   onFocusRequestHandled?: (version: number) => void;
   boundary?: HTMLElement | null;
+  visible?: boolean;
 } = {}) {
   if (!host) {
     host = document.createElement("div");
@@ -139,13 +153,15 @@ function renderTimeline({
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <UpstreamAccountAttemptTimeline
-            accountId={101}
-            focusedAttemptId={focusedAttemptId}
-            focusVersion={focusVersion}
-            interactionBoundary={boundary}
-            onFocusRequestHandled={onFocusRequestHandled}
-          />
+          {visible ? (
+            <UpstreamAccountAttemptTimeline
+              accountId={101}
+              focusedAttemptId={focusedAttemptId}
+              focusVersion={focusVersion}
+              interactionBoundary={boundary}
+              onFocusRequestHandled={onFocusRequestHandled}
+            />
+          ) : null}
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -246,6 +262,8 @@ describe("UpstreamAccountAttemptTimeline", () => {
     vi.clearAllMocks();
     topicSnapshotCache.clear();
     topicListeners.clear();
+    topicSnapshotMock.mockReset();
+    topicSnapshotMock.mockResolvedValue(attemptListResponse());
     subscriptionTopicMock.mockImplementation(useMockSubscriptionTopic);
     vi.useRealTimers();
     scrollIntoViewMock = vi.fn();
@@ -301,7 +319,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("keeps the primary row focused on upstream evidence and reveals complete failure context on demand", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -435,7 +453,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       detailLevel: "full",
       captureSource: "attempt_raw_file",
     });
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -668,7 +686,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("does not lazy-load the final invocation response body for non-final retry attempts", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -780,7 +798,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -831,7 +849,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       responseModel: "gpt-image-1",
       imageIntent: "direct_image",
     });
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [normalAttempt],
@@ -868,7 +886,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     ).not.toBeNull();
 
     await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
@@ -885,7 +903,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushAsync();
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
@@ -896,7 +914,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("offers request and response models and keeps empty results inside the list body", async () => {
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [
@@ -920,7 +938,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     await flushAsync();
     await selectModelOption(/gpt-5\.6/);
 
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         model: "gpt-5.6",
@@ -936,7 +954,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("preserves backend conversation option order and filters the unbound bucket", async () => {
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [makeAttempt({ attemptId: "ACONVO001" })],
@@ -987,7 +1005,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
 
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         stickyKey: "__unbound__",
@@ -1015,9 +1033,8 @@ describe("UpstreamAccountAttemptTimeline", () => {
       errorMessage: "focused failure details",
       createdAt: "2026-07-11T12:00:00.000Z",
     };
-    fetchAttemptsMock.mockImplementation(async (_accountId, options) =>
+    topicSnapshotMock.mockImplementation(async (_accountId, options) =>
       attemptListResponse({
-        items: [focusedAttempt],
         total: 100,
         page: options?.page ?? 1,
         pageSize: 50,
@@ -1038,13 +1055,14 @@ describe("UpstreamAccountAttemptTimeline", () => {
     renderTimeline();
     await flushAsync();
     await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
         page: 1,
       }),
     );
+    scrollIntoViewMock.mockClear();
     renderTimeline({
       focusedAttemptId: "YG7P25XG",
       focusVersion: 1,
@@ -1053,10 +1071,6 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
 
-    const record = host?.querySelector<HTMLElement>(
-      '[data-testid="account-attempt-record-YG7P25XG"]',
-    );
-    expect(record).not.toBeNull();
     expect(locateUpstreamAccountAttempt).toHaveBeenCalledWith(
       101,
       "YG7P25XG",
@@ -1065,17 +1079,44 @@ describe("UpstreamAccountAttemptTimeline", () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
     expect(host?.textContent).toMatch(/All types|全部类型/);
     const topicAfterLocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
     expect(topicAfterLocate?.params?.page).toBe("2");
-    const fetchCallsAfterLocate = fetchAttemptsMock.mock.calls.length;
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
+    ).toBeNull();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    act(() => {
+      emitTopicSnapshot(
+        buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+
+    const record = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-YG7P25XG"]',
+    );
+    expect(record).not.toBeNull();
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    const snapshotCallsAfterLocate = topicSnapshotMock.mock.calls.length;
     renderTimeline({
       boundary: interactionBoundary,
       onFocusRequestHandled,
     });
     await flushAsync();
-    expect(fetchAttemptsMock).toHaveBeenCalledTimes(fetchCallsAfterLocate);
+    expect(topicSnapshotMock).toHaveBeenCalledTimes(snapshotCallsAfterLocate);
     const topicAfterFocusAcknowledged = subscriptionTopicMock.mock.calls.at(-1)?.[0];
     expect(topicAfterFocusAcknowledged?.params?.page).toBe("2");
     expect(
@@ -1118,6 +1159,83 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("relocates a deep link when its first topic snapshot has shifted to the next page", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "SHIFT0001",
+      invokeId: "SHIFT0001INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolvePageTwo: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 2) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageTwo = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: 3,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "SHIFT0001",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolvePageTwo).toBeDefined();
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+    act(() => {
+      resolvePageTwo?.(
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    const record = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFT0001"]',
+    );
+    expect(record).not.toBeNull();
+    expect(record?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  });
+
   it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {
     vi.mocked(locateUpstreamAccountAttempt).mockRejectedValue(new Error("404 not found"));
 
@@ -1130,28 +1248,27 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(host?.textContent).toMatch(/7-day retention window|7 天保留范围|7 天窗口/i);
   });
 
-  it("reconciles a pending attempt in place without duplicating the expanded card", async () => {
+  it("reconciles a focused pending attempt in place without duplicating its expanded card", async () => {
     const pending = makeAttempt({
       attemptId: "LIVE0001",
       status: "pending",
       phase: "waiting_first_byte",
       httpStatus: null,
     });
-    fetchAttemptsMock.mockResolvedValue(attemptListResponse({ items: [pending] }));
+    topicSnapshotMock.mockResolvedValue(attemptListResponse({ items: [pending] }));
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({ items: [pending], total: 1, page: 1, pageSize: 50 }),
+    );
 
-    renderTimeline();
+    renderTimeline({ focusedAttemptId: "LIVE0001", focusVersion: 1 });
     await flushAsync();
 
     const pendingCard = host?.querySelector<HTMLElement>(
       '[data-testid="account-attempt-record-LIVE0001"]',
     );
     expect(pendingCard).not.toBeNull();
-    const timingButton = Array.from(pendingCard?.querySelectorAll("button") ?? []).find((button) =>
-      /时间|timing/i.test(button.textContent ?? ""),
-    );
-    act(() => {
-      timingButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
+    expect(pendingCard?.textContent).toMatch(/时间细分|timing breakdown/i);
+    expect(pendingCard?.dataset.focusVisible).toBe("true");
 
     const terminal = makeAttempt({
       ...pending,
@@ -1161,14 +1278,24 @@ describe("UpstreamAccountAttemptTimeline", () => {
       downstreamHttpStatus: 200,
       finishedAt: "2026-07-11T12:00:03.000Z",
     });
-    emitTopicSnapshot(
-      buildTopicDescriptor("upstream-account-attempts.window", {
-        accountId: 101,
-        page: 1,
-        pageSize: 50,
-      }),
-      attemptListResponse({ items: [terminal] }),
-    );
+    const newer = makeAttempt({
+      attemptId: "LIVE0002",
+      invokeId: "LIVE0002INVOKE",
+      status: "pending",
+      phase: "connecting",
+      httpStatus: null,
+      createdAt: "2026-07-11T12:00:04.000Z",
+    });
+    act(() => {
+      emitTopicSnapshot(
+        buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId: 101,
+          page: 1,
+          pageSize: 50,
+        }),
+        attemptListResponse({ items: [newer, terminal], total: 2 }),
+      );
+    });
     await flushAsync();
 
     const updatedCard = host?.querySelector<HTMLElement>(
@@ -1178,12 +1305,25 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(host?.querySelectorAll('[data-testid="account-attempt-record-LIVE0001"]')).toHaveLength(
       1,
     );
+    expect(host?.querySelectorAll('[data-testid="account-attempt-record-LIVE0002"]')).toHaveLength(
+      1,
+    );
     expect(updatedCard?.textContent).toMatch(/HTTP 200|上游 HTTP 200|success/i);
+    expect(updatedCard?.textContent).toMatch(/时间细分|timing breakdown/i);
+    expect(updatedCard?.dataset.focusVisible).toBe("true");
   });
 
-  it("releases the account attempt topic listener when the timeline unmounts", async () => {
-    fetchAttemptsMock.mockResolvedValue(attemptListResponse({ items: [] }));
+  it("releases and reacquires the account attempt topic listener with the request tab", async () => {
+    topicSnapshotMock.mockResolvedValue(attemptListResponse({ items: [] }));
     renderTimeline();
+    await flushAsync();
+    expect(topicListeners.size).toBe(1);
+
+    renderTimeline({ visible: false });
+    await flushAsync();
+    expect(topicListeners.size).toBe(0);
+
+    renderTimeline({ visible: true });
     await flushAsync();
     expect(topicListeners.size).toBe(1);
 

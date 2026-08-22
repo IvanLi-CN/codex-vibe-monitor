@@ -161,7 +161,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 账号 attempts API 返回的每个 item 可选携带 `invocationRecord` 与 `workflowEntry`：当同一主库 `(invokeId, occurredAt)` 能加载 invocation 与真实 attempt 行时，`workflowEntry` 使用 `GET /api/invocations/:id/workflow-detail` 的 attempt 构造规则生成；缺失关联数据时仍返回基本 attempt 行并允许前端最小 fallback。该接口不读取 archive，仍只覆盖最近 7 天主库窗口。
 - 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
 - 统一 `/events` 通道新增 `upstream-account-attempts.window` topic，参数固定为 `accountId`、`page`、`pageSize`、`type`、`model`、`stickyKey`；规范化规则与账号 attempts REST 列表一致，默认 `page=1`、`pageSize=20`，`accountId` 必须为正整数，响应 payload 复用 `items`、`stickyKeyOptions`、`total`、`page`、`pageSize`，schema epoch 固定为 `upstream-account-attempts.window/v1`。
-- `PoolAttempts` 广播只有在包含目标 `upstreamAccountId` 时才会触发对应活跃 topic；同一账号 topic 使用不可续延的 250ms 合并窗口，构建期间到达的新事件只补发一次最新快照。刷新失败保留最近一次成功 payload，不清空或倒退列表。
+- `PoolAttempts` 广播只有在包含目标 `upstreamAccountId` 时才会触发对应活跃 topic；同一账号 topic 使用不可续延的 250ms 合并窗口，构建期间到达的新事件只补发一次最新快照。刷新失败保留最近一次成功 payload，不清空或倒退列表；内部广播接收端发生 lag 时，所有活跃账号 topic 视为连续性中断，保留 last-good 并各自排入一次专用重建，gap 前构建不得提交覆盖新快照。
 - 请求 tab 仅在可见时订阅上述 topic；第一页接纳新记录，非第一页不自动跳页或滚动，同一 `attemptId` 以稳定 key 原位更新并保留展开卡片与深链 focus。`locate` REST 只负责深链定位目标页，定位完成后由对应 topic 接管当前页；断线不在页面私有轮询或补拉。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
@@ -822,6 +822,38 @@ PR: include
 - requested_viewport: 393x852
 - viewport_strategy: ui-demo-source
 - state: the existing InvocationWorkflowDetailPanel expands inside the same card boundary and remains available from the card body/chevron.
+
+- source_type: storybook_docs
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / RealtimeLifecycle
+  state: desktop lifecycle after pending attempt becomes terminal and a first-page attempt is added
+  requested_viewport: desktop
+  viewport_strategy: storybook-docs element capture
+  margin_policy: require_margin
+  evidence_surface: component
+  evidence_note: verifies the authoritative topic lifecycle replaces the pending record in place, adds exactly one new first-page record, and keeps list controls and diagnostics layout stable without a full-list loading state.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Upstream account attempt realtime lifecycle desktop](./assets/upstream-account-attempt-realtime-lifecycle-desktop-storybook-docs.png)
+
+- source_type: storybook_docs
+  story_id_or_title: Account Pool/Components/Upstream Account Attempt Timeline / RealtimeLifecycleMobile
+  state: mobile lifecycle after pending attempt becomes terminal and a first-page attempt is added
+  requested_viewport: mobile390 (390x852 CSS)
+  viewport_strategy: browser-resize-fallback
+  margin_policy: require_margin
+  evidence_surface: component
+  evidence_note: verifies the same topic lifecycle at 390px CSS width, with no duplicate rows, no full-list loading flash, and stable controls and expanded diagnostics layout.
+  PR: include
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only upstream attempt data
+  submission_gate: approved
+  image:
+  ![Upstream account attempt realtime lifecycle mobile390](./assets/upstream-account-attempt-realtime-lifecycle-mobile390-storybook-docs.png)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

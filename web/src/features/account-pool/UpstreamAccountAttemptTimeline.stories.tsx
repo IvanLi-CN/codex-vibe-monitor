@@ -379,12 +379,62 @@ function withAccountId(item: ApiPoolUpstreamRequestAttempt, accountId: number) {
 }
 
 function StorySurface({ children }: { children: ReactNode }) {
+  const visualEvidenceTarget = new URLSearchParams(window.location.search).get("evidence");
+  const visualEvidenceMode = visualEvidenceTarget != null;
+  const visualEvidenceStoryId =
+    visualEvidenceTarget === "mobile" ? "realtime-lifecycle-mobile" : "realtime-lifecycle";
+  const visualEvidenceAnchorId = `anchor--account-pool-components-upstream-account-attempt-timeline--${visualEvidenceStoryId}`;
+  const surfaceBackgroundClass = visualEvidenceMode ? "bg-[#e8dfd0]" : "bg-[#f6f1e7]";
+  const storySurfacePaddingClass =
+    visualEvidenceTarget === "mobile" ? "px-0 py-6" : "px-6 py-6 sm:px-8";
+  const evidenceFrameClass =
+    visualEvidenceTarget === "mobile"
+      ? "mx-0 mt-3 mb-10 bg-[#d8e3f0] px-[36px] pt-[36px] pb-[35px]"
+      : "mx-3 mt-3 mb-10 bg-[#d8e3f0] p-[18px]";
+  const timelineSurfaceClass = visualEvidenceMode
+    ? "mx-auto max-w-6xl bg-base-200 px-6 py-6"
+    : "mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm";
+  const timelineSurface = <div className={timelineSurfaceClass}>{children}</div>;
+
   return (
-    <div className="bg-[#f6f1e7] px-6 py-6 text-base-content sm:px-8">
-      <div className="mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm">
-        {children}
+    <>
+      {visualEvidenceMode ? (
+        <style>{`
+          body:has([data-testid="upstream-account-attempt-story-surface"]),
+          body:has([data-testid="upstream-account-attempt-story-surface"]) #storybook-docs,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-wrapper,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-content {
+            background: #e8dfd0 !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-preview {
+            background: #e8dfd0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-content > :not(#${visualEvidenceAnchorId}),
+          body:has([data-testid="upstream-account-attempt-story-surface"]) #${visualEvidenceAnchorId} > h3,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .docblock-code-toggle {
+            display: none !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"])::-webkit-scrollbar {
+            display: none;
+          }
+        `}</style>
+      ) : null}
+      <div className={`${surfaceBackgroundClass} ${storySurfacePaddingClass} text-base-content`}>
+        {visualEvidenceMode ? (
+          <div className={evidenceFrameClass} data-testid="upstream-account-attempt-story-surface">
+            {timelineSurface}
+          </div>
+        ) : (
+          timelineSurface
+        )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -445,10 +495,7 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
           },
         );
       }
-      if (
-        url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`) ||
-        url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts?`)
-      ) {
+      if (url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`)) {
         const parsedUrl = new URL(url, "http://storybook.local");
         const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
         const filteredItems = locatedAttemptId
@@ -621,12 +668,14 @@ const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
 };
 
 const REALTIME_LIFECYCLE_ACCOUNT_ID = 919;
+const REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID = 920;
 
 function buildAttemptTimelineSnapshot(
+  accountId: number,
   items: ApiPoolUpstreamRequestAttempt[],
 ): SubscriptionTopicEnvelope<UpstreamAccountAttemptListResponse> {
   const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
-    accountId: REALTIME_LIFECYCLE_ACCOUNT_ID,
+    accountId,
     page: 1,
     pageSize: 50,
   });
@@ -646,22 +695,20 @@ function buildAttemptTimelineSnapshot(
   };
 }
 
-function AttemptTimelineRealtimeLifecycleMock() {
+function AttemptTimelineRealtimeLifecycleMock({ accountId }: { accountId: number }) {
   useEffect(() => {
     const controller = getStorybookPageSseController();
     if (!controller) return;
     let terminalTimer: number | null = null;
     const initialTimer = window.setTimeout(() => {
       controller.emit(
-        buildAttemptTimelineSnapshot([
-          withAccountId(realtimePendingAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
-        ]),
+        buildAttemptTimelineSnapshot(accountId, [withAccountId(realtimePendingAttempt, accountId)]),
       );
       terminalTimer = window.setTimeout(() => {
         controller.emit(
-          buildAttemptTimelineSnapshot([
-            withAccountId(realtimeNewAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
-            withAccountId(realtimeTerminalAttempt, REALTIME_LIFECYCLE_ACCOUNT_ID),
+          buildAttemptTimelineSnapshot(accountId, [
+            withAccountId(realtimeNewAttempt, accountId),
+            withAccountId(realtimeTerminalAttempt, accountId),
           ]),
         );
       }, 160);
@@ -670,7 +717,7 @@ function AttemptTimelineRealtimeLifecycleMock() {
       window.clearTimeout(initialTimer);
       if (terminalTimer != null) window.clearTimeout(terminalTimer);
     };
-  }, []);
+  }, [accountId]);
 
   return null;
 }
@@ -743,8 +790,16 @@ function withAttemptTimelineFetchMock(Story: () => ReactNode) {
 function withAttemptTimelineRealtimeLifecycleMock(Story: () => ReactNode) {
   return (
     <>
-      <AttemptTimelineFetchMock accountId={REALTIME_LIFECYCLE_ACCOUNT_ID} />
-      <AttemptTimelineRealtimeLifecycleMock />
+      <AttemptTimelineRealtimeLifecycleMock accountId={REALTIME_LIFECYCLE_ACCOUNT_ID} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineRealtimeLifecycleMobileMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineRealtimeLifecycleMock accountId={REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID} />
       <Story />
     </>
   );
@@ -840,16 +895,40 @@ export const RealtimeLifecycle: Story = {
   },
   decorators: [withAttemptTimelineRealtimeLifecycleMock],
   play: async ({ canvasElement }) => {
+    const pendingCard = await within(canvasElement).findByTestId(
+      "account-attempt-record-ALIVE0001",
+    );
+    expect(
+      canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
+    ).toHaveLength(1);
+    expect(pendingCard.textContent ?? "").toContain("waiting_first_byte");
+
     await waitFor(() => {
-      expect(
-        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
-      ).toHaveLength(1);
+      expect(canvasElement.querySelector('[data-testid="account-attempt-record-ALIVE0001"]')).toBe(
+        pendingCard,
+      );
       expect(
         canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0002"]'),
+      ).toHaveLength(1);
+      expect(
+        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
       ).toHaveLength(1);
       expect(canvasElement.textContent ?? "").toContain("HTTP 200");
       expect(canvasElement.textContent ?? "").not.toContain("waiting_first_byte");
     });
+  },
+};
+
+export const RealtimeLifecycleMobile: Story = {
+  ...RealtimeLifecycle,
+  tags: ["test"],
+  args: {
+    accountId: REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID,
+    focusedAttemptId: null,
+  },
+  decorators: [withAttemptTimelineRealtimeLifecycleMobileMock],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
   },
 };
 

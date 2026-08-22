@@ -2330,8 +2330,14 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
-    #[cfg(test)]
-    if state.broadcaster.receiver_count() > 0 {
+    let has_account_attempt_topic = state
+        .subscription_hub
+        .has_active_topic_name("upstream-account-attempts.window")
+        .await;
+    let has_external_broadcaster_receiver = state
+        .subscription_hub
+        .has_external_broadcaster_receiver(state.broadcaster.receiver_count());
+    if has_account_attempt_topic || has_external_broadcaster_receiver {
         let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
             .await
             .map_err(|err| anyhow!("failed to load pool attempt snapshot: {err:?}"))?;
