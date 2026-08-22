@@ -21038,3 +21038,119 @@ async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled()
     .expect("count startup state writes");
     assert_eq!(state_row_count, 0);
 }
+
+#[tokio::test]
+async fn materialized_timeseries_uses_exact_fallback_for_same_cursor_terminal_replacement() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_at = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let invoke_id = "timeseries-materializer-same-cursor-replacement";
+    let persisted = persist_proxy_capture_record(
+        &state.pool,
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, &occurred_at),
+    )
+    .await
+    .expect("persist initial terminal row")
+    .expect("initial terminal row should be stored");
+    assert_eq!(persisted.status.as_deref(), Some("success"));
+
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let warm_start = now - ChronoDuration::minutes(62);
+    let warm_end = now + ChronoDuration::minutes(2);
+    let warm_outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        warm_start,
+        warm_end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        state
+            .terminal_projection_hub
+            .timeseries_coverage_generation(),
+        "stateful_same_cursor_materializer_seed",
+        &coordinator,
+    )
+    .await
+    .expect("warm the complete materializer selection");
+    assert_eq!(
+        warm_outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+
+    let minute_start = parse_to_utc_datetime(&occurred_at)
+        .expect("parse persisted occurrence")
+        .timestamp()
+        .div_euclid(60)
+        * 60;
+    let (coverage_state, projection_cursor): (String, i64) = sqlx::query_as(
+        "SELECT coverage_state, max_row_id FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(minute_start)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load warm minute projection");
+    assert_eq!(coverage_state, "ready");
+    assert_eq!(projection_cursor, persisted.id);
+
+    sqlx::query(
+        "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE id = ?1",
+    )
+    .bind(persisted.id)
+    .execute(&state.pool)
+    .await
+    .expect("replace the terminal row without advancing its cursor");
+
+    let mut replacement =
+        api_invocation_from_runtime_record(&test_proxy_capture_record(invoke_id, &occurred_at));
+    replacement.status = Some("failed".to_string());
+    replacement.failure_kind = Some("upstream_response_failed".to_string());
+    replacement.failure_class = Some("service_failure".to_string());
+    replacement.is_actionable = Some(true);
+    state
+        .terminal_projection_hub
+        .activate_timeseries_consumer(0);
+    let event_id = state
+        .terminal_projection_hub
+        .register_pending(&replacement, None)
+        .expect("replacement must fit in the terminal projection journal");
+    state.terminal_projection_hub.acknowledge_persisted(
+        Some(event_id),
+        &replacement.invoke_id,
+        &replacement.occurred_at,
+        persisted.id,
+    );
+
+    let query = TimeseriesQuery {
+        range: "1h".to_string(),
+        bucket: Some("1m".to_string()),
+        settlement_hour: None,
+        time_zone: Some("UTC".to_string()),
+        upstream_account_id: None,
+    };
+    let base = crate::api::TimeseriesTopicMaterializedBase::build(state.as_ref(), &query)
+        .await
+        .expect("build materialized timeseries base");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &base
+            .serialize(&[])
+            .expect("serialize exact-fallback materialized response"),
+    )
+    .expect("materialized timeseries JSON");
+    let point = payload["points"]
+        .as_array()
+        .expect("timeseries points")
+        .iter()
+        .find(|point| point["totalCount"] == 1)
+        .expect("replacement minute point");
+    assert_eq!(point["successCount"], 0);
+    assert_eq!(point["failureCount"], 1);
+}

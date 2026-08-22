@@ -615,6 +615,22 @@ mod tests {
         }
     }
 
+    fn hub_with_persisted_timeseries_delta(
+        delta: TimeseriesTerminalDelta,
+    ) -> TerminalProjectionHub {
+        let hub = TerminalProjectionHub::default();
+        let event = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &delta.occurred_at,
+                128,
+                Some(delta.clone()),
+            )
+            .expect("terminal event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(event), "invoke", &delta.occurred_at, 17);
+        hub
+    }
+
     #[test]
     fn long_term_cursor_prunes_out_of_order_persisted_events() {
         let hub = TerminalProjectionHub::default();
@@ -834,6 +850,95 @@ mod tests {
                 end,
             ),
             "an un-warmed replacement at the existing projection cursor must force exact reads"
+        );
+    }
+
+    #[test]
+    fn minute_projection_pending_delta_selection_respects_scope_account_and_complete_minutes() {
+        let full_start = Utc
+            .with_ymd_and_hms(2026, 7, 30, 1, 59, 0)
+            .single()
+            .expect("valid full-minute range start");
+        let full_end = Utc
+            .with_ymd_and_hms(2026, 7, 30, 2, 1, 0)
+            .single()
+            .expect("valid full-minute range end");
+
+        let proxy_hub = hub_with_persisted_timeseries_delta(timeseries_delta());
+        assert!(
+            crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &proxy_hub,
+                crate::api::InvocationSourceScope::ProxyOnly,
+                None,
+                full_start,
+                full_end,
+            )
+        );
+        assert!(
+            !crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &proxy_hub,
+                crate::api::InvocationSourceScope::All,
+                None,
+                Utc.with_ymd_and_hms(2026, 7, 30, 2, 0, 30)
+                    .single()
+                    .expect("valid partial-start range"),
+                full_end,
+            )
+        );
+        assert!(
+            !crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &proxy_hub,
+                crate::api::InvocationSourceScope::All,
+                None,
+                full_start,
+                Utc.with_ymd_and_hms(2026, 7, 30, 2, 0, 30)
+                    .single()
+                    .expect("valid partial-end range"),
+            )
+        );
+
+        let mut account_delta = timeseries_delta();
+        account_delta.upstream_account_id = Some(42);
+        let account_hub = hub_with_persisted_timeseries_delta(account_delta);
+        assert!(
+            crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &account_hub,
+                crate::api::InvocationSourceScope::All,
+                Some(42),
+                full_start,
+                full_end,
+            )
+        );
+        assert!(
+            !crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &account_hub,
+                crate::api::InvocationSourceScope::All,
+                Some(7),
+                full_start,
+                full_end,
+            )
+        );
+
+        let mut non_proxy_delta = timeseries_delta();
+        non_proxy_delta.source = "cli".to_string();
+        let non_proxy_hub = hub_with_persisted_timeseries_delta(non_proxy_delta);
+        assert!(
+            crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &non_proxy_hub,
+                crate::api::InvocationSourceScope::All,
+                None,
+                full_start,
+                full_end,
+            )
+        );
+        assert!(
+            !crate::api::timeseries_minute_projection_has_uncovered_terminal_delta(
+                &non_proxy_hub,
+                crate::api::InvocationSourceScope::ProxyOnly,
+                None,
+                full_start,
+                full_end,
+            )
         );
     }
 
