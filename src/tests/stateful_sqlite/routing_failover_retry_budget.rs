@@ -2087,11 +2087,11 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
         .await
     });
 
-    let started = Instant::now();
-    tokio::task::spawn_blocking(move || {
+    let wait_started_at = tokio::task::spawn_blocking(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("request should signal once the bounded wait starts");
+        Instant::now()
     })
     .await
     .expect("wait hook worker should join");
@@ -2100,7 +2100,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     state.pool_routing_availability.publish();
 
     let response = request_task.await.expect("request task should join");
-    let elapsed = started.elapsed();
+    let elapsed = wait_started_at.elapsed();
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
