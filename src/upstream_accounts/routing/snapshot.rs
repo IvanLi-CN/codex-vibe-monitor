@@ -6,7 +6,8 @@ pub(crate) const POOL_ROUTING_SNAPSHOT_RECONCILE_INTERVAL: Duration = Duration::
 pub(crate) struct PoolRoutingSnapshot {
     candidates: HashMap<i64, AccountRoutingCandidateRow>,
     candidate_order: Vec<i64>,
-    accounts: HashMap<i64, UpstreamAccountRow>,
+    accounts: HashMap<i64, Arc<UpstreamAccountRow>>,
+    model_mappings: HashMap<i64, Vec<CompiledModelMapping>>,
     effective_rules: HashMap<i64, EffectiveRoutingRule>,
     node_shunt_assignments: UpstreamAccountNodeShuntAssignments,
     model_routes: HashMap<(i64, String), PoolRoutingModelRouteSnapshot>,
@@ -19,6 +20,14 @@ pub(crate) struct PoolRoutingSnapshot {
     sticky_generations: HashMap<String, i64>,
     sticky_model_generations: HashMap<(String, String), i64>,
     cache_hit_protection: CacheHitProtectionSettings,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PoolRoutingNodeShuntInputs {
+    pub(crate) candidates: Vec<AccountRoutingCandidateRow>,
+    pub(crate) accounts: HashMap<i64, Arc<UpstreamAccountRow>>,
+    pub(crate) effective_rules: HashMap<i64, EffectiveRoutingRule>,
+    pub(crate) group_metadata: HashMap<String, UpstreamAccountGroupMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +54,7 @@ impl PoolRoutingSnapshot {
             .candidate_order
             .retain(|candidate_id| *candidate_id != account_id);
         snapshot.accounts.remove(&account_id);
+        snapshot.model_mappings.remove(&account_id);
         snapshot.effective_rules.remove(&account_id);
         snapshot
             .model_routes
@@ -71,11 +81,43 @@ impl PoolRoutingSnapshot {
     }
 
     pub(crate) fn account(&self, account_id: i64) -> Option<&UpstreamAccountRow> {
-        self.accounts.get(&account_id)
+        self.accounts.get(&account_id).map(Arc::as_ref)
     }
 
     pub(crate) fn effective_rule(&self, account_id: i64) -> Option<&EffectiveRoutingRule> {
         self.effective_rules.get(&account_id)
+    }
+
+    pub(crate) fn account_accepts_requested_model_or_mapping(
+        &self,
+        account_id: i64,
+        requested_model: Option<&str>,
+        rule: &EffectiveRoutingRule,
+        bypass_available_models: bool,
+    ) -> bool {
+        if requested_model_is_system_denied(requested_model, rule) {
+            return false;
+        }
+        match self
+            .model_mappings
+            .get(&account_id)
+            .and_then(|mappings| resolve_compiled_model_mapping(mappings, requested_model))
+        {
+            Some(mapping) => mapped_target_model_is_allowed(&mapping.target_model, rule),
+            None => {
+                bypass_available_models || account_accepts_requested_model(requested_model, rule)
+            }
+        }
+    }
+
+    pub(crate) fn model_mapping_for_account(
+        &self,
+        account_id: i64,
+        requested_model: Option<&str>,
+    ) -> Option<ResolvedModelMapping> {
+        self.model_mappings
+            .get(&account_id)
+            .and_then(|mappings| resolve_compiled_model_mapping(mappings, requested_model))
     }
 
     pub(crate) fn effective_rules_for(
@@ -95,6 +137,15 @@ impl PoolRoutingSnapshot {
 
     pub(crate) fn node_shunt_assignments(&self) -> UpstreamAccountNodeShuntAssignments {
         self.node_shunt_assignments.clone()
+    }
+
+    pub(crate) fn node_shunt_routing_inputs(&self) -> PoolRoutingNodeShuntInputs {
+        PoolRoutingNodeShuntInputs {
+            candidates: self.candidates(&HashSet::new()),
+            accounts: self.accounts.clone(),
+            effective_rules: self.effective_rules.clone(),
+            group_metadata: self.group_metadata.clone(),
+        }
     }
 
     pub(crate) fn model_route_penalties(
@@ -281,6 +332,7 @@ struct PoolRoutingSnapshotRefreshState {
     pending: bool,
     wake_waiters: bool,
     defer_availability_until_replacement: bool,
+    error_retry_scheduled: bool,
 }
 
 const REFRESH_PENDING_BIT: u64 = 1 << 63;
@@ -669,6 +721,7 @@ impl PoolRoutingSnapshotStore {
         let wake_waiters = std::mem::take(&mut refresh_state.wake_waiters);
         refresh_state.pending = false;
         refresh_state.defer_availability_until_replacement = false;
+        refresh_state.error_retry_scheduled = false;
         self.refresh_epoch
             .store(refresh_generation, std::sync::atomic::Ordering::Release);
         drop(refresh_state);
@@ -695,6 +748,17 @@ impl PoolRoutingSnapshotStore {
         // Stay fail-closed and retain a queued recovery wake until a later
         // reconciler pass installs a current snapshot.
         refresh_state.pending = true;
+        // One refresh error gets an immediate replacement attempt. A repeated
+        // failure stays fenced until the 60-second reconciler tick, preventing
+        // a persistent database outage from turning into a hot rebuild loop.
+        let schedule_retry = !refresh_state.error_retry_scheduled;
+        refresh_state.error_retry_scheduled = true;
+        drop(refresh_state);
+        if schedule_retry {
+            self.refresh_tx.send_modify(|generation| {
+                *generation = generation.wrapping_add(1);
+            });
+        }
     }
 
     pub(crate) fn refresh_pending(&self) -> bool {
@@ -941,16 +1005,26 @@ async fn try_refresh_pool_routing_snapshot(state: &AppState) -> Result<bool> {
     let mut accounts = HashMap::with_capacity(account_ids.len());
     for account_id in &account_ids {
         if let Some(account) = load_upstream_account_row(&state.pool, *account_id).await? {
-            accounts.insert(*account_id, account);
+            accounts.insert(*account_id, Arc::new(account));
         }
     }
+    let model_mappings = accounts
+        .iter()
+        .map(|(account_id, account)| {
+            (
+                *account_id,
+                compile_model_mappings(&decode_model_mappings_json(
+                    account.model_mappings_json.as_deref(),
+                )),
+            )
+        })
+        .collect();
     let effective_rules =
         load_effective_routing_rules_for_accounts(&state.pool, &account_ids).await?;
     let route_binding_failure_penalties =
         load_recent_route_binding_failure_penalties(&state.pool).await?;
     let transport_decode_sticky_escape_states =
         load_transport_decode_sticky_escape_states(&state.pool, &account_ids).await?;
-    let node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
     let settings = load_pool_routing_settings(&state.pool).await?;
     let model_rows = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<i64>)>(
         "SELECT routes.account_id, routes.model, routes.state, routes.cooldown_until, routes.cache_concurrency_limit \
@@ -996,6 +1070,14 @@ async fn try_refresh_pool_routing_snapshot(state: &AppState) -> Result<bool> {
         })
     })
     .collect();
+    let node_shunt_assignments = build_upstream_account_node_shunt_assignments_from_routing_data(
+        state,
+        &candidates,
+        &accounts,
+        &effective_rules,
+        &group_metadata,
+    )
+    .await?;
     let sticky_routes = sqlx::query_as::<_, PoolStickyRouteRow>(
         "SELECT sticky_key, account_id, created_at, updated_at, last_seen_at FROM pool_sticky_routes",
     )
@@ -1037,6 +1119,7 @@ async fn try_refresh_pool_routing_snapshot(state: &AppState) -> Result<bool> {
                 .map(|candidate| (candidate.id, candidate))
                 .collect(),
             accounts,
+            model_mappings,
             effective_rules,
             node_shunt_assignments,
             model_routes,
@@ -1087,6 +1170,7 @@ mod snapshot_store_tests {
             candidates: HashMap::new(),
             candidate_order: Vec::new(),
             accounts: HashMap::new(),
+            model_mappings: HashMap::new(),
             effective_rules: HashMap::new(),
             node_shunt_assignments: UpstreamAccountNodeShuntAssignments::default(),
             model_routes: HashMap::new(),
@@ -1282,6 +1366,42 @@ mod snapshot_store_tests {
         assert!(
             !published_availability.get(),
             "an initial refresh must not publish a waiter wake without a queued capacity event"
+        );
+    }
+
+    #[test]
+    fn failed_reconcile_schedules_one_immediate_retry_before_the_ticker() {
+        let store = PoolRoutingSnapshotStore::new();
+        let mut refreshes = store.subscribe_refresh();
+
+        store.invalidate();
+        assert!(
+            refreshes
+                .has_changed()
+                .expect("refresh watch should remain open"),
+            "the first refresh error should schedule an immediate recovery attempt"
+        );
+        let _ = refreshes.borrow_and_update();
+
+        store.invalidate();
+        assert!(
+            !refreshes
+                .has_changed()
+                .expect("refresh watch should remain open"),
+            "a repeated failure must wait for the low-frequency ticker"
+        );
+
+        let generation = store
+            .begin_refresh()
+            .expect("the immediate retry should claim the pending refresh");
+        assert!(store.complete_refresh(generation, empty_snapshot(), || {}));
+
+        store.invalidate();
+        assert!(
+            refreshes
+                .has_changed()
+                .expect("refresh watch should remain open"),
+            "a successful replacement resets the bounded recovery budget"
         );
     }
 

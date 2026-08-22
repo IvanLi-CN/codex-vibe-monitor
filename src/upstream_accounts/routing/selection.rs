@@ -1168,13 +1168,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         if bypass_requested_model_filter
                             && !conversation_available_models_override =>
                     {
-                        account_accepts_requested_model_or_mapping_with_available_models_bypass(
-                            state,
+                        routing_snapshot.account_accepts_requested_model_or_mapping(
                             row.id,
                             requested_model,
                             rule,
+                            true,
                         )
-                        .await?
                     }
                     // Conversation-scoped model policy is an explicit caller constraint.
                     // A local account mapping can bypass its ordinary availability policy,
@@ -1182,15 +1181,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     Some(rule) if conversation_available_models_override => {
                         account_accepts_requested_model(requested_model, rule)
                     }
-                    Some(rule) => {
-                        account_accepts_requested_model_or_cached_mapping(
-                            state,
-                            row.id,
-                            requested_model,
-                            rule,
-                        )
-                        .await?
-                    }
+                    Some(rule) => routing_snapshot.account_accepts_requested_model_or_mapping(
+                        row.id,
+                        requested_model,
+                        rule,
+                        false,
+                    ),
                 };
                 if sticky_model_accepted
                     && account_accepts_request_capabilities(
@@ -1678,23 +1674,21 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         }
         let model_accepted =
             if bypass_requested_model_filter && !conversation_available_models_override {
-                account_accepts_requested_model_or_mapping_with_available_models_bypass(
-                    state,
+                routing_snapshot.account_accepts_requested_model_or_mapping(
                     row.id,
                     requested_model,
                     effective_rule,
+                    true,
                 )
-                .await?
             } else if conversation_available_models_override {
                 account_accepts_requested_model(requested_model, effective_rule)
             } else {
-                account_accepts_requested_model_or_cached_mapping(
-                    state,
+                routing_snapshot.account_accepts_requested_model_or_mapping(
                     row.id,
                     requested_model,
                     effective_rule,
+                    false,
                 )
-                .await?
             };
         if !model_accepted {
             push_routing_selection_audit_exclusion(

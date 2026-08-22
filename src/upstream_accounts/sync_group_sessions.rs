@@ -1542,10 +1542,43 @@ pub(crate) fn account_is_node_shunt_slot_eligible(
 pub(crate) async fn build_upstream_account_node_shunt_assignments(
     state: &AppState,
 ) -> Result<UpstreamAccountNodeShuntAssignments> {
+    if let Some(routing_snapshot) = state.pool_routing_snapshot.current() {
+        let inputs = routing_snapshot.node_shunt_routing_inputs();
+        return build_upstream_account_node_shunt_assignments_from_routing_data(
+            state,
+            &inputs.candidates,
+            &inputs.accounts,
+            &inputs.effective_rules,
+            &inputs.group_metadata,
+        )
+        .await;
+    }
+
+    // This entry point is used by administration and synchronization flows,
+    // which may run before startup installs the routing snapshot. Proxy
+    // routing receives node-shunt assignments from that published snapshot
+    // and never calls this fallback.
     let runtime_cache = load_pool_routing_runtime_cache(state).await?;
     let routing_snapshot = &runtime_cache.model_routing;
-    let group_metadata_map = routing_snapshot
-        .group_metadata_by_name
+    let candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
+    build_upstream_account_node_shunt_assignments_from_routing_data(
+        state,
+        &candidates,
+        &routing_snapshot.routing_account_rows_by_id,
+        &routing_snapshot.effective_rules_by_account,
+        &routing_snapshot.group_metadata_by_name,
+    )
+    .await
+}
+
+pub(crate) async fn build_upstream_account_node_shunt_assignments_from_routing_data(
+    state: &AppState,
+    routing_candidates: &[AccountRoutingCandidateRow],
+    routing_account_rows_by_id: &HashMap<i64, Arc<UpstreamAccountRow>>,
+    effective_rules_by_account: &HashMap<i64, EffectiveRoutingRule>,
+    group_metadata_by_name: &HashMap<String, UpstreamAccountGroupMetadata>,
+) -> Result<UpstreamAccountNodeShuntAssignments> {
+    let group_metadata_map = group_metadata_by_name
         .iter()
         .filter(|(_, metadata)| metadata.node_shunt_enabled)
         .map(|(group_name, metadata)| (group_name.clone(), metadata.clone()))
@@ -1553,8 +1586,6 @@ pub(crate) async fn build_upstream_account_node_shunt_assignments(
     if group_metadata_map.is_empty() {
         return Ok(UpstreamAccountNodeShuntAssignments::default());
     }
-
-    let rows_by_id = &routing_snapshot.routing_account_rows_by_id;
 
     let mut assignments = UpstreamAccountNodeShuntAssignments::default();
     {
@@ -1573,13 +1604,13 @@ pub(crate) async fn build_upstream_account_node_shunt_assignments(
     let now = Utc::now();
     let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
     let reservation_snapshot = pool_routing_reservation_snapshot(state);
-    let mut candidates = routing_snapshot.routing_candidates.clone();
+    let mut candidates = routing_candidates.to_vec();
     for candidate in &mut candidates {
         candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
     }
-    let candidate_effective_rules = &routing_snapshot.effective_rules_by_account;
+    let candidate_effective_rules = effective_rules_by_account;
     for candidate in candidates {
-        let Some(row) = rows_by_id.get(&candidate.id) else {
+        let Some(row) = routing_account_rows_by_id.get(&candidate.id) else {
             continue;
         };
         let Some(group_name) = normalize_optional_text(row.group_name.clone()) else {

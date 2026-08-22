@@ -100,11 +100,55 @@ async fn post_create_sync_warms_empty_model_mapping_cache_entry() {
         "a new account must receive an explicit empty mapping entry"
     );
     drop(cache);
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install routing snapshot after account creation");
     assert_eq!(
         load_model_mapping_for_account(state.as_ref(), account_id, Some("client-model"))
             .await
             .expect("resolve cached empty mapping"),
         None
+    );
+}
+
+#[tokio::test]
+async fn model_mapping_lookup_fails_closed_when_routing_snapshot_is_cold() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Cold mapping snapshot account",
+        "sk-cold-mapping-snapshot",
+        None,
+        Some("https://cold-mapping-snapshot.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET model_mappings_json = ?1 WHERE id = ?2")
+        .bind(
+            serde_json::to_string(&vec![mapping("client-model", "upstream-model", true)])
+                .expect("encode model mapping"),
+        )
+        .bind(account_id)
+        .execute(&state.pool)
+        .await
+        .expect("seed model mapping");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install routing snapshot after mapping seed");
+    assert_eq!(
+        load_model_mapping_for_account(state.as_ref(), account_id, Some("client-model"))
+            .await
+            .expect("resolve warm snapshot mapping")
+            .expect("mapping should match")
+            .target_model,
+        "upstream-model"
+    );
+
+    state.pool_routing_snapshot.invalidate();
+    assert!(
+        load_model_mapping_for_account(state.as_ref(), account_id, Some("client-model"))
+            .await
+            .is_err(),
+        "a cold routing snapshot must fail closed instead of rebuilding mappings on the request path"
     );
 }
 
@@ -258,6 +302,9 @@ async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
     )
     .await
     .expect("save API key mappings");
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install routing snapshot after mapping update");
     assert_eq!(detail.model_mappings.len(), 2);
     assert_eq!(detail.model_mappings[0].source_model, "client-*");
     assert_eq!(detail.model_mappings[0].target_model, "upstream-fast");
@@ -326,6 +373,9 @@ async fn model_mappings_api_replaces_rows_resets_state_and_refreshes_cache() {
         oauth_detail.model_mappings[0].target_model,
         "upstream-oauth"
     );
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install routing snapshot after OAuth mapping update");
     let generation_before_rejected_save = state
         .pool_routing_runtime_cache
         .lock()
