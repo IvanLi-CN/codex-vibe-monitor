@@ -33,6 +33,7 @@ struct TimeseriesMinuteProjectionV2Row {
 }
 
 const TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT: usize = 64;
+const TIMESERIES_MINUTE_PROJECTION_WRITE_DELTA_BATCH_LIMIT: usize = 512;
 const TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT: i64 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1456,10 +1457,31 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
                 key.upstream_account_key,
             )
         });
+        let mut work_batches = Vec::<Vec<_>>::new();
+        let mut work_batch = Vec::new();
+        let mut work_batch_delta_count = 0usize;
+        for (key, mut deltas) in grouped {
+            deltas.sort_by_key(|(row_id, _)| *row_id);
+            for delta_batch in deltas.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_DELTA_BATCH_LIMIT) {
+                if !work_batch.is_empty()
+                    && (work_batch.len() >= TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT
+                        || work_batch_delta_count + delta_batch.len()
+                            > TIMESERIES_MINUTE_PROJECTION_WRITE_DELTA_BATCH_LIMIT)
+                {
+                    work_batches.push(std::mem::take(&mut work_batch));
+                    work_batch_delta_count = 0;
+                }
+                work_batch.push((key.clone(), delta_batch.to_vec()));
+                work_batch_delta_count += delta_batch.len();
+            }
+        }
+        if !work_batch.is_empty() {
+            work_batches.push(work_batch);
+        }
         let mut written_key_count = 0usize;
         let mut exact_fallback_minute_count = 0usize;
         let mut transaction_count = 0usize;
-        for key_batch in grouped.chunks_mut(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
+        for key_batch in work_batches {
             let Some(admission) = try_acquire_timeseries_minute_projection_write(
                 coordinator,
                 trigger,
@@ -1473,25 +1495,29 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
 
             let transaction_started = Instant::now();
             let mut tx = state.pool.begin().await?;
-            for (key, deltas) in &mut *key_batch {
-                deltas.sort_by_key(|(row_id, _)| *row_id);
+            let transaction_key_count = key_batch.len();
+            let transaction_delta_count = key_batch
+                .iter()
+                .map(|(_, deltas)| deltas.len())
+                .sum::<usize>();
+            for (key, deltas) in key_batch {
                 let (aggregate, max_row_id) = if let Some((aggregate, existing_max_row_id)) =
-                    load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key).await?
+                    load_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?
                 {
-                    if timeseries_projection_requires_exact_rebuild(deltas, existing_max_row_id) {
+                    if timeseries_projection_requires_exact_rebuild(&deltas, existing_max_row_id) {
                         // A terminal record can update an older running row. Its row ID is not a
                         // change cursor, and repeated pending events can share the same row ID.
                         // Either case needs an exact rebuild rather than another incremental add.
                         exact_fallback_minute_count += 1;
                         let (aggregate, max_row_id, source_row_count) =
-                            rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key)
+                            rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key)
                                 .await?;
                         loaded_row_count = loaded_row_count.saturating_add(source_row_count);
                         (aggregate, max_row_id)
                     } else {
                         let mut aggregate = aggregate;
                         let mut max_row_id = existing_max_row_id;
-                        for (row_id, delta) in deltas {
+                        for (row_id, delta) in &deltas {
                             add_timeseries_terminal_delta_to_aggregate(&mut aggregate, delta);
                             max_row_id = max_row_id.max(*row_id);
                         }
@@ -1503,13 +1529,13 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
                     // minute before publishing it as ready, rather than storing a partial total.
                     exact_fallback_minute_count += 1;
                     let (aggregate, max_row_id, source_row_count) =
-                        rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key).await?;
+                        rebuild_timeseries_minute_projection_v2_key_tx(tx.as_mut(), &key).await?;
                     loaded_row_count = loaded_row_count.saturating_add(source_row_count);
                     (aggregate, max_row_id)
                 };
                 upsert_timeseries_minute_projection_v2_key_tx(
                     tx.as_mut(),
-                    key,
+                    &key,
                     &aggregate,
                     max_row_id,
                 )
@@ -1524,7 +1550,9 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
                 trigger,
                 transaction_phase = "minute_projection_keys",
                 transaction_key_limit = TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT,
-                transaction_key_count = key_batch.len(),
+                transaction_key_count,
+                transaction_delta_limit = TIMESERIES_MINUTE_PROJECTION_WRITE_DELTA_BATCH_LIMIT,
+                transaction_delta_count,
                 elapsed_ms = transaction_started.elapsed().as_millis() as u64,
                 "flushed a bounded minute projection key slice"
             );
