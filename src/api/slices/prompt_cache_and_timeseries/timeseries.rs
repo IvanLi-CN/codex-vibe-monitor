@@ -508,6 +508,10 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
             upstream_account_key: upstream_account_id.unwrap_or(-1),
         })
         .collect::<Vec<_>>();
+    let projection_selection = TimeseriesProjectionSelection {
+        source_scope: timeseries_projection_scope(source_scope),
+        upstream_account_id,
+    };
 
     for key_batch in keys.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
         if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
@@ -604,6 +608,13 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
                 TimeseriesMinuteProjectionDeferred { retry_after: None },
             ));
         }
+        let projection_snapshot_records = source_records
+            .iter()
+            .filter(|record| {
+                !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+            })
+            .map(timeseries_projection_snapshot_record)
+            .collect::<Vec<_>>();
         let mut aggregates = HashMap::<i64, BucketAggregate>::new();
         let mut max_row_ids = HashMap::<i64, i64>::new();
         for record in source_records {
@@ -632,6 +643,8 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
                 .await?;
         }
         tx.commit().await?;
+        let coverage_ack_count = terminal_projection_hub
+            .mark_timeseries_warm_coverage(projection_selection, &projection_snapshot_records);
         debug!(
             route = "timeseries_projection",
             builder = "minute_projection_v2",
@@ -639,8 +652,9 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
             transaction_phase = "exact_warm",
             transaction_key_limit = TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT,
             transaction_key_count = key_batch.len(),
+            coverage_ack_count,
             elapsed_ms = transaction_started.elapsed().as_millis() as u64,
-            "materialized a bounded exact-fallback minute projection slice"
+            "materialized and acknowledged a bounded exact-fallback minute projection slice"
         );
         drop(admission);
         tokio::task::yield_now().await;
@@ -1017,7 +1031,36 @@ impl TimeseriesTopicMaterializedBase {
                         bucket_seconds,
                         reporting_tz,
                     )?;
-                    aggregates
+                    if timeseries_minute_projection_v2_coverage_is_ready(
+                        &state.pool,
+                        start,
+                        end,
+                        source_scope,
+                        params.upstream_account_id,
+                    )
+                    .await?
+                    {
+                        aggregates
+                    } else {
+                        debug!(
+                            route = "timeseries_topic",
+                            builder = "minute_projection_v2",
+                            projection_cursor,
+                            "minute projection coverage changed while building a hot topic; falling back to exact records"
+                        );
+                        build_exact_timeseries_topic_baseline(
+                            state,
+                            start,
+                            end,
+                            source_scope,
+                            snapshot_id,
+                            params.upstream_account_id,
+                            bucket_seconds,
+                            reporting_tz,
+                            true,
+                        )
+                        .await?
+                    }
                 } else {
                     build_exact_timeseries_topic_baseline(
                         state,
@@ -1231,18 +1274,7 @@ async fn build_exact_timeseries_topic_baseline(
     .await?;
     if let Some(coverage_generation) = warm_coverage_generation {
         let pool = state.pool.clone();
-        let projection_snapshot_records = records
-            .iter()
-            .filter(|record| {
-                !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
-            })
-            .map(timeseries_projection_snapshot_record)
-            .collect::<Vec<_>>();
         let terminal_projection_hub = state.terminal_projection_hub.clone();
-        let projection_selection = TimeseriesProjectionSelection {
-            source_scope: timeseries_projection_scope(source_scope),
-            upstream_account_id,
-        };
         tokio::spawn(async move {
             match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                 &pool,
@@ -1256,12 +1288,7 @@ async fn build_exact_timeseries_topic_baseline(
             )
             .await
             {
-                Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {
-                    terminal_projection_hub.mark_timeseries_warm_coverage(
-                        projection_selection,
-                        &projection_snapshot_records,
-                    );
-                }
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {}
                 Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
                     debug!(
                         route = "timeseries_projection",
@@ -1389,28 +1416,6 @@ fn timeseries_projection_snapshot_record(
         row_id: record.id,
         invoke_id: record.invoke_id.clone(),
         occurred_at: record.occurred_at.clone(),
-        delta: TimeseriesTerminalDelta {
-            occurred_at: record.occurred_at.clone(),
-            source: String::new(),
-            upstream_account_id: None,
-            status: record.status.clone(),
-            error_message: record.error_message.clone(),
-            failure_kind: record.failure_kind.clone(),
-            failure_class: record.failure_class.clone(),
-            is_actionable: record.is_actionable.map(|value| value != 0),
-            total_tokens: record.total_tokens,
-            input_tokens: record.input_tokens,
-            output_tokens: record.output_tokens,
-            cache_input_tokens: record.cache_input_tokens,
-            reasoning_tokens: record.reasoning_tokens,
-            cost: record.cost,
-            t_total_ms: record.t_total_ms,
-            t_req_read_ms: record.t_req_read_ms,
-            t_req_parse_ms: record.t_req_parse_ms,
-            t_upstream_connect_ms: record.t_upstream_connect_ms,
-            t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-            first_token_ms: record.first_token_ms,
-        },
     }
 }
 
@@ -3097,18 +3102,7 @@ pub(crate) async fn fetch_timeseries(
             // Projection persistence is P2 work. Never make a read request wait for a SQLite
             // writer when a first-time exact fallback already produced a valid response.
             let projection_pool = state.pool.clone();
-            let projection_snapshot_records = records
-                .iter()
-                .filter(|record| {
-                    !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
-                })
-                .map(timeseries_projection_snapshot_record)
-                .collect::<Vec<_>>();
             let terminal_projection_hub = state.terminal_projection_hub.clone();
-            let projection_selection = TimeseriesProjectionSelection {
-                source_scope: timeseries_projection_scope(source_scope),
-                upstream_account_id: None,
-            };
             tokio::spawn(async move {
                 match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                     &projection_pool,
@@ -3122,12 +3116,7 @@ pub(crate) async fn fetch_timeseries(
                 )
                 .await
                 {
-                    Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {
-                        terminal_projection_hub.mark_timeseries_warm_coverage(
-                            projection_selection,
-                            &projection_snapshot_records,
-                        );
-                    }
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {}
                     Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
                         debug!(
                             route = "timeseries_projection",
@@ -3524,58 +3513,21 @@ pub(crate) async fn fetch_timeseries_for_account(
         let projection_pool = state.pool.clone();
         let terminal_projection_hub = state.terminal_projection_hub.clone();
         let warm_coverage_generation = terminal_projection_hub.timeseries_coverage_generation();
-        let projection_selection = TimeseriesProjectionSelection {
-            source_scope: timeseries_projection_scope(source_scope),
-            upstream_account_id: Some(upstream_account_id),
-        };
         tokio::spawn(async move {
-            let records = query_invocation_aggregate_records_from_live_range_for_account(
+            match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                 &projection_pool,
-                ExactUtcRange {
-                    start: start_dt,
-                    end: end_dt,
-                },
+                start_dt,
+                end_dt,
                 source_scope,
-                None,
-                Some(snapshot_id),
-                upstream_account_id,
+                Some(upstream_account_id),
+                terminal_projection_hub.as_ref(),
+                warm_coverage_generation,
+                "account_exact_fallback",
             )
-            .await;
-            let result = match records {
-                Ok(records) => {
-                    let projection_snapshot_records = records
-                        .iter()
-                        .filter(|record| {
-                            !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
-                        })
-                        .map(timeseries_projection_snapshot_record)
-                        .collect::<Vec<_>>();
-                    store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
-                        &projection_pool,
-                        start_dt,
-                        end_dt,
-                        source_scope,
-                        Some(upstream_account_id),
-                        terminal_projection_hub.as_ref(),
-                        warm_coverage_generation,
-                        "account_exact_fallback",
-                    )
-                    .await
-                    .map(|outcome| (outcome, projection_snapshot_records))
-                }
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok((
-                    TimeseriesMinuteProjectionWarmOutcome::Stored,
-                    projection_snapshot_records,
-                )) => {
-                    terminal_projection_hub.mark_timeseries_warm_coverage(
-                        projection_selection,
-                        &projection_snapshot_records,
-                    );
-                }
-                Ok((TimeseriesMinuteProjectionWarmOutcome::Deferred(_), _)) => {
+            .await
+            {
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {}
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
                     debug!(
                         route = "timeseries_projection",
                         upstream_account_id,

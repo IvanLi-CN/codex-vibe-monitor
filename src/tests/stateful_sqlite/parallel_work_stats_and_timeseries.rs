@@ -20935,6 +20935,83 @@ async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
 }
 
 #[tokio::test]
+async fn exact_fallback_warm_acknowledges_the_transaction_snapshot_not_the_response_snapshot() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let start = Utc
+        .with_ymd_and_hms(2026, 8, 21, 12, 0, 0)
+        .single()
+        .expect("valid warm range start");
+    let end = start + ChronoDuration::minutes(1);
+    let occurred_at = format_naive(start.with_timezone(&Shanghai).naive_local());
+    let capture = test_proxy_capture_record("warm-transaction-snapshot", &occurred_at);
+    let terminal = api_invocation_from_runtime_record(&capture);
+    state
+        .terminal_projection_hub
+        .activate_timeseries_consumer(0);
+    let event_id = state
+        .terminal_projection_hub
+        .register_pending(&terminal, None)
+        .expect("terminal event should fit in the projection journal");
+    let persisted = persist_proxy_capture_record(&state.pool, Instant::now(), capture)
+        .await
+        .expect("persist terminal row")
+        .expect("terminal row should be persisted");
+    state.terminal_projection_hub.acknowledge_persisted(
+        Some(event_id),
+        &terminal.invoke_id,
+        &terminal.occurred_at,
+        persisted.id,
+    );
+
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let coverage_generation = state
+        .terminal_projection_hub
+        .timeseries_coverage_generation();
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        coverage_generation,
+        "stateful_warm_transaction_snapshot",
+        &coordinator,
+    )
+    .await
+    .expect("warm write should succeed");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+    let pending = state
+        .terminal_projection_hub
+        .pending_timeseries_deltas_for_selection(
+            crate::TimeseriesProjectionSelection {
+                source_scope: "all",
+                upstream_account_id: None,
+            },
+            10,
+        );
+    assert!(
+        pending.is_empty(),
+        "the committed transaction source row must be acknowledged so a later projection read cannot add it twice; pending={pending:#?}"
+    );
+    let cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT max_row_id FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(start.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load committed projection cursor");
+    assert_eq!(cursor, persisted.id);
+}
+
+#[tokio::test]
 async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

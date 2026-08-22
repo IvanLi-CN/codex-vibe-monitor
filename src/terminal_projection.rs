@@ -84,7 +84,6 @@ pub(crate) struct TimeseriesProjectionSnapshotRecord {
     pub(crate) row_id: i64,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
-    pub(crate) delta: TimeseriesTerminalDelta,
 }
 
 impl From<&ApiInvocation> for TimeseriesTerminalDelta {
@@ -123,27 +122,6 @@ impl TimeseriesTerminalDelta {
             + self.failure_kind.as_deref().map_or(0, str::len)
             + self.failure_class.as_deref().map_or(0, str::len)
             + std::mem::size_of::<Self>()
-    }
-
-    fn matches_projection_snapshot(&self, snapshot: &TimeseriesTerminalDelta) -> bool {
-        self.occurred_at == snapshot.occurred_at
-            && self.status == snapshot.status
-            && self.error_message == snapshot.error_message
-            && self.failure_kind == snapshot.failure_kind
-            && self.failure_class == snapshot.failure_class
-            && self.is_actionable == snapshot.is_actionable
-            && self.total_tokens == snapshot.total_tokens
-            && self.input_tokens == snapshot.input_tokens
-            && self.output_tokens == snapshot.output_tokens
-            && self.cache_input_tokens == snapshot.cache_input_tokens
-            && self.reasoning_tokens == snapshot.reasoning_tokens
-            && self.cost == snapshot.cost
-            && self.t_total_ms == snapshot.t_total_ms
-            && self.t_req_read_ms == snapshot.t_req_read_ms
-            && self.t_req_parse_ms == snapshot.t_req_parse_ms
-            && self.t_upstream_connect_ms == snapshot.t_upstream_connect_ms
-            && self.t_upstream_ttfb_ms == snapshot.t_upstream_ttfb_ms
-            && self.first_token_ms == snapshot.first_token_ms
     }
 }
 
@@ -429,11 +407,13 @@ impl TerminalProjectionHub {
             {
                 continue;
             }
+            // The source rows were read and committed by the same P2 transaction before this
+            // acknowledgement. Their durable identity is authoritative even when a read query
+            // normalizes derived fields such as `failure_class` differently from ingress.
             if records.iter().any(|record| {
                 record.row_id == row_id
                     && record.invoke_id == event.invoke_id
                     && record.occurred_at == event.occurred_at
-                    && delta.matches_projection_snapshot(&record.delta)
             }) {
                 event.timeseries_warm_coverage.insert(selection);
                 covered += 1;
@@ -736,7 +716,6 @@ mod tests {
                     row_id: 17,
                     invoke_id: "invoke".to_string(),
                     occurred_at: delta.occurred_at.clone(),
-                    delta: delta.clone(),
                 }],
             ),
             1
@@ -761,6 +740,41 @@ mod tests {
         let pending = hub.pending_timeseries_deltas_for_selection(selection, 10);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, second);
+    }
+
+    #[test]
+    fn warm_coverage_uses_committed_row_identity_without_a_derived_delta() {
+        let hub = TerminalProjectionHub::default();
+        let selection = TimeseriesProjectionSelection {
+            source_scope: "all",
+            upstream_account_id: None,
+        };
+        let delta = timeseries_delta();
+        let event = hub
+            .register_pending_parts_with_delta(
+                "invoke",
+                &delta.occurred_at,
+                128,
+                Some(delta.clone()),
+            )
+            .expect("event is within the projection hard limit");
+        hub.acknowledge_persisted(Some(event), "invoke", &delta.occurred_at, 17);
+
+        assert_eq!(
+            hub.mark_timeseries_warm_coverage(
+                selection,
+                &[TimeseriesProjectionSnapshotRecord {
+                    row_id: 17,
+                    invoke_id: "invoke".to_string(),
+                    occurred_at: delta.occurred_at.clone(),
+                }],
+            ),
+            1
+        );
+        assert!(
+            hub.pending_timeseries_deltas_for_selection(selection, 10)
+                .is_empty()
+        );
     }
 
     #[test]
