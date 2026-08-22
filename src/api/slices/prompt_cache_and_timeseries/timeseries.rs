@@ -324,7 +324,6 @@ async fn store_timeseries_minute_projection_v2_warm(
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    records: &[InvocationAggregateRecord],
     terminal_projection_hub: &TerminalProjectionHub,
     coverage_generation: u64,
     trigger: &'static str,
@@ -335,7 +334,6 @@ async fn store_timeseries_minute_projection_v2_warm(
         end,
         source_scope,
         upstream_account_id,
-        records,
         terminal_projection_hub,
         coverage_generation,
         trigger,
@@ -350,7 +348,6 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    records: &[InvocationAggregateRecord],
     terminal_projection_hub: &TerminalProjectionHub,
     coverage_generation: u64,
     trigger: &'static str,
@@ -363,7 +360,6 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
         end,
         source_scope,
         upstream_account_id,
-        records,
         terminal_projection_hub,
         coverage_generation,
         trigger,
@@ -388,7 +384,6 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                 end,
                 source_scope,
                 upstream_account_id,
-                records,
                 terminal_projection_hub,
                 coverage_generation,
                 trigger,
@@ -404,7 +399,6 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-    records: &[InvocationAggregateRecord],
     terminal_projection_hub: &TerminalProjectionHub,
     coverage_generation: u64,
     trigger: &'static str,
@@ -414,41 +408,16 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
     if minute_end <= minute_start {
         return Ok(TimeseriesMinuteProjectionWarmOutcome::Stored);
     }
-    let mut by_minute: HashMap<i64, BucketAggregate> = HashMap::new();
-    let mut max_row_ids = HashMap::new();
-    for record in records {
-        if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
-            continue;
-        }
-        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
-            continue;
-        };
-        let minute = occurred.timestamp().div_euclid(60) * 60;
-        if minute < minute_start || minute >= minute_end {
-            continue;
-        }
-        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record);
-        max_row_ids
-            .entry(minute)
-            .and_modify(|max_row_id: &mut i64| *max_row_id = (*max_row_id).max(record.id))
-            .or_insert(record.id);
-    }
-    let rows = (minute_start..minute_end)
+    let keys = (minute_start..minute_end)
         .step_by(60_usize)
-        .map(|minute| {
-            (
-                TimeseriesMinuteProjectionKey {
-                    minute_start_epoch: minute,
-                    source_scope: timeseries_projection_scope(source_scope),
-                    upstream_account_key: upstream_account_id.unwrap_or(-1),
-                },
-                by_minute.remove(&minute).unwrap_or_default(),
-                max_row_ids.remove(&minute).unwrap_or(0),
-            )
+        .map(|minute| TimeseriesMinuteProjectionKey {
+            minute_start_epoch: minute,
+            source_scope: timeseries_projection_scope(source_scope),
+            upstream_account_key: upstream_account_id.unwrap_or(-1),
         })
         .collect::<Vec<_>>();
 
-    for key_batch in rows.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
+    for key_batch in keys.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
         if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
             || terminal_projection_hub
                 .timeseries_coverage_invalidation_pending()
@@ -470,14 +439,15 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
             coordinator,
             trigger,
             "exact_warm",
-            records.len(),
+            key_batch.len(),
         )
         .await
         else {
             return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
         };
-        // The exact source snapshot was read before admission. Re-check while holding the
-        // shared P2 permit so an invalidation completed in that interval cannot be overwritten.
+        // Hub invalidations cover proxy terminal events. Non-proxy terminal updates invalidate
+        // coverage in SQLite through a trigger, so the source records are rebuilt in the
+        // transaction below rather than reusing the response-time snapshot.
         if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
             || terminal_projection_hub
                 .timeseries_coverage_invalidation_pending()
@@ -488,24 +458,76 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
         }
         let transaction_started = Instant::now();
         let mut tx = pool.begin().await?;
-        for (key, aggregate, max_row_id) in key_batch {
-            sqlx::query(
-                "INSERT INTO timeseries_minute_projection_v2 (minute_start_epoch, source_scope, upstream_account_key, aggregate_json, total_latency_samples_json, first_byte_samples_json, first_response_byte_total_samples_json, first_token_samples_json, max_row_id, coverage_state, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'ready', datetime('now')) ON CONFLICT(minute_start_epoch, source_scope, upstream_account_key) DO UPDATE SET aggregate_json = excluded.aggregate_json, total_latency_samples_json = excluded.total_latency_samples_json, first_byte_samples_json = excluded.first_byte_samples_json, first_response_byte_total_samples_json = excluded.first_response_byte_total_samples_json, first_token_samples_json = excluded.first_token_samples_json, max_row_id = excluded.max_row_id, coverage_state = 'ready', updated_at = excluded.updated_at WHERE excluded.max_row_id > timeseries_minute_projection_v2.max_row_id OR (timeseries_minute_projection_v2.coverage_state = 'warming' AND excluded.max_row_id = timeseries_minute_projection_v2.max_row_id)",
-            )
-            .bind(key.minute_start_epoch)
-            .bind(key.source_scope)
-            .bind(key.upstream_account_key)
-            .bind(serde_json::to_string(aggregate).map_err(ApiError::from)?)
-            .bind(serde_json::to_string(&aggregate.total_latency_values).map_err(ApiError::from)?)
-            .bind(serde_json::to_string(&aggregate.first_byte_ttfb_values).map_err(ApiError::from)?)
-            .bind(
-                serde_json::to_string(&aggregate.first_response_byte_total_values)
-                    .map_err(ApiError::from)?,
-            )
-            .bind(serde_json::to_string(&aggregate.first_token_values).map_err(ApiError::from)?)
-            .bind(*max_row_id)
-            .execute(tx.as_mut())
-            .await?;
+        let batch_start = Utc
+            .timestamp_opt(key_batch[0].minute_start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid minute projection batch start")))?;
+        let batch_end = Utc
+            .timestamp_opt(key_batch[key_batch.len() - 1].minute_start_epoch + 60, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid minute projection batch end")))?;
+        let source_records = match upstream_account_id {
+            Some(upstream_account_id) => {
+                query_invocation_aggregate_records_from_live_range_tx_for_account(
+                    tx.as_mut(),
+                    ExactUtcRange {
+                        start: batch_start,
+                        end: batch_end,
+                    },
+                    source_scope,
+                    None,
+                    None,
+                    upstream_account_id,
+                )
+                .await?
+            }
+            None => {
+                query_invocation_aggregate_records_from_live_range_tx(
+                    tx.as_mut(),
+                    ExactUtcRange {
+                        start: batch_start,
+                        end: batch_end,
+                    },
+                    source_scope,
+                    None,
+                    None,
+                )
+                .await?
+            }
+        };
+        if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
+            || terminal_projection_hub
+                .timeseries_coverage_invalidation_pending()
+                .is_some()
+        {
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+        }
+        let mut aggregates = HashMap::<i64, BucketAggregate>::new();
+        let mut max_row_ids = HashMap::<i64, i64>::new();
+        for record in source_records {
+            if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+                continue;
+            }
+            let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+                continue;
+            };
+            let minute = occurred.timestamp().div_euclid(60) * 60;
+            add_exact_record_to_timeseries_aggregate(
+                aggregates.entry(minute).or_default(),
+                &record,
+            );
+            max_row_ids
+                .entry(minute)
+                .and_modify(|max_row_id| *max_row_id = (*max_row_id).max(record.id))
+                .or_insert(record.id);
+        }
+        for key in key_batch {
+            let aggregate = aggregates
+                .remove(&key.minute_start_epoch)
+                .unwrap_or_default();
+            let max_row_id = max_row_ids.remove(&key.minute_start_epoch).unwrap_or(0);
+            upsert_timeseries_minute_projection_v2_key_tx(tx.as_mut(), key, &aggregate, max_row_id)
+                .await?;
         }
         tx.commit().await?;
         debug!(
@@ -1107,8 +1129,7 @@ async fn build_exact_timeseries_topic_baseline(
     .await?;
     if let Some(coverage_generation) = warm_coverage_generation {
         let pool = state.pool.clone();
-        let projection_records = records.clone();
-        let projection_snapshot_records = projection_records
+        let projection_snapshot_records = records
             .iter()
             .filter(|record| {
                 !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
@@ -1127,7 +1148,6 @@ async fn build_exact_timeseries_topic_baseline(
                 end,
                 source_scope,
                 upstream_account_id,
-                &projection_records,
                 terminal_projection_hub.as_ref(),
                 coverage_generation,
                 "topic_exact_fallback",
@@ -1888,7 +1908,8 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         loop {
             let observed_eligibility_generation = pressure_gate.eligibility_generation();
-            match prepare_timeseries_minute_projection_after_restart(state.as_ref()).await {
+            match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
+            {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
                     debug!(
@@ -1975,9 +1996,13 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     })
 }
 
-async fn prepare_timeseries_minute_projection_after_restart(
+pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
     state: &AppState,
+    cancellation: &CancellationToken,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    if cancellation.is_cancelled() {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+    }
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let Some(admission) = try_acquire_timeseries_minute_projection_write(
         &coordinator,
@@ -1989,6 +2014,10 @@ async fn prepare_timeseries_minute_projection_after_restart(
     else {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
     };
+    if cancellation.is_cancelled() {
+        drop(admission);
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+    }
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES ('timeseries_minute_v2', 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
@@ -2003,7 +2032,7 @@ async fn prepare_timeseries_minute_projection_after_restart(
         &coordinator,
         "startup_recovery",
         0,
-        None,
+        Some(cancellation),
     )
     .await?
     {
@@ -2026,6 +2055,10 @@ async fn prepare_timeseries_minute_projection_after_restart(
     else {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
     };
+    if cancellation.is_cancelled() {
+        drop(admission);
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+    }
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE timeseries_minute_projection_v2_state SET last_error = 'ready', updated_at = datetime('now') WHERE consumer = 'timeseries_minute_v2'",
@@ -2839,8 +2872,7 @@ pub(crate) async fn fetch_timeseries(
             // Projection persistence is P2 work. Never make a read request wait for a SQLite
             // writer when a first-time exact fallback already produced a valid response.
             let projection_pool = state.pool.clone();
-            let projection_records = records.clone();
-            let projection_snapshot_records = projection_records
+            let projection_snapshot_records = records
                 .iter()
                 .filter(|record| {
                     !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
@@ -2859,7 +2891,6 @@ pub(crate) async fn fetch_timeseries(
                     end_dt,
                     source_scope,
                     None,
-                    &projection_records,
                     terminal_projection_hub.as_ref(),
                     warm_coverage_generation,
                     "http_exact_fallback",
@@ -3286,7 +3317,6 @@ pub(crate) async fn fetch_timeseries_for_account(
                         end_dt,
                         source_scope,
                         Some(upstream_account_id),
-                        &records,
                         terminal_projection_hub.as_ref(),
                         warm_coverage_generation,
                         "account_exact_fallback",

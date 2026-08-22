@@ -20798,7 +20798,6 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
         end,
         InvocationSourceScope::All,
         None,
-        &[],
         state.terminal_projection_hub.as_ref(),
         coverage_generation,
         "stateful_exact_warm_p1_priority",
@@ -20827,7 +20826,6 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
         end,
         InvocationSourceScope::All,
         None,
-        &[],
         state.terminal_projection_hub.as_ref(),
         coverage_generation,
         "stateful_exact_warm_p1_retry",
@@ -20846,4 +20844,120 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
     .await
     .expect("count warm projection rows after retry");
     assert_eq!(projection_count, 1);
+}
+
+#[tokio::test]
+async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let start = Utc
+        .with_ymd_and_hms(2026, 8, 21, 12, 0, 0)
+        .single()
+        .expect("valid warm range start");
+    let end = start + ChronoDuration::minutes(1);
+    let occurred_at = format_naive(start.with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, raw_response) VALUES (?1, ?2, 'cli', 'running', 10, 0.01, 12.0, '{}')",
+    )
+    .bind("non-proxy-warm-race")
+    .bind(&occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert non-proxy running invocation");
+
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let coverage_generation = state
+        .terminal_projection_hub
+        .timeseries_coverage_generation();
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        coverage_generation,
+        "stateful_non_proxy_warm_seed",
+        &coordinator,
+    )
+    .await
+    .expect("seed warm projection");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+
+    sqlx::query("UPDATE codex_invocations SET status = 'success' WHERE invoke_id = ?1")
+        .bind("non-proxy-warm-race")
+        .execute(&state.pool)
+        .await
+        .expect("terminalize non-proxy invocation");
+    let coverage_state = sqlx::query_scalar::<_, String>(
+        "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(start.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invalidated projection coverage");
+    assert_eq!(coverage_state, "warming");
+
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        coverage_generation,
+        "stateful_non_proxy_warm_rebuild",
+        &coordinator,
+    )
+    .await
+    .expect("rebuild invalidated projection from transaction-time source rows");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+    let (coverage_state, aggregate_json): (String, String) = sqlx::query_as(
+        "SELECT coverage_state, aggregate_json FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(start.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load rebuilt non-proxy projection");
+    let aggregate: serde_json::Value =
+        serde_json::from_str(&aggregate_json).expect("valid rebuilt aggregate payload");
+    assert_eq!(coverage_state, "ready");
+    assert_eq!(aggregate["total_count"].as_i64(), Some(1));
+}
+
+#[tokio::test]
+async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let outcome = crate::api::prepare_timeseries_minute_projection_after_restart(
+        state.as_ref(),
+        &cancellation,
+    )
+    .await
+    .expect("cancelled startup recovery should not report a database error");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Cancelled
+    );
+    let state_row_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count startup state writes");
+    assert_eq!(state_row_count, 0);
 }
