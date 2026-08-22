@@ -20624,10 +20624,10 @@ async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
     )
     .await
     .expect("flush should yield without a database error");
-    assert_eq!(
+    assert!(matches!(
         outcome,
-        crate::api::TimeseriesMinuteProjectionFlushOutcome::Deferred
-    );
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Deferred(_)
+    ));
     assert_eq!(
         state
             .terminal_projection_hub
@@ -20805,10 +20805,10 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
     )
     .await
     .expect("warm write should defer without a database error");
-    assert_eq!(
+    assert!(matches!(
         outcome,
-        crate::api::TimeseriesMinuteProjectionWarmOutcome::Deferred
-    );
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Deferred(_)
+    ));
     let projection_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
             .fetch_one(&state.pool)

@@ -39,8 +39,18 @@ const TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT: i64 = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimeseriesMinuteProjectionFlushOutcome {
     Flushed,
-    Deferred,
+    Deferred(TimeseriesMinuteProjectionDeferred),
     Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TimeseriesMinuteProjectionDeferred {
+    retry_after: Option<Duration>,
+}
+
+enum TimeseriesMinuteProjectionWriteAdmissionOutcome {
+    Acquired(TimeseriesMinuteProjectionWriteAdmission),
+    Deferred(TimeseriesMinuteProjectionDeferred),
 }
 
 struct TimeseriesMinuteProjectionWriteAdmission {
@@ -56,7 +66,7 @@ struct TimeseriesMinuteProjectionCoverageInvalidationStats {
 
 enum TimeseriesMinuteProjectionCoverageInvalidationOutcome {
     Invalidated(TimeseriesMinuteProjectionCoverageInvalidationStats),
-    Deferred,
+    Deferred(TimeseriesMinuteProjectionDeferred),
     Cancelled,
 }
 
@@ -315,7 +325,7 @@ async fn store_timeseries_minute_projection_v2_for_test(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimeseriesMinuteProjectionWarmOutcome {
     Stored,
-    Deferred,
+    Deferred(TimeseriesMinuteProjectionDeferred),
 }
 
 async fn store_timeseries_minute_projection_v2_warm(
@@ -365,9 +375,9 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
         trigger,
     )
     .await?;
-    if outcome != TimeseriesMinuteProjectionWarmOutcome::Deferred {
+    let TimeseriesMinuteProjectionWarmOutcome::Deferred(deferred) = outcome else {
         return Ok(outcome);
-    }
+    };
     debug!(
         route = "timeseries_projection",
         builder = "minute_projection_v2",
@@ -389,7 +399,18 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                 trigger,
             ).await
         }
-        _ = tokio::time::sleep(Duration::from_secs(5)) => Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred),
+        _ = tokio::time::sleep(deferred.retry_after.unwrap_or(Duration::from_secs(5))) => {
+            store_timeseries_minute_projection_v2_warm(
+                pool,
+                start,
+                end,
+                source_scope,
+                upstream_account_id,
+                terminal_projection_hub,
+                coverage_generation,
+                trigger,
+            ).await
+        }
     }
 }
 
@@ -433,17 +454,23 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
                 coverage_generation,
                 "minute projection warm write deferred for a newer coverage generation"
             );
-            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after: None },
+            ));
         }
-        let Some(admission) = try_acquire_timeseries_minute_projection_write(
+        let admission = match try_acquire_timeseries_minute_projection_write(
             coordinator,
+            crate::db_pressure::global_db_pressure_gate(),
             trigger,
             "exact_warm",
             key_batch.len(),
         )
         .await
-        else {
-            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+        {
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+                return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(deferred));
+            }
         };
         // Hub invalidations cover proxy terminal events. Non-proxy terminal updates invalidate
         // coverage in SQLite through a trigger, so the source records are rebuilt in the
@@ -454,7 +481,9 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
                 .is_some()
         {
             drop(admission);
-            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after: None },
+            ));
         }
         let transaction_started = Instant::now();
         let mut tx = pool.begin().await?;
@@ -500,7 +529,9 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
                 .timeseries_coverage_invalidation_pending()
                 .is_some()
         {
-            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after: None },
+            ));
         }
         let mut aggregates = HashMap::<i64, BucketAggregate>::new();
         let mut max_row_ids = HashMap::<i64, i64>::new();
@@ -1160,7 +1191,7 @@ async fn build_exact_timeseries_topic_baseline(
                         &projection_snapshot_records,
                     );
                 }
-                Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred) => {
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
                     debug!(
                         route = "timeseries_projection",
                         projection_store_outcome = "deferred",
@@ -1548,11 +1579,11 @@ fn timeseries_projection_requires_exact_rebuild(
 
 async fn try_acquire_timeseries_minute_projection_write(
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+    pressure_gate: &crate::db_pressure::DbPressureGate,
     trigger: &'static str,
     transaction_phase: &'static str,
     pending_event_count: usize,
-) -> Option<TimeseriesMinuteProjectionWriteAdmission> {
-    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+) -> TimeseriesMinuteProjectionWriteAdmissionOutcome {
     let observed_eligibility_generation = pressure_gate.eligibility_generation();
     let Some(mut write_permit) = coordinator
         .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
@@ -1572,21 +1603,28 @@ async fn try_acquire_timeseries_minute_projection_write(
             pending_event_count,
             "minute projection deferred before opening a P2 write transaction"
         );
-        return None;
+        return TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(
+            TimeseriesMinuteProjectionDeferred { retry_after: None },
+        );
     };
 
     match pressure_gate.try_begin_background("timeseries_minute_projection_flush") {
-        Ok(pressure_permit) => Some(TimeseriesMinuteProjectionWriteAdmission {
-            _write_permit: write_permit,
-            _pressure_permit: pressure_permit,
-        }),
+        Ok(pressure_permit) => TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(
+            TimeseriesMinuteProjectionWriteAdmission {
+                _write_permit: write_permit,
+                _pressure_permit: pressure_permit,
+            },
+        ),
         Err(reason) => {
-            if matches!(
-                reason,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-            ) {
-                write_permit.suppress_background_eligibility_wakeup();
-            }
+            let retry_after = match reason {
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => {
+                    Some(Duration::from_millis(remaining_ms.max(1)))
+                }
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => None,
+            };
+            // This acquisition never opened a background transaction. Its P2 permit must not
+            // satisfy the retry wait that was registered before this admission attempt.
+            write_permit.suppress_background_eligibility_wakeup();
             drop(write_permit);
             debug!(
                 route = "timeseries_projection",
@@ -1600,7 +1638,9 @@ async fn try_acquire_timeseries_minute_projection_write(
                 %reason,
                 "minute projection deferred before opening a P2 write transaction"
             );
-            None
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after },
+            )
         }
     }
 }
@@ -1627,15 +1667,21 @@ async fn invalidate_timeseries_minute_projection_coverage(
             return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats));
         }
 
-        let Some(admission) = try_acquire_timeseries_minute_projection_write(
+        let admission = match try_acquire_timeseries_minute_projection_write(
             coordinator,
+            crate::db_pressure::global_db_pressure_gate(),
             trigger,
             "coverage_invalidation",
             pending_event_count,
         )
         .await
-        else {
-            return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred);
+        {
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+                return Ok(
+                    TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred(deferred),
+                );
+            }
         };
 
         let started = Instant::now();
@@ -1735,8 +1781,8 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
             .await?
             {
                 TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
-                TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred => {
-                    return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+                TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred(deferred) => {
+                    return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
                 }
                 TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
                     return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
@@ -1782,15 +1828,19 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
             if timeseries_minute_projection_is_cancelled(cancellation) {
                 return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
             }
-            let Some(admission) = try_acquire_timeseries_minute_projection_write(
+            let admission = match try_acquire_timeseries_minute_projection_write(
                 coordinator,
+                crate::db_pressure::global_db_pressure_gate(),
                 trigger,
                 "minute_projection_keys",
                 flushed_event_ids.len(),
             )
             .await
-            else {
-                return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+            {
+                TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+                TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+                    return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+                }
             };
 
             let transaction_started = Instant::now();
@@ -1911,7 +1961,7 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
-                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred)) => {
                     debug!(
                         route = "timeseries_projection",
                         builder = "minute_projection_v2",
@@ -1919,9 +1969,17 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                         observed_eligibility_generation,
                         "startup minute projection recovery yielded to higher-priority database work"
                     );
-                    tokio::select! {
-                        _ = cancel.cancelled() => return,
-                        _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                    if let Some(retry_after) = deferred.retry_after {
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                            _ = tokio::time::sleep(retry_after) => {}
+                        }
+                    } else {
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                        }
                     }
                 }
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => return,
@@ -1946,12 +2004,22 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
         let mut deferred_eligibility_generation = None;
+        let mut deferred_retry_after = None;
         loop {
             if let Some(observed_eligibility_generation) = deferred_eligibility_generation.take() {
-                tokio::select! {
-                    _ = cancel.cancelled() => return,
-                    _ = ticker.tick() => {}
-                    _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                if let Some(retry_after) = deferred_retry_after.take() {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = ticker.tick() => {}
+                        _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                        _ = tokio::time::sleep(retry_after) => {}
+                    }
+                } else {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = ticker.tick() => {}
+                        _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                    }
                 }
             } else {
                 tokio::select! {
@@ -1970,14 +2038,16 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             .await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => {}
-                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred)) => {
                     deferred_eligibility_generation = Some(observed_eligibility_generation);
+                    deferred_retry_after = deferred.retry_after;
                     debug!(
                         route = "timeseries_projection",
                         builder = "minute_projection_v2",
                         trigger = "terminal_deadline",
                         flush_outcome = "deferred",
                         observed_eligibility_generation,
+                        retry_after_ms = deferred.retry_after.map(|value| value.as_millis() as u64),
                         "minute projection flush yielded to higher-priority database work"
                     );
                 }
@@ -2004,15 +2074,19 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let Some(admission) = try_acquire_timeseries_minute_projection_write(
+    let admission = match try_acquire_timeseries_minute_projection_write(
         &coordinator,
+        crate::db_pressure::global_db_pressure_gate(),
         "startup_recovery",
         "startup_state_warming",
         0,
     )
     .await
-    else {
-        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+    {
+        TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+        TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+        }
     };
     if cancellation.is_cancelled() {
         drop(admission);
@@ -2037,23 +2111,27 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
     .await?
     {
         TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
-        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred => {
-            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred(deferred) => {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
         }
         TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
     };
 
-    let Some(admission) = try_acquire_timeseries_minute_projection_write(
+    let admission = match try_acquire_timeseries_minute_projection_write(
         &coordinator,
+        crate::db_pressure::global_db_pressure_gate(),
         "startup_recovery",
         "startup_state_ready",
         0,
     )
     .await
-    else {
-        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+    {
+        TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+        TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+        }
     };
     if cancellation.is_cancelled() {
         drop(admission);
@@ -2903,7 +2981,7 @@ pub(crate) async fn fetch_timeseries(
                             &projection_snapshot_records,
                         );
                     }
-                    Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred) => {
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
                         debug!(
                             route = "timeseries_projection",
                             projection_store_outcome = "deferred",
@@ -3336,7 +3414,7 @@ pub(crate) async fn fetch_timeseries_for_account(
                         &projection_snapshot_records,
                     );
                 }
-                Ok((TimeseriesMinuteProjectionWarmOutcome::Deferred, _)) => {
+                Ok((TimeseriesMinuteProjectionWarmOutcome::Deferred(_), _)) => {
                     debug!(
                         route = "timeseries_projection",
                         upstream_account_id,
@@ -4953,5 +5031,39 @@ mod tests {
         assert_eq!(aggregate.reasoning_tokens, 11);
         assert_eq!(aggregate.total_latency_sample_count, 2);
         assert_eq!(aggregate.total_latency_sum_ms, 1_100.0);
+    }
+
+    #[tokio::test]
+    async fn pressure_cooldown_deferral_does_not_wake_its_own_retry_waiter() {
+        let coordinator = Arc::new(
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test(),
+        );
+        let pressure_gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30));
+        pressure_gate.record_pressure("timeseries_minute_projection_test", "sqlite_lock");
+        let observed_eligibility_generation = pressure_gate.eligibility_generation();
+
+        let outcome = try_acquire_timeseries_minute_projection_write(
+            &coordinator,
+            &pressure_gate,
+            "test",
+            "pressure_cooldown",
+            1,
+        )
+        .await;
+
+        let TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) = outcome else {
+            panic!("pressure cooldown must defer minute projection work");
+        };
+        assert!(
+            deferred
+                .retry_after
+                .is_some_and(|retry_after| retry_after >= Duration::from_secs(29)),
+            "pressure cooldown must provide the retry deadline"
+        );
+        assert_eq!(
+            pressure_gate.eligibility_generation(),
+            observed_eligibility_generation,
+            "releasing a denied P2 permit must not wake its own retry waiter"
+        );
     }
 }
