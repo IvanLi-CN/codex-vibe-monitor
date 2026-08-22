@@ -280,6 +280,40 @@ async fn load_timeseries_minute_projection_v2(
     Ok(Some((aggregates, cursor)))
 }
 
+async fn timeseries_minute_projection_v2_coverage_is_ready(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<bool, ApiError> {
+    let projection_ready = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT last_error FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .flatten()
+    .is_some_and(|state| state == "ready");
+    if !projection_ready {
+        return Ok(false);
+    }
+    let (minute_start, minute_end) = complete_minute_bounds(start, end);
+    let expected = (minute_end - minute_start).div_euclid(60);
+    if expected <= 0 {
+        return Ok(false);
+    }
+    let ready_row_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM timeseries_minute_projection_v2 WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2 AND source_scope = ?3 AND upstream_account_key = ?4 AND coverage_state = 'ready'",
+    )
+    .bind(minute_start)
+    .bind(minute_end)
+    .bind(timeseries_projection_scope(source_scope))
+    .bind(upstream_account_id.unwrap_or(-1))
+    .fetch_one(pool)
+    .await?;
+    Ok(ready_row_count == expected)
+}
+
 #[cfg(test)]
 async fn store_timeseries_minute_projection_v2_for_test(
     pool: &Pool<Sqlite>,
@@ -2766,6 +2800,18 @@ mod minute_projection_tests {
             .expect("load invalidated projection")
             .is_none()
         );
+        assert!(
+            !timeseries_minute_projection_v2_coverage_is_ready(
+                &pool,
+                start,
+                end,
+                InvocationSourceScope::All,
+                None,
+            )
+            .await
+            .expect("check invalidated coverage fence"),
+            "a coverage change after the projection read must force an exact fallback"
+        );
         store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
@@ -2791,6 +2837,17 @@ mod minute_projection_tests {
         .expect("re-warmed minute coverage");
         assert_eq!(cursor, 18);
         assert_eq!(aggregates[&start.timestamp()].total_count, 2);
+        assert!(
+            timeseries_minute_projection_v2_coverage_is_ready(
+                &pool,
+                start,
+                end,
+                InvocationSourceScope::All,
+                None,
+            )
+            .await
+            .expect("check re-warmed coverage fence")
+        );
     }
 
     #[test]
@@ -2868,7 +2925,7 @@ pub(crate) async fn fetch_timeseries(
     let start_str_iso = format_utc_iso(start_dt);
     let use_minute_projection = range_window.duration <= ChronoDuration::days(1);
 
-    let coverage_invalidation_pending = state
+    let mut coverage_invalidation_pending = state
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some();
@@ -2978,28 +3035,44 @@ pub(crate) async fn fetch_timeseries(
             reporting_tz,
             &db_runtime_records,
         )?;
-        debug!(
-            route = "timeseries_http_or_topic",
-            builder = "minute_projection_v2",
-            response_source = "minute_projection",
-            minute_rollup_count = aggregates.len(),
-            memory_overlay_count,
-            exact_fallback_minute_count = 2_u8,
-            raw_row_count = db_runtime_records.len(),
-            coverage_state = "covered",
-            projection_cursor,
-            "built open-window timeseries from minute projection"
-        );
-        return build_timeseries_response(
+        if timeseries_minute_projection_v2_coverage_is_ready(
+            &state.pool,
             start_dt,
             end_dt,
-            bucket_seconds,
-            snapshot_id,
-            bucket_selection,
-            aggregates,
-            fill_start_epoch,
-            fill_end_epoch,
-            reporting_tz,
+            source_scope,
+            None,
+        )
+        .await?
+        {
+            debug!(
+                route = "timeseries_http_or_topic",
+                builder = "minute_projection_v2",
+                response_source = "minute_projection",
+                minute_rollup_count = aggregates.len(),
+                memory_overlay_count,
+                exact_fallback_minute_count = 2_u8,
+                raw_row_count = db_runtime_records.len(),
+                coverage_state = "covered",
+                projection_cursor,
+                "built open-window timeseries from minute projection"
+            );
+            return build_timeseries_response(
+                start_dt,
+                end_dt,
+                bucket_seconds,
+                snapshot_id,
+                bucket_selection,
+                aggregates,
+                fill_start_epoch,
+                fill_end_epoch,
+                reporting_tz,
+            );
+        }
+        coverage_invalidation_pending = true;
+        debug!(
+            route = "timeseries_http_or_topic",
+            projection_cursor,
+            "minute projection coverage changed while loading the live tail; falling back to exact records"
         );
     }
 
@@ -3269,7 +3342,7 @@ pub(crate) async fn fetch_timeseries_for_account(
         }
     }
 
-    let coverage_invalidation_pending = state
+    let mut coverage_invalidation_pending = state
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some();
@@ -3390,29 +3463,46 @@ pub(crate) async fn fetch_timeseries_for_account(
             reporting_tz,
             &db_runtime_records,
         )?;
-        debug!(
-            route = "timeseries_http_or_topic",
-            builder = "minute_projection_v2",
-            response_source = "minute_projection",
-            upstream_account_id,
-            minute_rollup_count = aggregates.len(),
-            memory_overlay_count,
-            exact_fallback_minute_count = 2_u8,
-            raw_row_count = db_runtime_records.len(),
-            coverage_state = "covered",
-            projection_cursor,
-            "built account open-window timeseries from minute projection"
-        );
-        return build_timeseries_response(
+        if timeseries_minute_projection_v2_coverage_is_ready(
+            &state.pool,
             start_dt,
             end_dt,
-            bucket_seconds,
-            snapshot_id,
-            bucket_selection,
-            aggregates,
-            fill_start_epoch,
-            fill_end_epoch,
-            reporting_tz,
+            source_scope,
+            Some(upstream_account_id),
+        )
+        .await?
+        {
+            debug!(
+                route = "timeseries_http_or_topic",
+                builder = "minute_projection_v2",
+                response_source = "minute_projection",
+                upstream_account_id,
+                minute_rollup_count = aggregates.len(),
+                memory_overlay_count,
+                exact_fallback_minute_count = 2_u8,
+                raw_row_count = db_runtime_records.len(),
+                coverage_state = "covered",
+                projection_cursor,
+                "built account open-window timeseries from minute projection"
+            );
+            return build_timeseries_response(
+                start_dt,
+                end_dt,
+                bucket_seconds,
+                snapshot_id,
+                bucket_selection,
+                aggregates,
+                fill_start_epoch,
+                fill_end_epoch,
+                reporting_tz,
+            );
+        }
+        coverage_invalidation_pending = true;
+        debug!(
+            route = "timeseries_http_or_topic",
+            upstream_account_id,
+            projection_cursor,
+            "account minute projection coverage changed while loading the live tail; falling back to exact records"
         );
     }
 
@@ -3427,10 +3517,7 @@ pub(crate) async fn fetch_timeseries_for_account(
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if bucket_seconds < 3_600
         && range_window.duration <= ChronoDuration::days(1)
-        && state
-            .terminal_projection_hub
-            .timeseries_coverage_invalidation_pending()
-            .is_none()
+        && !coverage_invalidation_pending
     {
         // Account projections include empty minutes, so a first exact fallback must warm
         // the complete selection instead of relying on future terminal events to fill gaps.
