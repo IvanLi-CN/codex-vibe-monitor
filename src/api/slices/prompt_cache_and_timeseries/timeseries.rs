@@ -20,7 +20,7 @@ struct TimeseriesMinuteProjectionRow {
     max_row_id: i64,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct TimeseriesMinuteProjectionV2Row {
     minute_start_epoch: i64,
     aggregate_json: String,
@@ -30,6 +30,12 @@ struct TimeseriesMinuteProjectionV2Row {
     first_token_samples_json: String,
     max_row_id: i64,
     coverage_state: String,
+}
+
+struct TimeseriesMinuteProjectionV2Load {
+    aggregates: BTreeMap<i64, BucketAggregate>,
+    cursor: i64,
+    coverage_rows: Vec<TimeseriesMinuteProjectionV2Row>,
 }
 
 const TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT: usize = 64;
@@ -228,7 +234,53 @@ async fn load_timeseries_minute_projection_v2(
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> Result<Option<(BTreeMap<i64, BucketAggregate>, i64)>, ApiError> {
+) -> Result<Option<TimeseriesMinuteProjectionV2Load>, ApiError> {
+    let Some(rows) = load_ready_timeseries_minute_projection_v2_rows(
+        pool,
+        start,
+        end,
+        source_scope,
+        upstream_account_id,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let mut aggregates = BTreeMap::new();
+    let mut cursor = 0;
+    for row in &rows {
+        debug_assert_eq!(row.coverage_state, "ready");
+        let mut aggregate = serde_json::from_str::<BucketAggregate>(&row.aggregate_json)
+            .map_err(|err| ApiError::from(anyhow!("invalid v2 minute aggregate: {err}")))?;
+        // Keep the sample payloads independently addressable so a corrupt aggregate payload
+        // cannot silently turn an exact P95 into a histogram approximation.
+        aggregate.total_latency_values = serde_json::from_str(&row.total_latency_samples_json)
+            .map_err(|err| ApiError::from(anyhow!("invalid v2 total-latency samples: {err}")))?;
+        aggregate.first_byte_ttfb_values = serde_json::from_str(&row.first_byte_samples_json)
+            .map_err(|err| ApiError::from(anyhow!("invalid v2 first-byte samples: {err}")))?;
+        aggregate.first_response_byte_total_values =
+            serde_json::from_str(&row.first_response_byte_total_samples_json).map_err(|err| {
+                ApiError::from(anyhow!("invalid v2 first-response samples: {err}"))
+            })?;
+        aggregate.first_token_values = serde_json::from_str(&row.first_token_samples_json)
+            .map_err(|err| ApiError::from(anyhow!("invalid v2 first-token samples: {err}")))?;
+        cursor = cursor.max(row.max_row_id);
+        aggregates.insert(row.minute_start_epoch, aggregate);
+    }
+    Ok(Some(TimeseriesMinuteProjectionV2Load {
+        aggregates,
+        cursor,
+        coverage_rows: rows,
+    }))
+}
+
+async fn load_ready_timeseries_minute_projection_v2_rows(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<Option<Vec<TimeseriesMinuteProjectionV2Row>>, ApiError> {
     let projection_ready = sqlx::query_scalar::<_, Option<String>>(
         "SELECT last_error FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
     )
@@ -256,62 +308,28 @@ async fn load_timeseries_minute_projection_v2(
     if rows.len() as i64 != expected {
         return Ok(None);
     }
-    let mut aggregates = BTreeMap::new();
-    let mut cursor = 0;
-    for row in rows {
-        debug_assert_eq!(row.coverage_state, "ready");
-        let mut aggregate = serde_json::from_str::<BucketAggregate>(&row.aggregate_json)
-            .map_err(|err| ApiError::from(anyhow!("invalid v2 minute aggregate: {err}")))?;
-        // Keep the sample payloads independently addressable so a corrupt aggregate payload
-        // cannot silently turn an exact P95 into a histogram approximation.
-        aggregate.total_latency_values = serde_json::from_str(&row.total_latency_samples_json)
-            .map_err(|err| ApiError::from(anyhow!("invalid v2 total-latency samples: {err}")))?;
-        aggregate.first_byte_ttfb_values = serde_json::from_str(&row.first_byte_samples_json)
-            .map_err(|err| ApiError::from(anyhow!("invalid v2 first-byte samples: {err}")))?;
-        aggregate.first_response_byte_total_values =
-            serde_json::from_str(&row.first_response_byte_total_samples_json).map_err(|err| {
-                ApiError::from(anyhow!("invalid v2 first-response samples: {err}"))
-            })?;
-        aggregate.first_token_values = serde_json::from_str(&row.first_token_samples_json)
-            .map_err(|err| ApiError::from(anyhow!("invalid v2 first-token samples: {err}")))?;
-        cursor = cursor.max(row.max_row_id);
-        aggregates.insert(row.minute_start_epoch, aggregate);
-    }
-    Ok(Some((aggregates, cursor)))
+    Ok(Some(rows))
 }
 
-async fn timeseries_minute_projection_v2_coverage_is_ready(
+async fn timeseries_minute_projection_v2_snapshot_is_current(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
+    coverage_rows: &[TimeseriesMinuteProjectionV2Row],
 ) -> Result<bool, ApiError> {
-    let projection_ready = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT last_error FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
+    // Re-read the payload selected by the loader, not merely its row count. An invalidation can
+    // warm the same primary keys again while a reader is building its live tail.
+    Ok(load_ready_timeseries_minute_projection_v2_rows(
+        pool,
+        start,
+        end,
+        source_scope,
+        upstream_account_id,
     )
-    .fetch_optional(pool)
     .await?
-    .flatten()
-    .is_some_and(|state| state == "ready");
-    if !projection_ready {
-        return Ok(false);
-    }
-    let (minute_start, minute_end) = complete_minute_bounds(start, end);
-    let expected = (minute_end - minute_start).div_euclid(60);
-    if expected <= 0 {
-        return Ok(false);
-    }
-    let ready_row_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM timeseries_minute_projection_v2 WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2 AND source_scope = ?3 AND upstream_account_key = ?4 AND coverage_state = 'ready'",
-    )
-    .bind(minute_start)
-    .bind(minute_end)
-    .bind(timeseries_projection_scope(source_scope))
-    .bind(upstream_account_id.unwrap_or(-1))
-    .fetch_one(pool)
-    .await?;
-    Ok(ready_row_count == expected)
+    .is_some_and(|current_rows| current_rows == coverage_rows))
 }
 
 #[cfg(test)]
@@ -966,15 +984,18 @@ impl TimeseriesTopicMaterializedBase {
                     .timeseries_coverage_invalidation_pending()
                     .is_none();
             let aggregates = if use_minute_projection {
-                if let Some((minute_aggregates, projection_cursor)) =
-                    load_timeseries_minute_projection_v2(
-                        &state.pool,
-                        start,
-                        end,
-                        source_scope,
-                        params.upstream_account_id,
-                    )
-                    .await?
+                if let Some(TimeseriesMinuteProjectionV2Load {
+                    aggregates: minute_aggregates,
+                    cursor: projection_cursor,
+                    coverage_rows,
+                }) = load_timeseries_minute_projection_v2(
+                    &state.pool,
+                    start,
+                    end,
+                    source_scope,
+                    params.upstream_account_id,
+                )
+                .await?
                 {
                     let mut aggregates = fold_minute_projection_aggregates(
                         minute_aggregates,
@@ -1031,12 +1052,13 @@ impl TimeseriesTopicMaterializedBase {
                         bucket_seconds,
                         reporting_tz,
                     )?;
-                    if timeseries_minute_projection_v2_coverage_is_ready(
+                    if timeseries_minute_projection_v2_snapshot_is_current(
                         &state.pool,
                         start,
                         end,
                         source_scope,
                         params.upstream_account_id,
+                        &coverage_rows,
                     )
                     .await?
                     {
@@ -2457,7 +2479,7 @@ mod minute_projection_tests {
         .await
         .expect("store v2 projection");
 
-        let (aggregates, cursor) = load_timeseries_minute_projection_v2(
+        let projection = load_timeseries_minute_projection_v2(
             &pool,
             start,
             end,
@@ -2467,6 +2489,8 @@ mod minute_projection_tests {
         .await
         .expect("load v2 projection")
         .expect("complete v2 minute coverage");
+        let aggregates = projection.aggregates;
+        let cursor = projection.cursor;
         let minute = start.timestamp();
         let aggregate = aggregates.get(&minute).expect("first minute aggregate");
         assert_eq!(cursor, 18);
@@ -2707,7 +2731,7 @@ mod minute_projection_tests {
         .await
         .expect("warm account projection");
 
-        let (aggregates, cursor) = load_timeseries_minute_projection_v2(
+        let projection = load_timeseries_minute_projection_v2(
             &pool,
             start,
             end,
@@ -2717,6 +2741,8 @@ mod minute_projection_tests {
         .await
         .expect("load account projection")
         .expect("complete account minute coverage");
+        let aggregates = projection.aggregates;
+        let cursor = projection.cursor;
         assert_eq!(cursor, 17);
         assert_eq!(aggregates.len(), 2);
         assert_eq!(
@@ -2726,7 +2752,7 @@ mod minute_projection_tests {
     }
 
     #[tokio::test]
-    async fn minute_projection_warm_snapshot_does_not_replace_a_newer_cursor() {
+    async fn minute_projection_snapshot_fence_rejects_changed_rewarm_with_same_cursor() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -2776,7 +2802,7 @@ mod minute_projection_tests {
         .await
         .expect("attempt stale warm snapshot");
 
-        let (aggregates, cursor) = load_timeseries_minute_projection_v2(
+        let initial_projection = load_timeseries_minute_projection_v2(
             &pool,
             start,
             end,
@@ -2786,8 +2812,11 @@ mod minute_projection_tests {
         .await
         .expect("load v2 projection")
         .expect("complete minute coverage");
-        assert_eq!(cursor, 18);
-        assert_eq!(aggregates[&start.timestamp()].total_count, 2);
+        assert_eq!(initial_projection.cursor, 18);
+        assert_eq!(
+            initial_projection.aggregates[&start.timestamp()].total_count,
+            2
+        );
 
         sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
             .execute(&pool)
@@ -2806,12 +2835,13 @@ mod minute_projection_tests {
             .is_none()
         );
         assert!(
-            !timeseries_minute_projection_v2_coverage_is_ready(
+            !timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
                 start,
                 end,
                 InvocationSourceScope::All,
                 None,
+                &initial_projection.coverage_rows,
             )
             .await
             .expect("check invalidated coverage fence"),
@@ -2825,12 +2855,28 @@ mod minute_projection_tests {
             None,
             &[
                 record(17, "2026-08-01 08:00:12"),
-                record(18, "2026-08-01 08:00:30"),
+                InvocationAggregateRecord {
+                    status: Some("failed".to_string()),
+                    ..record(18, "2026-08-01 08:00:30")
+                },
             ],
         )
         .await
         .expect("re-warm invalidated projection");
-        let (aggregates, cursor) = load_timeseries_minute_projection_v2(
+        assert!(
+            !timeseries_minute_projection_v2_snapshot_is_current(
+                &pool,
+                start,
+                end,
+                InvocationSourceScope::All,
+                None,
+                &initial_projection.coverage_rows,
+            )
+            .await
+            .expect("check changed re-warmed coverage fence"),
+            "re-warming the same primary keys must not accept stale aggregate payloads"
+        );
+        let re_warmed_projection = load_timeseries_minute_projection_v2(
             &pool,
             start,
             end,
@@ -2840,15 +2886,19 @@ mod minute_projection_tests {
         .await
         .expect("load re-warmed projection")
         .expect("re-warmed minute coverage");
-        assert_eq!(cursor, 18);
-        assert_eq!(aggregates[&start.timestamp()].total_count, 2);
+        assert_eq!(re_warmed_projection.cursor, 18);
+        assert_eq!(
+            re_warmed_projection.aggregates[&start.timestamp()].total_count,
+            2
+        );
         assert!(
-            timeseries_minute_projection_v2_coverage_is_ready(
+            timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
                 start,
                 end,
                 InvocationSourceScope::All,
                 None,
+                &re_warmed_projection.coverage_rows,
             )
             .await
             .expect("check re-warmed coverage fence")
@@ -2936,7 +2986,11 @@ pub(crate) async fn fetch_timeseries(
         .is_some();
     if use_minute_projection
         && !coverage_invalidation_pending
-        && let Some((minute_aggregates, projection_cursor)) =
+        && let Some(TimeseriesMinuteProjectionV2Load {
+            aggregates: minute_aggregates,
+            cursor: projection_cursor,
+            coverage_rows,
+        }) =
             load_timeseries_minute_projection_v2(&state.pool, start_dt, end_dt, source_scope, None)
                 .await?
     {
@@ -3040,12 +3094,13 @@ pub(crate) async fn fetch_timeseries(
             reporting_tz,
             &db_runtime_records,
         )?;
-        if timeseries_minute_projection_v2_coverage_is_ready(
+        if timeseries_minute_projection_v2_snapshot_is_current(
             &state.pool,
             start_dt,
             end_dt,
             source_scope,
             None,
+            &coverage_rows,
         )
         .await?
         {
@@ -3338,7 +3393,11 @@ pub(crate) async fn fetch_timeseries_for_account(
     if bucket_seconds < 3_600
         && range_window.duration <= ChronoDuration::days(1)
         && !coverage_invalidation_pending
-        && let Some((minute_aggregates, projection_cursor)) = load_timeseries_minute_projection_v2(
+        && let Some(TimeseriesMinuteProjectionV2Load {
+            aggregates: minute_aggregates,
+            cursor: projection_cursor,
+            coverage_rows,
+        }) = load_timeseries_minute_projection_v2(
             &state.pool,
             start_dt,
             end_dt,
@@ -3452,12 +3511,13 @@ pub(crate) async fn fetch_timeseries_for_account(
             reporting_tz,
             &db_runtime_records,
         )?;
-        if timeseries_minute_projection_v2_coverage_is_ready(
+        if timeseries_minute_projection_v2_snapshot_is_current(
             &state.pool,
             start_dt,
             end_dt,
             source_scope,
             Some(upstream_account_id),
+            &coverage_rows,
         )
         .await?
         {
