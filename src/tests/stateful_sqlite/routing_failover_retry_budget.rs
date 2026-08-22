@@ -2110,7 +2110,9 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
             set_test_account_status(&mutation_state.pool, delayed_id, "active").await;
             mutation_state
                 .pool_routing_snapshot
-                .request_refresh_and_wake_waiters();
+                .request_refresh_and_wake_waiters(|| {
+                    mutation_state.pool_routing_availability.publish()
+                });
             refresh_pool_routing_snapshot(mutation_state.as_ref())
                 .await
                 .expect("install recovered-account snapshot before waking the waiter");

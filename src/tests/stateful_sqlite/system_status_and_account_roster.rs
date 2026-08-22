@@ -1631,6 +1631,8 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
@@ -1966,6 +1968,8 @@ pub(crate) fn clone_state_with_upstream_accounts(
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: state.pool_routing_snapshot.clone(),
+        pool_no_candidate_waiters: state.pool_no_candidate_waiters.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_routing_test_data_version_connection: state
             .pool_routing_test_data_version_connection
@@ -2029,6 +2033,8 @@ fn clone_state_with_retry_delay_overrides(
         system_status_cache: state.system_status_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: state.pool_routing_snapshot.clone(),
+        pool_no_candidate_waiters: state.pool_no_candidate_waiters.clone(),
         pool_routing_runtime_cache: state.pool_routing_runtime_cache.clone(),
         pool_routing_test_data_version_connection: state
             .pool_routing_test_data_version_connection
@@ -2131,6 +2137,8 @@ pub(crate) async fn test_state_from_existing_pool(
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+        pool_routing_snapshot: Arc::new(PoolRoutingSnapshotStore::new()),
+        pool_no_candidate_waiters: Arc::new(Semaphore::new(POOL_NO_CANDIDATE_WAITER_LIMIT)),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
         #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
@@ -2458,16 +2466,68 @@ pub(crate) async fn set_test_account_local_limits(
     .expect("set test account local limits");
 }
 
-pub(crate) async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &str) {
+pub(crate) trait TestRoutingMutationTarget {
+    fn test_pool(&self) -> &SqlitePool;
+
+    fn test_state(&self) -> Option<&AppState> {
+        None
+    }
+}
+
+impl TestRoutingMutationTarget for SqlitePool {
+    fn test_pool(&self) -> &SqlitePool {
+        self
+    }
+}
+
+impl TestRoutingMutationTarget for AppState {
+    fn test_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    fn test_state(&self) -> Option<&AppState> {
+        Some(self)
+    }
+}
+
+impl TestRoutingMutationTarget for Arc<AppState> {
+    fn test_pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    fn test_state(&self) -> Option<&AppState> {
+        Some(self.as_ref())
+    }
+}
+
+async fn refresh_test_routing_snapshot(target: &impl TestRoutingMutationTarget, reason: &str) {
+    if let Some(state) = target.test_state() {
+        refresh_pool_routing_snapshot(state).await.expect(reason);
+    }
+}
+
+pub(crate) async fn set_test_account_status(
+    target: &impl TestRoutingMutationTarget,
+    account_id: i64,
+    status: &str,
+) {
     sqlx::query("UPDATE pool_upstream_accounts SET status = ?1 WHERE id = ?2")
         .bind(status)
         .bind(account_id)
-    .execute(pool)
-    .await
-    .expect("set test pool account status");
+        .execute(target.test_pool())
+        .await
+        .expect("set test pool account status");
+    refresh_test_routing_snapshot(
+        target,
+        "refresh routing snapshot after test account status update",
+    )
+    .await;
 }
 
-pub(crate) async fn clear_test_account_credentials(state: &Arc<AppState>, account_id: i64) {
+pub(crate) async fn clear_test_account_credentials(
+    target: &impl TestRoutingMutationTarget,
+    account_id: i64,
+) {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -2479,40 +2539,52 @@ pub(crate) async fn clear_test_account_credentials(state: &Arc<AppState>, accoun
     )
     .bind(&now_iso)
     .bind(account_id)
-    .execute(&state.pool)
+    .execute(target.test_pool())
     .await
     .expect("clear test pool account credentials");
-    Box::pin(refresh_pool_routing_snapshot(state.as_ref()))
-        .await
-        .expect("refresh routing snapshot after test account credentials clear");
+    refresh_test_routing_snapshot(
+        target,
+        "refresh routing snapshot after test account credentials clear",
+    )
+    .await;
 }
 
 pub(crate) async fn set_test_account_rate_limited_cooldown(
-    pool: &SqlitePool,
+    target: &impl TestRoutingMutationTarget,
     account_id: i64,
     cooldown_secs: i64,
 ) {
     set_test_account_route_cooldown(
-        pool,
+        target.test_pool(),
         account_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
         "test rate limit cooldown",
         cooldown_secs,
     )
     .await;
+    refresh_test_routing_snapshot(
+        target,
+        "refresh routing snapshot after test account cooldown",
+    )
+    .await;
 }
 
 pub(crate) async fn set_test_account_generic_route_cooldown(
-    pool: &SqlitePool,
+    target: &impl TestRoutingMutationTarget,
     account_id: i64,
     cooldown_secs: i64,
 ) {
     set_test_account_route_cooldown(
-        pool,
+        target.test_pool(),
         account_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
         "test generic cooldown",
         cooldown_secs,
+    )
+    .await;
+    refresh_test_routing_snapshot(
+        target,
+        "refresh routing snapshot after test account cooldown",
     )
     .await;
 }
@@ -2590,7 +2662,7 @@ async fn set_test_account_route_cooldown(
 }
 
 pub(crate) async fn upsert_test_sticky_route_at(
-    state: &Arc<AppState>,
+    target: &impl TestRoutingMutationTarget,
     sticky_key: &str,
     account_id: i64,
     last_seen_at: &str,
@@ -2609,12 +2681,14 @@ pub(crate) async fn upsert_test_sticky_route_at(
     .bind(sticky_key)
     .bind(account_id)
     .bind(last_seen_at)
-    .execute(&state.pool)
+    .execute(target.test_pool())
     .await
     .expect("upsert test sticky route");
-    Box::pin(refresh_pool_routing_snapshot(state.as_ref()))
-        .await
-        .expect("refresh routing snapshot after test sticky route update");
+    refresh_test_routing_snapshot(
+        target,
+        "refresh routing snapshot after test sticky route update",
+    )
+    .await;
 }
 
 pub(crate) fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {

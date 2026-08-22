@@ -1883,9 +1883,12 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     )
     .await?;
     invalidate_pool_routing_runtime_cache(state).await;
-    if outcome.sticky_route_cleared && let Some(sticky_key) = sticky_key {
+    if outcome.sticky_route_cleared
+        && let Some(sticky_key) = sticky_key
+    {
         invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
     }
+    if outcome.sticky_route_cleared
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {
         broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
