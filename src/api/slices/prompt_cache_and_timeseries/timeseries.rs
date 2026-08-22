@@ -76,6 +76,28 @@ fn timeseries_minute_projection_is_cancelled(
     cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
 }
 
+fn timeseries_minute_projection_pressure_deferred(
+    pressure_gate: &crate::db_pressure::DbPressureGate,
+    task: &'static str,
+    error: &ApiError,
+) -> Option<TimeseriesMinuteProjectionDeferred> {
+    let error = match error {
+        ApiError::BadRequest(error) | ApiError::Internal(error) => error,
+    };
+    if !pressure_gate.record_error(task, error) {
+        return None;
+    }
+    let retry_after = Duration::from_millis(
+        pressure_gate
+            .snapshot()
+            .pressure_cooldown_remaining_ms
+            .max(1),
+    );
+    Some(TimeseriesMinuteProjectionDeferred {
+        retry_after: Some(retry_after),
+    })
+}
+
 fn fold_minute_projection_aggregates(
     minute_aggregates: BTreeMap<i64, BucketAggregate>,
     bucket_seconds: i64,
@@ -338,7 +360,7 @@ async fn store_timeseries_minute_projection_v2_warm(
     coverage_generation: u64,
     trigger: &'static str,
 ) -> Result<TimeseriesMinuteProjectionWarmOutcome, ApiError> {
-    store_timeseries_minute_projection_v2_warm_with_coordinator(
+    let outcome = store_timeseries_minute_projection_v2_warm_with_coordinator(
         pool,
         start,
         end,
@@ -349,7 +371,22 @@ async fn store_timeseries_minute_projection_v2_warm(
         trigger,
         &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
     )
-    .await
+    .await;
+    match outcome {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            if let Some(deferred) = timeseries_minute_projection_pressure_deferred(
+                gate,
+                "timeseries_minute_projection_warm",
+                &error,
+            ) {
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(deferred))
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
@@ -363,7 +400,6 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
     trigger: &'static str,
 ) -> Result<TimeseriesMinuteProjectionWarmOutcome, ApiError> {
     let pressure_gate = crate::db_pressure::global_db_pressure_gate();
-    let observed_eligibility_generation = pressure_gate.eligibility_generation();
     let outcome = store_timeseries_minute_projection_v2_warm(
         pool,
         start,
@@ -378,6 +414,7 @@ async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
     let TimeseriesMinuteProjectionWarmOutcome::Deferred(deferred) = outcome else {
         return Ok(outcome);
     };
+    let observed_eligibility_generation = pressure_gate.eligibility_generation();
     debug!(
         route = "timeseries_projection",
         builder = "minute_projection_v2",
@@ -1947,7 +1984,29 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
             true,
         )
         .await;
-    result
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            if let Some(deferred) = timeseries_minute_projection_pressure_deferred(
+                gate,
+                "timeseries_minute_projection_flush",
+                &error,
+            ) {
+                debug!(
+                    route = "timeseries_projection",
+                    builder = "minute_projection_v2",
+                    trigger,
+                    defer_reason = "sqlite_pressure",
+                    retry_after_ms = deferred.retry_after.map(|value| value.as_millis() as u64),
+                    "minute projection flush deferred after a database pressure error"
+                );
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred))
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 pub(crate) fn spawn_timeseries_minute_projection_supervisor(
@@ -1957,11 +2016,11 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     tokio::spawn(async move {
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
         loop {
-            let observed_eligibility_generation = pressure_gate.eligibility_generation();
             match prepare_timeseries_minute_projection_after_restart(state.as_ref(), &cancel).await
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred)) => {
+                    let observed_eligibility_generation = pressure_gate.eligibility_generation();
                     debug!(
                         route = "timeseries_projection",
                         builder = "minute_projection_v2",
@@ -1984,15 +2043,30 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                 }
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => return,
                 Err(error) => {
+                    let pressure_deferred = timeseries_minute_projection_pressure_deferred(
+                        pressure_gate,
+                        "timeseries_minute_projection_startup",
+                        &error,
+                    );
+                    let observed_eligibility_generation = pressure_gate.eligibility_generation();
                     warn!(
                         route = "timeseries_projection",
                         builder = "minute_projection_v2",
+                        pressure_deferred = pressure_deferred.is_some(),
                         ?error,
                         "failed to invalidate minute projection during startup recovery"
                     );
-                    tokio::select! {
-                        _ = cancel.cancelled() => return,
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    if let Some(deferred) = pressure_deferred {
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                            _ = tokio::time::sleep(deferred.retry_after.expect("pressure deferral has a retry deadline")) => {}
+                        }
+                    } else {
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
                     }
                 }
             }
@@ -2028,7 +2102,6 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
                 }
             }
 
-            let observed_eligibility_generation = pressure_gate.eligibility_generation();
             match flush_timeseries_minute_projection_with_coordinator_and_cancellation(
                 state.as_ref(),
                 "terminal_deadline",
@@ -2039,6 +2112,7 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
             {
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => {}
                 Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred)) => {
+                    let observed_eligibility_generation = pressure_gate.eligibility_generation();
                     deferred_eligibility_generation = Some(observed_eligibility_generation);
                     deferred_retry_after = deferred.retry_after;
                     debug!(
@@ -5064,6 +5138,37 @@ mod tests {
             pressure_gate.eligibility_generation(),
             observed_eligibility_generation,
             "releasing a denied P2 permit must not wake its own retry waiter"
+        );
+    }
+
+    #[tokio::test]
+    async fn projection_sqlite_pressure_error_enters_cooldown_with_a_retry_deadline() {
+        let pressure_gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30));
+        let error = ApiError::Internal(anyhow!("database is locked"));
+
+        let deferred = timeseries_minute_projection_pressure_deferred(
+            &pressure_gate,
+            "timeseries_minute_projection_test",
+            &error,
+        )
+        .expect("SQLite lock errors must defer projection writes through the pressure gate");
+
+        assert!(
+            deferred
+                .retry_after
+                .is_some_and(|retry_after| retry_after >= Duration::from_secs(29)),
+            "pressure deferral must retain the gate cooldown deadline"
+        );
+        assert_eq!(pressure_gate.snapshot().pressure_events, 1);
+        let observed_eligibility_generation = pressure_gate.eligibility_generation();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(5),
+                pressure_gate.wait_for_eligibility_change(observed_eligibility_generation),
+            )
+            .await
+            .is_err(),
+            "retry wait must observe the post-error generation instead of self-waking"
         );
     }
 }
