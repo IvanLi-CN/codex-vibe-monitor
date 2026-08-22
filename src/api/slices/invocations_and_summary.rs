@@ -7873,24 +7873,28 @@ async fn load_summary_projection_account_rollup_totals(
 async fn load_summary_projection_live_tail_account_totals(
     pool: &Pool<Sqlite>,
     account_rollup_live_cursor: Option<i64>,
+    upper_bound_id: Option<i64>,
 ) -> Result<HashMap<i64, StatsTotals>> {
     // Account activity has its own durable cursor. A missing marker means that no account
     // prefix is proven to be represented by the account rollup, so archive-backed all-time
     // hydration must not silently add the entire live table as a second source.
-    let Some(account_rollup_live_cursor) = account_rollup_live_cursor else {
+    let (Some(account_rollup_live_cursor), Some(upper_bound_id)) =
+        (account_rollup_live_cursor, upper_bound_id)
+    else {
         return Ok(HashMap::new());
     };
     let account_expression = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let query = format!(
         "SELECT {account_expression} AS upstream_account_id, {} \
          FROM codex_invocations \
-         WHERE id > ?1 AND {account_expression} > 0 \
+         WHERE id > ?1 AND id <= ?2 AND {account_expression} > 0 \
          GROUP BY upstream_account_id \
-         LIMIT ?2",
+         LIMIT ?3",
         crate::stats::stats_success_failure_select_sql(),
     );
     let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(&query)
         .bind(account_rollup_live_cursor)
+        .bind(upper_bound_id)
         .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
         .fetch_all(pool)
         .await
@@ -7904,6 +7908,24 @@ async fn load_summary_projection_live_tail_account_totals(
         .into_iter()
         .map(|row| (row.upstream_account_id, row.into_totals()))
         .collect())
+}
+
+async fn admit_summary_projection_live_tail_account_ids(
+    pool: &Pool<Sqlite>,
+    account_rollup_live_cursor: Option<i64>,
+) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
+    let Some(account_rollup_live_cursor) = account_rollup_live_cursor else {
+        return Ok(None);
+    };
+    crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
+        pool,
+        InvocationSourceScope::All,
+        account_rollup_live_cursor,
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+    )
+    .await
+    .map(Some)
+    .map_err(|error| anyhow!("summary projection account live-tail id hydration failed: {error:?}"))
 }
 
 async fn load_summary_projection_live_account_totals(
@@ -10431,14 +10453,26 @@ async fn build_summary_projection(
         for (account_id, totals) in account_totals {
             batched_all_time_by_account.insert(account_id, totals);
         }
-        for (account_id, totals) in load_summary_projection_live_tail_account_totals(
-            &state.pool,
-            account_rollup_live_cursor,
-        )
-        .await?
-        {
-            let entry = batched_all_time_by_account.entry(account_id).or_default();
-            *entry = entry.add(totals);
+        // Account rollups advance independently from the global compact baseline. Admit this
+        // tail before aggregation and fence it at the observed ID, just as the global tail is
+        // fenced above. A lagging account cursor must not turn one background refresh into an
+        // unbounded table scan or absorb writes that arrived after this projection revision.
+        if has_any_completed_archive {
+            let account_live_tail = admit_summary_projection_live_tail_account_ids(
+                &state.pool,
+                account_rollup_live_cursor,
+            )
+            .await?;
+            for (account_id, totals) in load_summary_projection_live_tail_account_totals(
+                &state.pool,
+                account_rollup_live_cursor,
+                account_live_tail.map(|tail| tail.upper_bound_id),
+            )
+            .await?
+            {
+                let entry = batched_all_time_by_account.entry(account_id).or_default();
+                *entry = entry.add(totals);
+            }
         }
         let account_archive_totals =
             crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
@@ -26700,6 +26734,118 @@ mod request_compression_query_tests {
         assert_eq!(admitted.ids, HashSet::from([1]));
         assert_eq!(totals.total_count, 1);
         assert_eq!(totals.total_tokens, 17);
+    }
+
+    #[tokio::test]
+    async fn summary_account_live_tail_aggregate_stays_within_its_admitted_id_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            r#"INSERT INTO codex_invocations
+               (id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               VALUES (1, 'bounded-account-live-tail-1', datetime('now'), 'proxy', 'success', 17, 1.25, '{"upstreamAccountId":42}', '', 'full')"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert admitted account live tail row");
+
+        let admitted = admit_summary_projection_live_tail_account_ids(&state.pool, Some(0))
+            .await
+            .expect("admit bounded account live tail")
+            .expect("account cursor admits a live tail");
+        sqlx::query(
+            r#"INSERT INTO codex_invocations
+               (id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               VALUES (2, 'post-admission-account-live-tail', datetime('now'), 'proxy', 'success', 23, 2.5, '{"upstreamAccountId":42}', '', 'full')"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert concurrent post-admission account row");
+
+        let totals = load_summary_projection_live_tail_account_totals(
+            &state.pool,
+            Some(0),
+            Some(admitted.upper_bound_id),
+        )
+        .await
+        .expect("aggregate only admitted account live tail rows");
+        assert_eq!(totals[&42].total_count, 1);
+        assert_eq!(totals[&42].total_tokens, 17);
+        assert_eq!(totals[&42].total_cost, 1.25);
+    }
+
+    #[tokio::test]
+    async fn summary_live_only_all_time_does_not_add_account_tail_twice() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            r#"INSERT INTO codex_invocations
+               (id, invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               VALUES (1, 'live-only-account-tail', datetime('now'), 'proxy', 'success', 17, 1.25, '{"upstreamAccountId":42}', '', 'full')"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert live-only account row");
+        sqlx::query(
+            "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+             VALUES ('invocation_account_activity_v2_repair_live_cursor', 0, datetime('now'))",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("record independent account cursor");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate live-only all-time projection");
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve live-only account projection without SQLite");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+        assert_eq!(response.total_cost, 1.25);
+    }
+
+    #[tokio::test]
+    async fn summary_account_live_tail_admission_fails_closed_above_budget() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            r#"WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001)
+               INSERT INTO codex_invocations
+               (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               SELECT 'account-live-tail-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full'
+               FROM rows"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert account live-tail overflow fixture");
+
+        let error = admit_summary_projection_live_tail_account_ids(&state.pool, Some(0))
+            .await
+            .expect_err("account live-tail overflow must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("summary projection account live-tail id hydration failed"),
+            "account live-tail overflow must report its bounded admission: {error:#}"
+        );
+        assert!(error.to_string().contains("budget exceeded"));
     }
 
     #[tokio::test]
