@@ -402,38 +402,48 @@ impl PoolRoutingSnapshotStore {
     /// fencing an established route. Waiters are notified only after that
     /// replacement is installed, so they cannot retry against the old view.
     pub(crate) fn request_recovery_refresh_and_defer_availability_wake(&self) {
-        let mut refresh_state = self
-            .refresh_state
-            .lock()
-            .expect("pool routing snapshot refresh lock poisoned");
-        // A recovery keeps the established view routable until its replacement
-        // is ready. Releases in this interval must not wake waiters against
-        // that pre-recovery view.
-        refresh_state.defer_availability_until_replacement = true;
-        let epoch = self
-            .refresh_epoch
-            .load(std::sync::atomic::Ordering::Acquire);
-        if epoch
-            & (REFRESH_PENDING_BIT
-                | REFRESH_PUBLISHING_BIT
-                | REFRESH_RECONCILING_BIT
-                | REFRESH_COALESCED_SUCCESSOR_BIT)
-            != 0
-        {
-            drop(refresh_state);
-            self.request_refresh_inner(true, true);
-            return;
-        }
-        if refresh_state.pending {
+        loop {
+            let mut refresh_state = self
+                .refresh_state
+                .lock()
+                .expect("pool routing snapshot refresh lock poisoned");
+            let epoch = self
+                .refresh_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            if epoch & REFRESH_PUBLISHING_BIT != 0 {
+                // A publisher owns an availability wake that began before
+                // this recovery. Wait until it finishes before making the
+                // recovery visible, so the wake is linearized before the
+                // pre-recovery snapshot becomes stale.
+                drop(refresh_state);
+                std::thread::yield_now();
+                continue;
+            }
+
+            // A recovery keeps the established view routable until its
+            // replacement is ready. Releases after this point must defer
+            // their wake instead of notifying waiters against that view.
+            refresh_state.defer_availability_until_replacement = true;
+            if epoch
+                & (REFRESH_PENDING_BIT | REFRESH_RECONCILING_BIT | REFRESH_COALESCED_SUCCESSOR_BIT)
+                != 0
+            {
+                drop(refresh_state);
+                self.request_refresh_inner(true, true);
+                return;
+            }
+            if refresh_state.pending {
+                refresh_state.wake_waiters = true;
+                return;
+            }
+            refresh_state.pending = true;
             refresh_state.wake_waiters = true;
+            drop(refresh_state);
+            self.refresh_tx.send_modify(|generation| {
+                *generation = generation.wrapping_add(1);
+            });
             return;
         }
-        refresh_state.pending = true;
-        refresh_state.wake_waiters = true;
-        drop(refresh_state);
-        self.refresh_tx.send_modify(|generation| {
-            *generation = generation.wrapping_add(1);
-        });
     }
 
     /// Applies a committed model failure immediately to the in-memory routing
@@ -712,17 +722,17 @@ impl PoolRoutingSnapshotStore {
     }
 
     pub(crate) fn publish_availability_if_ready(&self, publish_availability: impl Fn()) {
-        if self
-            .refresh_state
-            .lock()
-            .expect("pool routing snapshot refresh lock poisoned")
-            .defer_availability_until_replacement
-        {
-            self.deferred_availability_wake
-                .store(true, std::sync::atomic::Ordering::Release);
-            return;
-        }
         loop {
+            let refresh_state = self
+                .refresh_state
+                .lock()
+                .expect("pool routing snapshot refresh lock poisoned");
+            if refresh_state.defer_availability_until_replacement {
+                drop(refresh_state);
+                self.deferred_availability_wake
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return;
+            }
             let epoch = self
                 .refresh_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
@@ -740,6 +750,7 @@ impl PoolRoutingSnapshotStore {
                 // to an immediate SQL reconciliation.
                 self.deferred_availability_wake
                     .store(true, std::sync::atomic::Ordering::Release);
+                drop(refresh_state);
                 publish_availability();
                 return;
             }
@@ -753,6 +764,10 @@ impl PoolRoutingSnapshotStore {
                 )
                 .is_ok()
             {
+                // `request_recovery_refresh...` observes this lease while
+                // holding the same lock and waits for the wake below to
+                // finish before it records its replacement requirement.
+                drop(refresh_state);
                 publish_availability();
                 self.refresh_epoch
                     .store(epoch, std::sync::atomic::Ordering::Release);
@@ -1374,6 +1389,69 @@ mod snapshot_store_tests {
         assert!(
             published_availability.get(),
             "the replacement installation must replay the deferred recovery wake"
+        );
+    }
+
+    #[test]
+    fn recovery_waits_for_an_inflight_availability_wake() {
+        let store = std::sync::Arc::new(PoolRoutingSnapshotStore::new());
+        let initial_generation = store
+            .begin_refresh()
+            .expect("initial refresh should claim its reconciliation lease");
+        assert!(store.complete_refresh(initial_generation, empty_snapshot(), || {}));
+
+        let (wake_started_tx, wake_started_rx) = std::sync::mpsc::sync_channel(1);
+        let (finish_wake_tx, finish_wake_rx) = std::sync::mpsc::sync_channel(1);
+        let publishing_store = store.clone();
+        let publisher = std::thread::spawn(move || {
+            publishing_store.publish_availability_if_ready(|| {
+                wake_started_tx
+                    .send(())
+                    .expect("publisher should notify the recovery test");
+                finish_wake_rx
+                    .recv()
+                    .expect("test should allow the availability wake to finish");
+            });
+        });
+        wake_started_rx
+            .recv()
+            .expect("availability publisher should hold its lease");
+
+        let (recovery_started_tx, recovery_started_rx) = std::sync::mpsc::sync_channel(1);
+        let (recovery_done_tx, recovery_done_rx) = std::sync::mpsc::sync_channel(1);
+        let recovery_store = store.clone();
+        let recovery = std::thread::spawn(move || {
+            recovery_started_tx
+                .send(())
+                .expect("recovery task should start");
+            recovery_store.request_recovery_refresh_and_defer_availability_wake();
+            recovery_done_tx
+                .send(())
+                .expect("recovery task should complete");
+        });
+        recovery_started_rx
+            .recv()
+            .expect("recovery should start after the wake lease");
+        assert!(
+            recovery_done_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err(),
+            "the recovery must not become visible until the in-flight wake completes"
+        );
+
+        finish_wake_tx
+            .send(())
+            .expect("test should release the availability wake");
+        publisher
+            .join()
+            .expect("availability publisher should join");
+        recovery_done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("recovery should proceed after the wake finishes");
+        recovery.join().expect("recovery task should join");
+        assert!(
+            store.refresh_pending(),
+            "the recovery replacement should be pending after the earlier wake is linearized"
         );
     }
 

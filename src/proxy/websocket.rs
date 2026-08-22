@@ -491,6 +491,34 @@ impl Drop for PoolRoutingReservationGuard {
     }
 }
 
+struct WebSocketFailureFenceOnCancel<'a> {
+    state: &'a AppState,
+    armed: bool,
+}
+
+impl<'a> WebSocketFailureFenceOnCancel<'a> {
+    fn new(state: &'a AppState) -> Self {
+        Self { state, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WebSocketFailureFenceOnCancel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A terminal failure can commit its model mutation before the
+            // following audit write completes. The reservation guard releases
+            // separately on task cancellation, so fence the snapshot first.
+            self.state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct WsPrepareError {
     pub(crate) status: StatusCode,
@@ -1487,6 +1515,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                     usage_tracker
                         .persist_interrupted_turn(
                             state.as_ref(),
+                            &mut reservation_guard,
                             "websocket turn superseded by a new response.create",
                         )
                         .await;
@@ -1624,6 +1653,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                                 usage_tracker
                                     .persist_interrupted_turn(
                                         state.as_ref(),
+                                        &mut reservation_guard,
                                         "websocket turn superseded by a new response.create",
                                     )
                                     .await;
@@ -1793,7 +1823,13 @@ pub(crate) async fn proxy_websocket_tunnel(
                             .as_deref()
                             .is_some_and(ws_text_event_is_terminal);
                         if let Some(text) = upstream_text.as_deref() {
-                            usage_tracker.observe_upstream_text(state.as_ref(), text).await;
+                            usage_tracker
+                                .observe_upstream_text(
+                                    state.as_ref(),
+                                    &mut reservation_guard,
+                                    text,
+                                )
+                                .await;
                         }
                         if terminal_for_message {
                             saw_terminal_upstream_event = true;
@@ -1903,7 +1939,7 @@ pub(crate) async fn proxy_websocket_tunnel(
                         let text = text.as_str();
                         let terminal_for_message = ws_text_event_is_terminal(text);
                         usage_tracker
-                            .observe_upstream_text(state.as_ref(), text)
+                            .observe_upstream_text(state.as_ref(), &mut reservation_guard, text)
                             .await;
                         if terminal_for_message {
                             saw_terminal_upstream_event = true;
@@ -1947,6 +1983,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         usage_tracker
             .persist_interrupted_turn(
                 state.as_ref(),
+                &mut reservation_guard,
                 failure
                     .as_deref()
                     .unwrap_or("websocket turn ended before terminal event"),
@@ -1972,7 +2009,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         Some(elapsed_ms(stream_started)),
     )
     .await;
-    if upstream_route_failure.is_some() {
+    if upstream_route_failure.is_some() || usage_tracker.failure_fence_pending {
         reservation_guard.suppress_availability_on_drop();
     }
     let failure_recorded = if let Some(message) = upstream_route_failure.as_deref() {
@@ -2019,7 +2056,7 @@ pub(crate) async fn proxy_websocket_tunnel(
         );
     }
     complete_deferred_pool_early_phase_cleanup_guard(&mut deferred_cleanup_guard);
-    if failure_recorded {
+    if failure_recorded && !usage_tracker.failure_fence_pending {
         reservation_guard.restore_availability_on_drop();
         reservation_guard.release();
     } else {
@@ -2359,6 +2396,7 @@ pub(crate) struct WsUsageTracker {
     runtime_snapshot_published: bool,
     runtime_snapshot_invoke_id: Option<String>,
     first_token_ms: Option<f64>,
+    failure_fence_pending: bool,
 }
 
 impl WsUsageTracker {
@@ -2385,6 +2423,7 @@ impl WsUsageTracker {
             runtime_snapshot_published: false,
             runtime_snapshot_invoke_id: None,
             first_token_ms: None,
+            failure_fence_pending: false,
         }
     }
 
@@ -2428,7 +2467,12 @@ impl WsUsageTracker {
         true
     }
 
-    async fn observe_upstream_text(&mut self, state: &AppState, text: &str) {
+    async fn observe_upstream_text(
+        &mut self,
+        state: &AppState,
+        reservation_guard: &mut PoolRoutingReservationGuard,
+        text: &str,
+    ) {
         if self.turn_stream_started_at.is_none() {
             self.turn_stream_started_at = Some(Instant::now());
         }
@@ -2443,18 +2487,30 @@ impl WsUsageTracker {
                 && let Some((reason_code, http_status)) = ws_terminal_temporary_classification(text)
                 && let Some(attempt_id) = self.attempt_id
                 && self.account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && let Err(err) = record_api_key_temporary_model_failure_or_diagnostic(
-                    &state.pool,
-                    self.account.account_id,
-                    self.trace.sticky_key.as_deref(),
-                    text,
-                    PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                    reason_code,
-                    http_status,
-                    Some(self.trace.invoke_id.as_str()),
-                    Some(attempt_id),
-                )
-                .await
+                && let Err(err) = {
+                    self.failure_fence_pending = true;
+                    reservation_guard.suppress_availability_on_drop();
+                    let mut cancellation_fence = WebSocketFailureFenceOnCancel::new(state);
+                    let result = record_api_key_temporary_model_failure_or_diagnostic(
+                        &state.pool,
+                        self.account.account_id,
+                        self.trace.sticky_key.as_deref(),
+                        text,
+                        PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        reason_code,
+                        http_status,
+                        Some(self.trace.invoke_id.as_str()),
+                        Some(attempt_id),
+                    )
+                    .await;
+                    cancellation_fence.disarm();
+                    if result.is_err() {
+                        state
+                            .pool_routing_snapshot
+                            .request_refresh_and_defer_availability_wake();
+                    }
+                    result
+                }
             {
                 warn!(
                     invoke_id = %self.trace.invoke_id,
@@ -2471,6 +2527,10 @@ impl WsUsageTracker {
         let stream_duration_ms = ws_usage_event_is_terminal(&event)
             .then(|| self.stream_duration_ms())
             .flatten();
+        if !ws_usage_event_is_completed_success(&event) {
+            self.failure_fence_pending = true;
+            reservation_guard.suppress_availability_on_drop();
+        }
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
@@ -2557,7 +2617,12 @@ impl WsUsageTracker {
         }
     }
 
-    async fn persist_interrupted_turn(&mut self, state: &AppState, reason: &str) {
+    async fn persist_interrupted_turn(
+        &mut self,
+        state: &AppState,
+        reservation_guard: &mut PoolRoutingReservationGuard,
+        reason: &str,
+    ) {
         let Some(first_token_ms) = self.first_token_ms else {
             return;
         };
@@ -2577,6 +2642,8 @@ impl WsUsageTracker {
         })
         .to_string();
         let ordinal = self.ordinal.saturating_add(1);
+        self.failure_fence_pending = true;
+        reservation_guard.suppress_availability_on_drop();
         if let Err(err) = persist_ws_usage_event(
             state,
             &self.account,
@@ -3251,6 +3318,7 @@ pub(crate) async fn persist_ws_usage_event(
             )
             .await?;
         } else if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+            let mut cancellation_fence = WebSocketFailureFenceOnCancel::new(state);
             let failure_result = if let Some((reason_code, http_status)) =
                 ws_terminal_temporary_classification(raw_event)
             {
@@ -3279,6 +3347,7 @@ pub(crate) async fn persist_ws_usage_event(
                 .await
                 .map(|_| ())
             };
+            cancellation_fence.disarm();
             if let Err(error) = failure_result {
                 // The model-route mutation can commit before its audit write.
                 // Keep request routing fail-closed whenever the persistence

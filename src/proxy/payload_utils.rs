@@ -1964,17 +1964,58 @@ pub(crate) async fn persist_pool_route_failure_then_release<T, E>(
     .await
 }
 
+struct PoolRoutingFailureReleaseOnCancel<'a> {
+    state: &'a AppState,
+    reservation_key: &'a str,
+    armed: bool,
+}
+
+impl<'a> PoolRoutingFailureReleaseOnCancel<'a> {
+    fn new(state: &'a AppState, reservation_key: &'a str) -> Self {
+        Self {
+            state,
+            reservation_key,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoolRoutingFailureReleaseOnCancel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // Orphan recovery has no request-owned drop guard. Cancellation
+            // while its durable failure/audit sequence is in flight must
+            // still release capacity, but only after cold-fencing the old
+            // snapshot so the release cannot revive a stale route.
+            self.state
+                .pool_routing_snapshot
+                .request_refresh_and_defer_availability_wake();
+            release_pool_routing_reservation_without_availability(self.state, self.reservation_key);
+        }
+    }
+}
+
 pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     state: &AppState,
     reservation_key: &str,
     reservation_guard: Option<&mut PoolRoutingReservationDropGuard>,
     persist_failure: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
+    let has_reservation_drop_guard = reservation_guard.is_some();
+    let mut cancellation_release_guard = (!has_reservation_drop_guard)
+        .then(|| PoolRoutingFailureReleaseOnCancel::new(state, reservation_key));
     let result = if let Some(guard) = reservation_guard {
         guard.fence_failure(persist_failure).await
     } else {
         persist_failure.await
     };
+    if let Some(cancellation_release_guard) = cancellation_release_guard.as_mut() {
+        cancellation_release_guard.disarm();
+    }
     match result {
         Ok(value) => {
             invalidate_pool_routing_runtime_cache(state).await;

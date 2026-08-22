@@ -2621,6 +2621,82 @@ async fn failure_persistence_releases_reservation_and_wakes_waiters_only_after_t
 }
 
 #[tokio::test]
+async fn cancelled_unguarded_failure_persistence_releases_and_cold_fences_the_snapshot() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(
+        &state,
+        "Cancelled Orphan Failure Fence",
+        "cancelled-orphan-fence-key",
+    )
+    .await;
+    refresh_pool_routing_snapshot(state.as_ref())
+        .await
+        .expect("install snapshot before cancellation");
+    let reservation_key = "cancelled-orphan-failure-reservation";
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.to_string(),
+            PoolRoutingReservation {
+                account_id,
+                model: Some("gpt-cancelled-orphan".to_string()),
+                proxy_key: None,
+                snapshot_generation: None,
+                created_at: Instant::now(),
+            },
+        );
+    let availability = state.pool_routing_availability.subscribe();
+    let availability_before = *availability.borrow();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        persist_pool_route_failure_then_release(task_state.as_ref(), reservation_key, async move {
+            started_tx
+                .send(())
+                .expect("failure persistence should begin before cancellation");
+            std::future::pending::<Result<(), anyhow::Error>>().await
+        })
+        .await
+    });
+
+    started_rx
+        .await
+        .expect("failure persistence should be pending before cancellation");
+    task.abort();
+    assert!(
+        task.await
+            .expect_err("cancelling unguarded failure persistence should abort the task")
+            .is_cancelled()
+    );
+    assert!(
+        !state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .contains_key(reservation_key),
+        "cancelling orphan-style failure persistence must not leak its reservation"
+    );
+    assert_eq!(
+        *availability.borrow(),
+        availability_before,
+        "cancelling an unfenced failure must not publish an immediate availability wake"
+    );
+    assert!(
+        state.pool_routing_snapshot.refresh_pending(),
+        "cancelling an unguarded failure must request a replacement snapshot"
+    );
+    assert!(
+        state.pool_routing_snapshot.current().is_none(),
+        "cancelling an unguarded failure must leave request-time routing fail-closed"
+    );
+}
+
+#[tokio::test]
 async fn guarded_broadcast_failure_wakes_waiters_after_the_in_memory_model_fence_installs() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
