@@ -20590,6 +20590,14 @@ async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
         "timeseries-projection-p1-priority",
         "2026-08-21 12:00:12",
     ));
+    insert_timeseries_invocation(
+        &state.pool,
+        &record.invoke_id,
+        &record.occurred_at,
+        "success",
+        Some(12.0),
+    )
+    .await;
     state
         .terminal_projection_hub
         .activate_timeseries_consumer(0);
@@ -20666,6 +20674,19 @@ async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
         projection_count > 0,
         "retry should persist the minute projections"
     );
+    let aggregate_json = sqlx::query_scalar::<_, String>(
+        "SELECT aggregate_json FROM timeseries_minute_projection_v2 WHERE source_scope = 'all' AND upstream_account_key = -1 AND coverage_state = 'ready'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load the all-scope minute aggregate after retry");
+    let aggregate: serde_json::Value =
+        serde_json::from_str(&aggregate_json).expect("valid persisted minute aggregate");
+    assert_eq!(
+        aggregate["total_count"].as_i64(),
+        Some(1),
+        "retry must persist the terminal aggregate, not only a ready projection row"
+    );
 }
 
 #[tokio::test]
@@ -20686,6 +20707,14 @@ async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_del
             &format!("timeseries-projection-slice-{minute}"),
             &occurred_at,
         ));
+        insert_timeseries_invocation(
+            &state.pool,
+            &record.invoke_id,
+            &record.occurred_at,
+            "success",
+            Some(12.0),
+        )
+        .await;
         let event_id = state
             .terminal_projection_hub
             .register_pending(&record, None)
@@ -20725,4 +20754,96 @@ async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_del
     .await
     .expect("count all committed minute projection keys");
     assert_eq!(projection_count, 68);
+    let aggregates = sqlx::query_scalar::<_, String>(
+        "SELECT aggregate_json FROM timeseries_minute_projection_v2 WHERE source_scope = 'all' AND upstream_account_key = -1 AND coverage_state = 'ready' ORDER BY minute_start_epoch",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load all-scope persisted minute aggregates");
+    assert_eq!(aggregates.len(), 17);
+    assert!(
+        aggregates.iter().all(|aggregate_json| {
+            serde_json::from_str::<serde_json::Value>(aggregate_json)
+                .ok()
+                .and_then(|aggregate| aggregate["total_count"].as_i64())
+                == Some(1)
+        }),
+        "every committed key slice must persist its terminal aggregate contents"
+    );
+}
+
+#[tokio::test]
+async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let start = Utc
+        .with_ymd_and_hms(2026, 8, 21, 12, 0, 0)
+        .single()
+        .expect("valid warm range start");
+    let end = start + ChronoDuration::minutes(1);
+    let coordinator =
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator::new_for_test();
+    let p1_write = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let coverage_generation = state
+        .terminal_projection_hub
+        .timeseries_coverage_generation();
+
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        &[],
+        state.terminal_projection_hub.as_ref(),
+        coverage_generation,
+        "stateful_exact_warm_p1_priority",
+        &coordinator,
+    )
+    .await
+    .expect("warm write should defer without a database error");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Deferred
+    );
+    let projection_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM timeseries_minute_projection_v2")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count warm projection rows before retry");
+    assert_eq!(
+        projection_count, 0,
+        "P1 preemption must occur before a warm transaction opens"
+    );
+
+    drop(p1_write);
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        &[],
+        state.terminal_projection_hub.as_ref(),
+        coverage_generation,
+        "stateful_exact_warm_p1_retry",
+        &coordinator,
+    )
+    .await
+    .expect("warm write should retry after P1 completes");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+    let projection_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM timeseries_minute_projection_v2 WHERE coverage_state = 'ready'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count warm projection rows after retry");
+    assert_eq!(projection_count, 1);
 }

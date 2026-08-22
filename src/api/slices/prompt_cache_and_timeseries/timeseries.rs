@@ -40,6 +40,7 @@ const TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT: i64 = 256;
 pub(crate) enum TimeseriesMinuteProjectionFlushOutcome {
     Flushed,
     Deferred,
+    Cancelled,
 }
 
 struct TimeseriesMinuteProjectionWriteAdmission {
@@ -51,6 +52,18 @@ struct TimeseriesMinuteProjectionWriteAdmission {
 struct TimeseriesMinuteProjectionCoverageInvalidationStats {
     row_count: u64,
     transaction_count: u64,
+}
+
+enum TimeseriesMinuteProjectionCoverageInvalidationOutcome {
+    Invalidated(TimeseriesMinuteProjectionCoverageInvalidationStats),
+    Deferred,
+    Cancelled,
+}
+
+fn timeseries_minute_projection_is_cancelled(
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> bool {
+    cancellation.is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
 }
 
 fn fold_minute_projection_aggregates(
@@ -235,7 +248,8 @@ async fn load_timeseries_minute_projection_v2(
     Ok(Some((aggregates, cursor)))
 }
 
-async fn store_timeseries_minute_projection_v2(
+#[cfg(test)]
+async fn store_timeseries_minute_projection_v2_for_test(
     pool: &Pool<Sqlite>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -296,6 +310,218 @@ async fn store_timeseries_minute_projection_v2(
     }
     tx.commit().await?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TimeseriesMinuteProjectionWarmOutcome {
+    Stored,
+    Deferred,
+}
+
+async fn store_timeseries_minute_projection_v2_warm(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    records: &[InvocationAggregateRecord],
+    terminal_projection_hub: &TerminalProjectionHub,
+    coverage_generation: u64,
+    trigger: &'static str,
+) -> Result<TimeseriesMinuteProjectionWarmOutcome, ApiError> {
+    store_timeseries_minute_projection_v2_warm_with_coordinator(
+        pool,
+        start,
+        end,
+        source_scope,
+        upstream_account_id,
+        records,
+        terminal_projection_hub,
+        coverage_generation,
+        trigger,
+        &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+    )
+    .await
+}
+
+async fn store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    records: &[InvocationAggregateRecord],
+    terminal_projection_hub: &TerminalProjectionHub,
+    coverage_generation: u64,
+    trigger: &'static str,
+) -> Result<TimeseriesMinuteProjectionWarmOutcome, ApiError> {
+    let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+    let observed_eligibility_generation = pressure_gate.eligibility_generation();
+    let outcome = store_timeseries_minute_projection_v2_warm(
+        pool,
+        start,
+        end,
+        source_scope,
+        upstream_account_id,
+        records,
+        terminal_projection_hub,
+        coverage_generation,
+        trigger,
+    )
+    .await?;
+    if outcome != TimeseriesMinuteProjectionWarmOutcome::Deferred {
+        return Ok(outcome);
+    }
+    debug!(
+        route = "timeseries_projection",
+        builder = "minute_projection_v2",
+        trigger,
+        transaction_phase = "exact_warm",
+        observed_eligibility_generation,
+        "waiting briefly to retry a deferred exact-fallback minute projection warm write"
+    );
+    tokio::select! {
+        _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {
+            store_timeseries_minute_projection_v2_warm(
+                pool,
+                start,
+                end,
+                source_scope,
+                upstream_account_id,
+                records,
+                terminal_projection_hub,
+                coverage_generation,
+                trigger,
+            ).await
+        }
+        _ = tokio::time::sleep(Duration::from_secs(5)) => Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred),
+    }
+}
+
+pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    records: &[InvocationAggregateRecord],
+    terminal_projection_hub: &TerminalProjectionHub,
+    coverage_generation: u64,
+    trigger: &'static str,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+) -> Result<TimeseriesMinuteProjectionWarmOutcome, ApiError> {
+    let (minute_start, minute_end) = complete_minute_bounds(start, end);
+    if minute_end <= minute_start {
+        return Ok(TimeseriesMinuteProjectionWarmOutcome::Stored);
+    }
+    let mut by_minute: HashMap<i64, BucketAggregate> = HashMap::new();
+    let mut max_row_ids = HashMap::new();
+    for record in records {
+        if prompt_shared::invocation_status_is_in_flight(record.status.as_deref()) {
+            continue;
+        }
+        let Some(occurred) = parse_to_utc_datetime(&record.occurred_at) else {
+            continue;
+        };
+        let minute = occurred.timestamp().div_euclid(60) * 60;
+        if minute < minute_start || minute >= minute_end {
+            continue;
+        }
+        add_exact_record_to_timeseries_aggregate(by_minute.entry(minute).or_default(), record);
+        max_row_ids
+            .entry(minute)
+            .and_modify(|max_row_id: &mut i64| *max_row_id = (*max_row_id).max(record.id))
+            .or_insert(record.id);
+    }
+    let rows = (minute_start..minute_end)
+        .step_by(60_usize)
+        .map(|minute| {
+            (
+                TimeseriesMinuteProjectionKey {
+                    minute_start_epoch: minute,
+                    source_scope: timeseries_projection_scope(source_scope),
+                    upstream_account_key: upstream_account_id.unwrap_or(-1),
+                },
+                by_minute.remove(&minute).unwrap_or_default(),
+                max_row_ids.remove(&minute).unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for key_batch in rows.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
+        if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
+            || terminal_projection_hub
+                .timeseries_coverage_invalidation_pending()
+                .is_some()
+        {
+            debug!(
+                route = "timeseries_projection",
+                builder = "minute_projection_v2",
+                trigger,
+                transaction_phase = "exact_warm",
+                admission_outcome = "deferred",
+                defer_reason = "coverage_generation_changed",
+                coverage_generation,
+                "minute projection warm write deferred for a newer coverage generation"
+            );
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+        }
+        let Some(admission) = try_acquire_timeseries_minute_projection_write(
+            coordinator,
+            trigger,
+            "exact_warm",
+            records.len(),
+        )
+        .await
+        else {
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+        };
+        // The exact source snapshot was read before admission. Re-check while holding the
+        // shared P2 permit so an invalidation completed in that interval cannot be overwritten.
+        if terminal_projection_hub.timeseries_coverage_generation() != coverage_generation
+            || terminal_projection_hub
+                .timeseries_coverage_invalidation_pending()
+                .is_some()
+        {
+            drop(admission);
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred);
+        }
+        let transaction_started = Instant::now();
+        let mut tx = pool.begin().await?;
+        for (key, aggregate, max_row_id) in key_batch {
+            sqlx::query(
+                "INSERT INTO timeseries_minute_projection_v2 (minute_start_epoch, source_scope, upstream_account_key, aggregate_json, total_latency_samples_json, first_byte_samples_json, first_response_byte_total_samples_json, first_token_samples_json, max_row_id, coverage_state, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'ready', datetime('now')) ON CONFLICT(minute_start_epoch, source_scope, upstream_account_key) DO UPDATE SET aggregate_json = excluded.aggregate_json, total_latency_samples_json = excluded.total_latency_samples_json, first_byte_samples_json = excluded.first_byte_samples_json, first_response_byte_total_samples_json = excluded.first_response_byte_total_samples_json, first_token_samples_json = excluded.first_token_samples_json, max_row_id = excluded.max_row_id, coverage_state = 'ready', updated_at = excluded.updated_at WHERE excluded.max_row_id > timeseries_minute_projection_v2.max_row_id OR (timeseries_minute_projection_v2.coverage_state = 'warming' AND excluded.max_row_id = timeseries_minute_projection_v2.max_row_id)",
+            )
+            .bind(key.minute_start_epoch)
+            .bind(key.source_scope)
+            .bind(key.upstream_account_key)
+            .bind(serde_json::to_string(aggregate).map_err(ApiError::from)?)
+            .bind(serde_json::to_string(&aggregate.total_latency_values).map_err(ApiError::from)?)
+            .bind(serde_json::to_string(&aggregate.first_byte_ttfb_values).map_err(ApiError::from)?)
+            .bind(
+                serde_json::to_string(&aggregate.first_response_byte_total_values)
+                    .map_err(ApiError::from)?,
+            )
+            .bind(serde_json::to_string(&aggregate.first_token_values).map_err(ApiError::from)?)
+            .bind(*max_row_id)
+            .execute(tx.as_mut())
+            .await?;
+        }
+        tx.commit().await?;
+        debug!(
+            route = "timeseries_projection",
+            builder = "minute_projection_v2",
+            trigger,
+            transaction_phase = "exact_warm",
+            transaction_key_limit = TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT,
+            transaction_key_count = key_batch.len(),
+            elapsed_ms = transaction_started.elapsed().as_millis() as u64,
+            "materialized a bounded exact-fallback minute projection slice"
+        );
+        drop(admission);
+        tokio::task::yield_now().await;
+    }
+    Ok(TimeseriesMinuteProjectionWarmOutcome::Stored)
 }
 
 pub(crate) fn add_timeseries_terminal_delta_to_aggregate(
@@ -860,6 +1086,16 @@ async fn build_exact_timeseries_topic_baseline(
     reporting_tz: Tz,
     warm_minute_projection: bool,
 ) -> Result<BTreeMap<i64, BucketAggregate>, ApiError> {
+    let warm_coverage_generation = (warm_minute_projection
+        && state
+            .terminal_projection_hub
+            .timeseries_coverage_invalidation_pending()
+            .is_none())
+    .then(|| {
+        state
+            .terminal_projection_hub
+            .timeseries_coverage_generation()
+    });
     let records = query_timeseries_topic_baseline_records(
         &state.pool,
         ExactUtcRange { start, end },
@@ -869,7 +1105,7 @@ async fn build_exact_timeseries_topic_baseline(
         upstream_account_id,
     )
     .await?;
-    if warm_minute_projection {
+    if let Some(coverage_generation) = warm_coverage_generation {
         let pool = state.pool.clone();
         let projection_records = records.clone();
         let projection_snapshot_records = projection_records
@@ -885,25 +1121,38 @@ async fn build_exact_timeseries_topic_baseline(
             upstream_account_id,
         };
         tokio::spawn(async move {
-            if let Err(error) = store_timeseries_minute_projection_v2(
+            match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                 &pool,
                 start,
                 end,
                 source_scope,
                 upstream_account_id,
                 &projection_records,
+                terminal_projection_hub.as_ref(),
+                coverage_generation,
+                "topic_exact_fallback",
             )
             .await
             {
-                debug!(
-                    ?error,
-                    "materialized timeseries minute projection warm write failed"
-                );
-            } else {
-                terminal_projection_hub.mark_timeseries_warm_coverage(
-                    projection_selection,
-                    &projection_snapshot_records,
-                );
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {
+                    terminal_projection_hub.mark_timeseries_warm_coverage(
+                        projection_selection,
+                        &projection_snapshot_records,
+                    );
+                }
+                Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred) => {
+                    debug!(
+                        route = "timeseries_projection",
+                        projection_store_outcome = "deferred",
+                        "materialized timeseries minute projection warm write yielded to higher-priority work"
+                    );
+                }
+                Err(error) => {
+                    debug!(
+                        ?error,
+                        "materialized timeseries minute projection warm write failed"
+                    );
+                }
             }
         });
     }
@@ -1341,9 +1590,13 @@ async fn invalidate_timeseries_minute_projection_coverage(
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
     trigger: &'static str,
     pending_event_count: usize,
-) -> Result<Option<TimeseriesMinuteProjectionCoverageInvalidationStats>, ApiError> {
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<TimeseriesMinuteProjectionCoverageInvalidationOutcome, ApiError> {
     let mut stats = TimeseriesMinuteProjectionCoverageInvalidationStats::default();
     loop {
+        if timeseries_minute_projection_is_cancelled(cancellation) {
+            return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled);
+        }
         let row_ids = sqlx::query_scalar::<_, i64>(
             "SELECT rowid FROM timeseries_minute_projection_v2 WHERE coverage_state <> 'warming' ORDER BY rowid LIMIT ?1",
         )
@@ -1351,7 +1604,7 @@ async fn invalidate_timeseries_minute_projection_coverage(
         .fetch_all(&state.pool)
         .await?;
         if row_ids.is_empty() {
-            return Ok(Some(stats));
+            return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats));
         }
 
         let Some(admission) = try_acquire_timeseries_minute_projection_write(
@@ -1362,7 +1615,7 @@ async fn invalidate_timeseries_minute_projection_coverage(
         )
         .await
         else {
-            return Ok(None);
+            return Ok(TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred);
         };
 
         let started = Instant::now();
@@ -1413,6 +1666,24 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
     trigger: &'static str,
     coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
 ) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    flush_timeseries_minute_projection_with_coordinator_and_cancellation(
+        state,
+        trigger,
+        coordinator,
+        None,
+    )
+    .await
+}
+
+async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
+    state: &AppState,
+    trigger: &'static str,
+    coordinator: &Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    if timeseries_minute_projection_is_cancelled(cancellation) {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+    }
     let pending = state
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000);
@@ -1439,11 +1710,17 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
                 coordinator,
                 trigger,
                 flushed_event_ids.len(),
+                cancellation,
             )
             .await?
             {
-                Some(stats) => stats,
-                None => return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred),
+                TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
+                TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred => {
+                    return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+                }
+                TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
+                    return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+                }
             }
         } else {
             TimeseriesMinuteProjectionCoverageInvalidationStats::default()
@@ -1482,6 +1759,9 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator(
         let mut exact_fallback_minute_count = 0usize;
         let mut transaction_count = 0usize;
         for key_batch in work_batches {
+            if timeseries_minute_projection_is_cancelled(cancellation) {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+            }
             let Some(admission) = try_acquire_timeseries_minute_projection_write(
                 coordinator,
                 trigger,
@@ -1605,14 +1885,38 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = prepare_timeseries_minute_projection_after_restart(state.as_ref()).await
-        {
-            warn!(
-                route = "timeseries_projection",
-                builder = "minute_projection_v2",
-                ?error,
-                "failed to invalidate minute projection during startup recovery"
-            );
+        let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+        loop {
+            let observed_eligibility_generation = pressure_gate.eligibility_generation();
+            match prepare_timeseries_minute_projection_after_restart(state.as_ref()).await {
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => break,
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
+                    debug!(
+                        route = "timeseries_projection",
+                        builder = "minute_projection_v2",
+                        trigger = "startup_recovery",
+                        observed_eligibility_generation,
+                        "startup minute projection recovery yielded to higher-priority database work"
+                    );
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                    }
+                }
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => return,
+                Err(error) => {
+                    warn!(
+                        route = "timeseries_projection",
+                        builder = "minute_projection_v2",
+                        ?error,
+                        "failed to invalidate minute projection during startup recovery"
+                    );
+                    tokio::select! {
+                        _ = cancel.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                }
+            }
         }
         state
             .terminal_projection_hub
@@ -1620,31 +1924,51 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
         let mut ticker = interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         ticker.tick().await;
+        let mut deferred_eligibility_generation = None;
         loop {
-            tokio::select! {
-                _ = cancel.cancelled() => return,
-                _ = ticker.tick() => {
-                    match flush_timeseries_minute_projection(state.as_ref(), "terminal_deadline").await {
-                        Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => {}
-                        Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
-                            debug!(
-                                route = "timeseries_projection",
-                                builder = "minute_projection_v2",
-                                trigger = "terminal_deadline",
-                                flush_outcome = "deferred",
-                                "minute projection flush yielded to higher-priority database work"
-                            );
-                        }
-                        Err(error) => {
-                            warn!(
-                                route = "timeseries_projection",
-                                builder = "minute_projection_v2",
-                                trigger = "terminal_deadline",
-                                ?error,
-                                "minute projection flush failed"
-                            );
-                        }
-                    }
+            if let Some(observed_eligibility_generation) = deferred_eligibility_generation.take() {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = ticker.tick() => {}
+                    _ = pressure_gate.wait_for_eligibility_change(observed_eligibility_generation) => {}
+                }
+            } else {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = ticker.tick() => {}
+                }
+            }
+
+            let observed_eligibility_generation = pressure_gate.eligibility_generation();
+            match flush_timeseries_minute_projection_with_coordinator_and_cancellation(
+                state.as_ref(),
+                "terminal_deadline",
+                &crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+                Some(&cancel),
+            )
+            .await
+            {
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed) => {}
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred) => {
+                    deferred_eligibility_generation = Some(observed_eligibility_generation);
+                    debug!(
+                        route = "timeseries_projection",
+                        builder = "minute_projection_v2",
+                        trigger = "terminal_deadline",
+                        flush_outcome = "deferred",
+                        observed_eligibility_generation,
+                        "minute projection flush yielded to higher-priority database work"
+                    );
+                }
+                Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled) => return,
+                Err(error) => {
+                    warn!(
+                        route = "timeseries_projection",
+                        builder = "minute_projection_v2",
+                        trigger = "terminal_deadline",
+                        ?error,
+                        "minute projection flush failed"
+                    );
                 }
             }
         }
@@ -1653,29 +1977,72 @@ pub(crate) fn spawn_timeseries_minute_projection_supervisor(
 
 async fn prepare_timeseries_minute_projection_after_restart(
     state: &AppState,
-) -> Result<(), ApiError> {
+) -> Result<TimeseriesMinuteProjectionFlushOutcome, ApiError> {
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let Some(admission) = try_acquire_timeseries_minute_projection_write(
+        &coordinator,
+        "startup_recovery",
+        "startup_state_warming",
+        0,
+    )
+    .await
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+    };
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES ('timeseries_minute_v2', 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
     )
     .execute(tx.as_mut())
     .await?;
-    sqlx::query("UPDATE timeseries_minute_projection_v2 SET coverage_state = 'warming'")
-        .execute(tx.as_mut())
-        .await?;
+    tx.commit().await?;
+    drop(admission);
+
+    let coverage = match invalidate_timeseries_minute_projection_coverage(
+        state,
+        &coordinator,
+        "startup_recovery",
+        0,
+        None,
+    )
+    .await?
+    {
+        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
+        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred => {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+        }
+        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+        }
+    };
+
+    let Some(admission) = try_acquire_timeseries_minute_projection_write(
+        &coordinator,
+        "startup_recovery",
+        "startup_state_ready",
+        0,
+    )
+    .await
+    else {
+        return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred);
+    };
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "UPDATE timeseries_minute_projection_v2_state SET last_error = 'ready', updated_at = datetime('now') WHERE consumer = 'timeseries_minute_v2'",
     )
     .execute(tx.as_mut())
     .await?;
     tx.commit().await?;
+    drop(admission);
     debug!(
         route = "timeseries_projection",
         builder = "minute_projection_v2",
         response_source = "startup_invalidation",
+        coverage_invalidation_row_count = coverage.row_count,
+        coverage_invalidation_transaction_count = coverage.transaction_count,
         "invalidated stale minute coverage before accepting projection reads"
     );
-    Ok(())
+    Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed)
 }
 
 #[cfg(test)]
@@ -1855,7 +2222,7 @@ mod minute_projection_tests {
         second.first_token_ms = Some(101.0);
         let mut in_flight = record(19, "2026-08-01 08:00:40");
         in_flight.status = Some("running".to_string());
-        store_timeseries_minute_projection_v2(
+        store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
             end,
@@ -2105,7 +2472,7 @@ mod minute_projection_tests {
         let start = Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).single().unwrap();
         let end = start + ChronoDuration::minutes(2);
 
-        store_timeseries_minute_projection_v2(
+        store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
             end,
@@ -2164,7 +2531,7 @@ mod minute_projection_tests {
         let old = record(17, "2026-08-01 08:00:12");
         let newer = record(18, "2026-08-01 08:00:30");
 
-        store_timeseries_minute_projection_v2(
+        store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
             end,
@@ -2174,7 +2541,7 @@ mod minute_projection_tests {
         )
         .await
         .expect("store newer snapshot");
-        store_timeseries_minute_projection_v2(
+        store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
             end,
@@ -2214,7 +2581,7 @@ mod minute_projection_tests {
             .expect("load invalidated projection")
             .is_none()
         );
-        store_timeseries_minute_projection_v2(
+        store_timeseries_minute_projection_v2_for_test(
             &pool,
             start,
             end,
@@ -2452,6 +2819,11 @@ pub(crate) async fn fetch_timeseries(
     }
 
     let (records, response_source) = if use_minute_projection {
+        let warm_coverage_generation = (!coverage_invalidation_pending).then(|| {
+            state
+                .terminal_projection_hub
+                .timeseries_coverage_generation()
+        });
         let records = query_invocation_aggregate_records_from_live_range(
             &state.pool,
             ExactUtcRange {
@@ -2463,46 +2835,61 @@ pub(crate) async fn fetch_timeseries(
             Some(snapshot_id),
         )
         .await?;
-        // Projection persistence is P2 work. Never make a read request wait for a SQLite
-        // writer when a first-time exact fallback already produced a valid response.
-        let projection_pool = state.pool.clone();
-        let projection_records = records.clone();
-        let projection_snapshot_records = projection_records
-            .iter()
-            .filter(|record| {
-                !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
-            })
-            .map(timeseries_projection_snapshot_record)
-            .collect::<Vec<_>>();
-        let terminal_projection_hub = state.terminal_projection_hub.clone();
-        let projection_selection = TimeseriesProjectionSelection {
-            source_scope: timeseries_projection_scope(source_scope),
-            upstream_account_id: None,
-        };
-        tokio::spawn(async move {
-            if let Err(error) = store_timeseries_minute_projection_v2(
-                &projection_pool,
-                start_dt,
-                end_dt,
-                source_scope,
-                None,
-                &projection_records,
-            )
-            .await
-            {
-                debug!(
-                    route = "timeseries_projection",
-                    projection_store_outcome = "deferred_failed",
-                    ?error,
-                    "v2 minute projection warm write failed"
-                );
-            } else {
-                terminal_projection_hub.mark_timeseries_warm_coverage(
-                    projection_selection,
-                    &projection_snapshot_records,
-                );
-            }
-        });
+        if let Some(warm_coverage_generation) = warm_coverage_generation {
+            // Projection persistence is P2 work. Never make a read request wait for a SQLite
+            // writer when a first-time exact fallback already produced a valid response.
+            let projection_pool = state.pool.clone();
+            let projection_records = records.clone();
+            let projection_snapshot_records = projection_records
+                .iter()
+                .filter(|record| {
+                    !prompt_shared::invocation_status_is_in_flight(record.status.as_deref())
+                })
+                .map(timeseries_projection_snapshot_record)
+                .collect::<Vec<_>>();
+            let terminal_projection_hub = state.terminal_projection_hub.clone();
+            let projection_selection = TimeseriesProjectionSelection {
+                source_scope: timeseries_projection_scope(source_scope),
+                upstream_account_id: None,
+            };
+            tokio::spawn(async move {
+                match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
+                    &projection_pool,
+                    start_dt,
+                    end_dt,
+                    source_scope,
+                    None,
+                    &projection_records,
+                    terminal_projection_hub.as_ref(),
+                    warm_coverage_generation,
+                    "http_exact_fallback",
+                )
+                .await
+                {
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {
+                        terminal_projection_hub.mark_timeseries_warm_coverage(
+                            projection_selection,
+                            &projection_snapshot_records,
+                        );
+                    }
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred) => {
+                        debug!(
+                            route = "timeseries_projection",
+                            projection_store_outcome = "deferred",
+                            "v2 minute projection warm write yielded to higher-priority work"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            route = "timeseries_projection",
+                            projection_store_outcome = "failed",
+                            ?error,
+                            "v2 minute projection warm write failed"
+                        );
+                    }
+                }
+            });
+        }
         (
             records,
             if coverage_invalidation_pending {
@@ -2855,11 +3242,18 @@ pub(crate) async fn fetch_timeseries_for_account(
     }
 
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
-    if bucket_seconds < 3_600 && range_window.duration <= ChronoDuration::days(1) {
+    if bucket_seconds < 3_600
+        && range_window.duration <= ChronoDuration::days(1)
+        && state
+            .terminal_projection_hub
+            .timeseries_coverage_invalidation_pending()
+            .is_none()
+    {
         // Account projections include empty minutes, so a first exact fallback must warm
         // the complete selection instead of relying on future terminal events to fill gaps.
         let projection_pool = state.pool.clone();
         let terminal_projection_hub = state.terminal_projection_hub.clone();
+        let warm_coverage_generation = terminal_projection_hub.timeseries_coverage_generation();
         let projection_selection = TimeseriesProjectionSelection {
             source_scope: timeseries_projection_scope(source_scope),
             upstream_account_id: Some(upstream_account_id),
@@ -2886,24 +3280,38 @@ pub(crate) async fn fetch_timeseries_for_account(
                         })
                         .map(timeseries_projection_snapshot_record)
                         .collect::<Vec<_>>();
-                    store_timeseries_minute_projection_v2(
+                    store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
                         &projection_pool,
                         start_dt,
                         end_dt,
                         source_scope,
                         Some(upstream_account_id),
                         &records,
+                        terminal_projection_hub.as_ref(),
+                        warm_coverage_generation,
+                        "account_exact_fallback",
                     )
                     .await
-                    .map(|()| projection_snapshot_records)
+                    .map(|outcome| (outcome, projection_snapshot_records))
                 }
                 Err(error) => Err(error),
             };
             match result {
-                Ok(projection_snapshot_records) => {
+                Ok((
+                    TimeseriesMinuteProjectionWarmOutcome::Stored,
+                    projection_snapshot_records,
+                )) => {
                     terminal_projection_hub.mark_timeseries_warm_coverage(
                         projection_selection,
                         &projection_snapshot_records,
+                    );
+                }
+                Ok((TimeseriesMinuteProjectionWarmOutcome::Deferred, _)) => {
+                    debug!(
+                        route = "timeseries_projection",
+                        upstream_account_id,
+                        projection_store_outcome = "deferred",
+                        "account v2 minute projection warm write yielded to higher-priority work"
                     );
                 }
                 Err(error) => {

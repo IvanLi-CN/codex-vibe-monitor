@@ -3027,6 +3027,7 @@ impl SubscriptionHub {
     pub(crate) async fn dashboard_hot_topic_health(
         &self,
         projection: DashboardRuntimeTopologyCounterSnapshot,
+        timeseries_projection_deferred: bool,
     ) -> DashboardHotTopicsHealthSnapshot {
         let recovery = {
             let guard = self.state.lock().await;
@@ -3049,7 +3050,9 @@ impl SubscriptionHub {
                     SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
                 ) && (cached.prompt_cache_pressure_deferred
                     || cached.prompt_cache_reconcile_required
-                    || !cached.prompt_cache_pending_key_hydrations.is_empty());
+                    || !cached.prompt_cache_pending_key_hydrations.is_empty())
+                    || (matches!(cached.topic, SubscriptionTopic::TimeseriesOpenWindow { .. })
+                        && timeseries_projection_deferred);
                 recovery.record(
                     &cached.topic,
                     DashboardHotTopicRecoveryState {
@@ -13658,13 +13661,48 @@ mod tests {
         hub.mark_runtime_mutation_gap_and_recover(state, 4, "cursor_gap")
             .await;
         let health = hub
-            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default())
+            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default(), false)
             .await;
 
         assert_eq!(health.working_conversations.state, "degraded");
         assert_eq!(health.parallel_work.state, "degraded");
         assert_eq!(health.timeseries.state, "degraded");
         assert_eq!(health.state, "degraded");
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn dashboard_hot_topic_health_defers_timeseries_while_coverage_is_warming() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::TimeseriesOpenWindow {
+            range: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            upstream_account_id: None,
+        };
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic.cache_key().expect("hot topic key"),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let lease = hub
+            .register_topic_subscribers(&[topic])
+            .await
+            .expect("register timeseries topic owner");
+
+        let health = hub
+            .dashboard_hot_topic_health(DashboardRuntimeTopologyCounterSnapshot::default(), true)
+            .await;
+
+        assert_eq!(health.timeseries.state, "deferred");
+        assert_eq!(health.state, "deferred");
         drop(lease);
     }
 

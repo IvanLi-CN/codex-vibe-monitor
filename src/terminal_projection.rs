@@ -483,6 +483,13 @@ impl TerminalProjectionHub {
             .then_some(state.timeseries_coverage_invalidation_generation)
     }
 
+    pub(crate) fn timeseries_coverage_generation(&self) -> u64 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .timeseries_coverage_invalidation_generation
+    }
+
     pub(crate) fn complete_timeseries_coverage_invalidation(&self, generation: u64) {
         let mut state = self
             .state

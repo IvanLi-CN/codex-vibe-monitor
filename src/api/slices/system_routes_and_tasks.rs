@@ -167,10 +167,14 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
     let prompt_cache_pressure_deferred = prompt_cache_projection.pressure_deferred_topic_count > 0;
     let dashboard_hot_topics = state
         .subscription_hub
-        .dashboard_hot_topic_health(dashboard_projection.slice_counters)
+        .dashboard_hot_topic_health(
+            dashboard_projection.slice_counters,
+            terminal_projection.timeseries_coverage_invalidation_pending,
+        )
         .await;
     let projection_deferred = dashboard_projection.last_defer_reason.is_some()
         || terminal_projection.hard_limit_reason.is_some()
+        || terminal_projection.timeseries_coverage_invalidation_pending
         || long_term_projection.last_defer_reason.is_some();
     let cursor_growth = terminal_projection.last_persisted_row_id
         > long_term_projection.cursor_row_id
