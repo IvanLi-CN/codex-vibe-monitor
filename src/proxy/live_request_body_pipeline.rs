@@ -92,9 +92,10 @@ impl LiveResponsesRequestBodyPipeline {
     }
 }
 
-/// Starts a replay-backed request-body transformer. The routing probe becomes
-/// available only after the complete root object has been parsed, so a caller
-/// never sends an upstream body for a provisional route.
+/// Starts a replay-backed request-body transformer. The routing probe can be
+/// published while the root object is still open only when a future-safe route
+/// commit is proven; otherwise it remains buffered until the complete root
+/// object has been parsed.
 pub(crate) fn spawn_live_responses_request_body_pipeline(
     raw_body: Body,
     downstream_content_encoding: Option<String>,
@@ -532,6 +533,7 @@ fn live_routing_probe_from_fields(
         } else {
             ImageIntent::Unknown
         },
+        root_object_complete,
     }
 }
 
@@ -1548,7 +1550,7 @@ mod tests {
     async fn final_route_gate_waits_for_late_routing_metadata_before_upstream_body() {
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
         tx.send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5.6","input":"hello","#,
+            br#"{"model":"gpt-5.6","input":"hello","instructions":"stream","#,
         )))
         .await
         .expect("send request prefix");
