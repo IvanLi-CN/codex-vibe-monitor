@@ -2058,7 +2058,7 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     .await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
-        Duration::from_millis(180),
+        Duration::from_secs(2),
         Duration::from_millis(10),
     )
     .await;
@@ -2068,37 +2068,45 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
     let wait_started_rx = crate::proxy::register_pool_no_available_wait_hook(&state);
-    let pool = state.pool.clone();
-    let runtime_handle = tokio::runtime::Handle::current();
-    let release_task = std::thread::spawn(move || {
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::from(
+                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        )
+        .await
+    });
+
+    let started = Instant::now();
+    tokio::task::spawn_blocking(move || {
         wait_started_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("request should signal once the bounded wait starts");
-        runtime_handle.block_on(async move {
-            set_test_account_status(&pool, delayed_id, "active").await;
-        });
-    });
+    })
+    .await
+    .expect("wait hook worker should join");
+    set_test_account_status(&state.pool, delayed_id, "active").await;
+    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
+    state.pool_routing_availability.publish();
 
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::from_iter([(
-            http_header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer pool-live-key"),
-        )]),
-        Body::from(
-            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-recover-after-upstream-failure"}"#
-                .as_bytes()
-                .to_vec(),
-        ),
-    )
-    .await;
-    release_task
-        .join()
-        .expect("delayed account release task should join");
+    let response = request_task.await.expect("request task should join");
+    let elapsed = started.elapsed();
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        elapsed < Duration::from_millis(900),
+        "availability publication should wake the bounded wait before its timeout, elapsed={elapsed:?}"
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read proxy response");
