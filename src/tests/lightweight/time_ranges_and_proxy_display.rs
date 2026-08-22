@@ -382,6 +382,9 @@ fn proxy_openai_v1_via_pool_keeps_in_flight_tracking_until_downstream_stream_fin
             let state = test_state_from_config(config, true).await;
             seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
             insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+            refresh_pool_routing_snapshot(state.as_ref())
+                .await
+                .expect("refresh streaming pool routing snapshot");
 
             let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
                 .await
