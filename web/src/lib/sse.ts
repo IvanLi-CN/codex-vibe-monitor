@@ -702,11 +702,18 @@ export function subscribeToTopic<T = unknown>(
     const entry = topicEntries.get(key);
     if (!entry) return;
     entry.listeners.delete(listener as TopicListener);
+    let descriptorRemoved = false;
     if (entry.listeners.size === 0) {
       topicEntries.delete(key);
       forcedSnapshotDescriptors.delete(key);
+      descriptorRemoved = true;
     }
     emitDiagnostics();
+    if (descriptorRemoved && hasActiveTopicSubscribers()) {
+      nextConnectReason = "topic-change";
+      ensureEventSource();
+      return;
+    }
     cleanupEventSource();
   };
 }

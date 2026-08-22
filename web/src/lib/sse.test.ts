@@ -97,7 +97,7 @@ afterEach(() => {
 });
 
 describe("sse topic registry", () => {
-  it("rebuilds the connection with resume cursors from cached topic state", async () => {
+  it("rebuilds the connection when a topic is added or removed and preserves remaining cursors", async () => {
     const sse = await loadSseModule();
     const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {
       limit: 20,
@@ -133,6 +133,7 @@ describe("sse topic registry", () => {
     const unsubscribeQuota = sse.subscribeToTopic(quotaTopic, vi.fn());
 
     expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    const secondConnection = FakeEventSource.instances[1];
     const decoded = decodePath(createEventSourceMock.mock.calls[1][0] as string);
     expect(decoded.topics).toEqual([
       { topic: "quota.current", params: {} },
@@ -147,6 +148,21 @@ describe("sse topic registry", () => {
     ]);
 
     unsubscribeQuota();
+
+    expect(secondConnection.closed).toBe(true);
+    expect(createEventSourceMock).toHaveBeenCalledTimes(3);
+    const afterRemoval = decodePath(createEventSourceMock.mock.calls[2][0] as string);
+    expect(afterRemoval.topics).toEqual([
+      { topic: "stats.summary.current", params: { limit: "20", window: "current" } },
+    ]);
+    expect(afterRemoval.resume).toEqual([
+      {
+        topicIndex: 0,
+        cursor: 4,
+        schemaEpoch: "stats.summary.current/v1",
+      },
+    ]);
+
     unsubscribeSummary();
   });
 
