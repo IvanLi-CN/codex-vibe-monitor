@@ -3842,7 +3842,7 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
-        self.refresh_topic_inner(state, topic, emit_live, false)
+        self.refresh_topic_inner(state, topic, emit_live, false, None)
             .await
             .map(|cached| cached.expect("unguarded topic refresh should always commit"))
     }
@@ -3853,7 +3853,18 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
-        self.refresh_topic_inner(state, topic, emit_live, true)
+        self.refresh_topic_inner(state, topic, emit_live, true, None)
+            .await
+    }
+
+    async fn refresh_upstream_account_attempt_topic_if_active(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        refresh_generation: u64,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
+        self.refresh_topic_inner(state, topic, emit_live, true, Some(refresh_generation))
             .await
     }
 
@@ -4074,6 +4085,7 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
         emit_live: bool,
         require_active_owner: bool,
+        expected_upstream_account_attempt_refresh_generation: Option<u64>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
@@ -4101,6 +4113,15 @@ impl SubscriptionHub {
                 .unwrap_or_default()
                 == 0
             {
+                return Ok(None);
+            }
+            if let Some(expected_generation) = expected_upstream_account_attempt_refresh_generation
+                && !guard.topics.get(&topic_key).is_some_and(|cached| {
+                    cached.upstream_account_attempt_refresh_generation == expected_generation
+                })
+            {
+                // A disconnect/reconnect can invalidate the dedicated refresh after its worker
+                // acquired the lease but before it begins the database build.
                 return Ok(None);
             }
             guard
@@ -4150,7 +4171,16 @@ impl SubscriptionHub {
                             Some(cached.runtime_topic_recovery_generation) == refresh_generation
                         })
                 };
-                if !active || !generation_matches {
+                let account_attempt_generation_matches =
+                    expected_upstream_account_attempt_refresh_generation.is_none_or(
+                        |expected_generation| {
+                            guard.topics.get(&topic_key).is_some_and(|cached| {
+                                cached.upstream_account_attempt_refresh_generation
+                                    == expected_generation
+                            })
+                        },
+                    );
+                if !active || !generation_matches || !account_attempt_generation_matches {
                     // A newer gap or owner generation owns the cache now. Only the owner that
                     // observed this generation may dirty it; never invalidate a newer clean
                     // frame committed by a reconnecting subscriber.
@@ -6068,7 +6098,12 @@ impl SubscriptionHub {
                     return;
                 }
                 let result = hub
-                    .refresh_topic_if_active(state.clone(), topic.clone(), true)
+                    .refresh_upstream_account_attempt_topic_if_active(
+                        state.clone(),
+                        topic.clone(),
+                        true,
+                        generation,
+                    )
                     .await;
                 let rerun = hub
                     .finish_upstream_account_attempt_topic_refresh(&topic, generation)
@@ -17791,6 +17826,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upstream_account_attempt_refresh_reconnect_rejects_stale_worker_after_begin() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 42,
+            page: 1,
+            page_size: 50,
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+        };
+        let topic_key = topic.cache_key().expect("account attempt topic key");
+        let stale_generation = 7;
+
+        {
+            let mut guard = hub.state.lock().await;
+            let mut cached = seeded_cached_topic(topic.clone(), &[7], Utc::now());
+            cached.upstream_account_attempt_refresh_generation = stale_generation;
+            cached.upstream_account_attempt_refresh_scheduled = true;
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        assert!(
+            hub.begin_upstream_account_attempt_topic_refresh(&topic, stale_generation)
+                .await,
+            "the old worker must have acquired its lease before the owner disconnects"
+        );
+        assert!(
+            hub.finish_upstream_account_attempt_topic_refresh_without_owner(
+                &topic,
+                stale_generation,
+            )
+            .await,
+            "the worker should still see its original owner before the reconnect"
+        );
+
+        hub.release_topic_subscribers(vec![topic_key.clone()], Vec::new(), false)
+            .await;
+        {
+            let mut guard = hub.state.lock().await;
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+        let refreshed = hub
+            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+            .await
+            .expect("the reconnected owner refresh should build")
+            .expect("the reconnected owner remains active");
+        let cursor_after_reconnect = refreshed.cursor;
+        let payload_after_reconnect = refreshed.snapshot_frame.payload_value();
+
+        assert!(
+            hub.refresh_upstream_account_attempt_topic_if_active(
+                state,
+                topic.clone(),
+                true,
+                stale_generation,
+            )
+            .await
+            .expect("a stale worker exits without a build error")
+            .is_none(),
+            "a worker generation invalidated after begin must not overwrite the reconnected frame"
+        );
+        assert!(
+            !hub.finish_upstream_account_attempt_topic_refresh(&topic, stale_generation)
+                .await,
+            "a stale worker must not affect the reconnected scheduler state"
+        );
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached account attempt topic");
+        assert_eq!(cached.cursor, cursor_after_reconnect);
+        assert_eq!(
+            cached.snapshot_frame.payload_value(),
+            payload_after_reconnect
+        );
+    }
+
+    #[tokio::test]
     async fn pool_attempt_broadcast_schedules_only_matching_active_account_topic() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -17980,6 +18099,72 @@ mod tests {
         assert!(!history.dirty);
         assert_eq!(history.cursor, 44);
         assert_eq!(history.snapshot_frame.payload_value(), history_payload);
+    }
+
+    #[tokio::test]
+    async fn unavailable_pool_attempt_snapshot_from_producer_recovers_active_account_topic() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 42,
+            page: 1,
+            page_size: 50,
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+        };
+        let topic_key = topic.cache_key().expect("account attempt topic key");
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(
+                topic_key.clone(),
+                seeded_cached_topic(topic.clone(), &[7], Utc::now()),
+            );
+        }
+        let _lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register active account attempt topic");
+        spawn_subscription_broadcast_listener(state.clone());
+        state.pool.close().await;
+
+        let err = crate::proxy::broadcast_pool_upstream_attempts_snapshot(
+            state.as_ref(),
+            "snapshot-query-failed",
+        )
+        .await
+        .expect_err("closed SQLite pool must fail the attempt snapshot query");
+        assert!(
+            err.to_string()
+                .contains("failed to load pool attempt snapshot")
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let recovered =
+                    hub.state
+                        .lock()
+                        .await
+                        .topics
+                        .get(&topic_key)
+                        .is_some_and(|cached| {
+                            cached.dirty
+                                && cached.upstream_account_attempt_refresh_scheduled
+                                && cached.upstream_account_attempt_refresh_generation > 0
+                        });
+                if recovered {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the internal listener should schedule active account-topic recovery");
+
+        state.shutdown.cancel();
     }
 
     #[tokio::test]

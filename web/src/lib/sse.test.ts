@@ -199,6 +199,7 @@ describe("sse topic registry", () => {
       type: "snapshot",
       cursor: 9,
       payload: { activeRequests: 3 },
+      deliverySource: "cache",
     });
 
     sse.requestTopicRefresh(topic);

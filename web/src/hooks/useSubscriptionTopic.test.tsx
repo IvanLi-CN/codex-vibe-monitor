@@ -27,6 +27,7 @@ function HookHarness(props: {
   onRender: (snapshot: {
     data: { total: number } | null;
     lastKind: "snapshot" | "replay" | "live" | null;
+    deliverySource: "cache" | "network" | null;
     isLoading: boolean;
     refresh: () => void;
   }) => void;
@@ -37,10 +38,18 @@ function HookHarness(props: {
     props.onRender({
       data: result.data,
       lastKind: result.lastKind,
+      deliverySource: result.deliverySource,
       isLoading: result.isLoading,
       refresh: result.refresh,
     });
-  }, [props, result.data, result.isLoading, result.lastKind, result.refresh]);
+  }, [
+    props,
+    result.data,
+    result.deliverySource,
+    result.isLoading,
+    result.lastKind,
+    result.refresh,
+  ]);
 
   return null;
 }
@@ -51,6 +60,7 @@ function renderHookHarness(props: {
   onRender: (snapshot: {
     data: { total: number } | null;
     lastKind: "snapshot" | "replay" | "live" | null;
+    deliverySource: "cache" | "network" | null;
     isLoading: boolean;
     refresh: () => void;
   }) => void;
@@ -82,6 +92,7 @@ describe("useSubscriptionTopic", () => {
     const renders: Array<{
       data: { total: number } | null;
       lastKind: "snapshot" | "replay" | "live" | null;
+      deliverySource: "cache" | "network" | null;
       isLoading: boolean;
       refresh: () => void;
     }> = [];
@@ -122,6 +133,7 @@ describe("useSubscriptionTopic", () => {
 
     expect(renders.at(-1)?.data).toEqual({ total: 11 });
     expect(renders.at(-1)?.lastKind).toBe("live");
+    expect(renders.at(-1)?.deliverySource).toBe("network");
     expect(renders.at(-1)?.isLoading).toBe(false);
 
     act(() => {

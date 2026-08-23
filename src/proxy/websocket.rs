@@ -910,6 +910,16 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
             "failed to advance websocket pool attempt into sending-request phase"
         );
     }
+    if let Some(pending) = pending_attempt_record.as_ref()
+        && let Err(err) =
+            broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id).await
+    {
+        warn!(
+            invoke_id = %pending.invoke_id,
+            error = %err,
+            "failed to broadcast websocket pool attempt snapshot"
+        );
+    }
     let mut deferred_cleanup_guard = pending_attempt_record
         .as_ref()
         .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));

@@ -2227,6 +2227,19 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     "failed to advance live-first pool attempt into sending-request phase"
                 );
             }
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                    state.as_ref(),
+                    &pending_attempt_record.invoke_id,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to broadcast live-first pool attempt snapshot"
+                );
+            }
             let mut outbound_headers = HeaderMap::new();
             for (name, value) in headers {
                 if *name == header::AUTHORIZATION || *name == header::CONTENT_LENGTH {
@@ -2508,6 +2521,19 @@ pub(crate) async fn send_pool_request_live_first_attempt(
                     invoke_id = %pending_attempt_record.invoke_id,
                     error = %err,
                     "failed to advance live-first oauth pool attempt into sending-request phase"
+                );
+            }
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                    state.as_ref(),
+                    &pending_attempt_record.invoke_id,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to broadcast live-first oauth pool attempt snapshot"
                 );
             }
             let live_reporter = trace_context.map(|trace| {

@@ -70,21 +70,27 @@ function useMockSubscriptionTopic(descriptor: SubscriptionTopicDescriptor | null
   const [isLoading, setIsLoading] = useState(
     Boolean(descriptor && enabled && !topicSnapshotCache.has(descriptorKey ?? "")),
   );
+  const [deliverySource, setDeliverySource] = useState<"cache" | "network" | null>(() =>
+    descriptor && enabled && topicSnapshotCache.has(descriptorKey ?? "") ? "cache" : null,
+  );
 
   useEffect(() => {
     if (!descriptor || !enabled || !descriptorKey) {
       setData(null);
       setIsLoading(false);
+      setDeliverySource(null);
       return;
     }
     const cached = topicSnapshotCache.get(descriptorKey);
     setData(cached ?? null);
     setIsLoading(!cached);
+    setDeliverySource(cached ? "cache" : null);
     const listeners = topicListeners.get(descriptorKey) ?? new Set();
     const listener = (next: UpstreamAccountAttemptListResponse) => {
       topicSnapshotCache.set(descriptorKey, next);
       setData(next);
       setIsLoading(false);
+      setDeliverySource("network");
     };
     listeners.add(listener);
     topicListeners.set(descriptorKey, listeners);
@@ -109,6 +115,7 @@ function useMockSubscriptionTopic(descriptor: SubscriptionTopicDescriptor | null
     descriptorKey: enabled ? descriptorKey : null,
     lastReceivedAt: null,
     lastKind: null,
+    deliverySource,
     isLoading: enabled ? isLoading : false,
     error: null,
     refresh: vi.fn(),
@@ -1345,6 +1352,106 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(relocatedCard?.dataset.focusVisible).toBe("true");
     expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
     expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThan(scrollCallsBeforeShift);
+  });
+
+  it("waits for a network frame before spending a deep-link relocation", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "CACHEMOVE1",
+      invokeId: "CACHEMOVE1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    const pageTwoDescriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+      accountId: 101,
+      page: 2,
+      pageSize: 50,
+    });
+    topicSnapshotCache.set(
+      getTopicDescriptorKey(pageTwoDescriptor),
+      attemptListResponse({
+        items: [],
+        total: 101,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    topicSnapshotMock.mockImplementation(async (_accountId, options) =>
+      attemptListResponse({
+        items: options.page === 3 ? [focusedAttempt] : [],
+        total: 101,
+        page: options.page ?? 1,
+        pageSize: 50,
+      }),
+    );
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "CACHEMOVE1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(1);
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    const relocatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-CACHEMOVE1"]',
+    );
+    expect(relocatedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
   });
 
   it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {

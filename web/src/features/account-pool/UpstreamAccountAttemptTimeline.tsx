@@ -580,6 +580,7 @@ export function UpstreamAccountAttemptTimeline({
       !activeFocus ||
       pendingFocus ||
       activeFocus.relocationCount > 0 ||
+      attemptTopic.deliverySource !== "network" ||
       attemptTopic.data?.page !== activeFocus.page ||
       attemptTopic.data.items.some((item) => item.attemptId === activeFocus.attemptId)
     ) {
@@ -589,12 +590,13 @@ export function UpstreamAccountAttemptTimeline({
     // target from its page. Re-enter the same bounded locate path instead of losing focus.
     setActiveFocus(null);
     setPendingFocus(activeFocus);
-  }, [activeFocus, attemptTopic.data, pendingFocus]);
+  }, [activeFocus, attemptTopic.data, attemptTopic.deliverySource, pendingFocus]);
 
   useEffect(() => {
     if (
       !pendingFocus ||
       !attemptTopic.data ||
+      attemptTopic.deliverySource !== "network" ||
       attemptTopic.data.page !== pendingFocus.page ||
       pendingFocus.relocationCount > 0 ||
       attemptTopic.data.items.some((item) => item.attemptId === pendingFocus.attemptId)
@@ -652,7 +654,14 @@ export function UpstreamAccountAttemptTimeline({
     return () => {
       controller.abort();
     };
-  }, [accountId, acknowledgeFocusRequest, attemptTopic.data, pendingFocus, t]);
+  }, [
+    accountId,
+    acknowledgeFocusRequest,
+    attemptTopic.data,
+    attemptTopic.deliverySource,
+    pendingFocus,
+    t,
+  ]);
 
   useLayoutEffect(() => {
     if (!activeFocus) return;
