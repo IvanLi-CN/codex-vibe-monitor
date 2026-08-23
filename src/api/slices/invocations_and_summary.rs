@@ -7871,7 +7871,6 @@ async fn ensure_summary_projection_archive_text_budget(
     archive_pool: &Pool<Sqlite>,
     exact_ranges: &[ExactUtcRange],
     columns: &HashMap<&str, bool>,
-    limit: usize,
 ) -> Result<(), anyhow::Error> {
     if exact_ranges.is_empty() {
         return Ok(());
@@ -7914,7 +7913,7 @@ async fn ensure_summary_projection_archive_text_budget(
             .push_bind(db_occurred_at_upper_bound(exact_ranges[index].end))
             .push(")");
     }
-    query.push(" LIMIT ").push_bind(limit as i64).push(")");
+    query.push(")");
     let estimated_bytes = query
         .build_query_scalar::<i64>()
         .fetch_one(archive_pool)
@@ -8901,13 +8900,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         hourly_rollup_usage,
         known_account_ids,
     );
-    ensure_summary_projection_archive_text_budget(
-        archive_pool,
-        &exact_ranges,
-        &columns,
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
-    )
-    .await?;
+    ensure_summary_projection_archive_text_budget(archive_pool, &exact_ranges, &columns).await?;
     let mut bind_index = 1usize;
     let mut bounded_query = query;
     bounded_query.push_str(" WHERE ");
@@ -9667,7 +9660,7 @@ async fn build_summary_projection(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
-    ensure_summary_projection_live_text_budget(
+    let exact_horizon_max_id = ensure_summary_projection_live_text_budget(
         &state.pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -9688,6 +9681,7 @@ async fn build_summary_projection(
         },
         None,
         Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
+        exact_horizon_max_id,
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
@@ -9744,7 +9738,7 @@ async fn build_summary_projection(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    ensure_summary_projection_live_text_budget(
+    let recent_index_max_id = ensure_summary_projection_live_text_budget(
         &state.pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -9771,6 +9765,7 @@ async fn build_summary_projection(
         },
         None,
         Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
+        recent_index_max_id,
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
@@ -10154,12 +10149,22 @@ async fn build_summary_projection(
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
+        let replacement_max_id = ensure_summary_projection_live_text_budget(
+            &state.pool,
+            InvocationSourceScope::All,
+            range,
+            None,
+            false,
+            remaining,
+        )
+        .await?;
         let mut exact_live_rows = query_live_upstream_account_activity_preview_rows_with_limit(
             &state.pool,
             InvocationSourceScope::All,
             range,
             None,
             Some(remaining),
+            replacement_max_id,
             false,
             UpstreamAccountActivityPreviewReadTelemetry {
                 route: "summary_projection",
@@ -15030,6 +15035,7 @@ pub(crate) async fn query_live_upstream_account_activity_preview_rows(
         range,
         None,
         None,
+        None,
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "shared",
@@ -15135,6 +15141,7 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     range: ExactUtcRange,
     upstream_account_id: Option<Option<i64>>,
     limit: Option<usize>,
+    max_id: Option<i64>,
     in_progress_only: bool,
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
@@ -15166,6 +15173,9 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
                 query.push(" IS NULL");
             }
         }
+    }
+    if let Some(max_id) = max_id {
+        query.push(" AND id <= ").push_bind(max_id);
     }
     query.push(" ORDER BY occurred_at DESC, id DESC");
     if let Some(limit) = limit {
@@ -15206,7 +15216,7 @@ async fn ensure_summary_projection_live_text_budget(
     upstream_account_id: Option<Option<i64>>,
     in_progress_only: bool,
     limit: usize,
-) -> Result<(), anyhow::Error> {
+) -> Result<Option<i64>, anyhow::Error> {
     // Keep the scalar preflight conservative and bounded to the same newest prefix that the
     // preview query will materialize. Payload covers JSON-derived preview fields; the optional
     // columns cover legacy schemas where model/error text is stored outside payload.
@@ -15224,16 +15234,27 @@ async fn ensure_summary_projection_live_text_budget(
             text_columns.push(column);
         }
     }
+    text_columns.push("__upstream_account_plan_type__");
     text_columns.sort_unstable();
     text_columns.dedup();
     let row_bytes = text_columns
         .iter()
-        .map(|column| format!("length(CAST(COALESCE({column}, '') AS BLOB))"))
+        .map(|column| {
+            if *column == "__upstream_account_plan_type__" {
+                format!(
+                    "length(CAST(COALESCE(({INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL}), '') AS BLOB))"
+                )
+            } else {
+                format!("length(CAST(COALESCE({column}, '') AS BLOB))")
+            }
+        })
         .collect::<Vec<_>>()
         .join(" + ");
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT COALESCE(SUM(row_bytes), 0) FROM (SELECT ");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COALESCE(SUM(row_bytes), 0), MAX(row_id) FROM (SELECT id AS row_id, ",
+    );
     query
         .push("512 + ")
         .push(row_bytes.as_str())
@@ -15265,13 +15286,16 @@ async fn ensure_summary_projection_live_text_budget(
         .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
         .push_bind(limit as i64)
         .push(")");
-    let estimated_bytes = query.build_query_scalar::<i64>().fetch_one(pool).await?;
+    let (estimated_bytes, max_id) = query
+        .build_query_as::<(i64, Option<i64>)>()
+        .fetch_one(pool)
+        .await?;
     if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
         return Err(anyhow!(
             "summary projection canonical record byte budget exceeded before preview fetch ({estimated_bytes} > {SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
         ));
     }
-    Ok(())
+    Ok(max_id)
 }
 
 async fn query_live_upstream_account_activity_preview_candidate_ids_per_account(
@@ -19839,6 +19863,7 @@ async fn load_dashboard_activity_current_minute_rows(
         &state.pool,
         source_scope,
         current_window,
+        None,
         None,
         None,
         false,
@@ -27973,6 +27998,44 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_rejects_oversized_account_plan_type_before_preview_fetch() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let now = format_utc_iso(Utc::now());
+        let oversized_plan_type = "p".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO pool_upstream_accounts \
+             (id, kind, provider, display_name, status, enabled, plan_type, created_at, updated_at) \
+             VALUES (987654, 'api_key_codex', 'codex', 'oversized plan account', 'active', 1, ?1, ?2, ?2)",
+        )
+        .bind(oversized_plan_type)
+        .bind(&now)
+        .execute(&state.pool)
+        .await
+        .expect("insert oversized plan type account");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('oversized-summary-plan', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{\"upstreamAccountId\":987654}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert oversized plan type live row");
+
+        let error = hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect_err("oversized plan type must fail before preview materialization");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical record byte budget exceeded before preview fetch"),
+            "plan type byte preflight must reject oversized text: {error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn summary_projection_rejects_oversized_archive_payload_before_preview_fetch() {
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -28015,14 +28078,10 @@ mod request_compression_query_tests {
             start: Utc::now() - ChronoDuration::hours(2),
             end: Utc::now() + ChronoDuration::minutes(1),
         };
-        let error = ensure_summary_projection_archive_text_budget(
-            &archive_pool,
-            &[range],
-            &columns,
-            SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
-        )
-        .await
-        .expect_err("oversized archive payload must fail before preview materialization");
+        let error =
+            ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
+                .await
+                .expect_err("oversized archive payload must fail before preview materialization");
         assert!(
             error
                 .to_string()
