@@ -1,10 +1,23 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { ApiPoolUpstreamRequestAttempt } from "../../lib/api";
-import { FullPageStorySurface } from "../../storybook/storybookPageHelpers";
+import type {
+  ApiPoolUpstreamRequestAttempt,
+  UpstreamAccountAttemptListResponse,
+} from "../../lib/api";
+import {
+  buildTopicDescriptor,
+  getCurrentSseDiagnostics,
+  getTopicDescriptorKey,
+  type SubscriptionTopicEnvelope,
+} from "../../lib/sse";
+import {
+  FullPageStorySurface,
+  StorybookPageEnvironment,
+} from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
 
 const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
@@ -370,12 +383,62 @@ function withAccountId(item: ApiPoolUpstreamRequestAttempt, accountId: number) {
 }
 
 function StorySurface({ children }: { children: ReactNode }) {
+  const visualEvidenceTarget = new URLSearchParams(window.location.search).get("evidence");
+  const visualEvidenceMode = visualEvidenceTarget != null;
+  const visualEvidenceStoryId =
+    visualEvidenceTarget === "mobile" ? "realtime-lifecycle-mobile" : "realtime-lifecycle";
+  const visualEvidenceAnchorId = `anchor--account-pool-components-upstream-account-attempt-timeline--${visualEvidenceStoryId}`;
+  const surfaceBackgroundClass = visualEvidenceMode ? "bg-[#e8dfd0]" : "bg-[#f6f1e7]";
+  const storySurfacePaddingClass =
+    visualEvidenceTarget === "mobile" ? "px-0 py-6" : "px-6 py-6 sm:px-8";
+  const evidenceFrameClass =
+    visualEvidenceTarget === "mobile"
+      ? "mx-0 mt-3 mb-10 bg-[#d8e3f0] px-[36px] py-[36px]"
+      : "mx-3 mt-3 mb-10 bg-[#d8e3f0] p-[18px]";
+  const timelineSurfaceClass = visualEvidenceMode
+    ? "mx-auto max-w-6xl bg-base-200 px-6 py-6"
+    : "mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm";
+  const timelineSurface = <div className={timelineSurfaceClass}>{children}</div>;
+
   return (
-    <div className="bg-[#f6f1e7] px-6 py-6 text-base-content sm:px-8">
-      <div className="mx-auto max-w-6xl rounded-[28px] border border-base-300/70 bg-base-200 px-6 py-6 shadow-sm">
-        {children}
+    <>
+      {visualEvidenceMode ? (
+        <style>{`
+          body:has([data-testid="upstream-account-attempt-story-surface"]),
+          body:has([data-testid="upstream-account-attempt-story-surface"]) #storybook-docs,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-wrapper,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-content {
+            background: #e8dfd0 !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-preview {
+            background: #e8dfd0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .sbdocs-content > :not(#${visualEvidenceAnchorId}),
+          body:has([data-testid="upstream-account-attempt-story-surface"]) #${visualEvidenceAnchorId} > h3,
+          body:has([data-testid="upstream-account-attempt-story-surface"]) .docblock-code-toggle {
+            display: none !important;
+          }
+
+          body:has([data-testid="upstream-account-attempt-story-surface"])::-webkit-scrollbar {
+            display: none;
+          }
+        `}</style>
+      ) : null}
+      <div className={`${surfaceBackgroundClass} ${storySurfacePaddingClass} text-base-content`}>
+        {visualEvidenceMode ? (
+          <div className={evidenceFrameClass} data-testid="upstream-account-attempt-story-surface">
+            {timelineSurface}
+          </div>
+        ) : (
+          timelineSurface
+        )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -387,7 +450,15 @@ function AttemptTimelinePageSurface({ children }: { children: ReactNode }) {
   );
 }
 
-function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
+function AttemptTimelineFetchMock({
+  accountId,
+  relocateAfterInitialLocate = false,
+}: {
+  accountId: number;
+  relocateAfterInitialLocate?: boolean;
+}) {
+  const locateRequestCountRef = useRef(0);
+
   useEffect(() => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -419,12 +490,11 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
           },
         );
       }
-      if (
-        url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`) ||
-        url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts?`)
-      ) {
+      if (url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`)) {
         const parsedUrl = new URL(url, "http://storybook.local");
         const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
+        const page = relocateAfterInitialLocate && locateRequestCountRef.current > 0 ? 2 : 1;
+        locateRequestCountRef.current += 1;
         const filteredItems = locatedAttemptId
           ? attemptItems.filter(
               (item) => item.attemptId === locatedAttemptId || item.attemptId === "AFAIL001",
@@ -436,7 +506,7 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
             items,
             stickyKeyOptions: buildStickyKeyOptions(filteredItems),
             total: items.length,
-            page: 1,
+            page,
             pageSize: 50,
           }),
           {
@@ -504,6 +574,222 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
     return () => {
       globalThis.fetch = originalFetch;
     };
+  }, [accountId, relocateAfterInitialLocate]);
+
+  return null;
+}
+
+function AttemptTimelineSseMock({ accountId }: { accountId: number }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    const timer = window.setTimeout(() => {
+      // The docs page mounts every story in one SSE scope. Keep the lifecycle
+      // story deterministic instead of letting the gallery fixtures overwrite it.
+      if (document.querySelector('[data-name="Realtime Lifecycle"]')) return;
+      const variants = [
+        {},
+        { type: "normal" },
+        { type: "remote_v2" },
+        { type: "compact" },
+        { type: "image" },
+        { model: "gpt-image-1" },
+        { model: "missing-model" },
+        { stickyKey: "sticky-image" },
+      ];
+      variants.forEach((variant, index) => {
+        const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId,
+          page: 1,
+          pageSize: 50,
+          ...variant,
+        });
+        const search = new URLSearchParams(descriptor.params as Record<string, string>);
+        const filteredItems = filterAttemptItems(search).map((item) =>
+          withAccountId(item, accountId),
+        );
+        controller.emit({
+          type: "snapshot",
+          topic: descriptor,
+          topicKey: getTopicDescriptorKey(descriptor),
+          schemaEpoch: "upstream-account-attempts.window/v1",
+          cursor: index + 1,
+          payload: {
+            items: filteredItems,
+            stickyKeyOptions: buildStickyKeyOptions(filteredItems),
+            total: filteredItems.length,
+            page: 1,
+            pageSize: 50,
+          },
+        });
+      });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [accountId]);
+
+  return null;
+}
+
+const realtimePendingAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...workflowSuccessAttemptItem,
+  attemptId: "ALIVE0001",
+  invokeId: "LIVE0001",
+  occurredAt: "2026-07-11T12:04:00.000Z",
+  createdAt: "2026-07-11T12:04:00.000Z",
+  status: "pending",
+  phase: "waiting_first_byte",
+  httpStatus: null,
+  downstreamHttpStatus: null,
+  finishedAt: null,
+  upstreamRequestId: null,
+  invocationRecord: undefined,
+  workflowEntry: undefined,
+};
+
+const realtimeTerminalAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...realtimePendingAttempt,
+  status: "success",
+  phase: "completed",
+  httpStatus: 200,
+  downstreamHttpStatus: 200,
+  finishedAt: "2026-07-11T12:04:03.200Z",
+};
+
+const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
+  ...realtimeTerminalAttempt,
+  attemptId: "ALIVE0002",
+  invokeId: "LIVE0002",
+  occurredAt: "2026-07-11T12:04:04.000Z",
+  createdAt: "2026-07-11T12:04:04.000Z",
+  finishedAt: "2026-07-11T12:04:05.000Z",
+};
+
+const REALTIME_LIFECYCLE_ACCOUNT_ID = 919;
+const REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID = 920;
+const FOCUSED_RELOCATION_ACCOUNT_ID = 921;
+const FOCUSED_RELOCATION_ADVANCE_EVENT =
+  "storybook:upstream-account-attempt-focused-relocation-advance";
+
+function buildAttemptTimelineSnapshot(
+  accountId: number,
+  items: ApiPoolUpstreamRequestAttempt[],
+  page = 1,
+): SubscriptionTopicEnvelope<UpstreamAccountAttemptListResponse> {
+  const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+    accountId,
+    page,
+    pageSize: 50,
+  });
+  return {
+    type: "live",
+    topic: descriptor,
+    topicKey: getTopicDescriptorKey(descriptor),
+    schemaEpoch: "upstream-account-attempts.window/v1",
+    cursor: 1,
+    payload: {
+      items,
+      stickyKeyOptions: buildStickyKeyOptions(items),
+      total: items.length,
+      page,
+      pageSize: 50,
+    },
+  };
+}
+
+function buildAttemptTimelineTopicLabel(accountId: number, page: number) {
+  const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+    accountId,
+    page,
+    pageSize: 50,
+  });
+  const search = new URLSearchParams(descriptor.params as Record<string, string>);
+  return `${descriptor.topic}?${search.toString()}`;
+}
+
+function AttemptTimelineRealtimeLifecycleMock({ accountId }: { accountId: number }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    let terminalTimer: number | null = null;
+    const initialTimer = window.setTimeout(() => {
+      controller.emit(
+        buildAttemptTimelineSnapshot(accountId, [withAccountId(realtimePendingAttempt, accountId)]),
+      );
+      terminalTimer = window.setTimeout(() => {
+        controller.emit(
+          buildAttemptTimelineSnapshot(accountId, [
+            withAccountId(realtimeNewAttempt, accountId),
+            withAccountId(realtimeTerminalAttempt, accountId),
+          ]),
+        );
+      }, 160);
+    }, 50);
+    return () => {
+      window.clearTimeout(initialTimer);
+      if (terminalTimer != null) window.clearTimeout(terminalTimer);
+    };
+  }, [accountId]);
+
+  return null;
+}
+
+function AttemptTimelineFocusedRelocationMock({ accountId }: { accountId: number }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    let advanced = false;
+    let initialTimer: number | null = null;
+    let relocatedPageTimer: number | null = null;
+    const emitWhenSubscribed = (
+      page: number,
+      emit: () => void,
+      schedule: (timer: number) => void,
+    ) => {
+      if (
+        getCurrentSseDiagnostics().activeTopics.includes(
+          buildAttemptTimelineTopicLabel(accountId, page),
+        )
+      ) {
+        emit();
+        return;
+      }
+      schedule(
+        window.setTimeout(() => {
+          emitWhenSubscribed(page, emit, schedule);
+        }, 10),
+      );
+    };
+    const emitInitial = () => {
+      controller.emit(
+        buildAttemptTimelineSnapshot(accountId, [withAccountId(realtimePendingAttempt, accountId)]),
+      );
+    };
+    emitWhenSubscribed(1, emitInitial, (timer) => {
+      initialTimer = timer;
+    });
+    const advance = () => {
+      if (advanced) return;
+      advanced = true;
+      controller.emit(buildAttemptTimelineSnapshot(accountId, [], 1));
+      const emitRelocated = () => {
+        controller.emit(
+          buildAttemptTimelineSnapshot(
+            accountId,
+            [withAccountId(realtimeTerminalAttempt, accountId)],
+            2,
+          ),
+        );
+      };
+      emitWhenSubscribed(2, emitRelocated, (timer) => {
+        relocatedPageTimer = timer;
+      });
+    };
+    window.addEventListener(FOCUSED_RELOCATION_ADVANCE_EVENT, advance);
+    return () => {
+      if (initialTimer != null) window.clearTimeout(initialTimer);
+      if (relocatedPageTimer != null) window.clearTimeout(relocatedPageTimer);
+      window.removeEventListener(FOCUSED_RELOCATION_ADVANCE_EVENT, advance);
+    };
   }, [accountId]);
 
   return null;
@@ -512,19 +798,22 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
 const meta = {
   title: "Account Pool/Components/Upstream Account Attempt Timeline",
   component: UpstreamAccountAttemptTimeline,
+  tags: ["autodocs"],
   decorators: [
     (Story, context) => (
-      <I18nProvider>
-        <MemoryRouter>
-          {context.parameters.pageSurface ? (
-            <Story />
-          ) : (
-            <StorySurface>
+      <StorybookPageEnvironment>
+        <I18nProvider>
+          <MemoryRouter>
+            {context.parameters.pageSurface ? (
               <Story />
-            </StorySurface>
-          )}
-        </MemoryRouter>
-      </I18nProvider>
+            ) : (
+              <StorySurface>
+                <Story />
+              </StorySurface>
+            )}
+          </MemoryRouter>
+        </I18nProvider>
+      </StorybookPageEnvironment>
     ),
   ],
   parameters: {
@@ -547,26 +836,27 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
     expect(canvasElement.textContent ?? "").toContain("输入写 2,090");
     expect(canvasElement.textContent ?? "").toContain("upstream_response_failed");
   });
-  const requestBodyButton = (
-    await canvas.findAllByRole("button", { name: /请求体|request body/i })
-  )[0];
+  const workflowCard = await canvas.findByTestId("account-attempt-record-ASUCC002");
+  const requestBodyButton = within(workflowCard).getByRole("button", {
+    name: /请求体|request body/i,
+  });
   await userEvent.click(requestBodyButton);
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large request");
   });
-  const responseBodyButton = (
-    await canvas.findAllByRole("button", { name: /响应体|response body/i })
-  )[0];
+  const responseBodyButton = within(workflowCard).getByRole("button", {
+    name: /响应体|response body/i,
+  });
   await userEvent.click(responseBodyButton);
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large response");
   });
-  const closedResponseBodyButton = (
-    await canvas.findAllByRole("button", { name: /响应体|response body/i })
-  )[0];
+  const closedResponseBodyButton = within(workflowCard).getByRole("button", {
+    name: /响应体|response body/i,
+  });
   await userEvent.click(closedResponseBodyButton);
   await waitFor(() => {
-    expect(canvasElement.textContent ?? "").not.toContain("large response");
+    expect(workflowCard.querySelector("[data-open]")).toHaveAttribute("data-open", "false");
   });
   closedResponseBodyButton.blur();
 }
@@ -575,6 +865,38 @@ function withAttemptTimelineFetchMock(Story: () => ReactNode) {
   return (
     <>
       <AttemptTimelineFetchMock accountId={101} />
+      <AttemptTimelineSseMock accountId={101} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineRealtimeLifecycleMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineRealtimeLifecycleMock accountId={REALTIME_LIFECYCLE_ACCOUNT_ID} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineRealtimeLifecycleMobileMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineRealtimeLifecycleMock accountId={REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineFocusedRelocationMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineFetchMock
+        accountId={FOCUSED_RELOCATION_ACCOUNT_ID}
+        relocateAfterInitialLocate
+      />
+      <AttemptTimelineFocusedRelocationMock accountId={FOCUSED_RELOCATION_ACCOUNT_ID} />
       <Story />
     </>
   );
@@ -658,6 +980,78 @@ export const EmptyFilteredAttempts: Story = {
       expect(
         canvasElement.querySelector('[data-testid="upstream-account-attempt-filter-bar"]'),
       ).not.toBeNull();
+    });
+  },
+};
+
+export const RealtimeLifecycle: Story = {
+  tags: ["test"],
+  args: {
+    accountId: REALTIME_LIFECYCLE_ACCOUNT_ID,
+    focusedAttemptId: null,
+  },
+  decorators: [withAttemptTimelineRealtimeLifecycleMock],
+  play: async ({ canvasElement }) => {
+    const pendingCard = await within(canvasElement).findByTestId(
+      "account-attempt-record-ALIVE0001",
+    );
+    expect(
+      canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
+    ).toHaveLength(1);
+    expect(pendingCard.textContent ?? "").toContain("waiting_first_byte");
+
+    await waitFor(() => {
+      expect(canvasElement.querySelector('[data-testid="account-attempt-record-ALIVE0001"]')).toBe(
+        pendingCard,
+      );
+      expect(
+        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0002"]'),
+      ).toHaveLength(1);
+      expect(
+        canvasElement.querySelectorAll('[data-testid="account-attempt-record-ALIVE0001"]'),
+      ).toHaveLength(1);
+      expect(canvasElement.textContent ?? "").toContain("HTTP 200");
+      expect(canvasElement.textContent ?? "").not.toContain("waiting_first_byte");
+    });
+  },
+};
+
+export const RealtimeLifecycleMobile: Story = {
+  ...RealtimeLifecycle,
+  tags: ["test"],
+  args: {
+    accountId: REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID,
+    focusedAttemptId: null,
+  },
+  decorators: [withAttemptTimelineRealtimeLifecycleMobileMock],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+};
+
+export const FocusedAttemptRelocatesAfterAuthoritativeShift: Story = {
+  tags: ["test"],
+  args: {
+    accountId: FOCUSED_RELOCATION_ACCOUNT_ID,
+    focusedAttemptId: "ALIVE0001",
+    focusVersion: 1,
+  },
+  decorators: [withAttemptTimelineFocusedRelocationMock],
+  play: async ({ canvasElement }) => {
+    const initialCard = await within(canvasElement).findByTestId(
+      "account-attempt-record-ALIVE0001",
+    );
+    expect(initialCard.textContent ?? "").toContain("waiting_first_byte");
+    window.dispatchEvent(new Event(FOCUSED_RELOCATION_ADVANCE_EVENT));
+
+    await waitFor(() => {
+      const relocatedCard = canvasElement.querySelector<HTMLElement>(
+        '[data-testid="account-attempt-record-ALIVE0001"]',
+      );
+      expect(relocatedCard).not.toBe(initialCard);
+      expect(relocatedCard?.dataset.focusVisible).toBe("true");
+      expect(relocatedCard?.textContent ?? "").toContain("HTTP 200");
+      expect(relocatedCard?.textContent ?? "").not.toContain("waiting_first_byte");
     });
   },
 };

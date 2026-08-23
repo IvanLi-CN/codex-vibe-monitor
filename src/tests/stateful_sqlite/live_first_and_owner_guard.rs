@@ -948,13 +948,14 @@ async fn live_route_gate_cancellation_after_commit_releases_reservation() {
 }
 
 #[test]
-fn final_route_gate_cancellation_after_eof_releases_active_reservation() {
+fn live_first_pending_attempt_broadcasts_before_cancellation_and_releases_active_reservation() {
     run_future_with_large_stack(async {
-        final_route_gate_cancellation_after_eof_releases_active_reservation_inner().await;
+        live_first_pending_attempt_broadcasts_before_cancellation_and_releases_active_reservation_inner().await;
     });
 }
 
-async fn final_route_gate_cancellation_after_eof_releases_active_reservation_inner() {
+async fn live_first_pending_attempt_broadcasts_before_cancellation_and_releases_active_reservation_inner()
+ {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_secs(5);
     config.proxy_enforce_stream_include_usage = false;
@@ -971,7 +972,8 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation_inn
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let primary_account_id =
+        insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
         "liveRequestStreaming": {
             "enabled": true,
@@ -984,6 +986,7 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation_inn
             .await
             .expect("enable live request streaming treatment");
 
+    let mut attempts_receiver = state.broadcaster.subscribe();
     let request_state = state.clone();
     let request_task = tokio::spawn(async move {
         proxy_openai_v1(
@@ -1011,6 +1014,38 @@ async fn final_route_gate_cancellation_after_eof_releases_active_reservation_inn
     )
     .await
     .expect("request must reach an active upstream before cancellation");
+    let pending_attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let payload = attempts_receiver
+                .recv()
+                .await
+                .expect("broadcast channel should stay open");
+            if let BroadcastPayload::PoolAttempts { attempts, .. } = payload
+                && let Some(attempt) = attempts
+                    .into_iter()
+                    .find(|attempt| attempt.upstream_account_id == Some(primary_account_id))
+                && attempt.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+                && attempt.finished_at.is_none()
+            {
+                return attempt;
+            }
+        }
+    })
+    .await
+    .expect("live-first pending attempt should publish before the upstream responds");
+    assert_eq!(
+        pending_attempt.upstream_account_id,
+        Some(primary_account_id)
+    );
+    assert_eq!(
+        pending_attempt.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert!(pending_attempt.finished_at.is_none());
+    assert!(
+        !request_task.is_finished(),
+        "pending attempt broadcast must precede the delayed upstream response"
+    );
     assert!(
         !state
             .pool_routing_reservations
@@ -4109,13 +4144,18 @@ async fn websocket_payload_only_prompt_cache_key_routes_first_upgrade_to_owner_a
 }
 
 #[tokio::test]
-async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_frame() {
+async fn websocket_realtime_passthrough_publishes_pending_before_session_created() {
     use futures_util::StreamExt;
     use tokio_tungstenite::connect_async;
     use tungstenite::Message as TungsteniteMessage;
 
-    async fn realtime_session_upstream(ws: WebSocketUpgrade) -> Response {
+    async fn realtime_session_upstream(
+        ws: WebSocketUpgrade,
+        State((opened, release)): State<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    ) -> Response {
         ws.on_upgrade(move |mut socket| async move {
+            opened.notify_one();
+            release.notified().await;
             let _ = socket
                 .send(AxumWsMessage::Text(
                     json!({
@@ -4133,7 +4173,11 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
         .into_response()
     }
 
-    let upstream_app = Router::new().route("/v1/realtime", get(realtime_session_upstream));
+    let opened = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let upstream_app = Router::new()
+        .route("/v1/realtime", get(realtime_session_upstream))
+        .with_state((opened.clone(), release.clone()));
     let upstream_listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind realtime websocket upstream");
@@ -4167,7 +4211,7 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
         settings.upstream_websocket_default_enabled = true;
     }
     seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
+    let account_id = insert_test_pool_api_key_account_with_options(
         &state,
         "Realtime WebSocket",
         "upstream-realtime",
@@ -4176,6 +4220,7 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
         Some(&format!("http://{upstream_addr}")),
     )
     .await;
+    let mut attempts_receiver = state.broadcaster.subscribe();
 
     let proxy_app = Router::new()
         .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
@@ -4204,6 +4249,35 @@ async fn websocket_realtime_passthrough_does_not_wait_for_response_create_first_
         .await
         .expect("connect realtime websocket proxy");
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    timeout(Duration::from_secs(1), opened.notified())
+        .await
+        .expect("realtime upstream should remain open before its first frame");
+    let pending_attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let payload = attempts_receiver
+                .recv()
+                .await
+                .expect("broadcast channel should stay open");
+            if let BroadcastPayload::PoolAttempts { attempts, .. } = payload
+                && let Some(attempt) = attempts
+                    .into_iter()
+                    .find(|attempt| attempt.upstream_account_id == Some(account_id))
+                && attempt.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+                && attempt.finished_at.is_none()
+            {
+                return attempt;
+            }
+        }
+    })
+    .await
+    .expect("websocket pending attempt should publish before the upstream session frame");
+    assert_eq!(pending_attempt.upstream_account_id, Some(account_id));
+    assert_eq!(
+        pending_attempt.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert!(pending_attempt.finished_at.is_none());
+    release.notify_one();
 
     let message = timeout(Duration::from_secs(1), client.next())
         .await
@@ -9500,6 +9574,100 @@ fn pool_account_supports_live_responses_oauth_and_request_compression() {
         &Method::POST,
         &headers,
     ));
+}
+
+#[test]
+fn live_first_oauth_pending_attempt_broadcasts_before_delayed_headers() {
+    run_future_with_large_stack(async {
+        live_first_oauth_pending_attempt_broadcasts_before_delayed_headers_inner().await;
+    });
+}
+
+async fn live_first_oauth_pending_attempt_broadcasts_before_delayed_headers_inner() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+    let (upstream_base, upstream_handle) =
+        spawn_oauth_codex_delayed_headers_upstream(Duration::from_secs(5)).await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_handshake_timeout = Duration::from_secs(5);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_oauth_account(&state, "Pending OAuth", "oauth-pending").await;
+    let mut attempts_receiver = state.broadcaster.subscribe();
+
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        let uri = "/v1/responses".parse().expect("valid responses uri");
+        let runtime_timeouts = resolve_proxy_request_timeouts(request_state.as_ref(), true)
+            .await
+            .expect("resolve pool runtime timeouts");
+        proxy_openai_v1_via_pool(
+            request_state,
+            7431,
+            &uri,
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5.4","input":"pending"}"#),
+            runtime_timeouts,
+            None,
+        )
+        .await
+    });
+
+    let pending_attempt = timeout(Duration::from_secs(1), async {
+        loop {
+            let payload = attempts_receiver
+                .recv()
+                .await
+                .expect("broadcast channel should stay open");
+            if let BroadcastPayload::PoolAttempts { attempts, .. } = payload
+                && let Some(attempt) = attempts
+                    .into_iter()
+                    .find(|attempt| attempt.upstream_account_id == Some(account_id))
+                && attempt.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+                && attempt.finished_at.is_none()
+            {
+                return attempt;
+            }
+        }
+    })
+    .await
+    .expect("live-first oauth pending attempt should publish before delayed headers");
+    assert_eq!(pending_attempt.upstream_account_id, Some(account_id));
+    assert_eq!(
+        pending_attempt.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert!(pending_attempt.finished_at.is_none());
+    assert!(
+        !request_task.is_finished(),
+        "pending attempt broadcast must precede the delayed oauth upstream response"
+    );
+
+    request_task.abort();
+    let join_error = request_task
+        .await
+        .expect_err("cancelling the delayed oauth request should cancel its task");
+    assert!(join_error.is_cancelled());
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]

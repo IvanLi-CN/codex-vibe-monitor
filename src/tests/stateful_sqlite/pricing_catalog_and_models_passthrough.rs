@@ -1622,6 +1622,7 @@ async fn proxy_capture_persist_and_broadcast_emits_records_and_dashboard_live() 
             }
             BroadcastPayload::Version { .. }
             | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. }
             | BroadcastPayload::DashboardNetworkSlice { .. }
             | BroadcastPayload::DashboardTerminalSlice { .. }
             | BroadcastPayload::PromptCacheConversationChanged { .. }

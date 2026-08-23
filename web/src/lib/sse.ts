@@ -69,6 +69,7 @@ export interface SubscriptionTopicEnvelope<T = unknown> {
   schemaEpoch: string;
   cursor: number;
   payload: T;
+  deliverySource?: "cache" | "network";
 }
 
 export interface SubscriptionTopicState<T = unknown> {
@@ -462,6 +463,7 @@ function handleMessage(event: MessageEvent<string>) {
           listener({
             ...payload,
             topic: descriptor,
+            deliverySource: "network",
           });
         } catch (error) {
           console.error("Failed to dispatch subscription topic event", error);
@@ -694,6 +696,7 @@ export function subscribeToTopic<T = unknown>(
       schemaEpoch: cached.schemaEpoch,
       cursor: cached.cursor,
       payload: cached.payload as T,
+      deliverySource: "cache",
     });
   }
   emitDiagnostics();
@@ -702,11 +705,18 @@ export function subscribeToTopic<T = unknown>(
     const entry = topicEntries.get(key);
     if (!entry) return;
     entry.listeners.delete(listener as TopicListener);
+    let descriptorRemoved = false;
     if (entry.listeners.size === 0) {
       topicEntries.delete(key);
       forcedSnapshotDescriptors.delete(key);
+      descriptorRemoved = true;
     }
     emitDiagnostics();
+    if (descriptorRemoved && hasActiveTopicSubscribers()) {
+      nextConnectReason = "topic-change";
+      ensureEventSource();
+      return;
+    }
     cleanupEventSource();
   };
 }

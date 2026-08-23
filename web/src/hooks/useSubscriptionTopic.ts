@@ -25,6 +25,9 @@ export function useSubscriptionTopic<T>(
   const [lastKind, setLastKind] = useState<SubscriptionTopicEnvelope["type"] | null>(() =>
     descriptor && enabled ? (getCachedTopicState<T>(descriptor)?.lastKind ?? null) : null,
   );
+  const [deliverySource, setDeliverySource] = useState<"cache" | "network" | null>(() =>
+    descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload != null ? "cache" : null,
+  );
   const [isLoading, setIsLoading] = useState(() =>
     Boolean(descriptor && enabled && getCachedTopicState<T>(descriptor)?.payload == null),
   );
@@ -36,6 +39,7 @@ export function useSubscriptionTopic<T>(
       setDataDescriptorKey(null);
       setLastReceivedAt(null);
       setLastKind(null);
+      setDeliverySource(null);
       setIsLoading(false);
       return;
     }
@@ -44,6 +48,7 @@ export function useSubscriptionTopic<T>(
     setDataDescriptorKey(descriptorKey);
     setLastReceivedAt(cached?.receivedAt ?? null);
     setLastKind(cached?.lastKind ?? null);
+    setDeliverySource(cached?.payload != null ? "cache" : null);
     setIsLoading(cached?.payload == null);
     const unsubscribe = subscribeToTopic<T>(descriptor, (event) => {
       const nextCached = getCachedTopicState<T>(descriptor);
@@ -51,6 +56,7 @@ export function useSubscriptionTopic<T>(
       setDataDescriptorKey(descriptorKey);
       setLastReceivedAt(nextCached?.receivedAt ?? Date.now());
       setLastKind(event.type);
+      setDeliverySource(event.deliverySource ?? "network");
       setIsLoading(false);
     });
     return unsubscribe;
@@ -72,6 +78,7 @@ export function useSubscriptionTopic<T>(
     descriptorKey,
     lastReceivedAt: isCurrentDescriptor ? lastReceivedAt : null,
     lastKind: isCurrentDescriptor ? lastKind : null,
+    deliverySource: isCurrentDescriptor ? deliverySource : null,
     isLoading: enabled ? (isCurrentDescriptor ? isLoading : true) : false,
     error: null as string | null,
     refresh,

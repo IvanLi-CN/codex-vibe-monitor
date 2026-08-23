@@ -3,6 +3,7 @@ import type {
   ImportedOauthValidationRow,
   ImportOauthCredentialFilePayload,
 } from "../../lib/api";
+import { getTopicDescriptorKey, type SubscriptionTopicDescriptor } from "../../lib/sse";
 import {
   buildBulkSyncRowEvent,
   buildBulkSyncSnapshotEvent,
@@ -25,6 +26,20 @@ export function wait(ms: number) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function decodeStorybookTopicDescriptors(raw: string | null): SubscriptionTopicDescriptor[] {
+  if (!raw) return [];
+  try {
+    const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (value) => value.charCodeAt(0));
+    const decoded = JSON.parse(new TextDecoder().decode(bytes));
+    return Array.isArray(decoded) ? (decoded as SubscriptionTopicDescriptor[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 export function getRosterResponseDelay(storyId: string | null, url: URL) {
@@ -294,6 +309,34 @@ export class MockStoryBulkSyncEventSource implements EventTarget {
 
   private bootstrap(rawUrl: string) {
     const parsed = new URL(rawUrl, window.location.origin);
+    const accountAttemptTopic = decodeStorybookTopicDescriptors(
+      parsed.searchParams.get("topics"),
+    ).find((descriptor) => descriptor.topic === "upstream-account-attempts.window");
+    if (accountAttemptTopic) {
+      this.schedule(60, async () => {
+        const params = accountAttemptTopic.params ?? {};
+        const accountId = Number(params.accountId);
+        if (!Number.isInteger(accountId) || accountId <= 0) return;
+        const search = new URLSearchParams(
+          Object.entries(params).flatMap(([key, value]) =>
+            value == null ? [] : [[key, String(value)]],
+          ),
+        );
+        const response = await window.fetch(
+          `/api/pool/upstream-accounts/${accountId}/call-attempts?${search.toString()}`,
+        );
+        if (!response.ok) return;
+        this.emit("message", {
+          type: "snapshot",
+          topic: accountAttemptTopic,
+          topicKey: getTopicDescriptorKey(accountAttemptTopic),
+          schemaEpoch: "upstream-account-attempts.window/v1",
+          cursor: 1,
+          payload: await response.json(),
+        });
+      });
+      return;
+    }
     const match = parsed.pathname.match(
       /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)\/events$/,
     );

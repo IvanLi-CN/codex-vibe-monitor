@@ -4933,11 +4933,15 @@ pub(crate) enum BroadcastPayload {
         #[serde(skip)]
         slice: Box<DashboardTerminalProjectionSlice>,
     },
-    #[cfg(test)]
     #[serde(rename = "pool_attempts")]
     PoolAttempts {
         invoke_id: String,
         attempts: Vec<ApiPoolUpstreamRequestAttempt>,
+    },
+    // This control event stays on the internal broadcaster. The producer could not determine
+    // which account changed, so the subscription hub restores only active account topics.
+    PoolAttemptsSnapshotUnavailable {
+        invoke_id: String,
     },
     Quota {
         snapshot: Box<QuotaSnapshotResponse>,
