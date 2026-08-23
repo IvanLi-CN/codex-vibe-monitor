@@ -28243,8 +28243,9 @@ mod request_compression_query_tests {
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        let fixture_now = Utc::now();
         for index in 0..80_i64 {
-            let occurred_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(index + 2));
+            let occurred_at = format_utc_iso(fixture_now - ChronoDuration::seconds(index + 2));
             sqlx::query(
                 "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
                  VALUES (?1, ?2, 'proxy', 'success', ?3, 1.0, '{\"upstreamAccountId\":42}', '', 'full')",
