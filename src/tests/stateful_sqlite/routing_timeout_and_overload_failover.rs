@@ -294,10 +294,10 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     .fetch_all(&state.pool)
     .await
     .expect("load timeout final-route-gate no-alternate rows");
-    assert_eq!(attempt_rows.len(), 1);
+    assert_eq!(attempt_rows.len(), 2);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
-    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 0);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
@@ -326,18 +326,17 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     assert!(row.error_message.as_deref().is_some_and(|msg| {
         msg.contains("no alternate upstream route is available after timeout")
     }));
-    // The final route is buffered at EOF, so this terminal path has no
-    // provisional live-first attempt to replay.
+    // The model-ready route starts a provisional upstream attempt before EOF.
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
-    assert_eq!(payload["requestBodyTransportMode"], "buffered");
+    assert_eq!(payload["requestBodyTransportMode"], "live_first");
     assert_eq!(
         payload["routeFinalizationOutcome"],
-        "buffered_eof_final_route"
+        "live_first_model_ready"
     );
     assert!(
         payload["routeFinalizationRawBytes"]
@@ -350,11 +349,16 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
             .as_i64()
             .is_some_and(|bytes| bytes > 0)
     );
-    assert_eq!(payload["routeFinalizationLogicalRatio"], 1.0);
+    assert!(
+        payload["routeFinalizationLogicalRatio"]
+            .as_f64()
+            .is_some_and(|ratio| ratio > 0.0 && ratio < 1.0),
+        "the model-ready route must finalize before the complete logical JSON body"
+    );
     assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
-    assert_eq!(payload["liveFirstAttemptFailed"], false);
-    assert_eq!(payload["liveFirstFallbackOrRetry"], false);
-    assert_eq!(payload["ambiguousUpstreamDelivery"], false);
+    assert_eq!(payload["liveFirstAttemptFailed"], true);
+    assert_eq!(payload["liveFirstFallbackOrRetry"], true);
+    assert_eq!(payload["ambiguousUpstreamDelivery"], true);
     assert!(payload["upstreamErrorMessage"].is_null());
 
     shared_upstream_handle.abort();
