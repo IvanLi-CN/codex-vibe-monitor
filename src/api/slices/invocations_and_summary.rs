@@ -7227,6 +7227,9 @@ pub(crate) struct SummaryProjection {
     // known to be in this exact projection revision. Keep the bounded identity set alongside
     // the canonical live records so reconnects never infer that coverage from a global cursor.
     persisted_live_terminal_invoke_ids: HashSet<String>,
+    // Rolling refreshes may reuse the previous all-time aggregate. Until a successful all-time
+    // rebuild, that aggregate cannot suppress a newly acknowledged terminal delta.
+    all_time_terminal_coverage_complete: bool,
     // Captured immediately before the durable hydration queries. A settled sequence means every
     // preceding terminal write has committed, so a successful projection can safely recover a
     // bounded SSE overlay that overflowed before its next rebuild.
@@ -7301,12 +7304,21 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
-    pub(crate) fn contains_persisted_live_terminal(&self, invoke_id: &str) -> bool {
-        self.persisted_live_terminal_invoke_ids.contains(invoke_id)
+    pub(crate) fn contains_persisted_live_terminal(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> bool {
+        self.persisted_live_terminal_invoke_ids
+            .contains(&format!("{invoke_id}\0{occurred_at}"))
     }
 
     pub(crate) fn durable_terminal_sequence_watermark(&self) -> u64 {
         self.durable_terminal_sequence_watermark
+    }
+
+    pub(crate) fn all_time_terminal_coverage_complete(&self) -> bool {
+        self.all_time_terminal_coverage_complete
     }
 
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
@@ -9073,6 +9085,7 @@ async fn refresh_summary_snapshots_with_deadline(
                 projection.archive_coverage_ranges_by_file.clone(),
                 projection.freshness.global_all_time_eligible,
                 projection.freshness.account_all_time_eligible.clone(),
+                projection.all_time_terminal_coverage_complete(),
             )
         });
     let had_previous_projection = previous_all_time.is_some();
@@ -9405,6 +9418,7 @@ async fn build_summary_projection(
         HashMap<String, ExactUtcRange>,
         bool,
         HashSet<i64>,
+        bool,
     )>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -9417,6 +9431,7 @@ async fn build_summary_projection(
         mut archive_coverage_ranges_by_file,
         previous_global_all_time_eligible,
         previous_account_all_time_eligible,
+        previous_all_time_terminal_coverage_complete,
     ) = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
@@ -10657,11 +10672,17 @@ async fn build_summary_projection(
     let persisted_live_terminal_invoke_ids = records
         .iter()
         .filter(|record| record.is_persisted_live_record)
-        .map(|record| record.row.invoke_id.clone())
+        .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
         .collect();
+    let all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
+        !global_all_time_source_unavailable && !account_all_time_unavailable
+    } else {
+        previous_all_time_terminal_coverage_complete
+    };
     let projection = SummaryProjection {
         records,
         persisted_live_terminal_invoke_ids,
+        all_time_terminal_coverage_complete,
         durable_terminal_sequence_watermark,
         hourly_buckets,
         recent_indexes,
@@ -25654,6 +25675,22 @@ mod attempt_response_body_query_tests {
 mod request_compression_query_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[test]
+    fn summary_projection_terminal_coverage_includes_occurred_at() {
+        let mut projection = SummaryProjection::default();
+        projection
+            .persisted_live_terminal_invoke_ids
+            .insert("replayed-terminal\u{0}2026-08-23 10:00:00".to_string());
+
+        assert!(
+            projection.contains_persisted_live_terminal("replayed-terminal", "2026-08-23 10:00:00")
+        );
+        assert!(
+            !projection
+                .contains_persisted_live_terminal("replayed-terminal", "2026-08-23 10:01:00")
+        );
+    }
 
     #[test]
     fn summary_projection_archive_ranges_include_missing_scope_coverage() {

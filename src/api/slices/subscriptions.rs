@@ -3110,9 +3110,11 @@ impl SubscriptionHub {
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
-        state
-            .summary_terminal_overlay
-            .retain(|delta| !projection.contains_persisted_live_terminal(&delta.invoke_id));
+        state.summary_terminal_overlay.retain(|delta| {
+            !projection.all_time_terminal_coverage_complete()
+                || !projection
+                    .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+        });
         state.summary_terminal_overlay_bytes = state
             .summary_terminal_overlay
             .iter()
@@ -3137,6 +3139,7 @@ impl SubscriptionHub {
     async fn summary_projection_terminal_overlay(
         &self,
         projection: &SummaryProjection,
+        all_time: bool,
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
         if state
@@ -3150,7 +3153,10 @@ impl SubscriptionHub {
         let overlay = state
             .summary_terminal_overlay
             .iter()
-            .filter(|delta| !projection.contains_persisted_live_terminal(&delta.invoke_id))
+            .filter(|delta| {
+                !(projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+                    && (!all_time || projection.all_time_terminal_coverage_complete()))
+            })
             .cloned()
             .collect::<Vec<_>>();
         let mut initial_slice_suppressions = overlay
@@ -3162,7 +3168,11 @@ impl SubscriptionHub {
                 slice
                     .deltas
                     .iter()
-                    .filter(|delta| projection.contains_persisted_live_terminal(&delta.invoke_id))
+                    .filter(|delta| {
+                        projection
+                            .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+                            && (!all_time || projection.all_time_terminal_coverage_complete())
+                    })
                     .map(|delta| delta.terminal_sequence),
             );
         }
@@ -10708,7 +10718,10 @@ impl SubscriptionTopic {
                         // background projection swap. This stays entirely in memory.
                         let (pending_terminal_deltas, initial_terminal_slice_suppressions) = state
                             .subscription_hub
-                            .summary_projection_terminal_overlay(projection.as_ref())
+                            .summary_projection_terminal_overlay(
+                                projection.as_ref(),
+                                matches!(&summary_window, SummaryWindow::All),
+                            )
                             .await?;
                         let mut replayed_terminal_sequence = 0;
                         apply_dashboard_terminal_slice_to_summary_response(
