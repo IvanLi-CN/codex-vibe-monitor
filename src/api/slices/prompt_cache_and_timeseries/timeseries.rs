@@ -414,13 +414,18 @@ async fn load_ready_timeseries_minute_projection_v2_rows(
 
 async fn timeseries_minute_projection_v2_snapshot_is_current(
     pool: &Pool<Sqlite>,
+    terminal_projection_hub: &TerminalProjectionHub,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
     coverage_rows: &[TimeseriesMinuteProjectionV2Row],
 ) -> Result<bool, ApiError> {
-    if timeseries_minute_projection_recovery_pending(pool).await? {
+    if terminal_projection_hub
+        .timeseries_coverage_invalidation_pending()
+        .is_some()
+        || timeseries_minute_projection_recovery_pending(pool).await?
+    {
         return Ok(false);
     }
     // Re-read the payload selected by the loader, not merely its row count. An invalidation can
@@ -434,7 +439,11 @@ async fn timeseries_minute_projection_v2_snapshot_is_current(
     )
     .await?
     .is_some_and(|current_rows| current_rows == coverage_rows);
-    Ok(projection_rows_are_current && !timeseries_minute_projection_recovery_pending(pool).await?)
+    Ok(projection_rows_are_current
+        && terminal_projection_hub
+            .timeseries_coverage_invalidation_pending()
+            .is_none()
+        && !timeseries_minute_projection_recovery_pending(pool).await?)
 }
 
 #[cfg(test)]
@@ -1210,6 +1219,7 @@ impl TimeseriesTopicMaterializedBase {
                     )?;
                     if timeseries_minute_projection_v2_snapshot_is_current(
                         &state.pool,
+                        state.terminal_projection_hub.as_ref(),
                         start,
                         end,
                         source_scope,
@@ -3060,9 +3070,11 @@ mod minute_projection_tests {
             .expect("load invalidated projection")
             .is_none()
         );
+        let terminal_projection_hub = TerminalProjectionHub::default();
         assert!(
             !timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
+                &terminal_projection_hub,
                 start,
                 end,
                 InvocationSourceScope::All,
@@ -3092,6 +3104,7 @@ mod minute_projection_tests {
         assert!(
             !timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
+                &terminal_projection_hub,
                 start,
                 end,
                 InvocationSourceScope::All,
@@ -3126,6 +3139,7 @@ mod minute_projection_tests {
         assert!(
             !timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
+                &terminal_projection_hub,
                 start,
                 end,
                 InvocationSourceScope::All,
@@ -3145,6 +3159,7 @@ mod minute_projection_tests {
         assert!(
             timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,
+                &terminal_projection_hub,
                 start,
                 end,
                 InvocationSourceScope::All,
@@ -3153,6 +3168,41 @@ mod minute_projection_tests {
             )
             .await
             .expect("check re-warmed coverage fence")
+        );
+
+        let rejected_terminal = crate::proxy::api_invocation_from_runtime_record(
+            &crate::tests::test_proxy_capture_record(
+                "snapshot-fence-rejected-terminal",
+                "2026-08-01 08:00:12",
+            ),
+        );
+        for _ in 0..=crate::terminal_projection::TERMINAL_PROJECTION_MAX_PENDING_EVENTS {
+            if terminal_projection_hub
+                .register_pending(&rejected_terminal, None)
+                .is_none()
+            {
+                break;
+            }
+        }
+        assert!(
+            terminal_projection_hub
+                .timeseries_coverage_invalidation_pending()
+                .is_some(),
+            "a rejected terminal delta must keep the loaded projection snapshot fenced"
+        );
+        assert!(
+            !timeseries_minute_projection_v2_snapshot_is_current(
+                &pool,
+                &terminal_projection_hub,
+                start,
+                end,
+                InvocationSourceScope::All,
+                None,
+                &re_warmed_projection.coverage_rows,
+            )
+            .await
+            .expect("check in-memory invalidation snapshot fence"),
+            "a hub invalidation after projection loading must force an exact fallback"
         );
     }
 
@@ -3385,6 +3435,7 @@ pub(crate) async fn fetch_timeseries(
         )?;
         if timeseries_minute_projection_v2_snapshot_is_current(
             &state.pool,
+            state.terminal_projection_hub.as_ref(),
             start_dt,
             end_dt,
             source_scope,
@@ -3835,6 +3886,7 @@ pub(crate) async fn fetch_timeseries_for_account(
         )?;
         if timeseries_minute_projection_v2_snapshot_is_current(
             &state.pool,
+            state.terminal_projection_hub.as_ref(),
             start_dt,
             end_dt,
             source_scope,

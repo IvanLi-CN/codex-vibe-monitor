@@ -21819,7 +21819,7 @@ async fn startup_minute_projection_recovery_keeps_the_durable_fence_when_cancell
 }
 
 #[tokio::test]
-async fn live_update_trigger_rebuild_restores_recovery_table_before_terminal_writes() {
+async fn live_update_trigger_rebuild_fences_source_changing_terminal_writes() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -21832,15 +21832,15 @@ async fn live_update_trigger_rebuild_restores_recovery_table_before_terminal_wri
         .await
         .expect("rebuild must restore the recovery table with its live update trigger");
     sqlx::query(
-        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) VALUES ('rebuild-recovery-table', datetime('now'), 'cli', 'running', '{}')",
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) VALUES ('rebuild-recovery-table', datetime('now'), 'proxy', 'running', '{}')",
     )
     .execute(&state.pool)
     .await
-    .expect("insert an in-flight non-proxy invocation");
-    sqlx::query("UPDATE codex_invocations SET status = 'success' WHERE invoke_id = 'rebuild-recovery-table'")
+    .expect("insert an in-flight proxy invocation");
+    sqlx::query("UPDATE codex_invocations SET source = 'cli', status = 'success' WHERE invoke_id = 'rebuild-recovery-table'")
         .execute(&state.pool)
         .await
-        .expect("terminal write must not target a missing recovery table");
+    .expect("source-changing terminal write must not target a missing recovery table");
     let recovery_pending = sqlx::query_scalar::<_, i64>(
         "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
     )

@@ -348,12 +348,12 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
         &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
     );
     // Proxy terminal writes are registered with the in-process projection hub before
-    // persistence. Other sources can update an existing in-flight row directly, so publish a
-    // constant-size durable recovery marker and let P2 invalidate coverage in bounded slices.
+    // persistence. A direct source correction can also turn a proxy in-flight row terminal, so
+    // publish a constant-size durable recovery marker whenever either endpoint is non-proxy.
     let non_proxy_terminal_projection_invalidation_sql = r#"
         INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending, updated_at)
         SELECT 'timeseries_minute_v2', 1, 1, datetime('now')
-        WHERE COALESCE(OLD.source, '') <> 'proxy'
+        WHERE (COALESCE(OLD.source, '') <> 'proxy' OR COALESCE(NEW.source, '') <> 'proxy')
           AND LOWER(TRIM(COALESCE(OLD.status, ''))) IN ('running', 'pending')
           AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
         ON CONFLICT(consumer) DO UPDATE SET
