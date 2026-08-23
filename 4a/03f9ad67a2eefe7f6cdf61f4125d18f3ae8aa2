@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.65.12",
+  "base_stable_version": "2.65.11",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-23T03:08:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.65.12",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4b60942dd54f5474eaab3797d1c7fed612ba03c8",
+  "pr_number": 835,
+  "pr_title": "fix(long-term): skip noop projection cursor writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.65.12",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.65.12",
+  "target_sha": "4a03f9ad67a2eefe7f6cdf61f4125d18f3ae8aa2",
+  "type_label": "type:patch"
+}
