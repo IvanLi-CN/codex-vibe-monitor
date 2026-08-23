@@ -359,13 +359,13 @@ async fn proxy_openai_v1_chunked_codex_lite_keeps_live_first_and_audits_keep_ori
 }
 
 #[test]
-fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing() {
+fn live_route_gate_resolves_prompt_cache_and_sticky_before_early_delivery() {
     run_future_with_large_stack(async {
-        final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inner().await;
+        live_route_gate_resolves_prompt_cache_and_sticky_before_early_delivery_inner().await;
     });
 }
 
-async fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inner() {
+async fn live_route_gate_resolves_prompt_cache_and_sticky_before_early_delivery_inner() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -475,15 +475,12 @@ async fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inn
         .await
     });
 
-    assert!(
-        timeout(
-            Duration::from_millis(100),
-            wait_for_pool_upstream_request_attempts(&state.pool, 1),
-        )
-        .await
-        .is_err(),
-        "the final-route gate must not start upstream before EOF"
-    );
+    timeout(
+        Duration::from_secs(1),
+        wait_for_pool_upstream_request_attempts(&state.pool, 1),
+    )
+    .await
+    .expect("the model, prompt-cache binding, and sticky route must commit before EOF");
     let _ = release_tail_tx.send(());
     body_task.await.expect("request body task should join");
     let response = request_task
@@ -525,17 +522,17 @@ async fn final_route_gate_waits_for_eof_with_prompt_cache_and_sticky_routing_inn
     })
     .await
     .expect("live treatment invocation should persist");
-    assert_eq!(transport_mode.as_deref(), Some("buffered"));
+    assert_eq!(transport_mode.as_deref(), Some("live_first"));
     assert_eq!(
         finalization_outcome.as_deref(),
-        Some("buffered_eof_final_route")
+        Some("live_first_model_ready")
     );
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
+async fn live_route_gate_rejects_malformed_tail_after_upstream_delivery() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -614,8 +611,8 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
 
     assert_eq!(
         count_pool_upstream_request_attempts(&state.pool).await,
-        0,
-        "malformed JSON must not start an upstream attempt before final route validation"
+        1,
+        "the model-ready request body may begin upstream delivery before a malformed tail"
     );
 
     let invocation = timeout(Duration::from_secs(1), async {
@@ -653,13 +650,13 @@ async fn final_route_gate_rejects_malformed_tail_before_upstream_delivery() {
             .expect("malformed live invocation payload"),
     )
     .expect("decode malformed live invocation payload");
-    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
 
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn final_route_gate_rejects_downstream_read_error_without_upstream_delivery() {
+async fn live_route_gate_marks_downstream_read_error_after_upstream_delivery_ambiguous() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     config.proxy_enforce_stream_include_usage = false;
@@ -714,26 +711,23 @@ async fn final_route_gate_rejects_downstream_read_error_without_upstream_deliver
         .await
         .expect("send valid live request prefix");
 
-    assert!(
-        timeout(Duration::from_millis(100), async {
-            loop {
-                if attempts
-                    .lock()
-                    .expect("lock upstream attempts")
-                    .get("Bearer upstream-primary")
-                    .copied()
-                    .unwrap_or_default()
-                    > 0
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if attempts
+                .lock()
+                .expect("lock upstream attempts")
+                .get("Bearer upstream-primary")
+                .copied()
+                .unwrap_or_default()
+                > 0
+            {
+                break;
             }
-        })
-        .await
-        .is_err(),
-        "a downstream read failure must not reach an upstream before the final route is known"
-    );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the model-ready request body should start upstream delivery before EOF");
     body_tx
         .send(Err(io::Error::other("downstream request body failed")))
         .await
@@ -746,7 +740,7 @@ async fn final_route_gate_rejects_downstream_read_error_without_upstream_deliver
         .expect("downstream body failure task should join");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let invocation_payload = timeout(Duration::from_secs(1), async {
         loop {
@@ -766,7 +760,7 @@ async fn final_route_gate_rejects_downstream_read_error_without_upstream_deliver
     .expect("downstream body failure invocation should persist");
     let invocation_payload: Value =
         serde_json::from_str(&invocation_payload).expect("decode downstream body failure payload");
-    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], false);
+    assert_eq!(invocation_payload["ambiguousUpstreamDelivery"], true);
 
     upstream_handle.abort();
 }
@@ -842,8 +836,8 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
         .expect("lock live-first sticky failure attempts");
     assert_eq!(
         attempts.get("Bearer upstream-primary").copied(),
-        Some(3),
-        "the buffered retry path preserves the existing same-account retry budget before failover"
+        Some(1),
+        "a failed live-first attempt must not replay a possibly delivered body to the sticky account"
     );
     assert!(matches!(
         attempts.get("Bearer upstream-secondary").copied(),
@@ -854,7 +848,7 @@ async fn live_first_capture_responses_failure_excludes_sticky_account_from_repla
 }
 
 #[tokio::test]
-async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() {
+async fn live_route_gate_cancellation_after_commit_releases_reservation() {
     let mut config = test_config();
     config.openai_proxy_request_read_timeout = Duration::from_secs(5);
     config.proxy_enforce_stream_include_usage = false;
@@ -912,22 +906,19 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
         .await
     });
 
+    timeout(
+        Duration::from_secs(1),
+        wait_for_pool_upstream_request_attempts(&state.pool, 1),
+    )
+    .await
+    .expect("a model-ready request should reserve and start upstream delivery before EOF");
     assert!(
-        timeout(
-            Duration::from_millis(100),
-            wait_for_pool_upstream_request_attempts(&state.pool, 1),
-        )
-        .await
-        .is_err(),
-        "an incomplete request must not reserve an account or open an upstream request"
-    );
-    assert!(
-        state
+        !state
             .pool_routing_reservations
             .lock()
             .expect("lock routing reservations")
             .is_empty(),
-        "an incomplete request must not hold a routing reservation"
+        "an active live-first request must hold a routing reservation"
     );
 
     request_task.abort();
@@ -951,7 +942,7 @@ async fn final_route_gate_cancellation_before_eof_does_not_reserve_or_deliver() 
     })
     .await
     .expect("cancelling a live-first request must release its routing reservation");
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     upstream_handle.abort();
 }

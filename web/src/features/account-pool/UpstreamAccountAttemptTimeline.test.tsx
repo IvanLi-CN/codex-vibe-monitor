@@ -1135,6 +1135,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     expect(record?.dataset.focusVisible).toBe("true");
     expect(record?.getAttribute("aria-current")).toBe("true");
+    expect(record?.classList.contains("invocation-workflow-attempt--focused")).toBe(true);
     expect(record?.textContent).toMatch(/关键诊断|key diagnostics/i);
     expect(record?.textContent).toMatch(/上游 HTTP 状态|upstream http/i);
 

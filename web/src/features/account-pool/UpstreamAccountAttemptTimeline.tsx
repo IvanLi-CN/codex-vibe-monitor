@@ -330,6 +330,7 @@ function buildSyntheticWorkflowAttemptEntry(
       errorMessage: attempt.errorMessage ?? null,
       downstreamErrorMessage: attempt.downstreamErrorMessage ?? null,
       connectLatencyMs: attempt.connectLatencyMs ?? null,
+      firstTokenMs: attempt.firstTokenMs ?? null,
       firstByteLatencyMs: attempt.firstByteLatencyMs ?? null,
       streamLatencyMs: attempt.streamLatencyMs ?? null,
       upstreamRequestId: attempt.upstreamRequestId ?? null,

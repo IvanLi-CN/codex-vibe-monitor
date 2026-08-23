@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
-import { Chip } from "../../components/ui/chip";
+import { Chip, type ChipTone } from "../../components/ui/chip";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
 import { type TranslationKey, useTranslation } from "../../i18n";
@@ -25,6 +25,10 @@ import {
 } from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationEndpointDisplay } from "../../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
+import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
@@ -68,6 +72,7 @@ interface TimelineFact {
   key: string;
   label: string;
   tooltip?: string;
+  tone?: ChipTone;
 }
 
 interface InvocationWorkflowDetailPanelProps {
@@ -81,21 +86,32 @@ interface InvocationWorkflowDetailPanelProps {
 const FALLBACK_CELL = "—";
 
 function formatDurationMs(value: number | null | undefined, locale: string) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
   const seconds = value / 1000;
-  const precision = Math.abs(seconds) >= 10 ? 1 : 2;
+  const rounded = Math.round(seconds * 10) / 10;
+  const precision = Math.abs(rounded) >= 100 ? 0 : 1;
   return `${seconds.toLocaleString(locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: precision,
   })} s`;
 }
 
+function formatResponseDurationMs(value: number | null | undefined, locale: string) {
+  if (!isFinitePositiveMilliseconds(value)) return FALLBACK_CELL;
+  return formatDurationMs(value, locale);
+}
+
 function formatMilliseconds(value: number | null | undefined, locale: string) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
   return `${value.toLocaleString(locale, {
     minimumFractionDigits: 0,
     maximumFractionDigits: 1,
   })} ms`;
+}
+
+function formatResponseMilliseconds(value: number | null | undefined, locale: string) {
+  if (!isFinitePositiveMilliseconds(value)) return FALLBACK_CELL;
+  return formatMilliseconds(value, locale);
 }
 
 function formatTimestamp(value: string | null | undefined, locale: string) {
@@ -230,13 +246,19 @@ function resolveStatusMeta(status: string | null | undefined, isZh: boolean) {
     return { variant: "success" as const, label: isZh ? "成功" : "Success" };
   }
   if (normalized === "warning_success") {
-    return { variant: "warning" as const, label: isZh ? "告警成功" : "Warning" };
+    return {
+      variant: "warning" as const,
+      label: isZh ? "告警成功" : "Warning",
+    };
   }
   if (normalized === "failed" || normalized === "transport_failure") {
     return { variant: "error" as const, label: isZh ? "失败" : "Failed" };
   }
   if (normalized === "http_failure") {
-    return { variant: "error" as const, label: isZh ? "HTTP 失败" : "HTTP Failure" };
+    return {
+      variant: "error" as const,
+      label: isZh ? "HTTP 失败" : "HTTP Failure",
+    };
   }
   if (normalized === "budget_exhausted_final") {
     return {
@@ -248,7 +270,10 @@ function resolveStatusMeta(status: string | null | undefined, isZh: boolean) {
     return { variant: "primary" as const, label: isZh ? "运行中" : "Running" };
   }
   if (normalized === "pending") {
-    return { variant: "secondary" as const, label: isZh ? "等待中" : "Pending" };
+    return {
+      variant: "secondary" as const,
+      label: isZh ? "等待中" : "Pending",
+    };
   }
   if (normalized.startsWith("http_")) {
     return {
@@ -599,6 +624,7 @@ interface TimelineMetricAction<TSection extends string> {
   tag?: string | null;
   primary: string;
   secondary?: string | null;
+  secondaryTone?: "success";
   tertiary?: string | null;
   tertiaryChips?: string[] | null;
   tertiaryOverflowCount?: number;
@@ -796,12 +822,11 @@ function buildTimelineFacts(
     const usageAudit = readAttemptUsageAudit(responseSummary?.usage);
     const phase = formatOptionalText(attempt.phase);
     const upstreamStatus = formatHttpStatus(attempt.httpStatus, localeTag);
-    const latencyValue =
-      typeof attempt.streamLatencyMs === "number"
-        ? `${isZh ? "流式" : "Stream"} ${formatDurationMs(attempt.streamLatencyMs, localeTag)}`
-        : typeof attempt.firstByteLatencyMs === "number"
-          ? `TTFB ${formatDurationMs(attempt.firstByteLatencyMs, localeTag)}`
-          : null;
+    const latencyValue = isFinitePositiveMilliseconds(attempt.streamLatencyMs)
+      ? `${isZh ? "流式" : "Stream"} ${formatResponseDurationMs(attempt.streamLatencyMs, localeTag)}`
+      : isFiniteNonNegativeMilliseconds(attempt.firstTokenMs)
+        ? `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`
+        : null;
 
     if (attempt.upstreamAccountName?.trim()) {
       facts.push({
@@ -816,7 +841,17 @@ function buildTimelineFacts(
         label: isZh ? `上游 ${upstreamStatus}` : `Upstream ${upstreamStatus}`,
       });
     }
-    if (latencyValue) facts.push({ key: "latency", label: latencyValue });
+    if (latencyValue) {
+      facts.push({
+        key: "latency",
+        label: latencyValue,
+        tone: isFinitePositiveMilliseconds(attempt.streamLatencyMs)
+          ? "secondary"
+          : isFiniteNonNegativeMilliseconds(attempt.firstTokenMs)
+            ? "success"
+            : "secondary",
+      });
+    }
     if (usageAudit?.cacheWriteTokens != null) {
       facts.push({
         key: "cache-write",
@@ -966,15 +1001,9 @@ function buildAttemptMetricActions(
     {
       section: "timing",
       label: isZh ? "时间" : "Timing",
-      primary: formatDurationMs(
-        typeof attempt.streamLatencyMs === "number"
-          ? attempt.streamLatencyMs
-          : typeof attempt.firstByteLatencyMs === "number"
-            ? attempt.firstByteLatencyMs
-            : attempt.connectLatencyMs,
-        localeTag,
-      ),
-      secondary: `TTFB ${formatDurationMs(attempt.firstByteLatencyMs, localeTag)}`,
+      primary: formatResponseDurationMs(attempt.streamLatencyMs, localeTag),
+      secondary: `TTFT ${formatDurationMs(attempt.firstTokenMs, localeTag)}`,
+      secondaryTone: isFiniteNonNegativeMilliseconds(attempt.firstTokenMs) ? "success" : undefined,
     },
     {
       section: "requestParsed",
@@ -1026,7 +1055,9 @@ function buildAttemptMetricActions(
     },
   ];
 
-  return actions.filter((item) => item.primary !== FALLBACK_CELL);
+  return actions.filter(
+    (item) => item.primary !== FALLBACK_CELL || item.secondaryTone === "success",
+  );
 }
 
 function buildGenericMetricActions(
@@ -1494,6 +1525,7 @@ function TimelineMetricButton({
   tag,
   primary,
   secondary,
+  secondaryTone,
   tertiary,
   tertiaryChips,
   tertiaryOverflowCount = 0,
@@ -1505,6 +1537,7 @@ function TimelineMetricButton({
   tag?: string | null;
   primary: string;
   secondary?: string | null;
+  secondaryTone?: "success";
   tertiary?: string | null;
   tertiaryChips?: string[] | null;
   tertiaryOverflowCount?: number;
@@ -1556,7 +1589,10 @@ function TimelineMetricButton({
           {secondary && secondary !== FALLBACK_CELL ? (
             <div
               title={secondary}
-              className="overflow-hidden text-[10.5px] leading-4 text-base-content/70 text-ellipsis whitespace-nowrap"
+              className={cn(
+                "overflow-hidden text-[10.5px] leading-4 text-ellipsis whitespace-nowrap",
+                secondaryTone === "success" ? "text-success" : "text-base-content/70",
+              )}
             >
               {secondary}
             </div>
@@ -1688,7 +1724,10 @@ function AttemptDetail({
             : FALLBACK_CELL,
       monospace: false,
     },
-    { label: isZh ? "阶段" : "Phase", value: formatOptionalText(attempt.phase) },
+    {
+      label: isZh ? "阶段" : "Phase",
+      value: formatOptionalText(attempt.phase),
+    },
     {
       label: isZh ? "上游 HTTP 状态" : "Upstream HTTP",
       value: formatHttpStatus(attempt.httpStatus, localeTag) ?? FALLBACK_CELL,
@@ -1699,12 +1738,12 @@ function AttemptDetail({
       value: formatMilliseconds(attempt.connectLatencyMs, localeTag),
     },
     {
-      label: "TTFB",
-      value: formatMilliseconds(attempt.firstByteLatencyMs, localeTag),
+      label: "TTFT",
+      value: formatDurationMs(attempt.firstTokenMs, localeTag),
     },
     {
       label: isZh ? "流式耗时" : "Stream",
-      value: formatMilliseconds(attempt.streamLatencyMs, localeTag),
+      value: formatResponseMilliseconds(attempt.streamLatencyMs, localeTag),
     },
     {
       label: isZh ? "失败类型" : "Failure Kind",
@@ -1741,10 +1780,10 @@ function AttemptDetail({
       label: isZh ? "连接" : "Connect",
       value: formatMilliseconds(attempt.connectLatencyMs, localeTag),
     },
-    { label: "TTFB", value: formatMilliseconds(attempt.firstByteLatencyMs, localeTag) },
+    { label: "TTFT", value: formatDurationMs(attempt.firstTokenMs, localeTag) },
     {
       label: isZh ? "流式" : "Stream",
-      value: formatMilliseconds(attempt.streamLatencyMs, localeTag),
+      value: formatResponseMilliseconds(attempt.streamLatencyMs, localeTag),
     },
     {
       label: isZh ? "读取请求" : "Request Read",
@@ -1758,15 +1797,29 @@ function AttemptDetail({
       label: isZh ? "解析响应" : "Response Parse",
       value: formatMilliseconds(record.tRespParseMs, localeTag),
     },
-    { label: isZh ? "持久化" : "Persist", value: formatMilliseconds(record.tPersistMs, localeTag) },
-    { label: isZh ? "总用时" : "Total", value: formatMilliseconds(record.tTotalMs, localeTag) },
+    {
+      label: isZh ? "持久化" : "Persist",
+      value: formatMilliseconds(record.tPersistMs, localeTag),
+    },
+    {
+      label: isZh ? "总用时" : "Total",
+      value: formatMilliseconds(record.tTotalMs, localeTag),
+    },
   ].filter((item) => item.value !== FALLBACK_CELL);
 
   const requestParsedItems = [
     ...buildStructuredItems(requestSummary, localeTag, isZh, [
       { key: "endpoint", label: isZh ? "端点" : "Endpoint", monospace: false },
-      { key: "requestModel", label: isZh ? "请求模型" : "Request Model", monospace: false },
-      { key: "responseModel", label: isZh ? "响应模型" : "Response Model", monospace: false },
+      {
+        key: "requestModel",
+        label: isZh ? "请求模型" : "Request Model",
+        monospace: false,
+      },
+      {
+        key: "responseModel",
+        label: isZh ? "响应模型" : "Response Model",
+        monospace: false,
+      },
       {
         key: "requestedServiceTier",
         label: isZh ? "请求服务层级" : "Requested Tier",
@@ -1783,14 +1836,38 @@ function AttemptDetail({
         label: isZh ? "请求压缩模式" : "Request Compaction",
         monospace: false,
       },
-      { key: "imageIntent", label: isZh ? "图像工具意图" : "Image Intent", monospace: false },
-      { key: "transport", label: isZh ? "传输" : "Transport", monospace: false },
+      {
+        key: "imageIntent",
+        label: isZh ? "图像工具意图" : "Image Intent",
+        monospace: false,
+      },
+      {
+        key: "transport",
+        label: isZh ? "传输" : "Transport",
+        monospace: false,
+      },
     ]),
     ...buildStructuredItems(imageToolRewrite, localeTag, isZh, [
-      { key: "protocol", label: isZh ? "图片工具协议" : "Image Tool Protocol", monospace: false },
-      { key: "mode", label: isZh ? "图片工具策略" : "Image Tool Policy", monospace: false },
-      { key: "outcome", label: isZh ? "图片工具结果" : "Image Tool Outcome", monospace: false },
-      { key: "reason", label: isZh ? "图片工具原因" : "Image Tool Reason", monospace: false },
+      {
+        key: "protocol",
+        label: isZh ? "图片工具协议" : "Image Tool Protocol",
+        monospace: false,
+      },
+      {
+        key: "mode",
+        label: isZh ? "图片工具策略" : "Image Tool Policy",
+        monospace: false,
+      },
+      {
+        key: "outcome",
+        label: isZh ? "图片工具结果" : "Image Tool Outcome",
+        monospace: false,
+      },
+      {
+        key: "reason",
+        label: isZh ? "图片工具原因" : "Image Tool Reason",
+        monospace: false,
+      },
     ]),
     ...buildStructuredItems(codexImagegenRewrite, localeTag, isZh, [
       {
@@ -1798,9 +1875,21 @@ function AttemptDetail({
         label: isZh ? "Codex 图片协议" : "Codex Image Protocol",
         monospace: false,
       },
-      { key: "mode", label: isZh ? "Codex 图片策略" : "Codex Image Policy", monospace: false },
-      { key: "outcome", label: isZh ? "Codex 图片结果" : "Codex Image Outcome", monospace: false },
-      { key: "reason", label: isZh ? "Codex 图片原因" : "Codex Image Reason", monospace: false },
+      {
+        key: "mode",
+        label: isZh ? "Codex 图片策略" : "Codex Image Policy",
+        monospace: false,
+      },
+      {
+        key: "outcome",
+        label: isZh ? "Codex 图片结果" : "Codex Image Outcome",
+        monospace: false,
+      },
+      {
+        key: "reason",
+        label: isZh ? "Codex 图片原因" : "Codex Image Reason",
+        monospace: false,
+      },
       {
         key: "hostedRemoved",
         label: isZh ? "移除托管图片工具" : "Hosted Image Removed",
@@ -1821,9 +1910,21 @@ function AttemptDetail({
       },
     ]),
     ...buildStructuredItems(requestBodyParsed, localeTag, isZh, [
-      { key: "model", label: isZh ? "请求体模型" : "Body Model", monospace: false },
-      { key: "stream", label: isZh ? "流式返回" : "Streaming", monospace: false },
-      { key: "serviceTier", label: isZh ? "请求体服务层级" : "Body Tier", monospace: false },
+      {
+        key: "model",
+        label: isZh ? "请求体模型" : "Body Model",
+        monospace: false,
+      },
+      {
+        key: "stream",
+        label: isZh ? "流式返回" : "Streaming",
+        monospace: false,
+      },
+      {
+        key: "serviceTier",
+        label: isZh ? "请求体服务层级" : "Body Tier",
+        monospace: false,
+      },
       {
         key: "reasoningEffort",
         label: isZh ? "请求体推理强度" : "Body Reasoning",
@@ -1835,19 +1936,43 @@ function AttemptDetail({
         label: isZh ? "最大输出 Token" : "Max Output Tokens",
         monospace: false,
       },
-      { key: "temperature", label: isZh ? "温度" : "Temperature", monospace: false },
+      {
+        key: "temperature",
+        label: isZh ? "温度" : "Temperature",
+        monospace: false,
+      },
       { key: "topP", label: isZh ? "Top P" : "Top P", monospace: false },
       {
         key: "parallelToolCalls",
         label: isZh ? "并行工具调用" : "Parallel Tools",
         monospace: false,
       },
-      { key: "toolChoice", label: isZh ? "工具选择" : "Tool Choice", monospace: false },
+      {
+        key: "toolChoice",
+        label: isZh ? "工具选择" : "Tool Choice",
+        monospace: false,
+      },
       { key: "tools", label: isZh ? "工具" : "Tools", monospace: false },
-      { key: "modalities", label: isZh ? "模态" : "Modalities", monospace: false },
-      { key: "inputShape", label: isZh ? "输入形态" : "Input Shape", monospace: false },
-      { key: "inputCount", label: isZh ? "输入条目" : "Input Count", monospace: false },
-      { key: "textFormat", label: isZh ? "返回格式" : "Response Format", monospace: false },
+      {
+        key: "modalities",
+        label: isZh ? "模态" : "Modalities",
+        monospace: false,
+      },
+      {
+        key: "inputShape",
+        label: isZh ? "输入形态" : "Input Shape",
+        monospace: false,
+      },
+      {
+        key: "inputCount",
+        label: isZh ? "输入条目" : "Input Count",
+        monospace: false,
+      },
+      {
+        key: "textFormat",
+        label: isZh ? "返回格式" : "Response Format",
+        monospace: false,
+      },
     ]),
   ];
 
@@ -1861,14 +1986,35 @@ function AttemptDetail({
 
   const requestRoutingItems = [
     ...buildStructuredItems(requestRoutingSource, localeTag, isZh, [
-      { key: "routeMode", label: isZh ? "路由模式" : "Route Mode", monospace: false },
-      { key: "upstreamScope", label: isZh ? "上游范围" : "Upstream Scope", monospace: false },
+      {
+        key: "routeMode",
+        label: isZh ? "路由模式" : "Route Mode",
+        monospace: false,
+      },
+      {
+        key: "upstreamScope",
+        label: isZh ? "上游范围" : "Upstream Scope",
+        monospace: false,
+      },
       { key: "stickyKey", label: "Sticky Key" },
-      { key: "promptCacheKey", label: isZh ? "Prompt Cache Key" : "Prompt Cache Key" },
-      { key: "proxyDisplayName", label: isZh ? "代理显示名" : "Proxy Display", monospace: false },
-      { key: "upstreamRouteKey", label: isZh ? "上游路由键" : "Upstream Route Key" },
+      {
+        key: "promptCacheKey",
+        label: isZh ? "Prompt Cache Key" : "Prompt Cache Key",
+      },
+      {
+        key: "proxyDisplayName",
+        label: isZh ? "代理显示名" : "Proxy Display",
+        monospace: false,
+      },
+      {
+        key: "upstreamRouteKey",
+        label: isZh ? "上游路由键" : "Upstream Route Key",
+      },
       { key: "proxyBindingKey", label: isZh ? "代理绑定" : "Proxy Binding" },
-      { key: "clientFingerprint", label: isZh ? "客户端指纹" : "Client Fingerprint" },
+      {
+        key: "clientFingerprint",
+        label: isZh ? "客户端指纹" : "Client Fingerprint",
+      },
       {
         key: "oauthForwardedHeaderNames",
         label: isZh ? "OAuth 转发头" : "OAuth Forwarded Headers",
@@ -2016,17 +2162,37 @@ function AttemptDetail({
 
   const responseParsedItems = [
     ...buildStructuredItems(responseSummary, localeTag, isZh, [
-      { key: "status", label: isZh ? "尝试状态" : "Attempt Status", monospace: false },
+      {
+        key: "status",
+        label: isZh ? "尝试状态" : "Attempt Status",
+        monospace: false,
+      },
       { key: "phase", label: isZh ? "阶段" : "Phase", monospace: false },
-      { key: "failureKind", label: isZh ? "失败类型" : "Failure Kind", monospace: false },
-      { key: "errorMessage", label: isZh ? "错误信息" : "Error Message", monospace: false },
+      {
+        key: "failureKind",
+        label: isZh ? "失败类型" : "Failure Kind",
+        monospace: false,
+      },
+      {
+        key: "errorMessage",
+        label: isZh ? "错误信息" : "Error Message",
+        monospace: false,
+      },
       {
         key: "downstreamErrorMessage",
         label: isZh ? "下游错误" : "Downstream Error",
         monospace: false,
       },
-      { key: "serviceTier", label: isZh ? "服务层级" : "Service Tier", monospace: false },
-      { key: "billingServiceTier", label: isZh ? "计费层级" : "Billing Tier", monospace: false },
+      {
+        key: "serviceTier",
+        label: isZh ? "服务层级" : "Service Tier",
+        monospace: false,
+      },
+      {
+        key: "billingServiceTier",
+        label: isZh ? "计费层级" : "Billing Tier",
+        monospace: false,
+      },
       {
         key: "streamTerminalEvent",
         label: isZh ? "流终止事件" : "Stream Terminal",
@@ -2046,38 +2212,104 @@ function AttemptDetail({
     ...buildStructuredItems(responseBodyParsed, localeTag, isZh, [
       { key: "id", label: isZh ? "响应 ID" : "Response ID", monospace: false },
       { key: "object", label: isZh ? "对象类型" : "Object", monospace: false },
-      { key: "status", label: isZh ? "响应状态" : "Body Status", monospace: false },
-      { key: "model", label: isZh ? "响应体模型" : "Body Model", monospace: false },
-      { key: "serviceTier", label: isZh ? "响应体服务层级" : "Body Tier", monospace: false },
-      { key: "outputItems", label: isZh ? "输出项" : "Output Items", monospace: false },
-      { key: "outputTextBlocks", label: isZh ? "文本块" : "Output Text Blocks", monospace: false },
-      { key: "toolCalls", label: isZh ? "工具调用" : "Tool Calls", monospace: false },
-      { key: "errorCode", label: isZh ? "错误码" : "Error Code", monospace: false },
-      { key: "errorMessage", label: isZh ? "错误消息" : "Error Message", monospace: false },
-      { key: "usageInputTokens", label: isZh ? "输入 Token" : "Input Tokens", monospace: false },
-      { key: "usageOutputTokens", label: isZh ? "输出 Token" : "Output Tokens", monospace: false },
+      {
+        key: "status",
+        label: isZh ? "响应状态" : "Body Status",
+        monospace: false,
+      },
+      {
+        key: "model",
+        label: isZh ? "响应体模型" : "Body Model",
+        monospace: false,
+      },
+      {
+        key: "serviceTier",
+        label: isZh ? "响应体服务层级" : "Body Tier",
+        monospace: false,
+      },
+      {
+        key: "outputItems",
+        label: isZh ? "输出项" : "Output Items",
+        monospace: false,
+      },
+      {
+        key: "outputTextBlocks",
+        label: isZh ? "文本块" : "Output Text Blocks",
+        monospace: false,
+      },
+      {
+        key: "toolCalls",
+        label: isZh ? "工具调用" : "Tool Calls",
+        monospace: false,
+      },
+      {
+        key: "errorCode",
+        label: isZh ? "错误码" : "Error Code",
+        monospace: false,
+      },
+      {
+        key: "errorMessage",
+        label: isZh ? "错误消息" : "Error Message",
+        monospace: false,
+      },
+      {
+        key: "usageInputTokens",
+        label: isZh ? "输入 Token" : "Input Tokens",
+        monospace: false,
+      },
+      {
+        key: "usageOutputTokens",
+        label: isZh ? "输出 Token" : "Output Tokens",
+        monospace: false,
+      },
       {
         key: "usageReasoningTokens",
         label: isZh ? "推理 Token" : "Reasoning Tokens",
         monospace: false,
       },
-      { key: "usageTotalTokens", label: isZh ? "总 Token" : "Total Tokens", monospace: false },
+      {
+        key: "usageTotalTokens",
+        label: isZh ? "总 Token" : "Total Tokens",
+        monospace: false,
+      },
     ]),
   ];
 
   const responseHeaderItems = buildStructuredItems(responseHeaderSource, localeTag, isZh, [
     { key: "contentEncoding", label: "Content-Encoding", monospace: false },
-    { key: "contentEncodingChain", label: isZh ? "编码链" : "Encoding Chain", monospace: false },
+    {
+      key: "contentEncodingChain",
+      label: isZh ? "编码链" : "Encoding Chain",
+      monospace: false,
+    },
     ...(!hideNonShortIds
-      ? [{ key: "upstreamRequestId", label: "X-Request-ID", monospace: false }]
+      ? [
+          {
+            key: "upstreamRequestId",
+            label: "X-Request-ID",
+            monospace: false,
+          },
+        ]
       : []),
     { key: "cvmInvokeId", label: isZh ? "CVM 调用 ID" : "CVM Invoke ID" },
   ]);
 
   const responseDeliveryItems = buildStructuredItems(responseDeliverySource, localeTag, isZh, [
-    { key: "forwardedChunkCount", label: isZh ? "转发块数" : "Forwarded Chunks", monospace: false },
-    { key: "forwardedBytes", label: isZh ? "转发字节" : "Forwarded Bytes", monospace: false },
-    { key: "usageObserved", label: isZh ? "观察到 Usage" : "Usage Observed", monospace: false },
+    {
+      key: "forwardedChunkCount",
+      label: isZh ? "转发块数" : "Forwarded Chunks",
+      monospace: false,
+    },
+    {
+      key: "forwardedBytes",
+      label: isZh ? "转发字节" : "Forwarded Bytes",
+      monospace: false,
+    },
+    {
+      key: "usageObserved",
+      label: isZh ? "观察到 Usage" : "Usage Observed",
+      monospace: false,
+    },
     {
       key: "downstreamClosePhase",
       label: isZh ? "下游关闭阶段" : "Downstream Close Phase",
@@ -2332,8 +2564,16 @@ function GenericDetail({
   const routeRequestParsedItems = [
     ...buildStructuredItems(routeRequest, localeTag, isZh, [
       { key: "endpoint", label: isZh ? "端点" : "Endpoint", monospace: false },
-      { key: "requestModel", label: isZh ? "请求模型" : "Request Model", monospace: false },
-      { key: "responseModel", label: isZh ? "响应模型" : "Response Model", monospace: false },
+      {
+        key: "requestModel",
+        label: isZh ? "请求模型" : "Request Model",
+        monospace: false,
+      },
+      {
+        key: "responseModel",
+        label: isZh ? "响应模型" : "Response Model",
+        monospace: false,
+      },
       {
         key: "requestedServiceTier",
         label: isZh ? "请求服务层级" : "Requested Tier",
@@ -2350,29 +2590,67 @@ function GenericDetail({
         label: isZh ? "请求压缩模式" : "Request Compaction",
         monospace: false,
       },
-      { key: "imageIntent", label: isZh ? "图像工具意图" : "Image Intent", monospace: false },
-      { key: "transport", label: isZh ? "传输" : "Transport", monospace: false },
+      {
+        key: "imageIntent",
+        label: isZh ? "图像工具意图" : "Image Intent",
+        monospace: false,
+      },
+      {
+        key: "transport",
+        label: isZh ? "传输" : "Transport",
+        monospace: false,
+      },
       { key: "promptCacheKey", label: "Prompt Cache Key" },
       { key: "stickyKey", label: "Sticky Key" },
-      { key: "requesterIp", label: isZh ? "请求 IP" : "Requester IP", monospace: false },
+      {
+        key: "requesterIp",
+        label: isZh ? "请求 IP" : "Requester IP",
+        monospace: false,
+      },
     ]),
     ...buildStructuredItems(routeRequestAccount, localeTag, isZh, [
       { key: "id", label: isZh ? "账号 ID" : "Account ID", monospace: false },
       { key: "name", label: isZh ? "账号" : "Account", monospace: false },
     ]),
     ...buildStructuredItems(routeRequestCompression, localeTag, isZh, [
-      { key: "algorithm", label: isZh ? "压缩算法" : "Compression", monospace: false },
-      { key: "mode", label: isZh ? "压缩模式" : "Compression Mode", monospace: false },
+      {
+        key: "algorithm",
+        label: isZh ? "压缩算法" : "Compression",
+        monospace: false,
+      },
+      {
+        key: "mode",
+        label: isZh ? "压缩模式" : "Compression Mode",
+        monospace: false,
+      },
     ]),
   ];
   const routeRequestRoutingItems = [
     ...buildStructuredItems(routeRequestRouting, localeTag, isZh, [
-      { key: "routeMode", label: isZh ? "路由模式" : "Route Mode", monospace: false },
-      { key: "upstreamScope", label: isZh ? "上游范围" : "Upstream Scope", monospace: false },
-      { key: "proxyDisplayName", label: isZh ? "代理显示名" : "Proxy Display", monospace: false },
-      { key: "upstreamRouteKey", label: isZh ? "上游路由键" : "Upstream Route Key" },
+      {
+        key: "routeMode",
+        label: isZh ? "路由模式" : "Route Mode",
+        monospace: false,
+      },
+      {
+        key: "upstreamScope",
+        label: isZh ? "上游范围" : "Upstream Scope",
+        monospace: false,
+      },
+      {
+        key: "proxyDisplayName",
+        label: isZh ? "代理显示名" : "Proxy Display",
+        monospace: false,
+      },
+      {
+        key: "upstreamRouteKey",
+        label: isZh ? "上游路由键" : "Upstream Route Key",
+      },
       { key: "proxyBindingKey", label: isZh ? "代理绑定" : "Proxy Binding" },
-      { key: "clientFingerprint", label: isZh ? "客户端指纹" : "Client Fingerprint" },
+      {
+        key: "clientFingerprint",
+        label: isZh ? "客户端指纹" : "Client Fingerprint",
+      },
       {
         key: "oauthForwardedHeaderNames",
         label: isZh ? "OAuth 转发头" : "OAuth Forwarded Headers",
@@ -2643,14 +2921,18 @@ function TimelineSummary({
                       side="top"
                       sideOffset={8}
                     >
-                      <Chip size="micro" tone="secondary" className="min-w-0 break-all px-2">
+                      <Chip
+                        size="micro"
+                        tone={fact.tone ?? "secondary"}
+                        className="min-w-0 break-all px-2"
+                      >
                         {fact.label}
                       </Chip>
                     </Tooltip>
                   ) : (
                     <Chip
                       size="micro"
-                      tone="secondary"
+                      tone={fact.tone ?? "secondary"}
                       key={`${entry.blockId}-${fact.key}`}
                       className="min-w-0 break-all px-2"
                     >
@@ -2685,6 +2967,7 @@ function TimelineSummary({
                 tag={action.tag}
                 primary={action.primary}
                 secondary={action.secondary}
+                secondaryTone={action.secondaryTone}
                 tertiary={action.tertiary}
                 tertiaryChips={action.tertiaryChips}
                 tertiaryOverflowCount={action.tertiaryOverflowCount}
@@ -2812,7 +3095,10 @@ export function InvocationWorkflowAttemptRecord({
     if (!attemptPublicId && !invocationResponseFallbackAllowed) {
       setResponseBodyState({
         status: "loaded",
-        data: { available: false, unavailableReason: responseBodyUnavailableReason },
+        data: {
+          available: false,
+          unavailableReason: responseBodyUnavailableReason,
+        },
         error: null,
       });
       return;
@@ -2857,8 +3143,8 @@ export function InvocationWorkflowAttemptRecord({
     <div
       ref={containerRef}
       className={cn(
-        "min-w-0 max-w-full scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
-        focused && "border-primary/45 bg-primary/8 ring-1 ring-inset ring-primary/35",
+        "invocation-workflow-attempt min-w-0 max-w-full scroll-mt-4 rounded-[1.125rem] border border-transparent transition-[background-color,border-color,box-shadow] duration-200",
+        focused && "invocation-workflow-attempt--focused bg-primary/8",
         className,
       )}
       data-focus-visible={focused ? "true" : "false"}

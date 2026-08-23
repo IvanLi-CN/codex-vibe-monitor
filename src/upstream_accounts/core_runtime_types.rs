@@ -1012,7 +1012,10 @@ pub(crate) struct ModelRoutingTimelineRecord {
     pub(crate) http_status: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) failure_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_opt_finite_positive_timing"
+    )]
     pub(crate) total_latency_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) action: Option<String>,

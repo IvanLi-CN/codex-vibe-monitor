@@ -4,6 +4,7 @@ import type {
   LongTermMetrics,
   ModelRoutingTimelineRecord,
 } from "../lib/api";
+import { isFiniteNonNegativeMilliseconds } from "../lib/invocationTiming";
 import { demoModel, demoNow } from "./model";
 import {
   DEMO_MODEL_ROUTE_FIXTURES,
@@ -391,6 +392,14 @@ function demoForwardProxyNodes(): DemoProxyNode[] {
 
 function json(payload: unknown, init?: ResponseInit) {
   return HttpResponse.json(payload as JsonBodyType, init);
+}
+
+export function demoAttemptPhase(
+  status: string | null | undefined,
+  firstTokenMs: number | null | undefined,
+) {
+  if (status !== "running") return "completed";
+  return isFiniteNonNegativeMilliseconds(firstTokenMs) ? "responding" : "requesting";
 }
 
 function apiPathname(pathname: string) {
@@ -849,7 +858,7 @@ function invocations() {
       10880,
       1640,
       0.014,
-      null,
+      210,
       null,
       "demo-conversation-a",
     ],
@@ -1481,11 +1490,11 @@ function invocations() {
           tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
           tUpstreamTtfbMs: ttfb,
           firstTokenMs:
-            ttfb == null ||
-            total == null ||
-            !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
+            ttfb == null || !["/v1/responses", "/v1/chat/completions"].includes(endpoint)
               ? null
-              : Math.min(total, ttfb + 420 + (id % 5) * 75),
+              : total == null
+                ? ttfb + 420 + (id % 5) * 75
+                : Math.min(total, ttfb + 420 + (id % 5) * 75),
           tUpstreamStreamMs: total == null ? null : Math.max(0, total - (ttfb ?? 0)),
           tTotalMs: total,
           timings:
@@ -2359,6 +2368,9 @@ function poolAttempts(invokeId: string) {
     invokeId,
     occurredAt: startedAt,
     endpoint: record.endpoint ?? "/v1/responses",
+    model: record.model ?? null,
+    requestModel: record.requestModel ?? record.model ?? null,
+    responseModel: record.responseModel ?? null,
     stickyKey: record.stickyKey ?? null,
     requesterIp: record.requesterIp ?? null,
     createdAt: startedAt,
@@ -2386,19 +2398,24 @@ function poolAttempts(invokeId: string) {
         ? null
         : `2026-07-10T09:25:00Z`,
     status: needsRetry ? "failed" : (record.status ?? "success"),
-    phase: record.status === "running" ? "responding" : "completed",
+    phase: demoAttemptPhase(record.status, record.firstTokenMs),
     httpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     downstreamHttpStatus: needsRetry ? 429 : (record.downstreamStatusCode ?? 200),
     failureKind: needsRetry ? "rate_limited" : (record.failureKind ?? null),
     errorMessage: needsRetry ? "Simulated retry after rate limit." : (record.errorMessage ?? null),
     connectLatencyMs: record.tUpstreamConnectMs ?? 42,
+    firstTokenMs: record.firstTokenMs ?? null,
     firstByteLatencyMs: record.tUpstreamTtfbMs ?? null,
     streamLatencyMs: record.tUpstreamStreamMs ?? null,
     upstreamRequestId: `up_demo_${record.id}_1`,
   };
   if (!needsRetry) return [first];
   return [
-    first,
+    {
+      ...first,
+      firstTokenMs: null,
+      streamLatencyMs: null,
+    },
     {
       ...first,
       id: record.id * 10 + 2,
@@ -2438,9 +2455,45 @@ function poolAttempts(invokeId: string) {
       errorMessage: record.status === "http_502" ? "Simulated recovery relay timeout." : null,
       startedAt: "2026-07-10T09:24:02Z",
       finishedAt: "2026-07-10T09:24:05Z",
+      firstTokenMs: record.firstTokenMs ?? null,
+      streamLatencyMs: record.tUpstreamStreamMs ?? null,
       upstreamRequestId: `up_demo_${record.id}_2`,
     },
   ];
+}
+
+function upstreamAccountAttempts(accountId: number, search: URLSearchParams) {
+  const type = search.get("type")?.trim() ?? "";
+  const model = search.get("model")?.trim().toLowerCase() ?? "";
+  const stickyKey = search.get("stickyKey")?.trim() ?? "";
+  const page = Math.max(1, Number(search.get("page") ?? 1) || 1);
+  const pageSize = Math.max(1, Number(search.get("pageSize") ?? 50) || 50);
+  const endpointMatchesType = (endpoint: string) => {
+    if (!type) return true;
+    if (type === "image") return endpoint.startsWith("/v1/images/");
+    if (type === "compact") return endpoint.includes("/compact");
+    if (type === "remote_v2") return endpoint.includes("/remote");
+    return !endpoint.startsWith("/v1/images/") && !endpoint.includes("/compact");
+  };
+  const items = invocations()
+    .flatMap((record) => poolAttempts(record.invokeId))
+    .filter((attempt) => attempt.upstreamAccountId === accountId)
+    .filter((attempt) => endpointMatchesType(attempt.endpoint))
+    .filter((attempt) => !model || attempt.requestModel?.toLowerCase().includes(model))
+    .filter((attempt) => !stickyKey || attempt.stickyKey === stickyKey)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const start = (page - 1) * pageSize;
+  const stickyKeyOptions = Array.from(
+    new Set(items.map((attempt) => attempt.stickyKey).filter(Boolean)),
+  ).map((value) => ({ value }));
+
+  return {
+    items: items.slice(start, start + pageSize),
+    total: items.length,
+    page,
+    pageSize,
+    stickyKeyOptions,
+  };
 }
 
 function buildDemoInvocationWorkflowDetail(
@@ -2576,16 +2629,17 @@ function buildDemoInvocationWorkflowDetail(
         sameAccountRetryIndex: 0,
         requesterIp: record.requesterIp ?? null,
         startedAt: record.occurredAt,
-        finishedAt: record.occurredAt,
+        finishedAt: record.tTotalMs == null ? null : record.occurredAt,
         status: finalStatus,
-        phase: "streaming",
+        phase: record.status === "running" ? "responding" : "completed",
         httpStatus: 200,
         downstreamHttpStatus: record.downstreamStatusCode ?? 200,
         failureKind: record.failureKind ?? null,
         errorMessage: record.errorMessage ?? null,
         connectLatencyMs: record.tUpstreamConnectMs ?? 184,
+        firstTokenMs: record.firstTokenMs ?? null,
         firstByteLatencyMs: record.tUpstreamTtfbMs ?? 0,
-        streamLatencyMs: 4_830,
+        streamLatencyMs: record.tUpstreamStreamMs ?? null,
         upstreamRequestId: `req_demo_${record.id}`,
         requestSummary: {
           endpoint: record.endpoint ?? "/v1/responses",
@@ -3393,6 +3447,23 @@ export async function handleDemoRequest(request: Request) {
   }
   if (pathname.endsWith("/pool-attempts"))
     return json(poolAttempts(decodeURIComponent(pathname.split("/").at(-2) ?? "")));
+
+  const upstreamAccountAttemptsMatch = pathname.match(
+    /^\/api\/pool\/upstream-accounts\/(\d+)\/call-attempts(?:\/locate)?$/,
+  );
+  if (upstreamAccountAttemptsMatch && request.method === "GET") {
+    const accountId = Number(upstreamAccountAttemptsMatch[1]);
+    const response = upstreamAccountAttempts(accountId, url.searchParams);
+    const requestedAttemptId = url.searchParams.get("attemptId")?.trim();
+    if (
+      pathname.endsWith("/locate") &&
+      requestedAttemptId &&
+      !response.items.some((attempt) => attempt.attemptId === requestedAttemptId)
+    ) {
+      return json({ message: "upstream account attempt was not found" }, { status: 404 });
+    }
+    return json(response);
+  }
 
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);

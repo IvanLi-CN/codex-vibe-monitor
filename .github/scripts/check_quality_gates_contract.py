@@ -594,13 +594,22 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         e2e_run = str(e2e_run_step.get("run", ""))
         require(
             "records-filter-overlay.spec.ts" in e2e_run
-            and "demo-runtime.spec.ts" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must run both Playwright regression specs",
+            and "demo-runtime.spec.ts" in e2e_run
+            and "dashboard-working-conversations-layout.spec.ts" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must run all required Playwright regression specs",
         )
         require(
             "--output=test-results/records-overlay" in e2e_run
-            and "--output=test-results/demo-runtime" in e2e_run,
-            "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate both Playwright result directories",
+            and "--output=test-results/demo-runtime" in e2e_run
+            and "--output=test-results/dashboard-working-conversations" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must isolate all Playwright result directories",
+        )
+        require(
+            "dashboard_status=0" in e2e_run
+            and "dashboard_pid=$!" in e2e_run
+            and 'wait "$dashboard_pid" || dashboard_status=$?' in e2e_run
+            and "exit $(( records_status || demo_status || dashboard_status ))" in e2e_run,
+            "ci-pr.yml.jobs.records-overlay-e2e-producer must propagate Dashboard Playwright status",
         )
         require(
             "E2E_BASE_URL=http://127.0.0.1:60083" in e2e_run,

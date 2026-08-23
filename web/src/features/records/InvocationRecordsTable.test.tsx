@@ -331,8 +331,8 @@ describe("InvocationRecordsTable", () => {
     const text = host?.textContent ?? "";
     expect(text).toContain("records.table.network.firstToken");
     expect(text).toContain("records.table.network.responseDuration");
-    expect(text).toContain("0.62 s");
-    expect(text).toContain("0.48 s");
+    expect(text).toContain("0.6 s");
+    expect(text).toContain("0.5 s");
     expect(text).not.toContain("0.741 s");
   });
 

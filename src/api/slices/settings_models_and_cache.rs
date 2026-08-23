@@ -168,10 +168,16 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) downstream_error_message: Option<String>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) connect_latency_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
+    pub(crate) first_token_ms: Option<f64>,
+    #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_byte_latency_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) stream_latency_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) upstream_request_id: Option<String>,
@@ -220,6 +226,23 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) workflow_entry: Option<InvocationWorkflowTimelineEntry>,
+}
+
+pub(crate) fn sanitize_pool_attempt_timing_fields(records: &mut [ApiPoolUpstreamRequestAttempt]) {
+    for record in records {
+        record.connect_latency_ms = record
+            .connect_latency_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.first_token_ms = record
+            .first_token_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.first_byte_latency_ms = record
+            .first_byte_latency_ms
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        record.stream_latency_ms = record
+            .stream_latency_ms
+            .filter(|value| value.is_finite() && *value > 0.0);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1067,14 +1090,23 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) service_tier: Option<String>,
     pub(crate) billing_service_tier: Option<String>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_read_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_parse_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_connect_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_token_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) t_upstream_stream_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_resp_parse_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_persist_ms: Option<f64>,
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_total_ms: Option<f64>,
 }
 

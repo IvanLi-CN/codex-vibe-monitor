@@ -628,6 +628,14 @@ body,
   --destructive-callout-bullet-halo: oklch(var(--color-error) / 0.14);
 }
 
+[data-theme="vibe-dark"] {
+  --surface-card-bg: color-mix(
+    in oklab,
+    oklch(var(--color-base-100)) 82%,
+    oklch(var(--color-base-200)) 18%
+  );
+}
+
 body {
   @apply bg-base-200 text-base-content antialiased;
   font-family:
@@ -1242,6 +1250,21 @@ body {
   .invocation-detail-block[data-open="true"] {
     border-color: var(--invocation-detail-subsurface-border-active);
     background-color: var(--invocation-detail-card-bg);
+  }
+
+  .invocation-workflow-attempt--focused {
+    position: relative;
+  }
+
+  .invocation-workflow-attempt--focused::after {
+    position: absolute;
+    z-index: 10;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    border: 1px solid oklch(var(--color-primary) / 0.45);
+    border-radius: inherit;
+    box-shadow: inset 0 0 0 1px oklch(var(--color-primary) / 0.35);
   }
 
   .invocation-detail-rail {

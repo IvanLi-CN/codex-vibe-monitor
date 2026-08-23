@@ -610,9 +610,10 @@ pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(
         let previews = grouped_recent_invocations
             .entry(prompt_cache_key.clone())
             .or_default();
-        if previews.iter().any(|preview| {
+        if let Some(preview) = previews.iter_mut().find(|preview| {
             preview.invoke_id == record.invoke_id && preview.occurred_at == record.occurred_at
         }) {
+            overlay_runtime_preview_progress(preview, record);
             continue;
         }
         previews.push(prompt_cache_invocation_preview_from_runtime_record(
@@ -630,6 +631,58 @@ pub(crate) fn overlay_runtime_prompt_cache_invocation_previews(
         });
         previews.truncate(recent_invocation_limit as usize);
     }
+}
+
+fn overlay_runtime_preview_progress(
+    preview: &mut PromptCacheConversationInvocationPreviewResponse,
+    record: &ApiInvocation,
+) {
+    let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+        preview.first_token_ms,
+        preview.live_phase.as_deref(),
+        runtime_record_first_token_ms(record),
+        runtime_record_live_phase(record),
+        runtime_record_is_retry(record),
+    );
+    preview.first_token_ms = first_token_ms;
+    preview.live_phase = live_phase;
+}
+
+fn merged_runtime_preview_progress(
+    persisted_first_token_ms: Option<f64>,
+    persisted_live_phase: Option<&str>,
+    runtime_first_token_ms: Option<f64>,
+    runtime_live_phase: Option<&str>,
+    suppress_persisted_progress: bool,
+) -> (Option<f64>, Option<String>) {
+    let measured_persisted_first_token_ms =
+        persisted_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
+    let measured_runtime_first_token_ms =
+        runtime_first_token_ms.filter(|value| value.is_finite() && *value >= 0.0);
+    let runtime_is_responding = measured_runtime_first_token_ms.is_some()
+        && runtime_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING);
+
+    let first_token_ms = measured_runtime_first_token_ms.or_else(|| {
+        (!suppress_persisted_progress)
+            .then_some(measured_persisted_first_token_ms)
+            .flatten()
+    });
+    let live_phase = runtime_is_responding
+        .then_some(INVOCATION_LIVE_PHASE_RESPONDING.to_string())
+        .or_else(|| {
+            if suppress_persisted_progress {
+                return runtime_live_phase.map(str::to_string);
+            }
+            if persisted_live_phase == Some(INVOCATION_LIVE_PHASE_RESPONDING)
+                && first_token_ms.is_none()
+            {
+                None
+            } else {
+                persisted_live_phase.map(str::to_string)
+            }
+        });
+
+    (first_token_ms, live_phase)
 }
 
 pub(crate) fn prompt_cache_invocation_preview_from_runtime_record(
@@ -653,10 +706,7 @@ pub(crate) fn invocation_preview_from_runtime_record(
             .status
             .clone()
             .unwrap_or_else(|| "unknown".to_string()),
-        live_phase: record
-            .live_phase
-            .clone()
-            .or_else(|| runtime_invocation_live_phase(record).map(str::to_string)),
+        live_phase: runtime_record_live_phase(record).map(str::to_string),
         failure_class: normalize_trimmed_optional_string(record.failure_class.clone()),
         route_mode: normalize_trimmed_optional_string(record.route_mode.clone()),
         model: normalize_trimmed_optional_string(record.model.clone()),
@@ -710,7 +760,7 @@ pub(crate) fn invocation_preview_from_runtime_record(
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: record.first_token_ms,
+        first_token_ms: runtime_record_first_token_ms(record),
         t_upstream_stream_ms: record.t_upstream_stream_ms,
         t_resp_parse_ms: record.t_resp_parse_ms,
         t_persist_ms: record.t_persist_ms,
@@ -892,4 +942,93 @@ pub(crate) fn resolve_prompt_cache_upstream_account_group_key(
         return format!("name:{name}");
     }
     "unknown".to_string()
+}
+
+#[cfg(test)]
+mod runtime_preview_progress_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_first_token_progress_overlays_the_stale_persisted_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            false,
+        );
+
+        assert_eq!(first_token_ms, Some(720.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn missing_runtime_timing_does_not_regress_a_persisted_responding_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            false,
+        );
+
+        assert_eq!(first_token_ms, Some(720.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn zero_millisecond_runtime_first_token_promotes_a_missing_preview() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            Some(0.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            false,
+        );
+
+        assert_eq!(first_token_ms, Some(0.0));
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING)
+        );
+    }
+
+    #[test]
+    fn invalid_persisted_first_token_is_treated_as_unavailable() {
+        for persisted in [Some(-1.0), Some(f64::INFINITY), Some(f64::NAN)] {
+            let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+                persisted,
+                Some(INVOCATION_LIVE_PHASE_RESPONDING),
+                None,
+                Some(INVOCATION_LIVE_PHASE_REQUESTING),
+                false,
+            );
+
+            assert_eq!(first_token_ms, None);
+            assert_eq!(live_phase, None);
+        }
+    }
+
+    #[test]
+    fn retry_runtime_progress_does_not_restore_persisted_attempt_timing() {
+        let (first_token_ms, live_phase) = merged_runtime_preview_progress(
+            Some(720.0),
+            Some(INVOCATION_LIVE_PHASE_RESPONDING),
+            None,
+            Some(INVOCATION_LIVE_PHASE_REQUESTING),
+            true,
+        );
+
+        assert_eq!(first_token_ms, None);
+        assert_eq!(
+            live_phase.as_deref(),
+            Some(INVOCATION_LIVE_PHASE_REQUESTING)
+        );
+    }
 }

@@ -29,11 +29,14 @@ describe("InvocationPhaseChip", () => {
   });
 
   it("renders responding badges with dynamic spin motion when labels stay visible", () => {
-    const html = renderMarkup(<InvocationPhaseChip phase="responding" motion="dynamic" />);
+    const html = renderMarkup(
+      <InvocationPhaseChip phase="responding" appearance="inline" motion="dynamic" />,
+    );
 
     expect(html).toContain('data-phase="responding"');
     expect(html).toContain('data-phase-motion="dynamic"');
     expect(html).toContain('data-phase-label-visible="true"');
+    expect(html).toContain('aria-label="响应中"');
     expect(html).toContain('data-phase-icon-name="sync"');
     expect(html).toContain("animate-spin");
     expect(html).toContain(">响应中<");

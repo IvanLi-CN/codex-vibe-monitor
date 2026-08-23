@@ -210,6 +210,66 @@ pub(crate) fn normalize_non_negative_timing_value(value: Option<f64>) -> Option<
     Some(value)
 }
 
+pub(crate) fn validated_proxy_perf_stage_rollup(
+    stage: &str,
+    sample_count: i64,
+    sum_ms: f64,
+    max_ms: f64,
+    mut histogram: ApproxHistogramCounts,
+) -> Option<(i64, f64, f64, ApproxHistogramCounts)> {
+    if sample_count <= 0
+        || !is_valid_perf_stage_sample(stage, sum_ms)
+        || !is_valid_perf_stage_sample(stage, max_ms)
+    {
+        return None;
+    }
+    if histogram.is_empty() {
+        histogram = empty_approx_histogram();
+    }
+    for count in &mut histogram {
+        *count = (*count).max(0);
+    }
+    Some((sample_count, sum_ms, max_ms, histogram))
+}
+
+#[cfg(test)]
+mod perf_stage_rollup_validation_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_rollups_reject_invalid_values_and_normalize_histogram_counts() {
+        assert!(
+            validated_proxy_perf_stage_rollup(
+                "upstreamStream",
+                1,
+                0.0,
+                0.0,
+                empty_approx_histogram(),
+            )
+            .is_none()
+        );
+        assert!(
+            validated_proxy_perf_stage_rollup(
+                "total",
+                1,
+                f64::INFINITY,
+                1.0,
+                empty_approx_histogram(),
+            )
+            .is_none()
+        );
+
+        let mut histogram = empty_approx_histogram();
+        histogram[0] = -2;
+        histogram[1] = 3;
+        let (_, _, _, normalized) =
+            validated_proxy_perf_stage_rollup("total", 1, 3.0, 3.0, histogram)
+                .expect("valid rollup");
+        assert_eq!(normalized[0], 0);
+        assert_eq!(normalized[1], 3);
+    }
+}
+
 pub(crate) fn resolve_first_response_byte_total_ms(
     t_req_read_ms: Option<f64>,
     t_req_parse_ms: Option<f64>,

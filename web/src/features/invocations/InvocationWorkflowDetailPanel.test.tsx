@@ -261,8 +261,9 @@ function createWorkflowDetailResponse(): ApiInvocationWorkflowDetailResponse {
           errorMessage: "upstream stream aborted",
           downstreamErrorMessage: "downstream closed while streaming",
           connectLatencyMs: 120,
+          firstTokenMs: 780,
           firstByteLatencyMs: 640,
-          streamLatencyMs: 5430,
+          streamLatencyMs: 100_040,
           upstreamRequestId: "req_77",
           requestSummary: {
             endpoint: "/v1/responses",
@@ -717,6 +718,7 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("invoke-workflow-77");
     expect(host?.textContent ?? "").toContain(expectedConversationId);
     expect(host?.textContent ?? "").toContain("17.4 s");
+    expect(host?.textContent ?? "").toContain("100 s");
     expect(host?.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
     expect(host?.textContent ?? "").toContain(requestBodySizeLabel);
     expect(host?.textContent ?? "").toContain("priority");
@@ -729,6 +731,13 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("web_search");
     expect(host?.textContent ?? "").toContain("+1");
     expect(host?.textContent ?? "").toContain("上游 HTTP 200");
+    expect(host?.textContent ?? "").toContain("TTFT 0.8 s");
+    expect(host?.textContent ?? "").not.toContain("TTFB 0.6 s");
+    expect(
+      Array.from(host?.querySelectorAll<HTMLElement>(".text-success") ?? []).some(
+        (element) => element.textContent === "TTFT 0.8 s",
+      ),
+    ).toBe(true);
     expect(host?.textContent ?? "").toContain("attempt-1");
     expect(host?.textContent ?? "").toContain("输入写 112");
     expect(host?.textContent ?? "").toContain("输入读 36");
@@ -831,6 +840,94 @@ describe("InvocationWorkflowDetailPanel", () => {
     expect(host?.textContent ?? "").toContain("归档");
     expect(host?.textContent ?? "").toContain("调用级");
     expect(host?.textContent ?? "").not.toContain("最终响应体：调用级存档。");
+  });
+
+  it("keeps measured TTFT separate from an unfinished response duration", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.streamLatencyMs = null;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("时间") &&
+        candidate.textContent.includes("TTFT 0.8 s"),
+    );
+    expect(timingButton).not.toBeNull();
+    expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
+  });
+
+  it("keeps a measured TTFT visible when stream timing is invalid", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = 800;
+    attemptEntry.attempt.streamLatencyMs = -1;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").toContain("TTFT 0.8 s");
+    expect(host?.textContent ?? "").not.toContain("Stream -1 ms");
+  });
+
+  it("does not present zero stream timing as a completed response", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = 0;
+    attemptEntry.attempt.streamLatencyMs = 0;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord({ status: "running" })} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").toContain("TTFT 0 s");
+    expect(host?.textContent ?? "").not.toContain("Stream 0 s");
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent?.includes("TTFT 0 s"),
+    );
+    expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
+  });
+
+  it("does not present a negative TTFT as a measured duration", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!attemptEntry?.attempt) {
+      throw new Error("workflow fixture must contain an attempt");
+    }
+    attemptEntry.attempt.firstTokenMs = -1_500;
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").not.toContain("TTFT -1.5 s");
+    expect(host?.textContent ?? "").toContain("TTFT —");
+    const timingButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent?.includes("TTFT —"),
+    );
+    expect(timingButton?.querySelector('[title="TTFT —"]')?.className).not.toContain(
+      "text-success",
+    );
   });
 
   it("lazy-fetches the selected non-final attempt response body by attempt identity", async () => {

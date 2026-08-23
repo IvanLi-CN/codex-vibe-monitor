@@ -898,7 +898,7 @@ async fn build_pool_upstream_request_body_follow_rejects_unsupported_request_enc
 }
 
 #[tokio::test]
-async fn query_pool_attempt_records_from_live_includes_request_compression_observation() {
+async fn query_pool_attempt_records_from_live_limits_ttft_to_the_final_attempt() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect in-memory sqlite");
@@ -917,9 +917,10 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
             status,
             payload,
             raw_response,
-            request_raw_codec
+            request_raw_codec,
+            first_token_ms
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
     .bind(invoke_id)
@@ -929,28 +930,68 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
     .bind(r#"{"endpoint":"/v1/responses"}"#)
     .bind(r#"{"ok":true}"#)
     .bind("identity")
+    .bind(840.0)
     .execute(&pool)
     .await
     .expect("insert invocation row");
 
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: None,
+    };
     insert_pool_upstream_request_attempt_with_scope(
         &pool,
-        &PoolUpstreamAttemptTraceContext {
-            invoke_id: invoke_id.to_string(),
-            occurred_at: occurred_at.to_string(),
-            endpoint: "/v1/responses".to_string(),
-            sticky_key: None,
-            requester_ip: None,
-            upstream_base_url_host: None,
-            request_model: None,
-        },
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        1,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED),
+        Some(StatusCode::OK),
+        None,
+        None,
+        None,
+        None,
+        Some(10.0),
+        Some(20.0),
+        Some(30.0),
+        Some("req_predecessor"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert predecessor pool attempt row");
+
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
         None,
         None,
         None,
         None,
         None,
         Some("https://api.openai.com"),
-        1,
+        2,
         1,
         0,
         Some(occurred_at),
@@ -979,28 +1020,207 @@ async fn query_pool_attempt_records_from_live_includes_request_compression_obser
     .await
     .expect("insert pool attempt row");
 
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        3,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert budget pseudo-terminal pool attempt row");
+
+    let rows = query_pool_attempt_records_from_live(&pool, invoke_id)
+        .await
+        .expect("query pool attempt records");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].first_token_ms, None);
+    assert_eq!(rows[1].first_token_ms, Some(840.0));
+    assert_eq!(rows[2].first_token_ms, None);
+    assert_eq!(
+        rows[1].downstream_request_content_encoding.as_deref(),
+        Some("identity")
+    );
+    assert_eq!(
+        rows[1].upstream_request_compression_algorithm.as_deref(),
+        Some("gzip")
+    );
+    assert_eq!(
+        rows[1].upstream_request_compression_mode.as_deref(),
+        Some("recompressed")
+    );
+    assert_eq!(rows[1].logical_body_bytes, Some(128));
+    assert_eq!(rows[1].transmitted_body_bytes, Some(64));
+    assert_eq!(rows[1].saved_bytes, Some(64));
+    assert_eq!(rows[1].ratio_pct, Some(-50.0));
+    assert_eq!(rows[1].approx_upload_bytes, Some(88));
+    assert_eq!(rows[1].approx_download_bytes, Some(560));
+}
+
+#[tokio::test]
+async fn query_pool_attempt_records_from_live_keeps_pending_streaming_ttft() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let invoke_id = "pool-pending-streaming-query";
+    let occurred_at = "2026-07-15 12:05:00";
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            payload,
+            raw_response,
+            request_raw_codec,
+            first_token_ms
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(r#"{"endpoint":"/v1/responses"}"#)
+    .bind(r#"{}"#)
+    .bind("identity")
+    .bind(720.0)
+    .execute(&pool)
+    .await
+    .expect("insert running invocation row");
+
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: None,
+        requester_ip: None,
+        upstream_base_url_host: None,
+        request_model: None,
+    };
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        Some(42),
+        Some("https://api.openai.com"),
+        2,
+        1,
+        0,
+        Some(occurred_at),
+        None,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(10.0),
+        Some(180.0),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert pending streaming pool attempt row");
+
     let rows = query_pool_attempt_records_from_live(&pool, invoke_id)
         .await
         .expect("query pool attempt records");
     assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].downstream_request_content_encoding.as_deref(),
-        Some("identity")
-    );
-    assert_eq!(
-        rows[0].upstream_request_compression_algorithm.as_deref(),
-        Some("gzip")
-    );
-    assert_eq!(
-        rows[0].upstream_request_compression_mode.as_deref(),
-        Some("recompressed")
-    );
-    assert_eq!(rows[0].logical_body_bytes, Some(128));
-    assert_eq!(rows[0].transmitted_body_bytes, Some(64));
-    assert_eq!(rows[0].saved_bytes, Some(64));
-    assert_eq!(rows[0].ratio_pct, Some(-50.0));
-    assert_eq!(rows[0].approx_upload_bytes, Some(88));
-    assert_eq!(rows[0].approx_download_bytes, Some(560));
+    assert_eq!(rows[0].first_token_ms, Some(720.0));
+    assert_eq!(rows[0].stream_latency_ms, None);
+
+    insert_pool_upstream_request_attempt_with_scope(
+        &pool,
+        &trace,
+        None,
+        None,
+        None,
+        None,
+        Some(41),
+        Some("https://api.openai.com"),
+        1,
+        1,
+        0,
+        Some(occurred_at),
+        Some(occurred_at),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
+        Some(StatusCode::BAD_GATEWAY),
+        None,
+        Some("upstream_failure"),
+        Some("first attempt failed"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("insert failed predecessor pool attempt row");
+
+    let retry_rows = query_pool_attempt_records_from_live(&pool, invoke_id)
+        .await
+        .expect("query retry pool attempt records");
+    assert_eq!(retry_rows.len(), 2);
+    assert_eq!(retry_rows[0].first_token_ms, None);
+    assert_eq!(retry_rows[1].first_token_ms, Some(720.0));
 }
 
 #[test]

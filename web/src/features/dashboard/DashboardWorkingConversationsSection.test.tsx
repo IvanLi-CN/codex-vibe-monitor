@@ -178,6 +178,7 @@ function createPreview(
     tReqParseMs: overrides.tReqParseMs ?? 7,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 90,
     tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 70,
+    firstTokenMs: overrides.firstTokenMs,
     tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
@@ -691,7 +692,7 @@ function renderSection(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -736,7 +737,7 @@ function renderSectionWithCards(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -842,7 +843,7 @@ function rerenderSection(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -888,7 +889,7 @@ function rerenderSectionWithCards(
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
-      slotKind: "current" | "previous";
+      slotKind: "current" | "previous" | "earlier";
       conversationSequenceId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
@@ -2336,8 +2337,12 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(firstRow instanceof HTMLElement)) {
       throw new Error("missing first upstream recent row");
     }
-    expect(firstRow.getAttribute("role")).toBe("button");
-    expect(firstRow.getAttribute("tabindex")).toBe("0");
+    expect(firstRow.getAttribute("role")).toBeNull();
+    expect(firstRow.getAttribute("tabindex")).toBeNull();
+    const rowAction = firstRow.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    expect(rowAction).toBeInstanceOf(HTMLButtonElement);
 
     const expectedConversationId = formatDashboardWorkingConversationSequenceId(
       `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
@@ -2373,7 +2378,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(endpointBadge?.className).toContain("min-h-5");
 
     act(() => {
-      firstRow.click();
+      (rowAction as HTMLButtonElement).click();
     });
 
     expect(onOpenInvocation).toHaveBeenCalledWith(
@@ -2580,6 +2585,7 @@ describe("DashboardWorkingConversationsSection", () => {
             invokeId: "invoke-header",
             occurredAt: "2026-04-04T10:04:00Z",
             status: "running",
+            firstTokenMs: 720,
           }),
         ]),
       ]),
@@ -2764,8 +2770,8 @@ describe("DashboardWorkingConversationsSection", () => {
     const accountName = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-account-name"]',
     );
-    const accountMeta = currentSlot.querySelector(
-      '[data-testid="dashboard-working-conversation-account-meta"]',
+    const slotModel = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-model"]',
     );
     const compactBadge = currentSlot.querySelector(
       '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
@@ -2775,22 +2781,20 @@ describe("DashboardWorkingConversationsSection", () => {
       !(accountLine instanceof HTMLDivElement) ||
       !(accountChip instanceof HTMLElement) ||
       !(accountName instanceof HTMLElement) ||
-      !(accountMeta instanceof HTMLDivElement) ||
+      !(slotModel instanceof HTMLDivElement) ||
       !(compactBadge instanceof HTMLElement)
     ) {
       throw new Error("missing account row or compact endpoint markers");
     }
 
-    expect(accountLine.className).toContain("sm:flex-nowrap");
+    expect(accountLine.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     expect(accountChip.className).not.toContain("bg-base-100");
     expect(accountChip.className).not.toContain("px-1.5");
     expect(accountName.className).toContain("truncate");
     expect(accountName.className).toContain("whitespace-nowrap");
     expect(accountName.className).not.toContain("line-clamp-2");
     expect(accountName.className).not.toContain("break-all");
-    expect(
-      accountChip.compareDocumentPosition(accountMeta) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    expect(slotModel.getAttribute("title")).toContain("gpt-5.4");
     expect(compactBadge.textContent).toMatch(/远程压缩|Compact/);
     expect(currentSlot.textContent).toContain("Team");
     expect(currentSlot.textContent).not.toContain("RQ ");
@@ -4088,13 +4092,18 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const placeholder = host?.querySelector(
+    const placeholders = host?.querySelectorAll(
       '[data-testid="dashboard-working-conversation-placeholder"]',
     );
 
-    expect(placeholder).not.toBeNull();
-    expect(placeholder?.textContent).toContain("上一条调用");
-    expect(placeholder?.textContent).toContain("等高占位");
+    expect(placeholders).toHaveLength(2);
+    for (const placeholder of placeholders ?? []) {
+      expect(placeholder.textContent).toBe("");
+      expect(placeholder.querySelectorAll(".working-conversation-placeholder-line")).toHaveLength(
+        2,
+      );
+      expect(placeholder.getAttribute("role")).toBe("group");
+    }
   });
 
   it("keeps the placeholder slot non-interactive when there is no previous invocation", () => {
@@ -4128,7 +4137,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(previousSlot).toBeNull();
-    expect(placeholder.getAttribute("role")).toBeNull();
+    expect(placeholder.getAttribute("role")).toBe("group");
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
@@ -4730,6 +4739,7 @@ describe("DashboardWorkingConversationsSection", () => {
           invokeId: "invoke-sequence-current",
           occurredAt: "2026-04-04T10:04:00Z",
           status: "running",
+          firstTokenMs: 720,
         }),
         createPreview({
           id: 1,
@@ -4796,16 +4806,25 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing slot header");
     }
     expect(slotHeader.className).toContain("grid");
-    expect(slotHeader.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    expect(slotHeader.className).toContain("grid-cols-[minmax(0,1fr)_auto]");
     const statusLabel = currentSlot.querySelector('[data-testid="invocation-phase-badge"]');
     if (!(statusLabel instanceof HTMLElement)) {
       throw new Error(`missing phase label in slot: ${currentSlot.textContent ?? ""}`);
     }
     expect(
-      slotHeader
-        .querySelector('[data-testid="dashboard-working-conversation-slot-label"]')
-        ?.textContent?.trim(),
-    ).toBe("当前调用");
+      slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
+    ).toBeNull();
+    const slotTime = slotHeader.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-time"]',
+    );
+    const headerModel = slotHeader.querySelector(
+      '[data-testid="dashboard-working-conversation-slot-model"]',
+    );
+    expect(slotTime).toBeInstanceOf(HTMLElement);
+    expect(headerModel).toBeInstanceOf(HTMLElement);
+    expect(
+      slotTime!.compareDocumentPosition(headerModel!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(slotHeader.querySelector('[data-testid="invocation-phase-badge"]')).toBe(statusLabel);
     expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
     expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");
@@ -6253,26 +6272,28 @@ describe("DashboardWorkingConversationsSection", () => {
     });
   });
 
-  it("formats dashboard latency pills with at most two decimals and without overflowing past four digits", () => {
+  it("formats dashboard latency pills with at most one decimal and keeps in-progress response time unavailable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+    const currentInvocation = createPreview({
+      id: 71,
+      invokeId: "invoke-latency-current",
+      occurredAt: "2026-04-04T10:04:57.744Z",
+      status: "running",
+      livePhase: "responding",
+      tReqReadMs: 400,
+      tReqParseMs: 100,
+      tUpstreamConnectMs: 700,
+      tUpstreamTtfbMs: 1_056,
+      firstTokenMs: 1_234,
+      tTotalMs: null,
+    });
+    currentInvocation.tUpstreamStreamMs = null;
 
     renderSection(
       createResponse([
         createConversation("pck-latency-compact", [
-          createPreview({
-            id: 71,
-            invokeId: "invoke-latency-current",
-            occurredAt: "2026-04-04T10:04:57.744Z",
-            status: "running",
-            livePhase: "responding",
-            tReqReadMs: 400,
-            tReqParseMs: 100,
-            tUpstreamConnectMs: 700,
-            tUpstreamTtfbMs: 1_056,
-            tUpstreamStreamMs: null,
-            tTotalMs: null,
-          }),
+          currentInvocation,
           createPreview({
             id: 70,
             invokeId: "invoke-latency-previous",
@@ -6282,7 +6303,17 @@ describe("DashboardWorkingConversationsSection", () => {
             tReqParseMs: 36,
             tUpstreamConnectMs: 100,
             tUpstreamTtfbMs: 0,
+            firstTokenMs: 0,
             tUpstreamStreamMs: 8_028_073.3,
+            tTotalMs: 0,
+          }),
+          createPreview({
+            id: 69,
+            invokeId: "invoke-latency-earlier",
+            occurredAt: "2026-04-04T10:02:00.000Z",
+            status: "completed",
+            firstTokenMs: 99_950,
+            tUpstreamStreamMs: 100_000,
             tTotalMs: 0,
           }),
         ]),
@@ -6294,13 +6325,145 @@ describe("DashboardWorkingConversationsSection", () => {
     )
       .map((element) => element.textContent ?? "")
       .join(" ");
+    const latencySlots = Array.from(
+      host?.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]') ?? [],
+    );
+    expect(latencySlots).toHaveLength(3);
+    expect(
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("1.2 s");
+    expect(
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.textContent,
+    ).toContain("--");
+    expect(
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.className,
+    ).toContain("text-success");
+    expect(
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("0 s");
+    expect(
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+        ?.textContent,
+    ).toContain("8028 s");
+    expect(
+      latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
+        ?.textContent,
+    ).toContain("100 s");
 
-    expect(readings).toContain("2.26 s");
+    expect(readings).toContain("1.2 s");
+    expect(readings).toContain("--");
+    expect(readings).toContain("0 s");
     expect(readings).toContain("8028 s");
-    expect(readings).not.toContain("2.256 s");
+    expect(readings).toContain("100 s");
+    expect(readings).not.toContain("1.234 s");
+    expect(readings).not.toContain("2.3 s");
+    expect(readings).not.toContain("7.89 s");
+    expect(readings).not.toContain("100.0 s");
     expect(readings).not.toContain("8,028");
 
     vi.useRealTimers();
+  });
+
+  it("keeps in-progress upstream account recent response time unavailable", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = 0;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const responseTime = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-response-time"]',
+    );
+    expect(responseTime?.textContent).toBe("--");
+  });
+
+  it("keeps missing upstream account recent TTFT unavailable", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = null;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const firstToken = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
+    );
+    expect(firstToken?.textContent).toBe("--");
+    expect(firstToken?.className).not.toContain("text-success");
+  });
+
+  it("keeps invalid upstream account recent TTFT neutral", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = -1;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const firstToken = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
+    );
+    expect(firstToken?.textContent).toBe("--");
+    expect(firstToken?.className).not.toContain("text-success");
+  });
+
+  it("keeps nonfinite upstream account timing unavailable", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = Number.POSITIVE_INFINITY;
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = Number.NaN;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const row = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    expect(
+      row?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.textContent,
+    ).toBe("--");
+    expect(
+      row?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')?.textContent,
+    ).toBe("--");
   });
 
   it("toggles selection mode on conversation cards and restores navigation after exit", async () => {

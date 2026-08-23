@@ -87,7 +87,7 @@ export function InvocationPhaseChip({
           PHASE_TEXT_CLASSNAMES[phase],
           className,
         )}
-        aria-label={showLabel ? undefined : label}
+        aria-label={label}
         title={showLabel ? undefined : label}
         role="img"
       >

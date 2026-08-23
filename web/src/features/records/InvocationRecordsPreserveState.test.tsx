@@ -142,8 +142,8 @@ describe("records stale-data rendering", () => {
     );
 
     const text = host?.textContent ?? "";
-    expect(text).toContain("0.62 s");
-    expect(text).toContain("0.48 s");
+    expect(text).toContain("0.6 s");
+    expect(text).toContain("0.5 s");
     expect(text).not.toContain("0.91 s");
   });
 
