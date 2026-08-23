@@ -1099,6 +1099,54 @@ pub(crate) async fn query_upstream_account_usage_breakdown_hourly_rollup_range_t
         .map_err(Into::into)
 }
 
+pub(crate) async fn query_upstream_account_usage_breakdown_hourly_rollup_range_bounded_tx(
+    tx: &mut SqliteConnection,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    max_bytes: usize,
+) -> Result<Vec<UpstreamAccountUsageBreakdownHourlyRollupRecord>, ApiError> {
+    let max_bytes = i64::try_from(max_bytes)
+        .map_err(|_| anyhow!("usage rollup byte budget does not fit SQLite integer"))?;
+    let mut budget_query = QueryBuilder::<Sqlite>::new(
+        "SELECT COALESCE(SUM(CAST(256 + length(COALESCE(normalized_model, '')) + \
+         length(COALESCE(normalized_reasoning_effort, '')) AS INTEGER)), 0) \
+         FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch >= ",
+    );
+    budget_query
+        .push_bind(range_start_epoch)
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end_epoch);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        budget_query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        budget_query
+            .push(" AND upstream_account_id = ")
+            .push_bind(upstream_account_id);
+    }
+    let estimated_bytes = budget_query
+        .build_query_scalar::<i64>()
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(ApiError::from)?;
+    if estimated_bytes > max_bytes {
+        return Err(ApiError::from(anyhow!(
+            "usage rollup byte budget exceeded ({estimated_bytes} > {max_bytes})"
+        )));
+    }
+
+    query_upstream_account_usage_breakdown_hourly_rollup_range_tx(
+        tx,
+        range_start_epoch,
+        range_end_epoch,
+        source_scope,
+        upstream_account_id,
+    )
+    .await
+}
+
 pub(crate) async fn query_upstream_account_stats_rollup_range_tx(
     tx: &mut SqliteConnection,
     table_name: &str,

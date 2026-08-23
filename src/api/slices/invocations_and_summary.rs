@@ -8223,12 +8223,13 @@ async fn load_summary_projection_rollup_usage_in_range(
         .await?;
     let mut tx = pool.begin().await?;
     let (start_epoch, end_epoch) = range.unwrap_or((i64::MIN, i64::MAX));
-    let rows = query_upstream_account_usage_breakdown_hourly_rollup_range_tx(
+    let rows = query_upstream_account_usage_breakdown_hourly_rollup_range_bounded_tx(
         tx.as_mut(),
         start_epoch,
         end_epoch,
         InvocationSourceScope::All,
         None,
+        SUMMARY_PROJECTION_MAX_ROLLUP_BYTES,
     )
     .await
     .map_err(|error| anyhow!("summary projection usage rollup hydration failed: {error:?}"))?;
@@ -27735,6 +27736,42 @@ mod request_compression_query_tests {
                 .expect("rollup costs")
                 .input,
             1.25
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_usage_rollup_rejects_oversized_text_before_fetch() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let bucket = align_bucket_epoch(
+            (Utc::now() - ChronoDuration::hours(2)).timestamp(),
+            3_600,
+            0,
+        );
+        let oversized_model = "m".repeat(SUMMARY_PROJECTION_MAX_ROLLUP_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly \
+             (bucket_start_epoch, source, upstream_account_key, upstream_account_id, \
+              normalized_model, normalized_reasoning_effort, request_count, \
+              cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) \
+             VALUES (?1, 'proxy', 'none', NULL, ?2, 'high', 1, 0, 0, 0, 0.0, 1)",
+        )
+        .bind(bucket)
+        .bind(oversized_model)
+        .execute(&state.pool)
+        .await
+        .expect("insert oversized usage rollup");
+
+        let error = load_summary_projection_rollup_usage(&state.pool)
+            .await
+            .expect_err("oversized usage text must fail closed before fetch_all");
+        assert!(
+            error
+                .to_string()
+                .contains("usage rollup byte budget exceeded"),
+            "oversized usage rows must be rejected by the preflight budget: {error:#}"
         );
     }
 
