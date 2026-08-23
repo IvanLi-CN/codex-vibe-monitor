@@ -7867,6 +7867,66 @@ fn summary_projection_archive_row_bytes(row: &SummaryProjectionArchiveRow) -> us
         + summary_projection_optional_string_bytes(row.failure_class.as_ref())
 }
 
+async fn ensure_summary_projection_archive_text_budget(
+    archive_pool: &Pool<Sqlite>,
+    exact_ranges: &[ExactUtcRange],
+    columns: &HashMap<&str, bool>,
+    limit: usize,
+) -> Result<(), anyhow::Error> {
+    if exact_ranges.is_empty() {
+        return Ok(());
+    }
+    let mut text_columns = vec!["invoke_id", "occurred_at"];
+    for column in [
+        "source",
+        "model",
+        "payload",
+        "status",
+        "error_message",
+        "failure_kind",
+        "failure_class",
+    ] {
+        if columns.get(column).copied().unwrap_or(false) {
+            text_columns.push(column);
+        }
+    }
+    text_columns.sort_unstable();
+    text_columns.dedup();
+    let row_bytes = text_columns
+        .iter()
+        .map(|column| format!("length(CAST(COALESCE({column}, '') AS BLOB))"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT COALESCE(SUM(row_bytes), 0) FROM (SELECT 512 + ");
+    query
+        .push(row_bytes.as_str())
+        .push(" AS row_bytes FROM codex_invocations WHERE ");
+    for (index, _) in exact_ranges.iter().enumerate() {
+        if index > 0 {
+            query.push(" OR ");
+        }
+        query
+            .push("(occurred_at >= ")
+            .push_bind(db_occurred_at_lower_bound(exact_ranges[index].start));
+        query
+            .push(" AND occurred_at < ")
+            .push_bind(db_occurred_at_upper_bound(exact_ranges[index].end))
+            .push(")");
+    }
+    query.push(" LIMIT ").push_bind(limit as i64).push(")");
+    let estimated_bytes = query
+        .build_query_scalar::<i64>()
+        .fetch_one(archive_pool)
+        .await?;
+    if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
+        return Err(anyhow!(
+            "summary projection archive byte budget exceeded before preview fetch ({estimated_bytes} > {SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, FromRow)]
 struct SummaryProjectionArchiveRow {
     id: i64,
@@ -8841,6 +8901,13 @@ async fn merge_summary_projection_archive_records_with_coverage(
         hourly_rollup_usage,
         known_account_ids,
     );
+    ensure_summary_projection_archive_text_budget(
+        archive_pool,
+        &exact_ranges,
+        &columns,
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+    )
+    .await?;
     let mut bind_index = 1usize;
     let mut bounded_query = query;
     bounded_query.push_str(" WHERE ");
@@ -9600,6 +9667,18 @@ async fn build_summary_projection(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
+    ensure_summary_projection_live_text_budget(
+        &state.pool,
+        InvocationSourceScope::All,
+        ExactUtcRange {
+            start: live_start,
+            end,
+        },
+        None,
+        false,
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+    )
+    .await?;
     let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
         &state.pool,
         InvocationSourceScope::All,
@@ -9665,6 +9744,21 @@ async fn build_summary_projection(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
+    ensure_summary_projection_live_text_budget(
+        &state.pool,
+        InvocationSourceScope::All,
+        ExactUtcRange {
+            start: Utc
+                .timestamp_opt(0, 0)
+                .single()
+                .expect("Unix epoch is valid"),
+            end,
+        },
+        None,
+        false,
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+    )
+    .await?;
     let mut recent_rows = query_live_upstream_account_activity_preview_rows_with_limit(
         &state.pool,
         InvocationSourceScope::All,
@@ -15103,6 +15197,81 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
         );
     }
     Ok(rows)
+}
+
+async fn ensure_summary_projection_live_text_budget(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    in_progress_only: bool,
+    limit: usize,
+) -> Result<(), anyhow::Error> {
+    // Keep the scalar preflight conservative and bounded to the same newest prefix that the
+    // preview query will materialize. Payload covers JSON-derived preview fields; the optional
+    // columns cover legacy schemas where model/error text is stored outside payload.
+    let mut text_columns = vec!["invoke_id", "occurred_at", "status", "source", "payload"];
+    for column in [
+        "model",
+        "request_model",
+        "upstream_request_model",
+        "error_message",
+        "failure_kind",
+        "failure_class",
+        "downstream_error_message",
+    ] {
+        if crate::stats::sqlite_table_has_column(pool, "codex_invocations", column).await? {
+            text_columns.push(column);
+        }
+    }
+    text_columns.sort_unstable();
+    text_columns.dedup();
+    let row_bytes = text_columns
+        .iter()
+        .map(|column| format!("length(CAST(COALESCE({column}, '') AS BLOB))"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT COALESCE(SUM(row_bytes), 0) FROM (SELECT ");
+    query
+        .push("512 + ")
+        .push(row_bytes.as_str())
+        .push(" AS row_bytes FROM codex_invocations WHERE occurred_at >= ");
+    query
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if in_progress_only {
+        query.push(" AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')");
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str());
+        match upstream_account_id {
+            Some(upstream_account_id) => {
+                query.push(" = ").push_bind(upstream_account_id);
+            }
+            None => {
+                query.push(" IS NULL");
+            }
+        }
+    }
+    query
+        .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
+        .push_bind(limit as i64)
+        .push(")");
+    let estimated_bytes = query.build_query_scalar::<i64>().fetch_one(pool).await?;
+    if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
+        return Err(anyhow!(
+            "summary projection canonical record byte budget exceeded before preview fetch ({estimated_bytes} > {SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+        ));
+    }
+    Ok(())
 }
 
 async fn query_live_upstream_account_activity_preview_candidate_ids_per_account(
@@ -27772,6 +27941,93 @@ mod request_compression_query_tests {
                 .to_string()
                 .contains("usage rollup byte budget exceeded"),
             "oversized usage rows must be rejected by the preflight budget: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_rejects_oversized_live_payload_before_preview_fetch() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('oversized-summary-live', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, ?1, '', 'full')",
+        )
+        .bind(oversized_payload)
+        .execute(&state.pool)
+        .await
+        .expect("insert oversized live payload");
+
+        let error = hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect_err("oversized live payload must fail before preview materialization");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical record byte budget exceeded before preview fetch"),
+            "live byte preflight must reject oversized payloads: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_rejects_oversized_archive_payload_before_preview_fetch() {
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory archive pool");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+             id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
+             source TEXT, model TEXT, payload TEXT, input_tokens INTEGER, output_tokens INTEGER, \
+             cache_input_tokens INTEGER, reasoning_tokens INTEGER, total_tokens INTEGER, cost REAL, \
+             cost_input REAL, cost_cache_write REAL, cost_cache_read REAL, cost_output REAL, \
+             cost_reasoning REAL, status TEXT, error_message TEXT, failure_kind TEXT, failure_class TEXT)",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create archive payload fixture");
+        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
+             VALUES (1, 'oversized-summary-archive', datetime('now', '+8 hours', '-1 minute'), 'proxy', ?1, 1, 0.1, 'success')",
+        )
+        .bind(oversized_payload)
+        .execute(&archive_pool)
+        .await
+        .expect("insert oversized archive payload");
+        let columns = [
+            ("source", true),
+            ("model", true),
+            ("payload", true),
+            ("status", true),
+            ("error_message", true),
+            ("failure_kind", true),
+            ("failure_class", true),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        let range = ExactUtcRange {
+            start: Utc::now() - ChronoDuration::hours(2),
+            end: Utc::now() + ChronoDuration::minutes(1),
+        };
+        let error = ensure_summary_projection_archive_text_budget(
+            &archive_pool,
+            &[range],
+            &columns,
+            SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+        )
+        .await
+        .expect_err("oversized archive payload must fail before preview materialization");
+        assert!(
+            error
+                .to_string()
+                .contains("archive byte budget exceeded before preview fetch"),
+            "archive byte preflight must reject oversized payloads: {error:#}"
         );
     }
 
