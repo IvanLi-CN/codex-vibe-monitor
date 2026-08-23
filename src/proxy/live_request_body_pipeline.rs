@@ -31,6 +31,7 @@ impl std::error::Error for LiveDecodedRequestBodyError {
 
 struct LiveDecodedRequestBodyReader<R> {
     inner: R,
+    logical_bytes_observed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<R> AsyncRead for LiveDecodedRequestBodyReader<R>
@@ -42,11 +43,19 @@ where
         context: &mut std::task::Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<io::Result<()>> {
+        let before = buffer.filled().len();
         match std::pin::Pin::new(&mut self.inner).poll_read(context, buffer) {
             std::task::Poll::Ready(Err(error)) => {
                 std::task::Poll::Ready(Err(live_decoded_request_body_error(error)))
             }
-            other => other,
+            std::task::Poll::Ready(Ok(())) => {
+                self.logical_bytes_observed.fetch_add(
+                    buffer.filled().len().saturating_sub(before),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                std::task::Poll::Ready(Ok(()))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
 }
@@ -68,6 +77,51 @@ pub(crate) struct LiveResponsesBodyTransformConfig {
     pub(crate) codex_imagegen_rewrite_mode: CodexImagegenRewriteMode,
     pub(crate) codex_imagegen_protocol: Option<CodexImagegenProtocol>,
     pub(crate) model_mapping_target: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum LiveRouteCommitPolicy {
+    #[default]
+    FullBody,
+    ModelAndBindings {
+        sticky_routes_present: bool,
+        prompt_cache_routes_present: bool,
+    },
+}
+
+impl LiveRouteCommitPolicy {
+    #[cfg(test)]
+    const fn model_only() -> Self {
+        Self::ModelAndBindings {
+            sticky_routes_present: false,
+            prompt_cache_routes_present: false,
+        }
+    }
+
+    fn permits_pre_eof_commit(self) -> bool {
+        !matches!(self, Self::FullBody)
+    }
+
+    fn requires_pending_route_field(self, key: &str) -> bool {
+        match self {
+            Self::FullBody => true,
+            Self::ModelAndBindings {
+                sticky_routes_present,
+                prompt_cache_routes_present,
+            } => {
+                key == "model"
+                    || ((sticky_routes_present || prompt_cache_routes_present)
+                        && matches!(
+                            key,
+                            "metadata"
+                                | "sticky_key"
+                                | "stickyKey"
+                                | "prompt_cache_key"
+                                | "promptCacheKey"
+                        ))
+            }
+        }
+    }
 }
 
 pub(crate) struct LiveResponsesRequestBodyPipeline {
@@ -100,6 +154,18 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
     raw_body: Body,
     downstream_content_encoding: Option<String>,
 ) -> LiveResponsesRequestBodyPipeline {
+    spawn_live_responses_request_body_pipeline_with_route_commit_policy(
+        raw_body,
+        downstream_content_encoding,
+        LiveRouteCommitPolicy::FullBody,
+    )
+}
+
+pub(crate) fn spawn_live_responses_request_body_pipeline_with_route_commit_policy(
+    raw_body: Body,
+    downstream_content_encoding: Option<String>,
+    route_commit_policy: LiveRouteCommitPolicy,
+) -> LiveResponsesRequestBodyPipeline {
     let (config_tx, config_rx) = oneshot::channel();
     let (probe_tx, probe_rx) = watch::channel(PoolReplayBodyStickyKeyProbeStatus::Pending);
     let (logical_tx, logical_rx) = mpsc::channel::<Result<Bytes, io::Error>>(8);
@@ -117,6 +183,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
         let result = run_live_responses_request_body_pipeline(
             raw_body,
             downstream_content_encoding.as_deref(),
+            route_commit_policy,
             config_rx,
             &probe_tx,
             &mut logical_tx,
@@ -200,6 +267,7 @@ pub(crate) fn live_responses_target_request_content_encoding_with_resolved(
 async fn run_live_responses_request_body_pipeline(
     raw_body: Body,
     downstream_content_encoding: Option<&str>,
+    route_commit_policy: LiveRouteCommitPolicy,
     config_rx: oneshot::Receiver<LiveResponsesBodyTransformConfig>,
     probe_tx: &watch::Sender<PoolReplayBodyStickyKeyProbeStatus>,
     logical_tx: &mut Option<mpsc::Sender<Result<Bytes, io::Error>>>,
@@ -209,12 +277,16 @@ async fn run_live_responses_request_body_pipeline(
     oauth_rewrite_tx: watch::Sender<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
     resolved_encoding_tx: watch::Sender<Option<RequestBodyContentEncoding>>,
 ) -> io::Result<()> {
-    let (reader, resolved_encoding) =
+    let (reader, resolved_encoding, raw_bytes_observed) =
         live_decoded_request_reader(raw_body, downstream_content_encoding)
             .await
             .map_err(live_decoded_request_body_error)?;
     let _ = resolved_encoding_tx.send(Some(resolved_encoding));
-    let mut reader = LiveDecodedRequestBodyReader { inner: reader };
+    let logical_bytes_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut reader = LiveDecodedRequestBodyReader {
+        inner: reader,
+        logical_bytes_observed: logical_bytes_observed.clone(),
+    };
     let Some(first) = read_non_whitespace(&mut reader).await? else {
         let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
             PoolReplayBodyKeyProbe::default(),
@@ -253,7 +325,12 @@ async fn run_live_responses_request_body_pipeline(
                 return Err(invalid_live_json("request body has trailing content"));
             }
             if selected_writer.is_none() {
-                let probe = live_routing_probe_from_fields(&pending_fields, true);
+                let probe = live_routing_probe_from_fields(
+                    &pending_fields,
+                    true,
+                    raw_bytes_observed.as_ref(),
+                    logical_bytes_observed.as_ref(),
+                );
                 let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(probe));
                 let Ok(selected_config) = config_rx
                     .take()
@@ -330,25 +407,23 @@ async fn run_live_responses_request_body_pipeline(
             return Err(invalid_live_json("request object value is missing"));
         };
 
-        // Once the required model, all enabled route metadata seen so far, and
-        // the potentially route-affecting input field are buffered, commit the
-        // route before consuming the next ordinary value. Until `input` has
-        // been observed, a later field may still introduce image capability or
-        // encrypted-content requirements, so an ordinary field must remain in
-        // the prefix buffer even when the model is already known.
-        let input_seen = pending_fields
-            .iter()
-            .any(|(pending_key, _)| pending_key == "input");
+        // The dispatcher uses the immutable snapshot to decide which root
+        // fields still affect this route. Once those fields have been parsed,
+        // begin forwarding the next field instead of buffering the input body.
         if selected_writer.is_none()
+            && route_commit_policy.permits_pre_eof_commit()
             && pending_fields
                 .iter()
                 .any(|(pending_key, _)| pending_key == "model")
-            && !is_precommit_routing_root_field(&key)
-            && input_seen
-            && !should_defer_route_commit(&key, value_start)
+            && !route_commit_policy.requires_pending_route_field(&key)
         {
             let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                live_routing_probe_from_fields(&pending_fields, false),
+                live_routing_probe_from_fields(
+                    &pending_fields,
+                    false,
+                    raw_bytes_observed.as_ref(),
+                    logical_bytes_observed.as_ref(),
+                ),
             ));
             let Ok(selected_config) = config_rx
                 .take()
@@ -473,14 +548,25 @@ fn start_live_encoder(
 async fn live_decoded_request_reader(
     raw_body: Body,
     content_encoding: Option<&str>,
-) -> io::Result<(BoxedPoolRequestReader, RequestBodyContentEncoding)> {
+) -> io::Result<(
+    BoxedPoolRequestReader,
+    RequestBodyContentEncoding,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+)> {
     let needs_deflate_prefix = parse_content_encodings(content_encoding)
         .iter()
         .any(|encoding| encoding == "deflate");
     let minimum_prefix_bytes = if needs_deflate_prefix { 2 } else { 1 };
-    let mut source = raw_body
-        .into_data_stream()
-        .map(|chunk| chunk.map_err(|err| io::Error::other(err.to_string())));
+    let raw_bytes_observed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let raw_bytes_observed_for_stream = raw_bytes_observed.clone();
+    let mut source = raw_body.into_data_stream().map(move |chunk| match chunk {
+        Ok(chunk) => {
+            raw_bytes_observed_for_stream
+                .fetch_add(chunk.len(), std::sync::atomic::Ordering::Relaxed);
+            Ok(chunk)
+        }
+        Err(err) => Err(io::Error::other(err.to_string())),
+    });
     let mut prefix = Vec::new();
     while prefix.len() < minimum_prefix_bytes {
         let Some(chunk) = source.next().await else {
@@ -500,12 +586,14 @@ async fn live_decoded_request_reader(
     let decoded = decode_pool_request_reader(raw_reader, encoding)
         .await
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.message))?;
-    Ok((decoded, encoding))
+    Ok((decoded, encoding, raw_bytes_observed))
 }
 
 fn live_routing_probe_from_fields(
     fields: &[(String, Vec<u8>)],
     root_object_complete: bool,
+    raw_bytes_observed: &std::sync::atomic::AtomicUsize,
+    logical_bytes_observed: &std::sync::atomic::AtomicUsize,
 ) -> PoolReplayBodyKeyProbe {
     let mut object = serde_json::Map::new();
     for (key, value) in fields {
@@ -534,30 +622,11 @@ fn live_routing_probe_from_fields(
             ImageIntent::Unknown
         },
         root_object_complete,
+        raw_bytes_observed: Some(raw_bytes_observed.load(std::sync::atomic::Ordering::Relaxed)),
+        logical_bytes_observed: Some(
+            logical_bytes_observed.load(std::sync::atomic::Ordering::Relaxed),
+        ),
     }
-}
-
-fn is_precommit_routing_root_field(key: &str) -> bool {
-    matches!(
-        key,
-        "model"
-            | "tools"
-            | "tool_choice"
-            | "metadata"
-            | "sticky_key"
-            | "stickyKey"
-            | "prompt_cache_key"
-            | "promptCacheKey"
-    )
-}
-
-fn should_defer_route_commit(_key: &str, _value_start: u8) -> bool {
-    // JSON object fields are unordered and optional. After any ordinary field
-    // there may still be a later input, tools, metadata, sticky, prompt-cache,
-    // or encrypted-content field that changes the route. Without a schema-level
-    // end marker, EOF is the only proof that the route-affecting root set is
-    // complete, so the live encoder must stay uncommitted until root EOF.
-    true
 }
 
 struct LiveRootFieldTransformer {
@@ -1383,6 +1452,81 @@ mod tests {
 
         let output = collect_body(pipeline.body).await;
         assert!(pipeline.first_upstream_body_poll_at_rx.borrow().is_some());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::json!({"model":"gpt-5.6","input":"delayed tail"})
+        );
+    }
+
+    #[test]
+    fn route_commit_policy_waits_only_for_enabled_binding_fields() {
+        let model_only = LiveRouteCommitPolicy::model_only();
+        assert!(model_only.permits_pre_eof_commit());
+        assert!(model_only.requires_pending_route_field("model"));
+        assert!(!model_only.requires_pending_route_field("metadata"));
+        assert!(!model_only.requires_pending_route_field("input"));
+
+        let bindings = LiveRouteCommitPolicy::ModelAndBindings {
+            sticky_routes_present: true,
+            prompt_cache_routes_present: true,
+        };
+        assert!(bindings.requires_pending_route_field("metadata"));
+        assert!(bindings.requires_pending_route_field("sticky_key"));
+        assert!(bindings.requires_pending_route_field("prompt_cache_key"));
+        assert!(!bindings.requires_pending_route_field("input"));
+    }
+
+    #[tokio::test]
+    async fn model_only_route_gate_starts_upstream_body_before_downstream_eof() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":"delayed "#,
+        )))
+        .await
+        .expect("send request prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline_with_route_commit_policy(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+            LiveRouteCommitPolicy::model_only(),
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(!probe.root_object_complete);
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let mut upstream_body = pipeline.body.into_data_stream();
+        let prefix = timeout(Duration::from_secs(1), upstream_body.next())
+            .await
+            .expect("upstream body starts before downstream EOF")
+            .expect("upstream body stream remains open")
+            .expect("upstream body chunk");
+        assert!(
+            prefix.starts_with(b"{\"model\":\"gpt-5.6\",\"input\":"),
+            "unexpected upstream prefix: {prefix:?}"
+        );
+
+        tx.send(Ok(Bytes::from_static(b"tail\"}")))
+            .await
+            .expect("send delayed tail");
+        drop(tx);
+        let mut output = prefix.to_vec();
+        while let Some(chunk) = upstream_body.next().await {
+            output.extend_from_slice(&chunk.expect("upstream body tail"));
+        }
         assert_eq!(
             serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
             serde_json::json!({"model":"gpt-5.6","input":"delayed tail"})

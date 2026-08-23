@@ -871,6 +871,23 @@ async fn prepare_capture_request_body(
         .read()
         .await
         .encrypted_session_owner_routing_enabled;
+    let codex_imagegen_request = codex_imagegen_protocol_from_headers(headers).is_some();
+    let live_route_commit_policy = live_routing_snapshot
+        .as_ref()
+        .map(|(snapshot, _)| {
+            let dependencies = snapshot.live_request_route_dependencies;
+            if dependencies
+                .requires_full_body_commit(encrypted_owner_routing_enabled, codex_imagegen_request)
+            {
+                LiveRouteCommitPolicy::FullBody
+            } else {
+                LiveRouteCommitPolicy::ModelAndBindings {
+                    sticky_routes_present: dependencies.sticky_routes_present,
+                    prompt_cache_routes_present: dependencies.prompt_cache_routes_present,
+                }
+            }
+        })
+        .unwrap_or(LiveRouteCommitPolicy::FullBody);
 
     let replayable_body = spawn_pool_replayable_request_body(
         body,
@@ -882,10 +899,13 @@ async fn prepare_capture_request_body(
         .get(header::CONTENT_ENCODING)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string);
-    let mut live_pipeline = Some(spawn_live_responses_request_body_pipeline(
-        replayable_body.body,
-        downstream_content_encoding.clone(),
-    ));
+    let mut live_pipeline = Some(
+        spawn_live_responses_request_body_pipeline_with_route_commit_policy(
+            replayable_body.body,
+            downstream_content_encoding.clone(),
+            live_route_commit_policy,
+        ),
+    );
     let live_request_body_error_rx = live_pipeline
         .as_ref()
         .expect("live pipeline is present before the first attempt")
@@ -978,7 +998,7 @@ async fn prepare_capture_request_body(
                         None,
                         capture_target.endpoint(),
                         live_body_key_probe.image_intent,
-                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                        codex_imagegen_request,
                         Some(live_routing_reservation_key.as_str()),
                     )
                     .await
@@ -997,7 +1017,7 @@ async fn prepare_capture_request_body(
                         None,
                         capture_target.endpoint(),
                         live_body_key_probe.image_intent,
-                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                        codex_imagegen_request,
                         Some(live_routing_reservation_key.as_str()),
                     )
                     .await
@@ -1358,6 +1378,8 @@ async fn prepare_capture_request_body(
         live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
         live_first_experiment_group,
         live_route_finalization_measurement: Some(LiveRequestStreamingMeasurement {
+            route_finalization_raw_bytes: live_body_key_probe.raw_bytes_observed,
+            route_finalization_logical_bytes: live_body_key_probe.logical_bytes_observed,
             route_finalization_ms: Some(live_route_finalization_ms),
             route_finalization_outcome: Some(route_finalization_outcome),
             route_dependency_factors: live_route_dependency_factors(
@@ -1746,11 +1768,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         None
     };
     if let Some(route_measurement) = live_route_finalization_measurement.as_mut() {
-        route_measurement.route_finalization_raw_bytes = Some(request_body_bytes_len);
-        route_measurement.route_finalization_logical_bytes = logical_request_body_bytes;
-        route_measurement.route_finalization_raw_ratio = Some(1.0);
-        route_measurement.route_finalization_logical_ratio =
-            logical_request_body_bytes.map(|_| 1.0);
+        let route_raw_bytes = route_measurement
+            .route_finalization_raw_bytes
+            .unwrap_or(request_body_bytes_len);
+        let route_logical_bytes = route_measurement
+            .route_finalization_logical_bytes
+            .or(logical_request_body_bytes);
+        route_measurement.route_finalization_raw_bytes = Some(route_raw_bytes);
+        route_measurement.route_finalization_logical_bytes = route_logical_bytes;
+        route_measurement.route_finalization_raw_ratio = (request_body_bytes_len != 0)
+            .then(|| route_raw_bytes as f64 / request_body_bytes_len as f64);
+        route_measurement.route_finalization_logical_ratio = route_logical_bytes
+            .zip(logical_request_body_bytes)
+            .and_then(|(route_bytes, body_bytes)| {
+                (body_bytes != 0).then(|| route_bytes as f64 / body_bytes as f64)
+            });
     }
     let live_first_eligible = persisted_live_request_streaming_decision
         .as_ref()
@@ -2952,12 +2984,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         live_request_streaming_measurement.routing_hot_cache_cold_load =
             route_measurement.routing_hot_cache_cold_load;
         live_request_streaming_measurement.route_finalization_raw_bytes =
-            Some(request_body_bytes_len);
+            route_measurement.route_finalization_raw_bytes;
         live_request_streaming_measurement.route_finalization_logical_bytes =
-            logical_request_body_bytes;
-        live_request_streaming_measurement.route_finalization_raw_ratio = Some(1.0);
+            route_measurement.route_finalization_logical_bytes;
+        live_request_streaming_measurement.route_finalization_raw_ratio =
+            route_measurement.route_finalization_raw_ratio;
         live_request_streaming_measurement.route_finalization_logical_ratio =
-            logical_request_body_bytes.map(|_| 1.0);
+            route_measurement.route_finalization_logical_ratio;
     }
     let mut response_running_record = build_running_proxy_capture_record(
         &invoke_id,
