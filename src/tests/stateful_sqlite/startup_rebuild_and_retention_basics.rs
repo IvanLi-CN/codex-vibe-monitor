@@ -1061,6 +1061,11 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
         .expect("background bootstrap should stop after cancellation")
         .expect("background bootstrap task should join");
     drop(rollup_guard);
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush deferred cancellation task-history finish");
 
     let (status, summary, detail) =
         wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
