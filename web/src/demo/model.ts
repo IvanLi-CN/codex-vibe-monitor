@@ -718,9 +718,9 @@ class DemoModel {
   createExternalApiKey() {
     const key = {
       id: 40 + this.#state.externalApiKeys.length + 1,
-      name: `Demo integration ${this.#state.externalApiKeys.length + 1}`,
+      name: `Synthetic integration ${this.#state.externalApiKeys.length + 1}`,
       status: "active",
-      prefix: `cvm_demo_${this.#state.externalApiKeys.length + 1}`,
+      prefix: `cvm_synthetic_${this.#state.externalApiKeys.length + 1}`,
       lastUsedAt: null,
       createdAt: DEMO_NOW,
       updatedAt: DEMO_NOW,
@@ -732,7 +732,7 @@ class DemoModel {
     this.record("模拟创建外部 API Key");
     return {
       key: clone(key),
-      secret: "demo-generated-key-not-valid",
+      secret: "cvm-synthetic-key-not-valid",
     };
   }
 

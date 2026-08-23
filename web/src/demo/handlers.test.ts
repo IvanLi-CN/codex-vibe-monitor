@@ -323,9 +323,9 @@ describe("demo MSW handlers", () => {
     const listingBody = await listing.text();
 
     expect(response.status).toBe(201);
-    expect(payload.key.name).toBe("Demo integration 7");
-    expect(payload.secret).toBe("demo-generated-key-not-valid");
-    expect(listingBody).toContain("Demo integration 7");
+    expect(payload.key.name).toBe("Synthetic integration 7");
+    expect(payload.secret).toBe("cvm-synthetic-key-not-valid");
+    expect(listingBody).toContain("Synthetic integration 7");
     expect(listingBody).not.toContain("submitted-name-must-not-persist");
   });
 

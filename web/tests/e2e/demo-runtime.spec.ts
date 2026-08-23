@@ -69,6 +69,11 @@ test.describe("Web Demo runtime", () => {
     await page.goto("/#/dashboard?demoScene=attention&demoTheme=dark");
     await expect(page.locator("html")).toHaveAttribute("data-color-mode", "dark");
     await expect(page).toHaveURL(/demoScene=attention/);
+    const attentionSummary = await page.evaluate(async () => {
+      const response = await fetch("/api/stats/summary");
+      return (await response.json()) as { totalCount: number };
+    });
+    expect(attentionSummary.totalCount).toBeGreaterThan(0);
 
     const lightPage = await page.context().newPage();
     try {
@@ -76,6 +81,11 @@ test.describe("Web Demo runtime", () => {
       await expect(lightPage).toHaveURL(/demoScene=empty/);
       await expect(lightPage.locator("html")).toHaveAttribute("data-color-mode", "light");
       await expect(lightPage).toHaveURL(/demoTheme=light/);
+      const emptySummary = await lightPage.evaluate(async () => {
+        const response = await fetch("/api/stats/summary");
+        return (await response.json()) as { totalCount: number };
+      });
+      expect(emptySummary.totalCount).toBe(0);
     } finally {
       await lightPage.close();
     }
@@ -93,10 +103,17 @@ test.describe("Web Demo runtime", () => {
 
     await page.getByText("创建 Key", { exact: true }).click();
     const dialog = page.getByRole("dialog");
-    await dialog.getByPlaceholder("例如：Vendor A upstream sync", { exact: true }).fill("Demo Key");
+    await dialog
+      .getByPlaceholder("例如：Vendor A upstream sync", { exact: true })
+      .fill("Synthetic Key");
     await dialog.getByText("创建 Key", { exact: true }).click();
 
     await expect(dialog).toBeHidden();
-    await expect(page.getByText("Demo Key", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("external-api-key-secret-alert")).toBeVisible();
+    const createdKeys = await page.evaluate(async () => {
+      const response = await fetch("/api/settings/external-api-keys");
+      return (await response.json()) as { items: Array<{ name: string }> };
+    });
+    expect(createdKeys.items.some((item) => item.name === "Synthetic integration 7")).toBe(true);
   });
 });

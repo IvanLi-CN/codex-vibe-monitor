@@ -3497,7 +3497,7 @@ export async function handleDemoRequest(request: Request) {
     return json(
       action === "disable"
         ? { key: { ...key, status: "disabled", updatedAt: demoNow() } }
-        : { key: { ...key, updatedAt: demoNow() }, secret: "demo-rotated-key-not-valid" },
+        : { key: { ...key, updatedAt: demoNow() }, secret: "cvm-synthetic-rotated-key-not-valid" },
     );
   }
   if (pathname === "/api/system/status") return json(systemStatus());
