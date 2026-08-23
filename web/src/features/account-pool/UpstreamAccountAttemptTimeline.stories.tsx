@@ -9,6 +9,7 @@ import type {
 } from "../../lib/api";
 import {
   buildTopicDescriptor,
+  getCurrentSseDiagnostics,
   getTopicDescriptorKey,
   type SubscriptionTopicEnvelope,
 } from "../../lib/sse";
@@ -666,6 +667,8 @@ const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
 const REALTIME_LIFECYCLE_ACCOUNT_ID = 919;
 const REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID = 920;
 const FOCUSED_RELOCATION_ACCOUNT_ID = 921;
+const FOCUSED_RELOCATION_ADVANCE_EVENT =
+  "storybook:upstream-account-attempt-focused-relocation-advance";
 
 function buildAttemptTimelineSnapshot(
   accountId: number,
@@ -691,6 +694,16 @@ function buildAttemptTimelineSnapshot(
       pageSize: 50,
     },
   };
+}
+
+function buildAttemptTimelineTopicLabel(accountId: number, page: number) {
+  const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+    accountId,
+    page,
+    pageSize: 50,
+  });
+  const search = new URLSearchParams(descriptor.params as Record<string, string>);
+  return `${descriptor.topic}?${search.toString()}`;
 }
 
 function AttemptTimelineRealtimeLifecycleMock({ accountId }: { accountId: number }) {
@@ -724,27 +737,58 @@ function AttemptTimelineFocusedRelocationMock({ accountId }: { accountId: number
   useEffect(() => {
     const controller = getStorybookPageSseController();
     if (!controller) return;
-    const initialTimer = window.setTimeout(() => {
+    let advanced = false;
+    let initialTimer: number | null = null;
+    let relocatedPageTimer: number | null = null;
+    const emitWhenSubscribed = (
+      page: number,
+      emit: () => void,
+      schedule: (timer: number) => void,
+    ) => {
+      if (
+        getCurrentSseDiagnostics().activeTopics.includes(
+          buildAttemptTimelineTopicLabel(accountId, page),
+        )
+      ) {
+        emit();
+        return;
+      }
+      schedule(
+        window.setTimeout(() => {
+          emitWhenSubscribed(page, emit, schedule);
+        }, 10),
+      );
+    };
+    const emitInitial = () => {
       controller.emit(
         buildAttemptTimelineSnapshot(accountId, [withAccountId(realtimePendingAttempt, accountId)]),
       );
-    }, 50);
-    const shiftedPageTimer = window.setTimeout(() => {
+    };
+    emitWhenSubscribed(1, emitInitial, (timer) => {
+      initialTimer = timer;
+    });
+    const advance = () => {
+      if (advanced) return;
+      advanced = true;
       controller.emit(buildAttemptTimelineSnapshot(accountId, [], 1));
-    }, 180);
-    const relocatedPageTimer = window.setTimeout(() => {
-      controller.emit(
-        buildAttemptTimelineSnapshot(
-          accountId,
-          [withAccountId(realtimeTerminalAttempt, accountId)],
-          2,
-        ),
-      );
-    }, 320);
+      const emitRelocated = () => {
+        controller.emit(
+          buildAttemptTimelineSnapshot(
+            accountId,
+            [withAccountId(realtimeTerminalAttempt, accountId)],
+            2,
+          ),
+        );
+      };
+      emitWhenSubscribed(2, emitRelocated, (timer) => {
+        relocatedPageTimer = timer;
+      });
+    };
+    window.addEventListener(FOCUSED_RELOCATION_ADVANCE_EVENT, advance);
     return () => {
-      window.clearTimeout(initialTimer);
-      window.clearTimeout(shiftedPageTimer);
-      window.clearTimeout(relocatedPageTimer);
+      if (initialTimer != null) window.clearTimeout(initialTimer);
+      if (relocatedPageTimer != null) window.clearTimeout(relocatedPageTimer);
+      window.removeEventListener(FOCUSED_RELOCATION_ADVANCE_EVENT, advance);
     };
   }, [accountId]);
 
@@ -807,12 +851,12 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large response");
   });
-  const closedResponseBodyButton = (
-    await canvas.findAllByRole("button", { name: /响应体|response body/i })
-  )[0];
+  const closedResponseBodyButton = within(workflowCard).getByRole("button", {
+    name: /响应体|response body/i,
+  });
   await userEvent.click(closedResponseBodyButton);
   await waitFor(() => {
-    expect(canvasElement.textContent ?? "").not.toContain("large response");
+    expect(workflowCard.querySelector("[data-open]")).toHaveAttribute("data-open", "false");
   });
   closedResponseBodyButton.blur();
 }
@@ -998,6 +1042,7 @@ export const FocusedAttemptRelocatesAfterAuthoritativeShift: Story = {
       "account-attempt-record-ALIVE0001",
     );
     expect(initialCard.textContent ?? "").toContain("waiting_first_byte");
+    window.dispatchEvent(new Event(FOCUSED_RELOCATION_ADVANCE_EVENT));
 
     await waitFor(() => {
       const relocatedCard = canvasElement.querySelector<HTMLElement>(
