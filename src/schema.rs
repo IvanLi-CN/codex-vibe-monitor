@@ -12,6 +12,14 @@ const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
     "invocation_rollup_hourly_token_components_v1";
 const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
 const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
+const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
+    CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
+        consumer TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL DEFAULT 0,
+        invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+"#;
 
 pub(crate) fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
@@ -294,6 +302,13 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .context("failed to begin immediate invocation_in_progress_live trigger rebuild")?;
+
+    // The update trigger writes this marker. Keep its table creation in the same transaction so
+    // rebuilding the trigger cannot leave direct terminal writes pointing at a missing table.
+    sqlx::query(TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure timeseries_minute_projection_v2 recovery table before trigger rebuild")?;
 
     for trigger_name in [
         "trg_codex_invocations_live_insert",
@@ -1309,6 +1324,13 @@ async fn legacy_raw_blob_link_seed_completed(
 pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let schema_lock = ensure_schema_lock(pool);
     let _schema_guard = schema_lock.lock_owned().await;
+
+    // Existing live-update triggers may already reference this table after an interrupted older
+    // startup. Restore it before any schema work can update invocations.
+    sqlx::query(TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL)
+        .execute(pool)
+        .await
+        .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
 
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -2653,19 +2675,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure timeseries_minute_projection_v2 state table existence")?;
 
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
-            consumer TEXT PRIMARY KEY,
-            generation INTEGER NOT NULL DEFAULT 0,
-            invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
+    sqlx::query(TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL)
+        .execute(pool)
+        .await
+        .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
 
     // This durable fence must exist before runtime accepts HTTP reads. The projection supervisor
     // is intentionally P2 and can start later, while direct non-proxy terminal corrections must

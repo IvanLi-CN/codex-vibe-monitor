@@ -420,9 +420,12 @@ async fn timeseries_minute_projection_v2_snapshot_is_current(
     upstream_account_id: Option<i64>,
     coverage_rows: &[TimeseriesMinuteProjectionV2Row],
 ) -> Result<bool, ApiError> {
+    if timeseries_minute_projection_recovery_pending(pool).await? {
+        return Ok(false);
+    }
     // Re-read the payload selected by the loader, not merely its row count. An invalidation can
     // warm the same primary keys again while a reader is building its live tail.
-    Ok(load_ready_timeseries_minute_projection_v2_rows(
+    let projection_rows_are_current = load_ready_timeseries_minute_projection_v2_rows(
         pool,
         start,
         end,
@@ -430,7 +433,8 @@ async fn timeseries_minute_projection_v2_snapshot_is_current(
         upstream_account_id,
     )
     .await?
-    .is_some_and(|current_rows| current_rows == coverage_rows))
+    .is_some_and(|current_rows| current_rows == coverage_rows);
+    Ok(projection_rows_are_current && !timeseries_minute_projection_recovery_pending(pool).await?)
 }
 
 #[cfg(test)]
@@ -2655,6 +2659,12 @@ mod minute_projection_tests {
         .await
         .expect("create v2 projection state table");
         sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_v2_recovery (consumer TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, invalidation_pending INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 projection recovery table");
+        sqlx::query(
             "INSERT INTO timeseries_minute_projection_v2_state (consumer, last_error) VALUES ('timeseries_minute_v2', 'ready')",
         )
         .execute(&pool)
@@ -2916,6 +2926,12 @@ mod minute_projection_tests {
         .await
         .expect("create v2 projection state table");
         sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_v2_recovery (consumer TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, invalidation_pending INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 projection recovery table");
+        sqlx::query(
             "INSERT INTO timeseries_minute_projection_v2_state (consumer, last_error) VALUES ('timeseries_minute_v2', 'ready')",
         )
         .execute(&pool)
@@ -2974,6 +2990,12 @@ mod minute_projection_tests {
         .execute(&pool)
         .await
         .expect("create v2 projection state table");
+        sqlx::query(
+            "CREATE TABLE timeseries_minute_projection_v2_recovery (consumer TEXT PRIMARY KEY, generation INTEGER NOT NULL DEFAULT 0, invalidation_pending INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .expect("create v2 projection recovery table");
         sqlx::query(
             "INSERT INTO timeseries_minute_projection_v2_state (consumer, last_error) VALUES ('timeseries_minute_v2', 'ready')",
         )
@@ -3095,6 +3117,31 @@ mod minute_projection_tests {
             re_warmed_projection.aggregates[&start.timestamp()].total_count,
             2
         );
+        sqlx::query(
+            "INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending) VALUES ('timeseries_minute_v2', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("publish a direct terminal replacement recovery marker");
+        assert!(
+            !timeseries_minute_projection_v2_snapshot_is_current(
+                &pool,
+                start,
+                end,
+                InvocationSourceScope::All,
+                None,
+                &re_warmed_projection.coverage_rows,
+            )
+            .await
+            .expect("check durable recovery snapshot fence"),
+            "a direct replacement marker must force an exact fallback even when projection rows are unchanged"
+        );
+        sqlx::query(
+            "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0 WHERE consumer = 'timeseries_minute_v2'",
+        )
+        .execute(&pool)
+        .await
+        .expect("clear recovered terminal replacement marker");
         assert!(
             timeseries_minute_projection_v2_snapshot_is_current(
                 &pool,

@@ -21313,38 +21313,48 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let start = Utc
-        .with_ymd_and_hms(2026, 8, 21, 12, 0, 0)
-        .single()
-        .expect("valid warm range start");
-    let end = start + ChronoDuration::minutes(1);
-    let occurred_at = format_naive(start.with_timezone(&Shanghai).naive_local());
+    let now = Utc::now();
+    let occurred_at = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
     sqlx::query(
-        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, raw_response) VALUES (?1, ?2, 'cli', 'success', 10, 0.01, '{}')",
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response) VALUES (?1, ?2, 'cli', 'success', 10, 0.01, ?3, '{}')",
     )
     .bind("non-proxy-terminal-replacement")
     .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": 17_i64 }).to_string())
     .execute(&state.pool)
     .await
     .expect("insert terminal non-proxy invocation");
 
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
-        &state.pool,
-        start,
-        end,
-        InvocationSourceScope::All,
-        None,
-        state.terminal_projection_hub.as_ref(),
-        "stateful_non_proxy_terminal_seed",
-        &coordinator,
-    )
-    .await
-    .expect("seed ready coverage before direct terminal replacement");
-    assert_eq!(
-        outcome,
-        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
-    );
+    let warm_start = now - ChronoDuration::minutes(62);
+    let warm_end = now + ChronoDuration::minutes(2);
+    for upstream_account_id in [None, Some(17)] {
+        let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+            &state.pool,
+            warm_start,
+            warm_end,
+            InvocationSourceScope::All,
+            upstream_account_id,
+            state.terminal_projection_hub.as_ref(),
+            "stateful_non_proxy_terminal_seed",
+            &coordinator,
+        )
+        .await
+        .expect("seed ready coverage before direct terminal replacement");
+        assert_eq!(
+            outcome,
+            crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+        );
+    }
+    let minute_start = parse_to_utc_datetime(&occurred_at)
+        .expect("parse persisted occurrence")
+        .timestamp()
+        .div_euclid(60)
+        * 60;
 
     sqlx::query(
         "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE invoke_id = ?1",
@@ -21356,7 +21366,7 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
     let coverage_state = sqlx::query_scalar::<_, String>(
         "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
     )
-    .bind(start.timestamp())
+    .bind(minute_start)
     .fetch_one(&state.pool)
     .await
     .expect("load coverage while durable replacement recovery is pending");
@@ -21375,6 +21385,55 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
         "direct terminal replacements must fence all minute coverage before it can be reused"
     );
 
+    for upstream_account_id in [None, Some(17)] {
+        let query = TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id,
+        };
+        let Json(response) = crate::api::fetch_timeseries(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(query),
+        )
+        .await
+        .expect("direct replacement must fence HTTP projection reads");
+        let payload = serde_json::to_value(response).expect("serialize HTTP timeseries response");
+        let point = payload["points"]
+            .as_array()
+            .expect("HTTP timeseries points")
+            .iter()
+            .find(|point| point["totalCount"] == 1)
+            .expect("replacement minute point");
+        assert_eq!(point["successCount"], 0);
+        assert_eq!(point["failureCount"], 1);
+    }
+    let topic_query = TimeseriesQuery {
+        range: "1h".to_string(),
+        bucket: Some("1m".to_string()),
+        settlement_hour: None,
+        time_zone: Some("UTC".to_string()),
+        upstream_account_id: None,
+    };
+    let base = crate::api::TimeseriesTopicMaterializedBase::build(state.as_ref(), &topic_query)
+        .await
+        .expect("direct replacement must fence materialized topic reads");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &base
+            .serialize(&[])
+            .expect("serialize exact-fallback materialized response"),
+    )
+    .expect("materialized timeseries JSON");
+    let point = payload["points"]
+        .as_array()
+        .expect("materialized timeseries points")
+        .iter()
+        .find(|point| point["totalCount"] == 1)
+        .expect("replacement minute point");
+    assert_eq!(point["successCount"], 0);
+    assert_eq!(point["failureCount"], 1);
+
     let recovery = crate::api::prepare_timeseries_minute_projection_after_restart(
         state.as_ref(),
         &CancellationToken::new(),
@@ -21388,7 +21447,7 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
     let coverage_state = sqlx::query_scalar::<_, String>(
         "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
     )
-    .bind(start.timestamp())
+    .bind(minute_start)
     .fetch_one(&state.pool)
     .await
     .expect("load recovered coverage state");
@@ -21402,8 +21461,8 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
     assert_eq!(recovery_pending, 0);
     let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
         &state.pool,
-        start,
-        end,
+        warm_start,
+        warm_end,
         InvocationSourceScope::All,
         None,
         state.terminal_projection_hub.as_ref(),
@@ -21682,6 +21741,113 @@ async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled()
     .await
     .expect("count startup state writes");
     assert_eq!(state_row_count, 0);
+}
+
+#[tokio::test]
+async fn startup_minute_projection_recovery_keeps_the_durable_fence_when_cancelled_after_warming() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    for minute_start_epoch in 0_i64..=1_024 {
+        sqlx::query(
+            "INSERT INTO timeseries_minute_projection_v2 (minute_start_epoch, source_scope, upstream_account_key, aggregate_json, total_latency_samples_json, first_byte_samples_json, first_response_byte_total_samples_json, first_token_samples_json, max_row_id, coverage_state) VALUES (?1, 'all', -1, '{}', '[]', '[]', '[]', '[]', 0, 'ready')",
+        )
+        .bind(minute_start_epoch)
+        .execute(&state.pool)
+        .await
+        .expect("seed coverage invalidation batches");
+    }
+    crate::api::mark_timeseries_minute_projection_startup_recovery(&state.pool)
+        .await
+        .expect("publish durable recovery marker");
+
+    let cancellation = CancellationToken::new();
+    let recovery_state = state.clone();
+    let recovery_cancellation = cancellation.clone();
+    let recovery = tokio::spawn(async move {
+        crate::api::prepare_timeseries_minute_projection_after_restart(
+            recovery_state.as_ref(),
+            &recovery_cancellation,
+        )
+        .await
+    });
+    let mut saw_warming = false;
+    for _ in 0..1_000 {
+        let recovery_state = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_error FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("load startup recovery state")
+        .flatten();
+        if recovery_state.as_deref() == Some("warming") {
+            cancellation.cancel();
+            saw_warming = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        saw_warming,
+        "cancellation must occur after recovery publishes warming and before it can report ready"
+    );
+    let outcome = recovery
+        .await
+        .expect("recovery task should not panic")
+        .expect("cancelled recovery should not report a database error");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Cancelled
+    );
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load retained recovery marker");
+    assert_eq!(recovery_pending, 1);
+    let recovery_state = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT last_error FROM timeseries_minute_projection_v2_state WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .expect("load cancelled recovery state")
+    .flatten();
+    assert_eq!(recovery_state.as_deref(), Some("warming"));
+}
+
+#[tokio::test]
+async fn live_update_trigger_rebuild_restores_recovery_table_before_terminal_writes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query("DROP TABLE timeseries_minute_projection_v2_recovery")
+        .execute(&state.pool)
+        .await
+        .expect("model an interrupted startup with a missing recovery table");
+    crate::schema::rebuild_invocation_in_progress_live_triggers(&state.pool)
+        .await
+        .expect("rebuild must restore the recovery table with its live update trigger");
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) VALUES ('rebuild-recovery-table', datetime('now'), 'cli', 'running', '{}')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert an in-flight non-proxy invocation");
+    sqlx::query("UPDATE codex_invocations SET status = 'success' WHERE invoke_id = 'rebuild-recovery-table'")
+        .execute(&state.pool)
+        .await
+        .expect("terminal write must not target a missing recovery table");
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("live update trigger publishes the restored recovery marker");
+    assert_eq!(recovery_pending, 1);
 }
 
 #[tokio::test]
