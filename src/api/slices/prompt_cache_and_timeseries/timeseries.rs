@@ -208,6 +208,22 @@ async fn ensure_timeseries_minute_projection_non_proxy_terminal_replacement_trig
     Ok(())
 }
 
+async fn timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_installed(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+) -> Result<bool, ApiError> {
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        return Ok(true);
+    }
+
+    let installed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement')",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(installed != 0)
+}
+
 fn complete_minute_bounds(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64) {
     let start_epoch = (start.timestamp() + 59).div_euclid(60) * 60;
     let end_epoch = end.timestamp().div_euclid(60) * 60;
@@ -1056,6 +1072,12 @@ impl TimeseriesTopicMaterializedBase {
             let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
             let minute_projection_candidate =
                 bucket_seconds < 3_600 && range_window.duration <= ChronoDuration::days(1);
+            let durable_replacement_fence_installed = minute_projection_candidate
+                && timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_installed(
+                    &state.pool,
+                    source_scope,
+                )
+                .await?;
             let uncovered_terminal_delta = minute_projection_candidate
                 && timeseries_minute_projection_has_uncovered_terminal_delta(
                     state.terminal_projection_hub.as_ref(),
@@ -1065,6 +1087,7 @@ impl TimeseriesTopicMaterializedBase {
                     end,
                 );
             let use_minute_projection = minute_projection_candidate
+                && durable_replacement_fence_installed
                 && state
                     .terminal_projection_hub
                     .timeseries_coverage_invalidation_pending()
@@ -1202,7 +1225,7 @@ impl TimeseriesTopicMaterializedBase {
                     params.upstream_account_id,
                     bucket_seconds,
                     reporting_tz,
-                    uncovered_terminal_delta,
+                    uncovered_terminal_delta && durable_replacement_fence_installed,
                 )
                 .await?
             };
@@ -3086,6 +3109,12 @@ pub(crate) async fn fetch_timeseries(
     let start_dt = range_window.start;
     let start_str_iso = format_utc_iso(start_dt);
     let use_minute_projection = range_window.duration <= ChronoDuration::days(1);
+    let durable_replacement_fence_installed = use_minute_projection
+        && timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_installed(
+            &state.pool,
+            source_scope,
+        )
+        .await?;
 
     let uncovered_terminal_delta = use_minute_projection
         && timeseries_minute_projection_has_uncovered_terminal_delta(
@@ -3099,8 +3128,10 @@ pub(crate) async fn fetch_timeseries(
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some()
-        || uncovered_terminal_delta;
+        || uncovered_terminal_delta
+        || (use_minute_projection && !durable_replacement_fence_installed);
     if use_minute_projection
+        && durable_replacement_fence_installed
         && !coverage_invalidation_pending
         && let Some(TimeseriesMinuteProjectionV2Load {
             aggregates: minute_aggregates,
@@ -3498,6 +3529,12 @@ pub(crate) async fn fetch_timeseries_for_account(
 
     let minute_projection_candidate =
         bucket_seconds < 3_600 && range_window.duration <= ChronoDuration::days(1);
+    let durable_replacement_fence_installed = minute_projection_candidate
+        && timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_installed(
+            &state.pool,
+            source_scope,
+        )
+        .await?;
     let uncovered_terminal_delta = minute_projection_candidate
         && timeseries_minute_projection_has_uncovered_terminal_delta(
             state.terminal_projection_hub.as_ref(),
@@ -3510,8 +3547,10 @@ pub(crate) async fn fetch_timeseries_for_account(
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some()
-        || uncovered_terminal_delta;
+        || uncovered_terminal_delta
+        || (minute_projection_candidate && !durable_replacement_fence_installed);
     if minute_projection_candidate
+        && durable_replacement_fence_installed
         && !coverage_invalidation_pending
         && let Some(TimeseriesMinuteProjectionV2Load {
             aggregates: minute_aggregates,

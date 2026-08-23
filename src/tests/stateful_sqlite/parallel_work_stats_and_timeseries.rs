@@ -21333,6 +21333,149 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
 }
 
 #[tokio::test]
+async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_at = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let invoke_id = "timeseries-missing-durable-replacement-fence";
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response) VALUES (?1, ?2, 'cli', 'success', 10, 0.01, ?3, '{}')",
+    )
+    .bind(invoke_id)
+    .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": 17_i64 }).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert terminal non-proxy invocation with an account");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let warm_start = now - ChronoDuration::minutes(62);
+    let warm_end = now + ChronoDuration::minutes(2);
+    for upstream_account_id in [None, Some(17)] {
+        let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+            &state.pool,
+            warm_start,
+            warm_end,
+            InvocationSourceScope::All,
+            upstream_account_id,
+            state.terminal_projection_hub.as_ref(),
+            "stateful_missing_durable_replacement_fence_seed",
+            &coordinator,
+        )
+        .await
+        .expect("seed ready minute projection coverage");
+        assert_eq!(
+            outcome,
+            crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+        );
+    }
+
+    let minute_start = parse_to_utc_datetime(&occurred_at)
+        .expect("parse persisted occurrence")
+        .timestamp()
+        .div_euclid(60)
+        * 60;
+    sqlx::query("DROP TRIGGER trg_timeseries_minute_projection_non_proxy_terminal_replacement")
+        .execute(&state.pool)
+        .await
+        .expect("model a cold-start database before the durable replacement fence is installed");
+    sqlx::query(
+        "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE invoke_id = ?1",
+    )
+    .bind(invoke_id)
+    .execute(&state.pool)
+    .await
+    .expect("replace the terminal row while the durable fence is absent");
+
+    for upstream_account_key in [-1_i64, 17_i64] {
+        let coverage_state = sqlx::query_scalar::<_, String>(
+            "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = ?2",
+        )
+        .bind(minute_start)
+        .bind(upstream_account_key)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load stale ready projection coverage");
+        assert_eq!(coverage_state, "ready");
+    }
+
+    for upstream_account_id in [None, Some(17)] {
+        let query = TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("1m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id,
+        };
+        let Json(response) = crate::api::fetch_timeseries(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(query),
+        )
+        .await
+        .expect("build HTTP timeseries while the durable fence is absent");
+        let payload = serde_json::to_value(response).expect("serialize HTTP timeseries response");
+        let point = payload["points"]
+            .as_array()
+            .expect("HTTP timeseries points")
+            .iter()
+            .find(|point| point["totalCount"] == 1)
+            .expect("replacement minute point");
+        assert_eq!(
+            point["successCount"], 0,
+            "HTTP selection {upstream_account_id:?} must not reuse stale ready coverage"
+        );
+        assert_eq!(
+            point["failureCount"], 1,
+            "HTTP selection {upstream_account_id:?} must use the direct terminal replacement"
+        );
+    }
+
+    let query = TimeseriesQuery {
+        range: "1h".to_string(),
+        bucket: Some("1m".to_string()),
+        settlement_hour: None,
+        time_zone: Some("UTC".to_string()),
+        upstream_account_id: None,
+    };
+    let base = crate::api::TimeseriesTopicMaterializedBase::build(state.as_ref(), &query)
+        .await
+        .expect("build materialized timeseries base while the durable fence is absent");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &base
+            .serialize(&[])
+            .expect("serialize exact-fallback materialized response"),
+    )
+    .expect("materialized timeseries JSON");
+    let point = payload["points"]
+        .as_array()
+        .expect("timeseries points")
+        .iter()
+        .find(|point| point["totalCount"] == 1)
+        .expect("replacement minute point");
+    assert_eq!(point["successCount"], 0);
+    assert_eq!(point["failureCount"], 1);
+
+    let trigger_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("check durable replacement fence remains absent");
+    assert_eq!(
+        trigger_count, 0,
+        "exact fallback must not create a P2 write that makes stale coverage reusable"
+    );
+}
+
+#[tokio::test]
 async fn exact_fallback_warm_acknowledges_the_transaction_snapshot_not_the_response_snapshot() {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
