@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import { I18nProvider } from "../../i18n";
 import {
   type ApiPoolUpstreamRequestAttempt,
@@ -10,10 +11,14 @@ import {
   fetchInvocationAttemptResponseBody,
   fetchInvocationRequestBody,
   fetchInvocationResponseBody,
-  fetchUpstreamAccountAttempts,
   locateUpstreamAccountAttempt,
   type UpstreamAccountAttemptListResponse,
 } from "../../lib/api";
+import {
+  buildTopicDescriptor,
+  getTopicDescriptorKey,
+  type SubscriptionTopicDescriptor,
+} from "../../lib/sse";
 import { UpstreamAccountAttemptTimeline } from "./UpstreamAccountAttemptTimeline";
 
 vi.mock("../../lib/api", async (importOriginal) => ({
@@ -22,16 +27,111 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   fetchInvocationRequestBody: vi.fn(),
   fetchInvocationAttemptResponseBody: vi.fn(),
   fetchInvocationResponseBody: vi.fn(),
-  fetchUpstreamAccountAttempts: vi.fn(),
   locateUpstreamAccountAttempt: vi.fn(),
 }));
 
-const fetchAttemptsMock = vi.mocked(fetchUpstreamAccountAttempts);
+vi.mock("../../hooks/useSubscriptionTopic", () => ({
+  useSubscriptionTopic: vi.fn(),
+}));
+
+type TopicSnapshotRequest = {
+  type?: "normal" | "remote_v2" | "compact" | "image";
+  model?: string;
+  stickyKey?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+const topicSnapshotMock =
+  vi.fn<
+    (
+      accountId: number,
+      request: TopicSnapshotRequest,
+    ) => Promise<UpstreamAccountAttemptListResponse>
+  >();
 const fetchBindingNodesMock = vi.mocked(fetchForwardProxyBindingNodes);
 const fetchRequestBodyMock = vi.mocked(fetchInvocationRequestBody);
 const fetchAttemptResponseBodyMock = vi.mocked(fetchInvocationAttemptResponseBody);
 const fetchResponseBodyMock = vi.mocked(fetchInvocationResponseBody);
+const subscriptionTopicMock = vi.mocked(useSubscriptionTopic);
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
+const topicSnapshotCache = new Map<string, UpstreamAccountAttemptListResponse>();
+const topicListeners = new Map<
+  string,
+  Set<(response: UpstreamAccountAttemptListResponse) => void>
+>();
+
+function useMockSubscriptionTopic(descriptor: SubscriptionTopicDescriptor | null, enabled = true) {
+  const descriptorKey = descriptor ? getTopicDescriptorKey(descriptor) : null;
+  const [data, setData] = useState<UpstreamAccountAttemptListResponse | null>(() =>
+    descriptor && enabled ? (topicSnapshotCache.get(descriptorKey ?? "") ?? null) : null,
+  );
+  const [isLoading, setIsLoading] = useState(
+    Boolean(descriptor && enabled && !topicSnapshotCache.has(descriptorKey ?? "")),
+  );
+  const [deliverySource, setDeliverySource] = useState<"cache" | "network" | null>(() =>
+    descriptor && enabled && topicSnapshotCache.has(descriptorKey ?? "") ? "cache" : null,
+  );
+
+  useEffect(() => {
+    if (!descriptor || !enabled || !descriptorKey) {
+      setData(null);
+      setIsLoading(false);
+      setDeliverySource(null);
+      return;
+    }
+    const cached = topicSnapshotCache.get(descriptorKey);
+    setData(cached ?? null);
+    setIsLoading(!cached);
+    setDeliverySource(cached ? "cache" : null);
+    const listeners = topicListeners.get(descriptorKey) ?? new Set();
+    const listener = (next: UpstreamAccountAttemptListResponse) => {
+      topicSnapshotCache.set(descriptorKey, next);
+      setData(next);
+      setIsLoading(false);
+      setDeliverySource("network");
+    };
+    listeners.add(listener);
+    topicListeners.set(descriptorKey, listeners);
+    if (!cached) {
+      const params = descriptor.params ?? {};
+      void topicSnapshotMock(Number(params.accountId), {
+        type: params.type as "normal" | "remote_v2" | "compact" | "image" | undefined,
+        model: typeof params.model === "string" ? params.model : undefined,
+        stickyKey: typeof params.stickyKey === "string" ? params.stickyKey : undefined,
+        page: Number(params.page ?? 1),
+        pageSize: Number(params.pageSize ?? 50),
+      }).then((next) => listener(next));
+    }
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) topicListeners.delete(descriptorKey);
+    };
+  }, [descriptor, descriptorKey, enabled]);
+
+  return {
+    data: enabled ? data : null,
+    descriptorKey: enabled ? descriptorKey : null,
+    lastReceivedAt: null,
+    lastKind: null,
+    deliverySource,
+    isLoading: enabled ? isLoading : false,
+    error: null,
+    refresh: vi.fn(),
+  };
+}
+
+function emitTopicSnapshot(
+  descriptor: SubscriptionTopicDescriptor,
+  response: UpstreamAccountAttemptListResponse,
+) {
+  const key = getTopicDescriptorKey(descriptor);
+  topicSnapshotCache.set(key, response);
+  topicListeners.get(key)?.forEach((listener) => {
+    listener(response);
+  });
+}
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -43,11 +143,13 @@ function renderTimeline({
   focusVersion = 0,
   onFocusRequestHandled,
   boundary = null,
+  visible = true,
 }: {
   focusedAttemptId?: string | null;
   focusVersion?: number;
   onFocusRequestHandled?: (version: number) => void;
   boundary?: HTMLElement | null;
+  visible?: boolean;
 } = {}) {
   if (!host) {
     host = document.createElement("div");
@@ -58,13 +160,15 @@ function renderTimeline({
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <UpstreamAccountAttemptTimeline
-            accountId={101}
-            focusedAttemptId={focusedAttemptId}
-            focusVersion={focusVersion}
-            interactionBoundary={boundary}
-            onFocusRequestHandled={onFocusRequestHandled}
-          />
+          {visible ? (
+            <UpstreamAccountAttemptTimeline
+              accountId={101}
+              focusedAttemptId={focusedAttemptId}
+              focusVersion={focusVersion}
+              interactionBoundary={boundary}
+              onFocusRequestHandled={onFocusRequestHandled}
+            />
+          ) : null}
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -163,6 +267,11 @@ async function selectModelOption(label: RegExp) {
 describe("UpstreamAccountAttemptTimeline", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    topicSnapshotCache.clear();
+    topicListeners.clear();
+    topicSnapshotMock.mockReset();
+    topicSnapshotMock.mockResolvedValue(attemptListResponse());
+    subscriptionTopicMock.mockImplementation(useMockSubscriptionTopic);
     vi.useRealTimers();
     scrollIntoViewMock = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -217,7 +326,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("keeps the primary row focused on upstream evidence and reveals complete failure context on demand", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -351,7 +460,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       detailLevel: "full",
       captureSource: "attempt_raw_file",
     });
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -584,7 +693,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("does not lazy-load the final invocation response body for non-final retry attempts", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -696,7 +805,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("shows the pending attempt phase without adding another permanent column", async () => {
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockResolvedValue(
       attemptListResponse({
         items: [
           {
@@ -747,7 +856,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       responseModel: "gpt-image-1",
       imageIntent: "direct_image",
     });
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [normalAttempt],
@@ -784,7 +893,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     ).not.toBeNull();
 
     await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
@@ -801,7 +910,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
       nextButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushAsync();
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
@@ -812,7 +921,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("offers request and response models and keeps empty results inside the list body", async () => {
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [
@@ -836,7 +945,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     await flushAsync();
     await selectModelOption(/gpt-5\.6/);
 
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         model: "gpt-5.6",
@@ -852,7 +961,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
   });
 
   it("preserves backend conversation option order and filters the unbound bucket", async () => {
-    fetchAttemptsMock
+    topicSnapshotMock
       .mockResolvedValueOnce(
         attemptListResponse({
           items: [makeAttempt({ attemptId: "ACONVO001" })],
@@ -903,7 +1012,7 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
 
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         stickyKey: "__unbound__",
@@ -931,19 +1040,18 @@ describe("UpstreamAccountAttemptTimeline", () => {
       errorMessage: "focused failure details",
       createdAt: "2026-07-11T12:00:00.000Z",
     };
-    fetchAttemptsMock.mockResolvedValue(
+    topicSnapshotMock.mockImplementation(async (_accountId, options) =>
       attemptListResponse({
-        items: [focusedAttempt],
-        total: 1,
-        page: 1,
+        total: 100,
+        page: options?.page ?? 1,
         pageSize: 50,
       }),
     );
     vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
       attemptListResponse({
         items: [focusedAttempt],
-        total: 1,
-        page: 1,
+        total: 100,
+        page: 2,
         pageSize: 50,
       }),
     );
@@ -954,13 +1062,14 @@ describe("UpstreamAccountAttemptTimeline", () => {
     renderTimeline();
     await flushAsync();
     await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
-    expect(fetchAttemptsMock).toHaveBeenLastCalledWith(
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
       101,
       expect.objectContaining({
         type: "image",
         page: 1,
       }),
     );
+    scrollIntoViewMock.mockClear();
     renderTimeline({
       focusedAttemptId: "YG7P25XG",
       focusVersion: 1,
@@ -969,10 +1078,6 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
     await flushAsync();
 
-    const record = host?.querySelector<HTMLElement>(
-      '[data-testid="account-attempt-record-YG7P25XG"]',
-    );
-    expect(record).not.toBeNull();
     expect(locateUpstreamAccountAttempt).toHaveBeenCalledWith(
       101,
       "YG7P25XG",
@@ -981,15 +1086,46 @@ describe("UpstreamAccountAttemptTimeline", () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
     expect(host?.textContent).toMatch(/All types|全部类型/);
-    const fetchCallsAfterLocate = fetchAttemptsMock.mock.calls.length;
+    const topicAfterLocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterLocate?.params?.page).toBe("2");
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
+    ).toBeNull();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    act(() => {
+      emitTopicSnapshot(
+        buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+
+    const record = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-YG7P25XG"]',
+    );
+    expect(record).not.toBeNull();
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    const snapshotCallsAfterLocate = topicSnapshotMock.mock.calls.length;
     renderTimeline({
       boundary: interactionBoundary,
       onFocusRequestHandled,
     });
     await flushAsync();
-    expect(fetchAttemptsMock).toHaveBeenCalledTimes(fetchCallsAfterLocate);
+    expect(topicSnapshotMock).toHaveBeenCalledTimes(snapshotCallsAfterLocate);
+    const topicAfterFocusAcknowledged = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterFocusAcknowledged?.params?.page).toBe("2");
     expect(
       host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-YG7P25XG"]'),
     ).not.toBeNull();
@@ -1031,6 +1167,418 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("acknowledges an in-flight deep link when the user changes a filter", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "FILTERCANCEL1",
+      invokeId: "FILTERCANCEL1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolvePageTwo: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 2) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageTwo = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [],
+        total: 0,
+        page: options.page ?? 1,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 100,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "FILTERCANCEL1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolvePageTwo).toBeDefined();
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        type: "image",
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+
+    act(() => {
+      resolvePageTwo?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+  });
+
+  it("does not restore a cancelled deep link when its locate request completes", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "LATELOCATE1",
+      invokeId: "LATELOCATE1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolveLocate: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    vi.mocked(locateUpstreamAccountAttempt).mockImplementation(
+      async () =>
+        await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolveLocate = resolve;
+        }),
+    );
+    topicSnapshotMock.mockResolvedValue(
+      attemptListResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "LATELOCATE1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolveLocate).toBeDefined();
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+
+    act(() => {
+      resolveLocate?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+
+    const topicAfterLateLocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterLateLocate?.params).toEqual(
+      expect.objectContaining({
+        type: "image",
+        page: "1",
+        pageSize: "50",
+      }),
+    );
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-LATELOCATE1"]'),
+    ).toBeNull();
+  });
+
+  it("relocates a deep link when its first topic snapshot has shifted to the next page", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "SHIFT0001",
+      invokeId: "SHIFT0001INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolvePageTwo: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 2) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageTwo = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: 3,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "SHIFT0001",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolvePageTwo).toBeDefined();
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+    act(() => {
+      resolvePageTwo?.(
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    const record = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFT0001"]',
+    );
+    expect(record).not.toBeNull();
+    expect(record?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({
+      behavior: "smooth",
+      block: "nearest",
+    });
+  });
+
+  it("relocates an acknowledged deep link when a later authoritative snapshot shifts its page", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "SHIFTACK1",
+      invokeId: "SHIFTACK1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    const pageTwoDescriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+      accountId: 101,
+      page: 2,
+      pageSize: 50,
+    });
+    topicSnapshotCache.set(
+      getTopicDescriptorKey(pageTwoDescriptor),
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    let resolvePageThree: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 3) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageThree = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: options.page ?? 1,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "SHIFTACK1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const firstFocusedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFTACK1"]',
+    );
+    expect(firstFocusedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    const scrollCallsBeforeShift = scrollIntoViewMock.mock.calls.length;
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(scrollCallsBeforeShift);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    expect(resolvePageThree).toBeDefined();
+
+    act(() => {
+      resolvePageThree?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const relocatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFTACK1"]',
+    );
+    expect(relocatedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThan(scrollCallsBeforeShift);
+  });
+
+  it("waits for a network frame before spending a deep-link relocation", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "CACHEMOVE1",
+      invokeId: "CACHEMOVE1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    const pageTwoDescriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+      accountId: 101,
+      page: 2,
+      pageSize: 50,
+    });
+    topicSnapshotCache.set(
+      getTopicDescriptorKey(pageTwoDescriptor),
+      attemptListResponse({
+        items: [],
+        total: 101,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    topicSnapshotMock.mockImplementation(async (_accountId, options) =>
+      attemptListResponse({
+        items: options.page === 3 ? [focusedAttempt] : [],
+        total: 101,
+        page: options.page ?? 1,
+        pageSize: 50,
+      }),
+    );
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "CACHEMOVE1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(1);
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    const relocatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-CACHEMOVE1"]',
+    );
+    expect(relocatedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+  });
+
   it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {
     vi.mocked(locateUpstreamAccountAttempt).mockRejectedValue(new Error("404 not found"));
 
@@ -1041,5 +1589,91 @@ describe("UpstreamAccountAttemptTimeline", () => {
     await flushAsync();
 
     expect(host?.textContent).toMatch(/7-day retention window|7 天保留范围|7 天窗口/i);
+  });
+
+  it("reconciles a focused pending attempt in place without duplicating its expanded card", async () => {
+    const pending = makeAttempt({
+      attemptId: "LIVE0001",
+      status: "pending",
+      phase: "waiting_first_byte",
+      httpStatus: null,
+    });
+    topicSnapshotMock.mockResolvedValue(attemptListResponse({ items: [pending] }));
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({ items: [pending], total: 1, page: 1, pageSize: 50 }),
+    );
+
+    renderTimeline({ focusedAttemptId: "LIVE0001", focusVersion: 1 });
+    await flushAsync();
+
+    const pendingCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-LIVE0001"]',
+    );
+    expect(pendingCard).not.toBeNull();
+    expect(pendingCard?.textContent).toMatch(/时间细分|timing breakdown/i);
+    expect(pendingCard?.dataset.focusVisible).toBe("true");
+
+    const terminal = makeAttempt({
+      ...pending,
+      status: "success",
+      phase: "completed",
+      httpStatus: 200,
+      downstreamHttpStatus: 200,
+      finishedAt: "2026-07-11T12:00:03.000Z",
+    });
+    const newer = makeAttempt({
+      attemptId: "LIVE0002",
+      invokeId: "LIVE0002INVOKE",
+      status: "pending",
+      phase: "connecting",
+      httpStatus: null,
+      createdAt: "2026-07-11T12:00:04.000Z",
+    });
+    act(() => {
+      emitTopicSnapshot(
+        buildTopicDescriptor("upstream-account-attempts.window", {
+          accountId: 101,
+          page: 1,
+          pageSize: 50,
+        }),
+        attemptListResponse({ items: [newer, terminal], total: 2 }),
+      );
+    });
+    await flushAsync();
+
+    const updatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-LIVE0001"]',
+    );
+    expect(updatedCard).toBe(pendingCard);
+    expect(host?.querySelectorAll('[data-testid="account-attempt-record-LIVE0001"]')).toHaveLength(
+      1,
+    );
+    expect(host?.querySelectorAll('[data-testid="account-attempt-record-LIVE0002"]')).toHaveLength(
+      1,
+    );
+    expect(updatedCard?.textContent).toMatch(/HTTP 200|上游 HTTP 200|success/i);
+    expect(updatedCard?.textContent).toMatch(/时间细分|timing breakdown/i);
+    expect(updatedCard?.dataset.focusVisible).toBe("true");
+  });
+
+  it("releases and reacquires the account attempt topic listener with the request tab", async () => {
+    topicSnapshotMock.mockResolvedValue(attemptListResponse({ items: [] }));
+    renderTimeline();
+    await flushAsync();
+    expect(topicListeners.size).toBe(1);
+
+    renderTimeline({ visible: false });
+    await flushAsync();
+    expect(topicListeners.size).toBe(0);
+
+    renderTimeline({ visible: true });
+    await flushAsync();
+    expect(topicListeners.size).toBe(1);
+
+    act(() => {
+      root?.unmount();
+    });
+    root = null;
+    expect(topicListeners.size).toBe(0);
   });
 });

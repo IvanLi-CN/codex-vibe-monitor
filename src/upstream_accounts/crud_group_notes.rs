@@ -748,14 +748,22 @@ pub(crate) async fn list_upstream_account_attempts(
     AxumPath(account_id): AxumPath<i64>,
     Query(params): Query<ListUpstreamAccountAttemptsQuery>,
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
-    let page = normalize_upstream_account_list_page(params.page);
-    let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let filters = normalize_upstream_account_attempt_filters(&params);
     let response =
-        load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size, &filters)
+        load_upstream_account_attempt_page_from_query(state.as_ref(), account_id, &params)
             .await
             .map_err(internal_error_tuple)?;
     Ok(Json(response))
+}
+
+pub(crate) async fn load_upstream_account_attempt_page_from_query(
+    state: &AppState,
+    account_id: i64,
+    params: &ListUpstreamAccountAttemptsQuery,
+) -> Result<UpstreamAccountAttemptListResponse> {
+    let page = normalize_upstream_account_list_page(params.page);
+    let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let filters = normalize_upstream_account_attempt_filters(params);
+    load_upstream_account_attempt_page(state, account_id, page, page_size, &filters).await
 }
 
 pub(crate) async fn locate_upstream_account_attempt(

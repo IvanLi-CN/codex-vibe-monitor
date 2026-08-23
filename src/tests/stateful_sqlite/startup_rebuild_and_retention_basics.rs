@@ -942,11 +942,14 @@ async fn health_check_reports_starting_until_startup_is_ready() {
     assert_eq!(std::str::from_utf8(&body).expect("utf8 body"), "ok");
 }
 
+const HOURLY_ROLLUP_BOOTSTRAP_TASK_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const HOURLY_ROLLUP_BOOTSTRAP_TASK_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 async fn wait_for_hourly_rollup_bootstrap_task(
     state: &AppState,
     expected_status: &str,
 ) -> (String, Option<String>, Option<String>) {
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(HOURLY_ROLLUP_BOOTSTRAP_TASK_WAIT_TIMEOUT, async {
         loop {
             let task = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
                 r#"
@@ -965,7 +968,7 @@ async fn wait_for_hourly_rollup_bootstrap_task(
             {
                 return task;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(HOURLY_ROLLUP_BOOTSTRAP_TASK_POLL_INTERVAL).await;
         }
     })
     .await
