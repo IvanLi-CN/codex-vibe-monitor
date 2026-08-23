@@ -7227,6 +7227,10 @@ pub(crate) struct SummaryProjection {
     // known to be in this exact projection revision. Keep the bounded identity set alongside
     // the canonical live records so reconnects never infer that coverage from a global cursor.
     persisted_live_terminal_invoke_ids: HashSet<String>,
+    // Captured immediately before the durable hydration queries. A settled sequence means every
+    // preceding terminal write has committed, so a successful projection can safely recover a
+    // bounded SSE overlay that overflowed before its next rebuild.
+    durable_terminal_sequence_watermark: u64,
     // Buckets are an index over canonical records, not a second source of truth.  They bound
     // rolling/calendar selection work without approximating a timezone boundary.
     hourly_buckets: BTreeMap<i64, Vec<usize>>,
@@ -7299,6 +7303,10 @@ pub(crate) struct SummaryProjection {
 impl SummaryProjection {
     pub(crate) fn contains_persisted_live_terminal(&self, invoke_id: &str) -> bool {
         self.persisted_live_terminal_invoke_ids.contains(invoke_id)
+    }
+
+    pub(crate) fn durable_terminal_sequence_watermark(&self) -> u64 {
+        self.durable_terminal_sequence_watermark
     }
 
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
@@ -9068,7 +9076,21 @@ async fn refresh_summary_snapshots_with_deadline(
             )
         });
     let had_previous_projection = previous_all_time.is_some();
-    let build = build_summary_projection(state, include_all_time, previous_all_time);
+    // The runtime read model advances this watermark only after SQLite ACKs every preceding
+    // terminal in order. Capture it before the durable projection queries so a later successful
+    // revision can prove that an overflowed Summary SSE overlay is no longer missing data.
+    let durable_terminal_sequence_watermark = state
+        .dashboard_activity_snapshot_cache
+        .lock()
+        .await
+        .read_model
+        .settled_terminal_sequence;
+    let build = build_summary_projection(
+        state,
+        include_all_time,
+        previous_all_time,
+        durable_terminal_sequence_watermark,
+    );
     let projection = match deadline {
         Some(deadline) => tokio::time::timeout(deadline, build)
             .await
@@ -9384,6 +9406,7 @@ async fn build_summary_projection(
         bool,
         HashSet<i64>,
     )>,
+    durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
     let end = Utc::now() + ChronoDuration::seconds(1);
     let (
@@ -10639,6 +10662,7 @@ async fn build_summary_projection(
     let projection = SummaryProjection {
         records,
         persisted_live_terminal_invoke_ids,
+        durable_terminal_sequence_watermark,
         hourly_buckets,
         recent_indexes,
         recent_index_complete,

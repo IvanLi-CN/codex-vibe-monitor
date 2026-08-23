@@ -742,7 +742,10 @@ struct SubscriptionHubState {
     // until the next projection revision demonstrably contains each durable identity.
     summary_terminal_overlay: VecDeque<DashboardActivityTerminalDelta>,
     summary_terminal_overlay_bytes: usize,
-    summary_terminal_overlay_overflowed: bool,
+    // The highest sequence not retained because the bounded overlay overflowed. It remains
+    // fail-closed until a later durable Summary projection proves it has observed every terminal
+    // through this sequence.
+    summary_terminal_overlay_overflowed_through_sequence: Option<u64>,
     summary_http_interest_at: Option<Instant>,
     summary_http_all_time_interest_at: Option<Instant>,
     summary_projection_revision: u64,
@@ -3115,6 +3118,19 @@ impl SubscriptionHub {
             .iter()
             .map(|delta| delta.estimated_bytes)
             .sum();
+        if state
+            .summary_terminal_overlay_overflowed_through_sequence
+            .is_some_and(|overflowed_through| {
+                projection.durable_terminal_sequence_watermark() >= overflowed_through
+            })
+        {
+            state.summary_terminal_overlay_overflowed_through_sequence = None;
+            tracing::info!(
+                durable_terminal_sequence_watermark =
+                    projection.durable_terminal_sequence_watermark(),
+                "summary terminal overlay recovered after a durable projection refresh"
+            );
+        }
         state.summary_projection = Some(Arc::new(projection));
     }
 
@@ -3123,7 +3139,10 @@ impl SubscriptionHub {
         projection: &SummaryProjection,
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
-        if state.summary_terminal_overlay_overflowed {
+        if state
+            .summary_terminal_overlay_overflowed_through_sequence
+            .is_some()
+        {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
@@ -4886,6 +4905,12 @@ impl SubscriptionHub {
             {
                 return;
             }
+            let highest_sequence = slice
+                .deltas
+                .iter()
+                .map(|delta| delta.terminal_sequence)
+                .max()
+                .unwrap_or_default();
             for delta in &slice.deltas {
                 if guard
                     .summary_terminal_overlay
@@ -4901,10 +4926,16 @@ impl SubscriptionHub {
                     .saturating_add(delta.estimated_bytes)
                     > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
                 if exceeds_count || exceeds_bytes {
-                    guard.summary_terminal_overlay_overflowed = true;
+                    let overflowed_through = guard
+                        .summary_terminal_overlay_overflowed_through_sequence
+                        .unwrap_or_default()
+                        .max(highest_sequence);
+                    guard.summary_terminal_overlay_overflowed_through_sequence =
+                        Some(overflowed_through);
                     tracing::warn!(
                         pending_terminal_count = guard.summary_terminal_overlay.len(),
                         pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
+                        overflowed_through,
                         "summary terminal overlay reached its bounded memory budget"
                     );
                     break;
@@ -15855,6 +15886,115 @@ mod tests {
                 }),
             )
             .expect("serialize the refreshed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate initial summary projection");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_003;
+        terminal.invoke_id = "hydrated-summary-overflow-recovery-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before the recovery projection");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        assert_eq!(delta.persisted_row_id, Some(terminal.id));
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta.clone());
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        {
+            let mut hub = state.subscription_hub.state.lock().await;
+            hub.summary_terminal_overlay_overflowed_through_sequence =
+                Some(delta.terminal_sequence);
+        }
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        assert!(matches!(
+            summary.build_cached_payload(state.clone()).await,
+            Err(ApiError::Unavailable(_))
+        ));
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("durable projection must recover the bounded overlay");
+        assert!(
+            state
+                .subscription_hub
+                .state
+                .lock()
+                .await
+                .summary_terminal_overlay_overflowed_through_sequence
+                .is_none(),
+            "the durable watermark must clear an overflow it fully covers",
+        );
+        state.pool.close().await;
+
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("recovered Summary topic remains memory-only")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the recovered Summary topic");
         let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
         assert_eq!(payload["totalCount"], json!(1));
         assert_eq!(payload["totalTokens"], json!(42));
