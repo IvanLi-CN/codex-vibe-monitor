@@ -1,6 +1,10 @@
 use super::*;
 use crate::api::DashboardTerminalProjectionSlice;
 use serde_json::json;
+use std::sync::LazyLock;
+
+static TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     pool: &SqlitePool,
@@ -20838,6 +20842,7 @@ async fn dashboard_account_model_performance_ignores_stale_retry_timing() {
 
 #[tokio::test]
 async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let record = api_invocation_from_runtime_record(&test_proxy_capture_record(
         "timeseries-projection-p1-priority",
         "2026-08-21 12:00:12",
@@ -20942,6 +20947,7 @@ async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
 
 #[tokio::test]
 async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_deltas() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -20972,6 +20978,14 @@ async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_del
             .execute(&state.pool)
             .await
             .expect("attach the account payload used by all projection selections");
+        let row_id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load durable row id for the terminal delta");
         let event_id = state
             .terminal_projection_hub
             .register_pending(&record, None)
@@ -20980,7 +20994,7 @@ async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_del
             Some(event_id),
             &record.invoke_id,
             &record.occurred_at,
-            92_000 + minute,
+            row_id,
         );
     }
 
@@ -21039,10 +21053,77 @@ async fn minute_projection_flush_commits_all_key_slices_before_acknowledging_del
             "every committed key slice must persist its terminal aggregate contents"
         );
     }
+
+    for minute in 0..17_i64 {
+        let occurred_at = format!("2026-08-21 12:{minute:02}:42");
+        let record = api_invocation_from_runtime_record(&test_proxy_capture_record(
+            &format!("timeseries-projection-incremental-{minute}"),
+            &occurred_at,
+        ));
+        insert_timeseries_invocation(
+            &state.pool,
+            &record.invoke_id,
+            &record.occurred_at,
+            "success",
+            Some(12.0),
+        )
+        .await;
+        sqlx::query("UPDATE codex_invocations SET payload = ?1 WHERE invoke_id = ?2")
+            .bind(r#"{"upstreamAccountId":17}"#)
+            .bind(&record.invoke_id)
+            .execute(&state.pool)
+            .await
+            .expect("attach the account payload used by the incremental projection selection");
+        let row_id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM codex_invocations WHERE invoke_id = ?1 AND occurred_at = ?2",
+        )
+        .bind(&record.invoke_id)
+        .bind(&record.occurred_at)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load durable incremental row id");
+        let event_id = state
+            .terminal_projection_hub
+            .register_pending(&record, None)
+            .expect("incremental terminal event should fit in the projection journal");
+        state.terminal_projection_hub.acknowledge_persisted(
+            Some(event_id),
+            &record.invoke_id,
+            &record.occurred_at,
+            row_id,
+        );
+    }
+    let outcome = crate::api::flush_timeseries_minute_projection_with_coordinator(
+        state.as_ref(),
+        "stateful_key_slices_incremental",
+        &coordinator,
+    )
+    .await
+    .expect("incremental key slices should flush after the initial rebuild");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed
+    );
+    let aggregate_counts = sqlx::query_scalar::<_, String>(
+        "SELECT aggregate_json FROM timeseries_minute_projection_v2 WHERE coverage_state = 'ready'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load aggregate rows after incremental update");
+    assert!(
+        aggregate_counts.iter().all(|aggregate_json| {
+            serde_json::from_str::<serde_json::Value>(aggregate_json)
+                .ok()
+                .and_then(|aggregate| aggregate["total_count"].as_i64())
+                == Some(2)
+        }),
+        "existing ready rows must incorporate newer distinct durable row ids incrementally"
+    );
 }
 
 #[tokio::test]
 async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -21110,6 +21191,7 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
 
 #[tokio::test]
 async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -21191,7 +21273,68 @@ async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
 }
 
 #[tokio::test]
+async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let start = Utc
+        .with_ymd_and_hms(2026, 8, 21, 12, 0, 0)
+        .single()
+        .expect("valid warm range start");
+    let end = start + ChronoDuration::minutes(1);
+    let occurred_at = format_naive(start.with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, raw_response) VALUES (?1, ?2, 'cli', 'success', 10, 0.01, '{}')",
+    )
+    .bind("non-proxy-terminal-replacement")
+    .bind(&occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert terminal non-proxy invocation");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        "stateful_non_proxy_terminal_seed",
+        &coordinator,
+    )
+    .await
+    .expect("seed ready coverage before direct terminal replacement");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+
+    sqlx::query(
+        "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE invoke_id = ?1",
+    )
+    .bind("non-proxy-terminal-replacement")
+    .execute(&state.pool)
+    .await
+    .expect("replace terminal non-proxy invocation");
+    let coverage_state = sqlx::query_scalar::<_, String>(
+        "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(start.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load durable replacement invalidation state");
+    assert_eq!(
+        coverage_state, "warming",
+        "direct terminal replacements must invalidate ready all-source coverage"
+    );
+}
+
+#[tokio::test]
 async fn exact_fallback_warm_acknowledges_the_transaction_snapshot_not_the_response_snapshot() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -21292,6 +21435,7 @@ async fn startup_minute_projection_recovery_stops_before_writes_when_cancelled()
 
 #[tokio::test]
 async fn materialized_timeseries_uses_exact_fallback_for_same_cursor_terminal_replacement() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )

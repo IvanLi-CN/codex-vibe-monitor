@@ -57,6 +57,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - parallel-work 必须复用既有 minute-key/hourly rollup baseline，并以 current boundary identities 和 runtime overlay 精确维护 `today`、`1d`、`7d`；`yesterday` 必须作为 `ClosedSnapshot`，不受当前 mutation 触发。
 - open-window timeseries 必须复用 `timeseries_minute_projection_v2`，并以 terminal/runtime revisions 更新当前桶；健康发布不得调用通用 timeseries fetch builder。
 - minute projection 的后台写入必须以 `P2Derived` 通过共享 SQLite 写协调器和 pressure gate；coverage invalidation 与 key 更新必须是有界事务、片段间让出执行权，并在 P1 terminal 写入等待或持有时保留 delta 以便重试。
+- 直接非代理 terminal row replacement 必须通过 durable coverage invalidation 使 `all` selection 回退到 exact；account 的 projection snapshot 失效回退必须替换已载入 aggregate，不得叠加。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
 - activity topic descriptor 必须固定 `recentLimit=16`；动态可见数量仅由客户端本地截断，显式 range、分页和筛选操作仍可改变 descriptor。
 - 每个依赖 revision tuple 最多 materialize 和 serialize 一次，生成一个 `Arc<SerializedTopicFrame>`；内容未变化时不得推进 cursor。
