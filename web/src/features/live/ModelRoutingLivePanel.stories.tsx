@@ -4,6 +4,9 @@ import { I18nProvider } from "../../i18n";
 import type { ModelRoutingLiveResponse } from "../../lib/api";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
 
+const primaryAccountName = "Aster";
+const recoveryAccountName = "Borealis";
+
 const data: ModelRoutingLiveResponse = {
   generatedAt: "2026-08-16T04:00:00.000Z",
   groups: [
@@ -12,7 +15,7 @@ const data: ModelRoutingLiveResponse = {
       accounts: [
         {
           accountId: 11,
-          accountDisplayName: "API Key #11",
+          accountDisplayName: primaryAccountName,
           model: "gpt-5.5",
           state: "available",
           priority: "normal",
@@ -22,7 +25,7 @@ const data: ModelRoutingLiveResponse = {
         },
         {
           accountId: 12,
-          accountDisplayName: "API Key #12",
+          accountDisplayName: recoveryAccountName,
           model: "gpt-5.5",
           state: "cooling_down",
           priority: "excluded",
@@ -43,7 +46,7 @@ const data: ModelRoutingLiveResponse = {
       kind: "attempt",
       occurredAt: "2026-08-16T03:59:20.000Z",
       accountId: 11,
-      accountDisplayName: "API Key #11",
+      accountDisplayName: primaryAccountName,
       model: "gpt-5.5",
       attemptId: "attempt-001",
       invokeId: "invoke-001",
@@ -59,7 +62,7 @@ const data: ModelRoutingLiveResponse = {
       modelRoutePriorityAfter: "normal",
       routingSelectionAudit: {
         selectedAccountId: 11,
-        selectedAccountName: "API Key #11",
+        selectedAccountName: primaryAccountName,
         eligibleCandidateCount: 2,
         winnerReasonCode: "lowest_effective_load",
         excludedCandidates: [],
@@ -129,5 +132,7 @@ export const RecoveryAttemptMobile: Story = {
 };
 
 export const Empty: Story = {
-  args: { data: { generatedAt: "2026-08-16T04:00:00.000Z", groups: [], records: [] } },
+  args: {
+    data: { generatedAt: "2026-08-16T04:00:00.000Z", groups: [], records: [] },
+  },
 };

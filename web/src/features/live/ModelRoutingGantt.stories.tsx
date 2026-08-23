@@ -9,11 +9,16 @@ import type {
 import { ModelRoutingGantt } from "./ModelRoutingGantt";
 
 const generatedAt = "2026-08-16T04:00:00.000Z";
+const accountName11 = "Aster";
+const accountName12 = "Borealis";
+const accountName13 = "Cedar";
+const accountName21 = "Lumen";
+const accountName22 = "Northstar";
 
 const accounts: ModelRoutingLiveAccount[] = [
   {
     accountId: 11,
-    accountDisplayName: "API Key #11",
+    accountDisplayName: accountName11,
     model: "gpt-5.5",
     state: "available",
     priority: "normal",
@@ -23,7 +28,7 @@ const accounts: ModelRoutingLiveAccount[] = [
   },
   {
     accountId: 12,
-    accountDisplayName: "API Key #12",
+    accountDisplayName: accountName12,
     model: "gpt-5.5",
     state: "degraded",
     priority: "deprioritized",
@@ -33,7 +38,7 @@ const accounts: ModelRoutingLiveAccount[] = [
   },
   {
     accountId: 13,
-    accountDisplayName: "API Key #13",
+    accountDisplayName: accountName13,
     model: "gpt-5.5",
     state: "cooling_down",
     priority: "excluded",
@@ -47,7 +52,7 @@ const accounts: ModelRoutingLiveAccount[] = [
 const miniAccounts: ModelRoutingLiveAccount[] = [
   {
     accountId: 21,
-    accountDisplayName: "API Key #21",
+    accountDisplayName: accountName21,
     model: "gpt-5.4-mini",
     state: "degraded",
     priority: "demoted",
@@ -57,7 +62,7 @@ const miniAccounts: ModelRoutingLiveAccount[] = [
   },
   {
     accountId: 22,
-    accountDisplayName: "API Key #22",
+    accountDisplayName: accountName22,
     model: "gpt-5.4-mini",
     state: "available",
     priority: "normal",
@@ -73,7 +78,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "attempt",
     occurredAt: "2026-08-16T03:35:00.000Z",
     accountId: 11,
-    accountDisplayName: "API Key #11",
+    accountDisplayName: accountName11,
     model: "gpt-5.5",
     attemptId: "attempt-11-recovery",
     invokeId: "invoke-11-recovery",
@@ -93,7 +98,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "attempt",
     occurredAt: "2026-08-16T03:42:00.000Z",
     accountId: 12,
-    accountDisplayName: "API Key #12",
+    accountDisplayName: accountName12,
     model: "gpt-5.5",
     attemptId: "attempt-12-degraded",
     invokeId: "invoke-12-degraded",
@@ -113,7 +118,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "event",
     occurredAt: "2026-08-16T03:49:00.000Z",
     accountId: 13,
-    accountDisplayName: "API Key #13",
+    accountDisplayName: accountName13,
     model: "gpt-5.5",
     status: "cooling_down",
     action: "model_route_cooldown",
@@ -129,7 +134,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "event",
     occurredAt: "2026-08-16T03:18:00.000Z",
     accountId: 21,
-    accountDisplayName: "API Key #21",
+    accountDisplayName: accountName21,
     model: "gpt-5.4-mini",
     status: "degraded",
     action: "model_route_degraded",
@@ -194,11 +199,11 @@ export const Operational24Hours: Story = {
       canvas.findByTestId("model-routing-model-group-gpt-5.4-mini"),
     ).resolves.toBeVisible();
     for (const account of [
-      "API Key #11",
-      "API Key #12",
-      "API Key #13",
-      "API Key #21",
-      "API Key #22",
+      accountName11,
+      accountName12,
+      accountName13,
+      accountName21,
+      accountName22,
     ]) {
       await expect(canvas.findAllByText(account)).resolves.not.toHaveLength(0);
     }
@@ -236,14 +241,18 @@ export const Operational24Hours: Story = {
       ganttHost.querySelectorAll('[data-routing-priority="excluded"]').length,
     ).toBeGreaterThan(0);
     await expect(
-      canvas.queryByRole("button", { name: /^API Key #12 · 恢复尝试/ }),
+      canvas.queryByRole("button", {
+        name: new RegExp(`^${accountName12} · 恢复尝试`),
+      }),
     ).not.toBeInTheDocument();
     await expect(
-      canvas.findByRole("button", { name: /^API Key #11 · 正常候选 · 可用 ·/ }),
+      canvas.findByRole("button", {
+        name: new RegExp(`^${accountName11} · 正常候选 · 可用 ·`),
+      }),
     ).resolves.toBeVisible();
 
     const attempt = await canvas.findByRole("button", {
-      name: /^API Key #11 · 恢复尝试/,
+      name: new RegExp(`^${accountName11} · 恢复尝试`),
     });
     const attemptRect = attempt.getBoundingClientRect();
     const availableBands = Array.from(

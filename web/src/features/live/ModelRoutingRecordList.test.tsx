@@ -12,7 +12,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "attempt",
     occurredAt: "2026-08-16T03:59:20.000Z",
     accountId: 11,
-    accountDisplayName: "ignored-account-name",
+    accountDisplayName: "Aster",
     model: "gpt-5.5",
     invokeId: "invoke-11",
     sameAccountRetryIndex: 1,
@@ -27,13 +27,17 @@ const records: ModelRoutingTimelineRecord[] = [
     modelRoutePriorityAfter: "normal",
     routingSelectionAudit: {
       selectedAccountId: 11,
-      selectedAccountName: "ignored-account-name",
+      selectedAccountName: "Aster",
       eligibleCandidateCount: 2,
       winnerReasonCode: "lowest_effective_load",
       comparedAccountId: 12,
-      comparedAccountName: "ignored-compared-name",
+      comparedAccountName: "Borealis",
       excludedCandidates: [
-        { accountId: 13, accountName: "ignored-excluded-name", reasonCode: "cooling_down" },
+        {
+          accountId: 13,
+          accountName: "Cedar",
+          reasonCode: "cooling_down",
+        },
       ],
     },
   },
@@ -42,7 +46,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "event",
     occurredAt: "2026-08-16T04:00:00.000Z",
     accountId: 12,
-    accountDisplayName: "ignored-event-name",
+    accountDisplayName: "Borealis",
     model: "gpt-5.5",
     action: "model_route_cooldown",
     reasonCode: "upstream_http_5xx",
@@ -63,7 +67,7 @@ const records: ModelRoutingTimelineRecord[] = [
     kind: "attempt",
     occurredAt: "2026-08-16T04:00:10.000Z",
     accountId: 21,
-    accountDisplayName: "ignored-other-model-name",
+    accountDisplayName: "Lumen",
     model: "gpt-5.4-mini",
     status: "success",
   },
@@ -117,7 +121,7 @@ describe("ModelRoutingRecordList", () => {
     expect(host?.querySelector("h3")?.textContent).toBe("路由记录");
     expect(host?.textContent).not.toContain("gpt-5.5 路由决策");
     expect(host?.textContent).not.toContain("gpt-5.4-mini");
-    expect(host?.textContent).not.toContain("ignored-account-name");
+    expect(host?.textContent).toContain("Aster");
 
     const attempt = host?.querySelector('[data-testid="model-routing-record-attempt:gpt-5.5"]');
     const toggle = attempt?.querySelector('button[aria-label="展开决策详情"]');
@@ -125,13 +129,13 @@ describe("ModelRoutingRecordList", () => {
     act(() => toggle.click());
 
     expect(attempt?.textContent).toContain("有效负载最低");
-    expect(attempt?.textContent).toContain("与 API Key #12 比较");
-    expect(attempt?.textContent).toContain("API Key #13 (冷却中)");
+    expect(attempt?.textContent).toContain("与 Borealis 比较");
+    expect(attempt?.textContent).toContain("Cedar (冷却中)");
     expect(attempt?.textContent).toContain("冷却中 → 可用");
     expect(attempt?.textContent).toContain("排除 → 正常");
 
     const account = Array.from(attempt?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent?.trim() === "API Key #11",
+      (button) => button.textContent?.trim() === "Aster",
     );
     const invocation = attempt?.querySelector('button[aria-label="打开调用详情"]');
     if (!(account instanceof HTMLButtonElement) || !(invocation instanceof HTMLButtonElement)) {

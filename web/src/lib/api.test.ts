@@ -249,6 +249,7 @@ describe("model routing read models", () => {
   });
 
   it("drops account-pool grouping metadata from routing snapshots and history", async () => {
+    const displayName = "Aster";
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -261,7 +262,7 @@ describe("model routing read models", () => {
                   kind: "attempt",
                   occurredAt: "2026-08-16T04:00:00.000Z",
                   accountId: 11,
-                  accountDisplayName: "Ciii",
+                  accountDisplayName: displayName,
                   accountGroupName: "unrelated-management-group",
                   model: "gpt-5.5",
                 },
@@ -276,7 +277,7 @@ describe("model routing read models", () => {
                   accounts: [
                     {
                       accountId: 11,
-                      accountDisplayName: "Ciii",
+                      accountDisplayName: displayName,
                       accountGroupName: "unrelated-management-group",
                       model: "gpt-5.5",
                       state: "available",
@@ -293,7 +294,7 @@ describe("model routing read models", () => {
                   kind: "attempt",
                   occurredAt: "2026-08-16T04:00:00.000Z",
                   accountId: 11,
-                  accountDisplayName: "Ciii",
+                  accountDisplayName: displayName,
                   accountGroupName: "unrelated-management-group",
                   model: "gpt-5.5",
                 },
@@ -314,6 +315,9 @@ describe("model routing read models", () => {
     expect(live.groups[0]?.accounts[0]).not.toHaveProperty("accountGroupName");
     expect(live.records[0]).not.toHaveProperty("accountGroupName");
     expect(history.items[0]).not.toHaveProperty("accountGroupName");
+    expect(live.groups[0]?.accounts[0]).toHaveProperty("accountDisplayName", displayName);
+    expect(live.records[0]).toHaveProperty("accountDisplayName", displayName);
+    expect(history.items[0]).toHaveProperty("accountDisplayName", displayName);
   });
 });
 

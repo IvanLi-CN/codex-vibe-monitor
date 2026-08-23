@@ -72,6 +72,7 @@ struct ModelRouteRow {
 #[derive(Debug, Clone, FromRow)]
 struct ModelRoutingLiveRouteRow {
     account_id: i64,
+    account_display_name: String,
     model: String,
     state: String,
     priority: String,
@@ -128,6 +129,8 @@ impl ModelRoutingLiveRouteRow {
         });
         ModelRoutingLiveAccount {
             account_id: self.account_id,
+            account_display_name: (!self.account_display_name.trim().is_empty())
+                .then_some(self.account_display_name),
             route,
         }
     }
@@ -412,6 +415,7 @@ pub(crate) async fn load_api_key_model_routing_live_accounts(
     let rows = sqlx::query_as::<_, ModelRoutingLiveRouteRow>(
         r#"
         SELECT routes.account_id,
+               accounts.display_name AS account_display_name,
                routes.model,
                routes.state,
                routes.priority,

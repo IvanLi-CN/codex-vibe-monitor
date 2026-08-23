@@ -1,7 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";
 import { useTheme } from "../theme";
-import { DemoInspector } from "./DemoInspector";
 import { demoModel } from "./model";
 import {
   demoSearchParamsFromLocation,
@@ -46,11 +45,11 @@ export function DemoShell({ children }: { children: ReactNode }) {
       <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
         <div className="mx-auto flex w-full max-w-[30rem] flex-col gap-3">
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-base-content/55">
-            Demo mobile viewport · {mobileViewportWidth}px
+            移动视口 · {mobileViewportWidth}px
           </p>
           <div className="overflow-hidden rounded-[2rem] border border-base-300/80 bg-base-100 shadow-2xl shadow-base-content/10">
             <iframe
-              title="Demo mobile viewport"
+              title="移动视口"
               src={embeddedSrc}
               className="block max-w-full border-0 bg-base-100"
               style={{ height: mobileViewportHeight, width: mobileViewportWidth }}
@@ -61,10 +60,5 @@ export function DemoShell({ children }: { children: ReactNode }) {
     );
   }
 
-  return (
-    <>
-      <div key={snapshot.scene}>{children}</div>
-      {embedded ? null : <DemoInspector />}
-    </>
-  );
+  return <div key={snapshot.scene}>{children}</div>;
 }
