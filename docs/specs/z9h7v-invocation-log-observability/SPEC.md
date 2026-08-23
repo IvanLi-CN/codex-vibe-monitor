@@ -163,6 +163,8 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 统一 `/events` 通道新增 `upstream-account-attempts.window` topic，参数固定为 `accountId`、`page`、`pageSize`、`type`、`model`、`stickyKey`；规范化规则与账号 attempts REST 列表一致，默认 `page=1`、`pageSize=20`，`accountId` 必须为正整数，响应 payload 复用 `items`、`stickyKeyOptions`、`total`、`page`、`pageSize`，schema epoch 固定为 `upstream-account-attempts.window/v1`。
 - `PoolAttempts` 广播只有在包含目标 `upstreamAccountId` 时才会触发对应活跃 topic；同一账号 topic 使用不可续延的 250ms 合并窗口，构建期间到达的新事件只补发一次最新快照。刷新失败保留最近一次成功 payload，不清空或倒退列表；内部广播接收端发生 lag 时，所有活跃账号 topic 视为连续性中断，保留 last-good 并各自排入一次专用重建，gap 前构建不得提交覆盖新快照。
 - 请求 tab 仅在可见时订阅上述 topic；共享 EventSource 在某个 descriptor 的最后一个 listener 卸载、但仍有其他 topic 时，必须立即以剩余 descriptors 重建连接，释放服务端的账号 attempts topic。第一页接纳新记录，非第一页不自动跳页或滚动，同一 `attemptId` 以稳定 key 原位更新并保留展开卡片与深链 focus。`locate` REST 只负责深链定位目标页，定位完成后由对应 topic 接管当前页；断线不在页面私有轮询或补拉。
+- 若 producer 在读取 attempts 快照时失败、无法确定受影响账号，则发送仅内部消费的控制信号，以同一代际失效和专用重建路径恢复所有活跃账号 topic；不得伪造空 `PoolAttempts` 或放宽正常账号匹配。
+- 若已确认的深链目标随后被权威快照挤出当前页，则请求 tab 限一次重新 `locate`，并等待新页 topic 确认后恢复焦点；该路径不引入列表 REST 回退、轮询或隐藏 tab 订阅。
 - 号池详情中，真实上游尝试与合成终态记录分开展示。`budget_exhausted_final` 或 `sameAccountRetryIndex <= 0` 仅作为号池终态说明，不作为普通尝试卡片展示，不显示同账号重试序号或阶段耗时。
 - 启动阶段执行历史回填：读取 `request_raw_path` 指向的原始请求 JSON，提取 `prompt_cache_key` 后写回 payload。
 - Settings 页面在现有 proxy card 内新增两个独立开关，文案明确区分“请求 body 记录”与“响应 body 记录”，并说明关闭仅影响新记录，旧记录继续走 retention。

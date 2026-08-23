@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
@@ -463,7 +463,15 @@ function AttemptTimelinePageSurface({ children }: { children: ReactNode }) {
   );
 }
 
-function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
+function AttemptTimelineFetchMock({
+  accountId,
+  relocateAfterInitialLocate = false,
+}: {
+  accountId: number;
+  relocateAfterInitialLocate?: boolean;
+}) {
+  const locateRequestCountRef = useRef(0);
+
   useEffect(() => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -498,6 +506,8 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
       if (url.includes(`/api/pool/upstream-accounts/${accountId}/call-attempts/locate`)) {
         const parsedUrl = new URL(url, "http://storybook.local");
         const locatedAttemptId = parsedUrl.searchParams.get("attemptId")?.trim();
+        const page = relocateAfterInitialLocate && locateRequestCountRef.current > 0 ? 2 : 1;
+        locateRequestCountRef.current += 1;
         const filteredItems = locatedAttemptId
           ? attemptItems.filter(
               (item) => item.attemptId === locatedAttemptId || item.attemptId === "AFAIL001",
@@ -509,7 +519,7 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
             items,
             stickyKeyOptions: buildStickyKeyOptions(filteredItems),
             total: items.length,
-            page: 1,
+            page,
             pageSize: 50,
           }),
           {
@@ -577,7 +587,7 @@ function AttemptTimelineFetchMock({ accountId }: { accountId: number }) {
     return () => {
       globalThis.fetch = originalFetch;
     };
-  }, [accountId]);
+  }, [accountId, relocateAfterInitialLocate]);
 
   return null;
 }
@@ -669,14 +679,16 @@ const realtimeNewAttempt: ApiPoolUpstreamRequestAttempt = {
 
 const REALTIME_LIFECYCLE_ACCOUNT_ID = 919;
 const REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID = 920;
+const FOCUSED_RELOCATION_ACCOUNT_ID = 921;
 
 function buildAttemptTimelineSnapshot(
   accountId: number,
   items: ApiPoolUpstreamRequestAttempt[],
+  page = 1,
 ): SubscriptionTopicEnvelope<UpstreamAccountAttemptListResponse> {
   const descriptor = buildTopicDescriptor("upstream-account-attempts.window", {
     accountId,
-    page: 1,
+    page,
     pageSize: 50,
   });
   return {
@@ -689,7 +701,7 @@ function buildAttemptTimelineSnapshot(
       items,
       stickyKeyOptions: buildStickyKeyOptions(items),
       total: items.length,
-      page: 1,
+      page,
       pageSize: 50,
     },
   };
@@ -716,6 +728,37 @@ function AttemptTimelineRealtimeLifecycleMock({ accountId }: { accountId: number
     return () => {
       window.clearTimeout(initialTimer);
       if (terminalTimer != null) window.clearTimeout(terminalTimer);
+    };
+  }, [accountId]);
+
+  return null;
+}
+
+function AttemptTimelineFocusedRelocationMock({ accountId }: { accountId: number }) {
+  useEffect(() => {
+    const controller = getStorybookPageSseController();
+    if (!controller) return;
+    const initialTimer = window.setTimeout(() => {
+      controller.emit(
+        buildAttemptTimelineSnapshot(accountId, [withAccountId(realtimePendingAttempt, accountId)]),
+      );
+    }, 50);
+    const shiftedPageTimer = window.setTimeout(() => {
+      controller.emit(buildAttemptTimelineSnapshot(accountId, [], 1));
+    }, 180);
+    const relocatedPageTimer = window.setTimeout(() => {
+      controller.emit(
+        buildAttemptTimelineSnapshot(
+          accountId,
+          [withAccountId(realtimeTerminalAttempt, accountId)],
+          2,
+        ),
+      );
+    }, 320);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearTimeout(shiftedPageTimer);
+      window.clearTimeout(relocatedPageTimer);
     };
   }, [accountId]);
 
@@ -800,6 +843,19 @@ function withAttemptTimelineRealtimeLifecycleMobileMock(Story: () => ReactNode) 
   return (
     <>
       <AttemptTimelineRealtimeLifecycleMock accountId={REALTIME_LIFECYCLE_MOBILE_ACCOUNT_ID} />
+      <Story />
+    </>
+  );
+}
+
+function withAttemptTimelineFocusedRelocationMock(Story: () => ReactNode) {
+  return (
+    <>
+      <AttemptTimelineFetchMock
+        accountId={FOCUSED_RELOCATION_ACCOUNT_ID}
+        relocateAfterInitialLocate
+      />
+      <AttemptTimelineFocusedRelocationMock accountId={FOCUSED_RELOCATION_ACCOUNT_ID} />
       <Story />
     </>
   );
@@ -929,6 +985,32 @@ export const RealtimeLifecycleMobile: Story = {
   decorators: [withAttemptTimelineRealtimeLifecycleMobileMock],
   parameters: {
     viewport: { defaultViewport: "mobile390" },
+  },
+};
+
+export const FocusedAttemptRelocatesAfterAuthoritativeShift: Story = {
+  tags: ["test"],
+  args: {
+    accountId: FOCUSED_RELOCATION_ACCOUNT_ID,
+    focusedAttemptId: "ALIVE0001",
+    focusVersion: 1,
+  },
+  decorators: [withAttemptTimelineFocusedRelocationMock],
+  play: async ({ canvasElement }) => {
+    const initialCard = await within(canvasElement).findByTestId(
+      "account-attempt-record-ALIVE0001",
+    );
+    expect(initialCard.textContent ?? "").toContain("waiting_first_byte");
+
+    await waitFor(() => {
+      const relocatedCard = canvasElement.querySelector<HTMLElement>(
+        '[data-testid="account-attempt-record-ALIVE0001"]',
+      );
+      expect(relocatedCard).not.toBe(initialCard);
+      expect(relocatedCard?.dataset.focusVisible).toBe("true");
+      expect(relocatedCard?.textContent ?? "").toContain("HTTP 200");
+      expect(relocatedCard?.textContent ?? "").not.toContain("waiting_first_byte");
+    });
   },
 };
 

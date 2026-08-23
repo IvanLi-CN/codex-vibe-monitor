@@ -125,6 +125,38 @@ fn same_origin_settings_write_rejects_cross_site_request() {
     assert!(!is_same_origin_settings_write(&headers));
 }
 
+#[tokio::test]
+async fn pool_attempt_snapshot_query_failure_broadcasts_account_recovery_signal() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9").expect("valid upstream base URL"),
+    )
+    .await;
+    let _topic_lease = state
+        .subscription_hub
+        .register_test_topic_name("upstream-account-attempts.window")
+        .await;
+    let mut receiver = state.broadcaster.subscribe();
+    state.pool.close().await;
+
+    let err = broadcast_pool_upstream_attempts_snapshot(state.as_ref(), "snapshot-query-failed")
+        .await
+        .expect_err("closed SQLite pool must fail the attempt snapshot query");
+    assert!(
+        err.to_string()
+            .contains("failed to load pool attempt snapshot")
+    );
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("timed out waiting for account attempt recovery signal")
+        .expect("broadcast channel should stay open");
+    assert!(matches!(
+        payload,
+        BroadcastPayload::PoolAttemptsSnapshotUnavailable { invoke_id }
+            if invoke_id == "snapshot-query-failed"
+    ));
+}
+
 #[test]
 fn rewrite_proxy_location_path_strips_upstream_base_prefix() {
     let upstream_base = Url::parse("https://proxy.example.com/gateway/").expect("valid base");

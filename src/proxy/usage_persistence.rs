@@ -2338,9 +2338,20 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
         .subscription_hub
         .has_external_broadcaster_receiver(state.broadcaster.receiver_count());
     if has_account_attempt_topic || has_external_broadcaster_receiver {
-        let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
-            .await
-            .map_err(|err| anyhow!("failed to load pool attempt snapshot: {err:?}"))?;
+        let attempts = match query_pool_attempt_records_from_live(&state.pool, invoke_id).await {
+            Ok(attempts) => attempts,
+            Err(err) => {
+                // A failed source query cannot identify the affected account. Preserve the
+                // producer error while allowing active account topics to retain last-good and
+                // enter their bounded dedicated recovery path.
+                let _ = state
+                    .broadcaster
+                    .send(BroadcastPayload::PoolAttemptsSnapshotUnavailable {
+                        invoke_id: invoke_id.to_string(),
+                    });
+                return Err(anyhow!("failed to load pool attempt snapshot: {err:?}"));
+            }
+        };
         let _ = state.broadcaster.send(BroadcastPayload::PoolAttempts {
             invoke_id: invoke_id.to_string(),
             attempts,

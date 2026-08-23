@@ -1236,6 +1236,117 @@ describe("UpstreamAccountAttemptTimeline", () => {
     });
   });
 
+  it("relocates an acknowledged deep link when a later authoritative snapshot shifts its page", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "SHIFTACK1",
+      invokeId: "SHIFTACK1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    const pageTwoDescriptor = buildTopicDescriptor("upstream-account-attempts.window", {
+      accountId: 101,
+      page: 2,
+      pageSize: 50,
+    });
+    topicSnapshotCache.set(
+      getTopicDescriptorKey(pageTwoDescriptor),
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    let resolvePageThree: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 3) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageThree = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [focusedAttempt],
+        total: 101,
+        page: options.page ?? 1,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt)
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      )
+      .mockResolvedValueOnce(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "SHIFTACK1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const firstFocusedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFTACK1"]',
+    );
+    expect(firstFocusedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    const scrollCallsBeforeShift = scrollIntoViewMock.mock.calls.length;
+
+    act(() => {
+      emitTopicSnapshot(
+        pageTwoDescriptor,
+        attemptListResponse({
+          items: [],
+          total: 101,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+    await flushAsync();
+
+    expect(locateUpstreamAccountAttempt).toHaveBeenCalledTimes(2);
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(scrollIntoViewMock).toHaveBeenCalledTimes(scrollCallsBeforeShift);
+    const topicAfterRelocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterRelocate?.params?.page).toBe("3");
+    expect(resolvePageThree).toBeDefined();
+
+    act(() => {
+      resolvePageThree?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 101,
+          page: 3,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+    await flushAsync();
+
+    const relocatedCard = host?.querySelector<HTMLElement>(
+      '[data-testid="account-attempt-record-SHIFTACK1"]',
+    );
+    expect(relocatedCard?.dataset.focusVisible).toBe("true");
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThan(scrollCallsBeforeShift);
+  });
+
   it("shows locate unavailable feedback when the focused attempt is outside the locate window", async () => {
     vi.mocked(locateUpstreamAccountAttempt).mockRejectedValue(new Error("404 not found"));
 

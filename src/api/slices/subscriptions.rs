@@ -4995,48 +4995,48 @@ impl SubscriptionHub {
         self.runtime_topic_recovery_notify.notify_one();
     }
 
-    async fn mark_internal_broadcast_gap_and_recover(&self, state: Arc<AppState>, skipped: u64) {
-        let account_attempt_topics = {
-            let mut guard = self.state.lock().await;
-            guard.runtime_topic_recovery_generation =
-                guard.runtime_topic_recovery_generation.saturating_add(1);
-            let recovery_generation = guard.runtime_topic_recovery_generation;
-            let active_subscribers = guard.active_subscribers.clone();
-            guard
-                .topics
-                .iter_mut()
-                .filter_map(|(topic_key, cached)| {
-                    if !cached.topic.uses_upstream_account_attempt_refresh()
-                        || active_subscribers
-                            .get(topic_key)
-                            .copied()
-                            .unwrap_or_default()
-                            == 0
-                    {
-                        return None;
-                    }
+    async fn invalidate_active_upstream_account_attempt_topics_for_recovery(
+        &self,
+    ) -> Vec<SubscriptionTopic> {
+        let mut guard = self.state.lock().await;
+        guard.runtime_topic_recovery_generation =
+            guard.runtime_topic_recovery_generation.saturating_add(1);
+        let recovery_generation = guard.runtime_topic_recovery_generation;
+        let active_subscribers = guard.active_subscribers.clone();
+        guard
+            .topics
+            .iter_mut()
+            .filter_map(|(topic_key, cached)| {
+                if !cached.topic.uses_upstream_account_attempt_refresh()
+                    || active_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                {
+                    return None;
+                }
 
-                    // PoolAttempts is the authoritative invalidation source for this topic.
-                    // When its receiver falls behind, retain the last-good frame and reset
-                    // continuity before the dedicated builder publishes its replacement.
-                    cached.dirty = true;
-                    cached.refresh_scheduled = false;
-                    cached.invalidate_upstream_account_attempt_refresh();
-                    cached.latest_live_snapshot = None;
-                    cached.continuity_reset_cursor = Some(cached.cursor);
-                    cached.runtime_topic_recovery_generation = recovery_generation;
-                    cached.runtime_topic_recovery_retry_at = None;
-                    Some(cached.topic.clone())
-                })
-                .collect::<Vec<_>>()
-        };
+                // Retain the last-good frame and reject any older build before the dedicated
+                // account-attempt builder publishes its next authoritative snapshot.
+                cached.dirty = true;
+                cached.refresh_scheduled = false;
+                cached.invalidate_upstream_account_attempt_refresh();
+                cached.latest_live_snapshot = None;
+                cached.continuity_reset_cursor = Some(cached.cursor);
+                cached.runtime_topic_recovery_generation = recovery_generation;
+                cached.runtime_topic_recovery_retry_at = None;
+                Some(cached.topic.clone())
+            })
+            .collect()
+    }
 
-        warn!(
-            skipped,
-            account_attempt_topic_count = account_attempt_topics.len(),
-            recovery = "dirty_last_good",
-            "subscription broadcast continuity lost; scheduling account attempt topic recovery"
-        );
+    async fn schedule_invalidated_upstream_account_attempt_topics(
+        &self,
+        state: Arc<AppState>,
+        account_attempt_topics: Vec<SubscriptionTopic>,
+        recovery_source: &'static str,
+    ) {
         for topic in account_attempt_topics {
             if let Err(err) = self
                 .schedule_upstream_account_attempt_topic_refresh(state.clone(), topic.clone())
@@ -5045,11 +5045,31 @@ impl SubscriptionHub {
                 warn!(
                     ?err,
                     topic = %topic.name(),
+                    recovery_source,
                     recovery = "dirty_last_good",
-                    "failed to schedule account attempt topic after subscription broadcast gap"
+                    "failed to schedule recovered account attempt topic"
                 );
             }
         }
+    }
+
+    async fn mark_internal_broadcast_gap_and_recover(&self, state: Arc<AppState>, skipped: u64) {
+        let account_attempt_topics = self
+            .invalidate_active_upstream_account_attempt_topics_for_recovery()
+            .await;
+
+        warn!(
+            skipped,
+            account_attempt_topic_count = account_attempt_topics.len(),
+            recovery = "dirty_last_good",
+            "subscription broadcast continuity lost; scheduling account attempt topic recovery"
+        );
+        self.schedule_invalidated_upstream_account_attempt_topics(
+            state,
+            account_attempt_topics,
+            "broadcast_gap",
+        )
+        .await;
     }
 
     async fn schedule_dirty_topic_recovery(&self, state: Arc<AppState>, topic: SubscriptionTopic) {
@@ -5311,6 +5331,24 @@ impl SubscriptionHub {
                 if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
                     self.materialize_dashboard_terminal_slice(*slice).await;
                 }
+                return;
+            }
+            BroadcastPayload::PoolAttemptsSnapshotUnavailable { invoke_id } => {
+                let account_attempt_topics = self
+                    .invalidate_active_upstream_account_attempt_topics_for_recovery()
+                    .await;
+                warn!(
+                    %invoke_id,
+                    account_attempt_topic_count = account_attempt_topics.len(),
+                    recovery = "dirty_last_good",
+                    "pool attempt snapshot unavailable; scheduling active account topic recovery"
+                );
+                self.schedule_invalidated_upstream_account_attempt_topics(
+                    state,
+                    account_attempt_topics,
+                    "snapshot_unavailable",
+                )
+                .await;
                 return;
             }
             _ => {}
@@ -10260,6 +10298,7 @@ impl SubscriptionTopic {
             BroadcastPayload::Records { .. }
             | BroadcastPayload::PromptCacheConversationChanged { .. }
             | BroadcastPayload::PromptCacheConversationStickyRouteChanged { .. } => false,
+            BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. } => false,
             BroadcastPayload::PoolAttempts { attempts, .. } => match self {
                 Self::UpstreamAccountAttemptsWindow { account_id, .. } => attempts
                     .iter()
@@ -17818,6 +17857,129 @@ mod tests {
                 .get(&other_key)
                 .is_some_and(|cached| !cached.upstream_account_attempt_refresh_scheduled)
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_pool_attempt_snapshot_recovers_only_active_account_topics() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let first_topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 42,
+            page: 1,
+            page_size: 50,
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+        };
+        let second_topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 43,
+            page: 2,
+            page_size: 20,
+            attempt_type: Some("responses".to_string()),
+            model: Some("gpt-5".to_string()),
+            sticky_key: Some("sticky-43".to_string()),
+        };
+        let inactive_topic = SubscriptionTopic::UpstreamAccountAttemptsWindow {
+            account_id: 44,
+            page: 1,
+            page_size: 50,
+            attempt_type: None,
+            model: None,
+            sticky_key: None,
+        };
+        let history_topic = SubscriptionTopic::InvocationHistoryWindow {
+            scope: ConversationSubscriptionScope::PromptCacheKey("unaffected-history".to_string()),
+        };
+        let first_key = first_topic.cache_key().expect("first account topic key");
+        let second_key = second_topic.cache_key().expect("second account topic key");
+        let inactive_key = inactive_topic
+            .cache_key()
+            .expect("inactive account topic key");
+        let history_key = history_topic.cache_key().expect("history topic key");
+        let (first_payload, inactive_payload, history_payload, stale_generation) = {
+            let mut guard = hub.state.lock().await;
+            for (topic, topic_key, cursor) in [
+                (&first_topic, &first_key, 41),
+                (&second_topic, &second_key, 42),
+                (&inactive_topic, &inactive_key, 43),
+                (&history_topic, &history_key, 44),
+            ] {
+                guard.topics.insert(
+                    topic_key.clone(),
+                    seeded_cached_topic(topic.clone(), &[cursor], Utc::now()),
+                );
+            }
+            for topic_key in [&first_key, &second_key, &history_key] {
+                guard.active_subscribers.insert(topic_key.clone(), 1);
+            }
+            (
+                guard
+                    .topics
+                    .get(&first_key)
+                    .expect("first cached topic")
+                    .snapshot_frame
+                    .payload_value()
+                    .clone(),
+                guard
+                    .topics
+                    .get(&inactive_key)
+                    .expect("inactive cached topic")
+                    .snapshot_frame
+                    .payload_value()
+                    .clone(),
+                guard
+                    .topics
+                    .get(&history_key)
+                    .expect("history cached topic")
+                    .snapshot_frame
+                    .payload_value()
+                    .clone(),
+                guard
+                    .topics
+                    .get(&first_key)
+                    .expect("first cached topic")
+                    .runtime_topic_recovery_generation,
+            )
+        };
+
+        hub.handle_internal_broadcast(
+            state,
+            BroadcastPayload::PoolAttemptsSnapshotUnavailable {
+                invoke_id: "snapshot-query-failed".to_string(),
+            },
+        )
+        .await;
+
+        let guard = hub.state.lock().await;
+        for topic_key in [&first_key, &second_key] {
+            let cached = guard.topics.get(topic_key).expect("active account topic");
+            assert!(cached.dirty);
+            assert!(cached.upstream_account_attempt_refresh_scheduled);
+            assert!(!cached.upstream_account_attempt_refresh_in_flight);
+            assert!(!cached.upstream_account_attempt_refresh_pending);
+            assert_eq!(cached.continuity_reset_cursor, Some(cached.cursor));
+            assert_ne!(cached.runtime_topic_recovery_generation, stale_generation);
+        }
+        let first = guard.topics.get(&first_key).expect("first account topic");
+        assert_eq!(first.cursor, 41);
+        assert_eq!(first.snapshot_frame.payload_value(), first_payload);
+
+        let inactive = guard
+            .topics
+            .get(&inactive_key)
+            .expect("inactive account topic");
+        assert!(!inactive.dirty);
+        assert!(!inactive.upstream_account_attempt_refresh_scheduled);
+        assert_eq!(inactive.cursor, 43);
+        assert_eq!(inactive.snapshot_frame.payload_value(), inactive_payload);
+
+        let history = guard.topics.get(&history_key).expect("history topic");
+        assert!(!history.dirty);
+        assert_eq!(history.cursor, 44);
+        assert_eq!(history.snapshot_frame.payload_value(), history_payload);
     }
 
     #[tokio::test]

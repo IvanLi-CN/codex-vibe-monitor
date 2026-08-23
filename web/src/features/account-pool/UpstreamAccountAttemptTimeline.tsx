@@ -43,6 +43,8 @@ type PendingAttemptFocus = {
   relocationCount: number;
 };
 
+type ActiveAttemptFocus = PendingAttemptFocus;
+
 const DEFAULT_FILTERS: AttemptFilterState = {
   type: "",
   model: "",
@@ -370,10 +372,7 @@ export function UpstreamAccountAttemptTimeline({
   const [locateLoading, setLocateLoading] = useState(focusedAttemptId != null);
   const [locateError, setLocateError] = useState<string | null>(null);
   const [pendingFocus, setPendingFocus] = useState<PendingAttemptFocus | null>(null);
-  const [activeFocus, setActiveFocus] = useState<{
-    attemptId: string;
-    version: number;
-  } | null>(null);
+  const [activeFocus, setActiveFocus] = useState<ActiveAttemptFocus | null>(null);
   const focusDismissTimerRef = useRef<number | null>(null);
   const attemptElementMapRef = useRef(new Map<string, HTMLDivElement>());
   const previousAccountIdRef = useRef(accountId);
@@ -575,6 +574,22 @@ export function UpstreamAccountAttemptTimeline({
     setPendingFocus(null);
     acknowledgeFocusRequest(pendingFocus.version);
   }, [acknowledgeFocusRequest, attemptTopic.data, pendingFocus]);
+
+  useEffect(() => {
+    if (
+      !activeFocus ||
+      pendingFocus ||
+      activeFocus.relocationCount > 0 ||
+      attemptTopic.data?.page !== activeFocus.page ||
+      attemptTopic.data.items.some((item) => item.attemptId === activeFocus.attemptId)
+    ) {
+      return;
+    }
+    // A cached snapshot can confirm focus before the authoritative live frame removes the
+    // target from its page. Re-enter the same bounded locate path instead of losing focus.
+    setActiveFocus(null);
+    setPendingFocus(activeFocus);
+  }, [activeFocus, attemptTopic.data, pendingFocus]);
 
   useEffect(() => {
     if (

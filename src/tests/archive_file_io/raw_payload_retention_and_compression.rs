@@ -2028,6 +2028,7 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
             BroadcastPayload::Records { .. }
             | BroadcastPayload::Version { .. }
             | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. }
             | BroadcastPayload::DashboardActivityLive { .. }
             | BroadcastPayload::DashboardCurrentSlice { .. }
             | BroadcastPayload::DashboardNetworkSlice { .. }
@@ -2091,6 +2092,7 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
             }
             BroadcastPayload::Version { .. }
             | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. }
             | BroadcastPayload::DashboardActivityLive { .. }
             | BroadcastPayload::DashboardCurrentSlice { .. }
             | BroadcastPayload::DashboardNetworkSlice { .. }
@@ -2162,6 +2164,7 @@ async fn persist_and_broadcast_runtime_terminal_schedules_follow_up_after_flush(
             }
             BroadcastPayload::Version { .. }
             | BroadcastPayload::PoolAttempts { .. }
+            | BroadcastPayload::PoolAttemptsSnapshotUnavailable { .. }
             | BroadcastPayload::DashboardActivityLive { .. }
             | BroadcastPayload::DashboardCurrentSlice { .. }
             | BroadcastPayload::DashboardNetworkSlice { .. }

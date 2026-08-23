@@ -4846,6 +4846,11 @@ pub(crate) enum BroadcastPayload {
         invoke_id: String,
         attempts: Vec<ApiPoolUpstreamRequestAttempt>,
     },
+    // This control event stays on the internal broadcaster. The producer could not determine
+    // which account changed, so the subscription hub restores only active account topics.
+    PoolAttemptsSnapshotUnavailable {
+        invoke_id: String,
+    },
     Quota {
         snapshot: Box<QuotaSnapshotResponse>,
     },
