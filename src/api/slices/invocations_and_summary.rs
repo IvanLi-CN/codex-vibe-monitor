@@ -9660,7 +9660,7 @@ async fn build_summary_projection(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
-    let exact_horizon_max_id = ensure_summary_projection_live_text_budget(
+    let mut rows = query_summary_projection_live_rows_with_budget(
         &state.pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -9668,20 +9668,7 @@ async fn build_summary_projection(
             end,
         },
         None,
-        false,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
-    )
-    .await?;
-    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit(
-        &state.pool,
-        InvocationSourceScope::All,
-        ExactUtcRange {
-            start: live_start,
-            end,
-        },
-        None,
-        Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
-        exact_horizon_max_id,
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
@@ -9689,8 +9676,7 @@ async fn build_summary_projection(
             purpose: "summary_projection_exact_horizon",
         },
     )
-    .await
-    .map_err(|error| anyhow!("summary projection live-record hydration failed: {error:?}"))?;
+    .await?;
     if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
         return Err(anyhow!(
             "summary projection live exact horizon exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
@@ -9738,7 +9724,7 @@ async fn build_summary_projection(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    let recent_index_max_id = ensure_summary_projection_live_text_budget(
+    let mut recent_rows = query_summary_projection_live_rows_with_budget(
         &state.pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -9749,23 +9735,7 @@ async fn build_summary_projection(
             end,
         },
         None,
-        false,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
-    )
-    .await?;
-    let mut recent_rows = query_live_upstream_account_activity_preview_rows_with_limit(
-        &state.pool,
-        InvocationSourceScope::All,
-        ExactUtcRange {
-            start: Utc
-                .timestamp_opt(0, 0)
-                .single()
-                .expect("Unix epoch is valid"),
-            end,
-        },
-        None,
-        Some(SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1),
-        recent_index_max_id,
         false,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
@@ -9773,8 +9743,7 @@ async fn build_summary_projection(
             purpose: "summary_projection_recent_index",
         },
     )
-    .await
-    .map_err(|error| anyhow!("summary projection recent-index hydration failed: {error:?}"))?;
+    .await?;
     let recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
     restore_summary_projection_persisted_statuses(&state.pool, &mut recent_rows)
@@ -10149,22 +10118,12 @@ async fn build_summary_projection(
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
-        let replacement_max_id = ensure_summary_projection_live_text_budget(
+        let mut exact_live_rows = query_summary_projection_live_rows_with_budget(
             &state.pool,
             InvocationSourceScope::All,
             range,
             None,
-            false,
             remaining,
-        )
-        .await?;
-        let mut exact_live_rows = query_live_upstream_account_activity_preview_rows_with_limit(
-            &state.pool,
-            InvocationSourceScope::All,
-            range,
-            None,
-            Some(remaining),
-            replacement_max_id,
             false,
             UpstreamAccountActivityPreviewReadTelemetry {
                 route: "summary_projection",
@@ -10172,32 +10131,15 @@ async fn build_summary_projection(
                 purpose: "summary_projection_archive_live_replacement",
             },
         )
-        .await
-        .map_err(|error| {
-            anyhow!("summary projection exact live replacement hydration failed: {error:?}")
-        })?;
+        .await?;
         if exact_live_rows.len() >= remaining {
             return Err(anyhow!(
                 "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
-        let statuses = sqlx::query_as::<_, (i64, Option<String>)>(
-            "SELECT id, status FROM codex_invocations \
-             WHERE occurred_at >= ?1 AND occurred_at < ?2 AND id <= ?3",
-        )
-        .bind(db_occurred_at_lower_bound(range.start))
-        .bind(db_occurred_at_upper_bound(range.end))
-        .bind(replacement_max_id)
-        .fetch_all(&state.pool)
-        .await
-        .context("summary projection exact live replacement status hydration failed")?
-        .into_iter()
-        .collect::<HashMap<_, _>>();
-        for row in &mut exact_live_rows {
-            if let Some(status) = statuses.get(&row.id).and_then(|status| status.clone()) {
-                row.status = status;
-            }
-        }
+        restore_summary_projection_persisted_statuses(&state.pool, &mut exact_live_rows)
+            .await
+            .context("summary projection exact live replacement status hydration failed")?;
         for row in exact_live_rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
                 continue;
@@ -15147,6 +15089,32 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     in_progress_only: bool,
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    query_live_upstream_account_activity_preview_rows_with_limit_executor(
+        pool,
+        source_scope,
+        range,
+        upstream_account_id,
+        limit,
+        max_id,
+        in_progress_only,
+        telemetry,
+    )
+    .await
+}
+
+async fn query_live_upstream_account_activity_preview_rows_with_limit_executor<'e, E>(
+    executor: E,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    limit: Option<usize>,
+    max_id: Option<i64>,
+    in_progress_only: bool,
+    telemetry: UpstreamAccountActivityPreviewReadTelemetry,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let started_at = Instant::now();
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
@@ -15186,7 +15154,7 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
 
     let rows = query
         .build_query_as::<UpstreamAccountInvocationPreviewRow>()
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await?;
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 1_000 {
@@ -15211,17 +15179,9 @@ async fn query_live_upstream_account_activity_preview_rows_with_limit(
     Ok(rows)
 }
 
-async fn ensure_summary_projection_live_text_budget(
+async fn load_summary_projection_live_text_columns(
     pool: &Pool<Sqlite>,
-    source_scope: InvocationSourceScope,
-    range: ExactUtcRange,
-    upstream_account_id: Option<Option<i64>>,
-    in_progress_only: bool,
-    limit: usize,
-) -> Result<Option<i64>, anyhow::Error> {
-    // Keep the scalar preflight conservative and bounded to the same newest prefix that the
-    // preview query will materialize. Payload covers JSON-derived preview fields; the optional
-    // columns cover legacy schemas where model/error text is stored outside payload.
+) -> Result<Vec<&'static str>, anyhow::Error> {
     let mut text_columns = vec!["invoke_id", "occurred_at", "status", "source", "payload"];
     for column in [
         "model",
@@ -15239,6 +15199,24 @@ async fn ensure_summary_projection_live_text_budget(
     text_columns.push("__upstream_account_plan_type__");
     text_columns.sort_unstable();
     text_columns.dedup();
+    Ok(text_columns)
+}
+
+async fn ensure_summary_projection_live_text_budget<'e, E>(
+    executor: E,
+    text_columns: &[&str],
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    in_progress_only: bool,
+    limit: usize,
+) -> Result<Option<i64>, anyhow::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    // Keep the scalar preflight conservative and bounded to the same newest prefix that the
+    // preview query will materialize. Payload covers JSON-derived preview fields; the optional
+    // columns cover legacy schemas where model/error text is stored outside payload.
     let row_bytes = text_columns
         .iter()
         .map(|column| {
@@ -15290,7 +15268,7 @@ async fn ensure_summary_projection_live_text_budget(
         .push(")");
     let (estimated_bytes, max_id) = query
         .build_query_as::<(i64, Option<i64>)>()
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await?;
     if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
         return Err(anyhow!(
@@ -15298,6 +15276,43 @@ async fn ensure_summary_projection_live_text_budget(
         ));
     }
     Ok(max_id)
+}
+
+async fn query_summary_projection_live_rows_with_budget(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    limit: usize,
+    in_progress_only: bool,
+    telemetry: UpstreamAccountActivityPreviewReadTelemetry,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, anyhow::Error> {
+    let text_columns = load_summary_projection_live_text_columns(pool).await?;
+    let mut tx = pool.begin().await?;
+    let max_id = ensure_summary_projection_live_text_budget(
+        &mut *tx,
+        &text_columns,
+        source_scope,
+        range,
+        upstream_account_id,
+        in_progress_only,
+        limit,
+    )
+    .await?;
+    let rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
+        &mut *tx,
+        source_scope,
+        range,
+        upstream_account_id,
+        Some(limit),
+        max_id,
+        in_progress_only,
+        telemetry,
+    )
+    .await
+    .map_err(|error| anyhow!("summary projection live preview fetch failed: {error:?}"))?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 async fn query_live_upstream_account_activity_preview_candidate_ids_per_account(
