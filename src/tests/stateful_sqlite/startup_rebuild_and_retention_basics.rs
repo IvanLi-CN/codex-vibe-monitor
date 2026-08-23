@@ -949,8 +949,16 @@ async fn wait_for_hourly_rollup_bootstrap_task(
     state: &AppState,
     expected_status: &str,
 ) -> (String, Option<String>, Option<String>) {
-    tokio::time::timeout(HOURLY_ROLLUP_BOOTSTRAP_TASK_WAIT_TIMEOUT, async {
+    let mut last_task = None;
+    let result = tokio::time::timeout(HOURLY_ROLLUP_BOOTSTRAP_TASK_WAIT_TIMEOUT, async {
         loop {
+            if expected_status != "running" {
+                state
+                    .sqlite_batch_writer
+                    .flush_now(&state.pool)
+                    .await
+                    .expect("flush deferred hourly rollup bootstrap task-history writes");
+            }
             let task = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
                 r#"
                 SELECT status, summary, detail
@@ -963,6 +971,7 @@ async fn wait_for_hourly_rollup_bootstrap_task(
             .fetch_optional(&state.pool)
             .await
             .expect("read hourly rollup bootstrap task");
+            last_task.clone_from(&task);
             if let Some(task) = task
                 && task.0 == expected_status
             {
@@ -971,8 +980,27 @@ async fn wait_for_hourly_rollup_bootstrap_task(
             tokio::time::sleep(HOURLY_ROLLUP_BOOTSTRAP_TASK_POLL_INTERVAL).await;
         }
     })
-    .await
-    .expect("hourly rollup bootstrap task should reach the expected state")
+    .await;
+    if result.is_err() {
+        let pending = state.sqlite_batch_writer.accounting_snapshot();
+        let all_tasks = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>)>(
+            r#"
+            SELECT id, status, summary, detail
+            FROM system_task_runs
+            WHERE task_kind = 'hourly_rollup_bootstrap'
+            ORDER BY id DESC
+            LIMIT 5
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+        panic!(
+            "hourly rollup bootstrap task should reach expected status {expected_status}; last_task={last_task:?}; all_tasks={all_tasks:?}; pending_depth={}; pending_bytes={}",
+            pending.pending_depth, pending.pending_bytes,
+        )
+    }
+    result.expect("hourly rollup bootstrap task should reach the expected state")
 }
 
 #[tokio::test]
@@ -1064,6 +1092,11 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
         .expect("background bootstrap should stop after cancellation")
         .expect("background bootstrap task should join");
     drop(rollup_guard);
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush deferred cancellation task-history finish");
 
     let (status, summary, detail) =
         wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
