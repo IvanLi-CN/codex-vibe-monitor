@@ -2651,6 +2651,63 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure timeseries_minute_projection_v2 state table existence")?;
 
+    // This durable fence must exist before runtime accepts HTTP reads. The projection supervisor
+    // is intentionally P2 and can start later, while direct non-proxy terminal corrections must
+    // invalidate ready coverage immediately without relying on an in-process hub delta.
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS trg_timeseries_minute_projection_non_proxy_terminal_replacement",
+    )
+    .execute(pool)
+    .await
+    .context("failed to refresh non-proxy terminal replacement projection trigger")?;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER trg_timeseries_minute_projection_non_proxy_terminal_replacement
+        AFTER UPDATE ON codex_invocations
+        WHEN (
+            COALESCE(OLD.source, '') <> 'proxy'
+            OR COALESCE(NEW.source, '') <> 'proxy'
+        )
+        AND LOWER(TRIM(COALESCE(OLD.status, ''))) NOT IN ('running', 'pending')
+        AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
+        AND (
+            OLD.occurred_at IS NOT NEW.occurred_at
+            OR OLD.source IS NOT NEW.source
+            OR OLD.model IS NOT NEW.model
+            OR OLD.input_tokens IS NOT NEW.input_tokens
+            OR OLD.output_tokens IS NOT NEW.output_tokens
+            OR OLD.cache_input_tokens IS NOT NEW.cache_input_tokens
+            OR OLD.reasoning_tokens IS NOT NEW.reasoning_tokens
+            OR OLD.total_tokens IS NOT NEW.total_tokens
+            OR OLD.cost IS NOT NEW.cost
+            OR OLD.status IS NOT NEW.status
+            OR OLD.error_message IS NOT NEW.error_message
+            OR OLD.failure_kind IS NOT NEW.failure_kind
+            OR OLD.failure_class IS NOT NEW.failure_class
+            OR OLD.is_actionable IS NOT NEW.is_actionable
+            OR OLD.payload IS NOT NEW.payload
+            OR OLD.t_total_ms IS NOT NEW.t_total_ms
+            OR OLD.t_req_read_ms IS NOT NEW.t_req_read_ms
+            OR OLD.t_req_parse_ms IS NOT NEW.t_req_parse_ms
+            OR OLD.t_upstream_connect_ms IS NOT NEW.t_upstream_connect_ms
+            OR OLD.t_upstream_ttfb_ms IS NOT NEW.t_upstream_ttfb_ms
+            OR OLD.first_token_ms IS NOT NEW.first_token_ms
+        )
+        BEGIN
+            UPDATE timeseries_minute_projection_v2
+            SET coverage_state = 'warming'
+            WHERE source_scope = 'all'
+               OR (
+                    source_scope = 'proxy_only'
+                    AND (COALESCE(OLD.source, '') = 'proxy' OR COALESCE(NEW.source, '') = 'proxy')
+               );
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure non-proxy terminal replacement projection trigger")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS parallel_work_rollup_maintenance_state (

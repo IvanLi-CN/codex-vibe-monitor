@@ -153,61 +153,6 @@ pub(crate) fn timeseries_minute_projection_has_uncovered_terminal_delta(
         })
 }
 
-async fn ensure_timeseries_minute_projection_non_proxy_terminal_replacement_trigger(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-) -> Result<(), ApiError> {
-    // The normal live trigger covers non-proxy in-flight -> terminal transitions. A direct
-    // correction to an already-terminal non-proxy row has the same aggregate effect but no hub
-    // delta, so it needs durable coverage invalidation before a ready projection is reused.
-    sqlx::query(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_timeseries_minute_projection_non_proxy_terminal_replacement
-        AFTER UPDATE ON codex_invocations
-        WHEN (
-            COALESCE(OLD.source, '') <> 'proxy'
-            OR COALESCE(NEW.source, '') <> 'proxy'
-        )
-        AND LOWER(TRIM(COALESCE(OLD.status, ''))) NOT IN ('running', 'pending')
-        AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
-        AND (
-            OLD.occurred_at IS NOT NEW.occurred_at
-            OR OLD.source IS NOT NEW.source
-            OR OLD.model IS NOT NEW.model
-            OR OLD.input_tokens IS NOT NEW.input_tokens
-            OR OLD.output_tokens IS NOT NEW.output_tokens
-            OR OLD.cache_input_tokens IS NOT NEW.cache_input_tokens
-            OR OLD.reasoning_tokens IS NOT NEW.reasoning_tokens
-            OR OLD.total_tokens IS NOT NEW.total_tokens
-            OR OLD.cost IS NOT NEW.cost
-            OR OLD.status IS NOT NEW.status
-            OR OLD.error_message IS NOT NEW.error_message
-            OR OLD.failure_kind IS NOT NEW.failure_kind
-            OR OLD.failure_class IS NOT NEW.failure_class
-            OR OLD.is_actionable IS NOT NEW.is_actionable
-            OR OLD.payload IS NOT NEW.payload
-            OR OLD.t_total_ms IS NOT NEW.t_total_ms
-            OR OLD.t_req_read_ms IS NOT NEW.t_req_read_ms
-            OR OLD.t_req_parse_ms IS NOT NEW.t_req_parse_ms
-            OR OLD.t_upstream_connect_ms IS NOT NEW.t_upstream_connect_ms
-            OR OLD.t_upstream_ttfb_ms IS NOT NEW.t_upstream_ttfb_ms
-            OR OLD.first_token_ms IS NOT NEW.first_token_ms
-        )
-        BEGIN
-            UPDATE timeseries_minute_projection_v2
-            SET coverage_state = 'warming'
-            WHERE source_scope = 'all'
-               OR (
-                    source_scope = 'proxy_only'
-                    AND (COALESCE(OLD.source, '') = 'proxy' OR COALESCE(NEW.source, '') = 'proxy')
-               );
-        END
-        "#,
-    )
-    .execute(tx.as_mut())
-    .await?;
-    Ok(())
-}
-
 async fn timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_installed(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -222,6 +167,30 @@ async fn timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_in
     .fetch_one(pool)
     .await?;
     Ok(installed != 0)
+}
+
+async fn timeseries_minute_projection_v2_has_warming_coverage(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+) -> Result<bool, ApiError> {
+    let (minute_start, minute_end) = complete_minute_bounds(start, end);
+    if minute_end <= minute_start {
+        return Ok(false);
+    }
+
+    let warming_coverage_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM timeseries_minute_projection_v2 WHERE minute_start_epoch >= ?1 AND minute_start_epoch < ?2 AND source_scope = ?3 AND upstream_account_key = ?4 AND coverage_state <> 'ready'",
+    )
+    .bind(minute_start)
+    .bind(minute_end)
+    .bind(timeseries_projection_scope(source_scope))
+    .bind(upstream_account_id.unwrap_or(-1))
+    .fetch_one(pool)
+    .await?;
+    Ok(warming_coverage_count != 0)
 }
 
 fn complete_minute_bounds(start: DateTime<Utc>, end: DateTime<Utc>) -> (i64, i64) {
@@ -678,7 +647,6 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
         // invalidate this coverage through SQLite triggers without reaching the proxy hub; the
         // immediate writer barrier orders that invalidation before this rebuild or after commit.
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-        ensure_timeseries_minute_projection_non_proxy_terminal_replacement_trigger(&mut tx).await?;
         let batch_start = Utc
             .timestamp_opt(key_batch[0].minute_start_epoch, 0)
             .single()
@@ -1086,13 +1054,23 @@ impl TimeseriesTopicMaterializedBase {
                     start,
                     end,
                 );
+            let warming_projection_coverage = minute_projection_candidate
+                && timeseries_minute_projection_v2_has_warming_coverage(
+                    &state.pool,
+                    start,
+                    end,
+                    source_scope,
+                    params.upstream_account_id,
+                )
+                .await?;
             let use_minute_projection = minute_projection_candidate
                 && durable_replacement_fence_installed
                 && state
                     .terminal_projection_hub
                     .timeseries_coverage_invalidation_pending()
                     .is_none()
-                && !uncovered_terminal_delta;
+                && !uncovered_terminal_delta
+                && !warming_projection_coverage;
             let aggregates = if use_minute_projection {
                 if let Some(TimeseriesMinuteProjectionV2Load {
                     aggregates: minute_aggregates,
@@ -1225,7 +1203,9 @@ impl TimeseriesTopicMaterializedBase {
                     params.upstream_account_id,
                     bucket_seconds,
                     reporting_tz,
-                    uncovered_terminal_delta && durable_replacement_fence_installed,
+                    uncovered_terminal_delta
+                        && durable_replacement_fence_installed
+                        && !warming_projection_coverage,
                 )
                 .await?
             };
@@ -2069,8 +2049,6 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
 
             let transaction_started = Instant::now();
             let mut tx = state.pool.begin().await?;
-            ensure_timeseries_minute_projection_non_proxy_terminal_replacement_trigger(&mut tx)
-                .await?;
             let transaction_key_count = key_batch.len();
             let transaction_delta_count = key_batch
                 .iter()
@@ -2357,7 +2335,6 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
     let mut tx = state.pool.begin().await?;
-    ensure_timeseries_minute_projection_non_proxy_terminal_replacement_trigger(&mut tx).await?;
     sqlx::query(
         "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES ('timeseries_minute_v2', 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
     )
@@ -3124,11 +3101,21 @@ pub(crate) async fn fetch_timeseries(
             start_dt,
             end_dt,
         );
+    let warming_projection_coverage = use_minute_projection
+        && timeseries_minute_projection_v2_has_warming_coverage(
+            &state.pool,
+            start_dt,
+            end_dt,
+            source_scope,
+            None,
+        )
+        .await?;
     let mut coverage_invalidation_pending = state
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some()
         || uncovered_terminal_delta
+        || warming_projection_coverage
         || (use_minute_projection && !durable_replacement_fence_installed);
     if use_minute_projection
         && durable_replacement_fence_installed
@@ -3543,11 +3530,21 @@ pub(crate) async fn fetch_timeseries_for_account(
             start_dt,
             end_dt,
         );
+    let warming_projection_coverage = minute_projection_candidate
+        && timeseries_minute_projection_v2_has_warming_coverage(
+            &state.pool,
+            start_dt,
+            end_dt,
+            source_scope,
+            Some(upstream_account_id),
+        )
+        .await?;
     let mut coverage_invalidation_pending = state
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending()
         .is_some()
         || uncovered_terminal_delta
+        || warming_projection_coverage
         || (minute_projection_candidate && !durable_replacement_fence_installed);
     if minute_projection_candidate
         && durable_replacement_fence_installed

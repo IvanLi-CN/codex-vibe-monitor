@@ -21333,7 +21333,8 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
 }
 
 #[tokio::test]
-async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
+async fn restart_schema_installs_durable_non_proxy_replacement_fence_before_projection_supervisor()
+{
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -21386,14 +21387,25 @@ async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
     sqlx::query("DROP TRIGGER trg_timeseries_minute_projection_non_proxy_terminal_replacement")
         .execute(&state.pool)
         .await
-        .expect("model a cold-start database before the durable replacement fence is installed");
+        .expect("model an older database before restart schema initialization");
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("restart schema initialization installs the durable replacement fence");
     sqlx::query(
         "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE invoke_id = ?1",
     )
     .bind(invoke_id)
     .execute(&state.pool)
     .await
-    .expect("replace the terminal row while the durable fence is absent");
+    .expect("replace the terminal row before the projection supervisor starts");
+    let (status, failure_class): (String, String) =
+        sqlx::query_as("SELECT status, failure_class FROM codex_invocations WHERE invoke_id = ?1")
+            .bind(invoke_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load direct terminal replacement");
+    assert_eq!(status, "failed");
+    assert_eq!(failure_class, "service_failure");
 
     for upstream_account_key in [-1_i64, 17_i64] {
         let coverage_state = sqlx::query_scalar::<_, String>(
@@ -21403,8 +21415,8 @@ async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
         .bind(upstream_account_key)
         .fetch_one(&state.pool)
         .await
-        .expect("load stale ready projection coverage");
-        assert_eq!(coverage_state, "ready");
+        .expect("load invalidated projection coverage");
+        assert_eq!(coverage_state, "warming");
     }
 
     for upstream_account_id in [None, Some(17)] {
@@ -21420,7 +21432,7 @@ async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
             axum::extract::Query(query),
         )
         .await
-        .expect("build HTTP timeseries while the durable fence is absent");
+        .expect("build HTTP timeseries before the projection supervisor starts");
         let payload = serde_json::to_value(response).expect("serialize HTTP timeseries response");
         let point = payload["points"]
             .as_array()
@@ -21447,7 +21459,7 @@ async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
     };
     let base = crate::api::TimeseriesTopicMaterializedBase::build(state.as_ref(), &query)
         .await
-        .expect("build materialized timeseries base while the durable fence is absent");
+        .expect("build materialized timeseries base before the projection supervisor starts");
     let payload: serde_json::Value = serde_json::from_slice(
         &base
             .serialize(&[])
@@ -21468,10 +21480,10 @@ async fn minute_projection_requires_the_durable_non_proxy_replacement_fence() {
     )
     .fetch_one(&state.pool)
     .await
-    .expect("check durable replacement fence remains absent");
+    .expect("check durable replacement fence is installed");
     assert_eq!(
-        trigger_count, 0,
-        "exact fallback must not create a P2 write that makes stale coverage reusable"
+        trigger_count, 1,
+        "schema initialization must install the durable replacement fence before HTTP reads"
     );
 }
 
