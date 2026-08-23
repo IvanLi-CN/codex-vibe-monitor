@@ -179,6 +179,14 @@ capture_scope=live routing tab viewport and model routing panel
 viewport_strategy=ui-demo-source with controlled desktop and mobile captures
 sensitive_exclusion=N/A
 
+PR: include
+桌面端仿真证据（API Key 显示名与路由泳道）
+![模型路由显示名桌面仿真证据](./assets/model-routing-display-names-desktop.jpg)
+
+PR: include
+移动端仿真证据（API Key 显示名与路由泳道）
+![模型路由显示名移动端仿真证据](./assets/model-routing-display-names-mobile.png)
+
 页面流使用登录豁免、纯前端、确定性仿真 fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取。已通过 Chrome 对 `/#/live?demoScene=operational&demoTheme=light` 的“路由”页签采集受控桌面证据，并通过仓库移动视口仿真入口采集 `393×852` CSS 视口证据；仅使用本地仿真数据，不访问真实后端。当前 Spec 无可读的历史基线，因此视觉比较保持待确认。
 
 ## Related PRs
