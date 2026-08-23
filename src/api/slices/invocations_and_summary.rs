@@ -271,6 +271,23 @@ pub(crate) fn final_pool_invocation_timing_sql(invocation_ref: &str, column: &st
     )
 }
 
+fn invocation_timing_sql_for_source(
+    invocation_ref: &str,
+    column: &str,
+    use_attempt_fallback: bool,
+) -> String {
+    if use_attempt_fallback {
+        return final_pool_invocation_timing_sql(invocation_ref, column);
+    }
+
+    let timing_sql = match column {
+        "first_token_ms" => sqlite_nonnegative_timing_sql(&format!("{invocation_ref}.{column}")),
+        "t_upstream_stream_ms" => sqlite_positive_timing_sql(&format!("{invocation_ref}.{column}")),
+        _ => panic!("unsupported invocation timing column: {column}"),
+    };
+    format!("CASE WHEN {timing_sql} THEN {invocation_ref}.{column} END")
+}
+
 fn final_pool_attempt_timing_evidence_sql(
     attempt_ref: &str,
     invocation_ref: &str,
@@ -552,6 +569,17 @@ mod invocation_live_phase_tests {
         assert!(sql.contains("inv.first_token_ms >= 0"));
         assert!(sql.contains("ORDER BY final_attempt.attempt_index DESC, final_attempt.id DESC"));
         assert!(sql.contains("THEN inv.first_token_ms END END"));
+    }
+
+    #[test]
+    fn archive_timing_sql_uses_validated_values_without_pool_attempts() {
+        let first_token_sql = invocation_timing_sql_for_source("inv", "first_token_ms", false);
+        let stream_sql = invocation_timing_sql_for_source("inv", "t_upstream_stream_ms", false);
+
+        assert!(first_token_sql.contains("inv.first_token_ms >= 0"));
+        assert!(stream_sql.contains("inv.t_upstream_stream_ms > 0"));
+        assert!(!first_token_sql.contains("pool_upstream_request_attempts"));
+        assert!(!stream_sql.contains("pool_upstream_request_attempts"));
     }
 
     #[test]
@@ -9651,8 +9679,11 @@ where
         "CASE WHEN {first_response_byte_components_valid_sql} THEN COALESCE(t_req_read_ms, 0) + COALESCE(t_req_parse_ms, 0) + COALESCE(t_upstream_connect_ms, 0) + COALESCE(t_upstream_ttfb_ms, 0) END"
     );
     let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
-    let final_first_token_sql =
-        final_pool_invocation_timing_sql("filtered_invocations", "first_token_ms");
+    let final_first_token_sql = invocation_timing_sql_for_source(
+        "filtered_invocations",
+        "first_token_ms",
+        use_attempt_fallback,
+    );
     let first_token_nonnegative_sql =
         sqlite_nonnegative_timing_sql(&format!("({final_first_token_sql})"));
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
@@ -10450,12 +10481,18 @@ where
     let failure_count_sql = format!(
         "LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending') AND ({failure_class_sql}) IN ('service_failure', 'client_failure', 'client_abort')"
     );
-    let final_stream_timing_sql =
-        final_pool_invocation_timing_sql("codex_invocations", "t_upstream_stream_ms");
+    let final_stream_timing_sql = invocation_timing_sql_for_source(
+        "codex_invocations",
+        "t_upstream_stream_ms",
+        use_attempt_fallback,
+    );
     let final_stream_measured_sql = format!("({final_stream_timing_sql}) IS NOT NULL");
     let ttfb_positive_sql = sqlite_positive_timing_sql("t_upstream_ttfb_ms");
-    let final_first_token_timing_sql =
-        final_pool_invocation_timing_sql("codex_invocations", "first_token_ms");
+    let final_first_token_timing_sql = invocation_timing_sql_for_source(
+        "codex_invocations",
+        "first_token_ms",
+        use_attempt_fallback,
+    );
     let final_first_token_measured_sql = format!("({final_first_token_timing_sql}) IS NOT NULL");
     let total_nonnegative_sql = sqlite_nonnegative_timing_sql("t_total_ms");
     let first_response_byte_components_valid_sql = format!(
