@@ -883,6 +883,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     tokio::spawn(async move {
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+        let task_start_window = format_utc_iso_millis(Utc::now() - ChronoDuration::seconds(1));
         let task_run = match tokio::select! {
             biased;
             _ = cancel.cancelled() => {
@@ -890,6 +891,12 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
                     "background startup hourly rollup bootstrap cancelled before recording task start"
                 );
+                finish_orphaned_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    &task_start_window,
+                )
+                .await;
                 return;
             }
             result = begin_system_task_run(
@@ -1081,6 +1088,68 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     })
 }
 
+async fn finish_orphaned_startup_hourly_rollup_bootstrap_task(
+    state: &AppState,
+    cancel: &CancellationToken,
+    started_at_from: &str,
+) {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        let task = sqlx::query_as::<_, (i64, String)>(
+            r#"
+            SELECT id, trigger_kind
+            FROM system_task_runs
+            WHERE task_kind = ?1
+              AND trigger_kind = 'startup'
+              AND status = ?2
+              AND summary = 'background hourly rollup bootstrap started'
+              AND started_at >= ?3
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(SystemTaskKind::HourlyRollupBootstrap.as_str())
+        .bind(SystemTaskStatus::Running.as_str())
+        .bind(started_at_from)
+        .fetch_optional(&state.pool)
+        .await;
+
+        match task {
+            Ok(Some((id, trigger_kind))) => {
+                let task_run = SystemTaskRunHandle {
+                    id,
+                    task_kind: SystemTaskKind::HourlyRollupBootstrap,
+                    trigger_kind,
+                    started_at: Instant::now(),
+                };
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state,
+                    cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
+                    None,
+                )
+                .await;
+                return;
+            }
+            Ok(None) => {}
+            Err(err) => {
+                debug!(
+                    error = %err,
+                    "failed to inspect for an orphaned startup hourly rollup bootstrap task"
+                );
+                return;
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     state: &AppState,
     cancel: &CancellationToken,
@@ -1099,13 +1168,12 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
             detail.clone(),
         );
         if cancel.is_cancelled() {
-            if tokio::time::timeout(
+            let finished = tokio::time::timeout(
                 STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT,
                 finish,
             )
-            .await
-            .is_err()
-            {
+            .await;
+            if !matches!(finished, Ok(true)) {
                 warn!(
                     task_kind = task_run.task_kind.as_str(),
                     trigger_kind = %task_run.trigger_kind,
@@ -1137,7 +1205,22 @@ pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
                         "cancelled startup hourly rollup bootstrap task-history finish during shutdown"
                     );
                 }
-                _ = finish => {}
+                finished = finish => {
+                    if !finished {
+                        warn!(
+                            task_kind = task_run.task_kind.as_str(),
+                            trigger_kind = %task_run.trigger_kind,
+                            deferred = try_enqueue_system_task_run_finish(
+                                state,
+                                task_run,
+                                status,
+                                summary,
+                                detail,
+                            ),
+                            "deferred startup hourly rollup bootstrap task-history finish after direct update failure"
+                        );
+                    }
+                }
             }
         }
     }

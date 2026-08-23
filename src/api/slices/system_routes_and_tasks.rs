@@ -1184,7 +1184,7 @@ pub(crate) async fn finish_system_task_run(
     status: SystemTaskStatus,
     summary: Option<String>,
     detail: Option<String>,
-) {
+) -> bool {
     let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
@@ -1217,6 +1217,9 @@ pub(crate) async fn finish_system_task_run(
             error = %err,
             "failed to finalize system task run"
         );
+        false
+    } else {
+        true
     }
 }
 
