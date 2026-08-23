@@ -1167,6 +1167,130 @@ describe("UpstreamAccountAttemptTimeline", () => {
     expect(scrollIntoViewMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("acknowledges an in-flight deep link when the user changes a filter", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "FILTERCANCEL1",
+      invokeId: "FILTERCANCEL1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolvePageTwo: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    topicSnapshotMock.mockImplementation(async (_accountId, options) => {
+      if (options.page === 2) {
+        return await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolvePageTwo = resolve;
+        });
+      }
+      return attemptListResponse({
+        items: [],
+        total: 0,
+        page: options.page ?? 1,
+        pageSize: 50,
+      });
+    });
+    vi.mocked(locateUpstreamAccountAttempt).mockResolvedValue(
+      attemptListResponse({
+        items: [focusedAttempt],
+        total: 100,
+        page: 2,
+        pageSize: 50,
+      }),
+    );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "FILTERCANCEL1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolvePageTwo).toBeDefined();
+    expect(onFocusRequestHandled).not.toHaveBeenCalled();
+
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+    expect(onFocusRequestHandled).toHaveBeenCalledTimes(1);
+    expect(topicSnapshotMock).toHaveBeenLastCalledWith(
+      101,
+      expect.objectContaining({
+        type: "image",
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+
+    act(() => {
+      resolvePageTwo?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+  });
+
+  it("does not restore a cancelled deep link when its locate request completes", async () => {
+    const focusedAttempt = makeAttempt({
+      attemptId: "LATELOCATE1",
+      invokeId: "LATELOCATE1INVOKE",
+      createdAt: "2026-07-11T12:00:00.000Z",
+    });
+    let resolveLocate: ((response: UpstreamAccountAttemptListResponse) => void) | undefined;
+    vi.mocked(locateUpstreamAccountAttempt).mockImplementation(
+      async () =>
+        await new Promise<UpstreamAccountAttemptListResponse>((resolve) => {
+          resolveLocate = resolve;
+        }),
+    );
+    topicSnapshotMock.mockResolvedValue(
+      attemptListResponse({
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize: 50,
+      }),
+    );
+    const onFocusRequestHandled = vi.fn();
+
+    renderTimeline({
+      focusedAttemptId: "LATELOCATE1",
+      focusVersion: 1,
+      onFocusRequestHandled,
+    });
+    await flushAsync();
+
+    expect(resolveLocate).toBeDefined();
+    await selectOptionByText('[data-testid="upstream-attempt-type-filter"]', /image/i);
+    expect(onFocusRequestHandled).toHaveBeenCalledWith(1);
+
+    act(() => {
+      resolveLocate?.(
+        attemptListResponse({
+          items: [focusedAttempt],
+          total: 100,
+          page: 2,
+          pageSize: 50,
+        }),
+      );
+    });
+    await flushAsync();
+
+    const topicAfterLateLocate = subscriptionTopicMock.mock.calls.at(-1)?.[0];
+    expect(topicAfterLateLocate?.params).toEqual(
+      expect.objectContaining({
+        type: "image",
+        page: "1",
+        pageSize: "50",
+      }),
+    );
+    expect(
+      host?.querySelector<HTMLElement>('[data-testid="account-attempt-record-LATELOCATE1"]'),
+    ).toBeNull();
+  });
+
   it("relocates a deep link when its first topic snapshot has shifted to the next page", async () => {
     const focusedAttempt = makeAttempt({
       attemptId: "SHIFT0001",

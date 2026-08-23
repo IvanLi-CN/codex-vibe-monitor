@@ -120,5 +120,5 @@
 - [x] M17: 为账号详情补齐请求 ID 展示、账号作用域锚点分页、虚拟滚动定位与结构化未找到反馈。
 - [x] M18: 为 Records 与 workflow detail 补齐记录侧成本审计、最终成功 attempt Token/成本面板、reasoning `null` vs `0` 合同与共享 warning 语义。
 - [x] M19: 为 Codex Full/Lite imagegen 改写补齐 invocation 与 workflow attempt 审计展示，包含协议、策略、hosted 清理与有界 schema 冲突证据。
-- [x] M20: 为账号详情请求 tab 增加账号范围 `upstream-account-attempts.window/v1` SSE 读模型，复用 REST 列表查询，补齐 250ms 合并、匹配账号刷新、last-good 降级、纯订阅渲染与 Storybook 生命周期覆盖。
+- [x] M20: 为账号详情请求 tab 增加账号范围 `upstream-account-attempts.window/v1` SSE 读模型，复用 REST 列表查询，补齐 250ms 合并、匹配账号刷新、last-good 降级、纯订阅渲染、筛选或分页中止 in-flight 深链定位，以及 Storybook 生命周期覆盖。
 - `codexImagegenRewrite.reason` now distinguishes the `keep_original` policy decision as `policy_keep_original`; it no longer claims that an opaque request body already matched the injected schema.

@@ -3,7 +3,7 @@
 - 2026-08-04: Implemented Codex standalone search recording as an exact `POST /v1/alpha/search` non-streaming capture target. It reuses pool and OAuth passthrough accounting, records one parent invocation per downstream request, and enters the existing source-level hourly rollup without inventing search usage or adding an endpoint rollup dimension.
 - 2026-08-05: Connected API-key standalone search attempts to an independent account capability axis without changing invocation, attempt, OAuth passthrough, or source-level rollup accounting.
 - 2026-08-18: Added the account-scoped `upstream-account-attempts.window/v1` SSE read model. Matching `PoolAttempts` broadcasts coalesce into a fixed 250ms refresh window with in-flight replay and last-good retention; the request tab now renders snapshot/replay/live payloads while preserving pagination, deep-link focus, and expanded attempt identity.
-- 2026-08-23: Hardened the account-attempt reconciliation path for unavailable producer snapshots and post-acknowledgement page shifts. Active topics now retain last-good through the bounded recovery path, and a deep link can re-locate once when an authoritative page snapshot moves its target.
+- 2026-08-23: Hardened the account-attempt reconciliation path for unavailable producer snapshots and post-acknowledgement page shifts. Active topics now retain last-good through the bounded recovery path, a deep link can re-locate once when an authoritative page snapshot moves its target, and a user filter or page change acknowledges and cancels any in-flight focus navigation.
 
 ## Account upstream attempt observability
 

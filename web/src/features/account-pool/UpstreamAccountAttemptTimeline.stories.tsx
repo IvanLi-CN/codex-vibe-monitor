@@ -393,7 +393,7 @@ function StorySurface({ children }: { children: ReactNode }) {
     visualEvidenceTarget === "mobile" ? "px-0 py-6" : "px-6 py-6 sm:px-8";
   const evidenceFrameClass =
     visualEvidenceTarget === "mobile"
-      ? "mx-0 mt-3 mb-10 bg-[#d8e3f0] px-[36px] pt-[36px] pb-[35px]"
+      ? "mx-0 mt-3 mb-10 bg-[#d8e3f0] px-[36px] py-[36px]"
       : "mx-3 mt-3 mb-10 bg-[#d8e3f0] p-[18px]";
   const timelineSurfaceClass = visualEvidenceMode
     ? "mx-auto max-w-6xl bg-base-200 px-6 py-6"

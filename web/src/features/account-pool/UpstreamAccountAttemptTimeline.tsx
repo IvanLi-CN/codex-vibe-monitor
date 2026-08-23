@@ -378,6 +378,7 @@ export function UpstreamAccountAttemptTimeline({
   const attemptElementMapRef = useRef(new Map<string, HTMLDivElement>());
   const previousAccountIdRef = useRef(accountId);
   const handledFocusVersionRef = useRef<number | null>(null);
+  const cancelledFocusVersionRef = useRef<number | null>(null);
   const relocationRequestRef = useRef<string | null>(null);
   const onFocusRequestHandledRef = useRef(onFocusRequestHandled);
   const attemptTopicDescriptor = useMemo(
@@ -443,6 +444,20 @@ export function UpstreamAccountAttemptTimeline({
     onFocusRequestHandledRef.current?.(version);
   }, []);
 
+  const cancelFocusedAttemptNavigation = useCallback(() => {
+    clearFocusDismissTimer();
+    relocationRequestRef.current = null;
+    setLocateReady(true);
+    setLocateLoading(false);
+    setLocateError(null);
+    setPendingFocus(null);
+    setActiveFocus(null);
+    if (focusedAttemptId != null) {
+      cancelledFocusVersionRef.current = focusVersion;
+      acknowledgeFocusRequest(focusVersion);
+    }
+  }, [acknowledgeFocusRequest, clearFocusDismissTimer, focusVersion, focusedAttemptId]);
+
   const setAttemptElement = useCallback((attemptId: string, node: HTMLDivElement | null) => {
     if (node) {
       attemptElementMapRef.current.set(attemptId, node);
@@ -459,29 +474,24 @@ export function UpstreamAccountAttemptTimeline({
 
   const updateFilters = useCallback(
     (patch: Partial<AttemptFilterState>) => {
-      setFilters((current) => {
-        const next = {
-          ...current,
-          ...patch,
-        };
-        next.model = normalizeFilterValue(next.model);
-        next.stickyKey = normalizeFilterValue(next.stickyKey);
-        if (
-          next.type === current.type &&
-          next.model === current.model &&
-          next.stickyKey === current.stickyKey
-        ) {
-          return current;
-        }
-        clearFocusDismissTimer();
-        setPage(1);
-        setLocateError(null);
-        setPendingFocus(null);
-        setActiveFocus(null);
-        return next;
-      });
+      const next = {
+        ...filters,
+        ...patch,
+      };
+      next.model = normalizeFilterValue(next.model);
+      next.stickyKey = normalizeFilterValue(next.stickyKey);
+      if (
+        next.type === filters.type &&
+        next.model === filters.model &&
+        next.stickyKey === filters.stickyKey
+      ) {
+        return;
+      }
+      cancelFocusedAttemptNavigation();
+      setPage(1);
+      setFilters(next);
     },
-    [clearFocusDismissTimer],
+    [cancelFocusedAttemptNavigation, filters],
   );
 
   useEffect(() => {
@@ -505,6 +515,7 @@ export function UpstreamAccountAttemptTimeline({
     const controller = new AbortController();
     const defaultFilters = createDefaultFilters();
     handledFocusVersionRef.current = null;
+    cancelledFocusVersionRef.current = null;
     relocationRequestRef.current = null;
     setFilters((current) =>
       buildAttemptFilterKey(current) === buildAttemptFilterKey(defaultFilters)
@@ -523,7 +534,7 @@ export function UpstreamAccountAttemptTimeline({
       signal: controller.signal,
     })
       .then((next) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || cancelledFocusVersionRef.current === focusVersion) return;
         setPage(next.page);
         setPendingFocus({
           attemptId: focusedAttemptId,
@@ -534,7 +545,7 @@ export function UpstreamAccountAttemptTimeline({
         setLocateReady(true);
       })
       .catch((requestError) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || cancelledFocusVersionRef.current === focusVersion) return;
         setLocateReady(false);
         setPendingFocus(null);
         setActiveFocus(null);
@@ -548,7 +559,7 @@ export function UpstreamAccountAttemptTimeline({
         acknowledgeFocusRequest(focusVersion);
       })
       .finally(() => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || cancelledFocusVersionRef.current === focusVersion) return;
         setLocateLoading(false);
       });
     return () => {
@@ -620,7 +631,12 @@ export function UpstreamAccountAttemptTimeline({
       signal: controller.signal,
     })
       .then((next) => {
-        if (controller.signal.aborted) return;
+        if (
+          controller.signal.aborted ||
+          cancelledFocusVersionRef.current === pendingFocus.version
+        ) {
+          return;
+        }
         setPage(next.page);
         setPendingFocus((current) =>
           current?.attemptId === pendingFocus.attemptId && current.version === pendingFocus.version
@@ -633,7 +649,12 @@ export function UpstreamAccountAttemptTimeline({
         );
       })
       .catch((requestError) => {
-        if (controller.signal.aborted) return;
+        if (
+          controller.signal.aborted ||
+          cancelledFocusVersionRef.current === pendingFocus.version
+        ) {
+          return;
+        }
         setPendingFocus(null);
         setActiveFocus(null);
         setLocateError(
@@ -646,7 +667,12 @@ export function UpstreamAccountAttemptTimeline({
         acknowledgeFocusRequest(pendingFocus.version);
       })
       .finally(() => {
-        if (controller.signal.aborted) return;
+        if (
+          controller.signal.aborted ||
+          cancelledFocusVersionRef.current === pendingFocus.version
+        ) {
+          return;
+        }
         if (relocationRequestRef.current === requestKey) {
           relocationRequestRef.current = null;
         }
@@ -703,11 +729,8 @@ export function UpstreamAccountAttemptTimeline({
   }, [activeFocus, clearFocusDismissTimer, interactionBoundary]);
 
   const loadPage = (nextPage: number) => {
-    clearFocusDismissTimer();
+    cancelFocusedAttemptNavigation();
     setPage(nextPage);
-    setLocateError(null);
-    setPendingFocus(null);
-    setActiveFocus(null);
   };
   const showListLoading = loading && !response;
   const showListError = !loading && error != null;
