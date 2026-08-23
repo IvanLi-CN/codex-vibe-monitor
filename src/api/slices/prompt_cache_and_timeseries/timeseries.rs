@@ -3685,7 +3685,6 @@ pub(crate) async fn fetch_timeseries_for_account(
 
     let snapshot_id = resolve_invocation_snapshot_id(&state.pool, source_scope).await?;
     if minute_projection_candidate && coverage_invalidation_pending {
-        aggregates.clear();
         let records = query_invocation_aggregate_records_from_live_range_for_account(
             &state.pool,
             ExactUtcRange {
