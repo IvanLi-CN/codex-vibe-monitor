@@ -10182,10 +10182,12 @@ async fn build_summary_projection(
             ));
         }
         let statuses = sqlx::query_as::<_, (i64, Option<String>)>(
-            "SELECT id, status FROM codex_invocations WHERE occurred_at >= ?1 AND occurred_at < ?2",
+            "SELECT id, status FROM codex_invocations \
+             WHERE occurred_at >= ?1 AND occurred_at < ?2 AND id <= ?3",
         )
         .bind(db_occurred_at_lower_bound(range.start))
         .bind(db_occurred_at_upper_bound(range.end))
+        .bind(replacement_max_id)
         .fetch_all(&state.pool)
         .await
         .context("summary projection exact live replacement status hydration failed")?
