@@ -7392,6 +7392,19 @@ impl SummaryProjection {
                     || refresh_due(self.all_time_oldest_account_refreshed_at)))
     }
 
+    pub(crate) fn startup_hydration_is_fresh(&self) -> bool {
+        let fresh = |refreshed_at: Option<Instant>| {
+            refreshed_at
+                .is_some_and(|refreshed_at| refreshed_at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+        };
+        fresh(self.freshness.rolling_at(self.refreshed_at))
+            && fresh(self.all_time_refreshed_at)
+            && self
+                .all_time_account_refreshed_at
+                .values()
+                .all(|refreshed_at| fresh(Some(*refreshed_at)))
+    }
+
     fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
         let in_progress = self
             .in_progress_by_account
@@ -9492,7 +9505,7 @@ async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Res
 }
 
 async fn restore_summary_projection_persisted_statuses(
-    pool: &Pool<Sqlite>,
+    connection: &mut SqliteConnection,
     rows: &mut [UpstreamAccountInvocationPreviewRow],
 ) -> Result<()> {
     const STATUS_HYDRATION_CHUNK_SIZE: usize = 500;
@@ -9511,7 +9524,7 @@ async fn restore_summary_projection_persisted_statuses(
         statuses.extend(
             query
                 .build_query_as::<(i64, Option<String>)>()
-                .fetch_all(pool)
+                .fetch_all(&mut *connection)
                 .await?,
         );
     }
@@ -9660,7 +9673,7 @@ async fn build_summary_projection(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
-    let mut rows = query_summary_projection_live_rows_with_budget(
+    let rows = query_summary_projection_live_rows_with_budget(
         &state.pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -9682,13 +9695,6 @@ async fn build_summary_projection(
             "summary projection live exact horizon exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    // The activity preview intentionally maps a persisted running/pending row with terminal
-    // metadata to the UI's display status `failed`. Summary aggregation has a stricter contract:
-    // that row remains in-flight until its persisted terminal status changes. Restore the durable
-    // source status before this becomes canonical projection input.
-    restore_summary_projection_persisted_statuses(&state.pool, &mut rows)
-        .await
-        .context("summary projection status hydration failed")?;
     // `invoke_id` is the durable identity used by the archive preview contract.  In particular,
     // an archive replay can carry a different timestamp from the richer persisted live row; a
     // `(invoke_id, occurred_at)` key would double count it or overwrite live detail.
@@ -9746,9 +9752,6 @@ async fn build_summary_projection(
     .await?;
     let recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
-    restore_summary_projection_persisted_statuses(&state.pool, &mut recent_rows)
-        .await
-        .context("summary projection recent-index status hydration failed")?;
     for row in recent_rows {
         let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
         if is_new {
@@ -10118,7 +10121,7 @@ async fn build_summary_projection(
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
-        let mut exact_live_rows = query_summary_projection_live_rows_with_budget(
+        let exact_live_rows = query_summary_projection_live_rows_with_budget(
             &state.pool,
             InvocationSourceScope::All,
             range,
@@ -10137,9 +10140,6 @@ async fn build_summary_projection(
                 "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
-        restore_summary_projection_persisted_statuses(&state.pool, &mut exact_live_rows)
-            .await
-            .context("summary projection exact live replacement status hydration failed")?;
         for row in exact_live_rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
                 continue;
@@ -15299,7 +15299,7 @@ async fn query_summary_projection_live_rows_with_budget(
         limit,
     )
     .await?;
-    let rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
+    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
         &mut *tx,
         source_scope,
         range,
@@ -15311,6 +15311,9 @@ async fn query_summary_projection_live_rows_with_budget(
     )
     .await
     .map_err(|error| anyhow!("summary projection live preview fetch failed: {error:?}"))?;
+    restore_summary_projection_persisted_statuses(&mut tx, &mut rows)
+        .await
+        .context("summary projection live status hydration failed")?;
     tx.commit().await?;
     Ok(rows)
 }

@@ -30,7 +30,25 @@ async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
             }
         }
         if summary_ready && system_status_ready {
-            return Ok(());
+            let summary_is_fresh = state
+                .subscription_hub
+                .summary_projection()
+                .await
+                .is_some_and(|projection| projection.startup_hydration_is_fresh());
+            let status_is_fresh = state
+                .system_status_cache
+                .lock()
+                .await
+                .latest
+                .as_ref()
+                .is_some_and(|entry| {
+                    entry.cached_at.elapsed() <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+                });
+            if summary_is_fresh && status_is_fresh {
+                return Ok(());
+            }
+            summary_ready = summary_is_fresh;
+            system_status_ready = status_is_fresh;
         }
         tokio::select! {
             _ = state.shutdown.cancelled() => {
