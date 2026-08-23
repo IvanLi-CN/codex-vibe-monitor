@@ -883,14 +883,22 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     tokio::spawn(async move {
         let started_at = Instant::now();
         let pressure_gate = crate::db_pressure::global_db_pressure_gate();
-        let task_run = match begin_system_task_run(
-            &state.pool,
-            SystemTaskKind::HourlyRollupBootstrap,
-            "startup",
-            Some("background hourly rollup bootstrap started".to_string()),
-        )
-        .await
-        {
+        let task_run = match tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                info!(
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "background startup hourly rollup bootstrap cancelled before recording task start"
+                );
+                return;
+            }
+            result = begin_system_task_run(
+                &state.pool,
+                SystemTaskKind::HourlyRollupBootstrap,
+                "startup",
+                Some("background hourly rollup bootstrap started".to_string()),
+            ) => result,
+        } {
             Ok(task_run) => Some(task_run),
             Err(err) => {
                 warn!(
@@ -918,6 +926,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                         "background startup hourly rollup bootstrap deferred by database pressure"
                     );
                     tokio::select! {
+                        biased;
                         _ = cancel.cancelled() => {
                             info!(
                                 elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -925,6 +934,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                             );
                             finish_runtime_startup_hourly_rollup_bootstrap_task(
                                 state.as_ref(),
+                                &cancel,
                                 task_run.as_ref(),
                                 SystemTaskStatus::Skipped,
                                 "background hourly rollup bootstrap cancelled while waiting for database pressure admission",
@@ -938,6 +948,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             }
         };
         let rollup_guard = tokio::select! {
+            biased;
             _ = cancel.cancelled() => {
                 info!(
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -945,6 +956,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 );
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
+                    &cancel,
                     task_run.as_ref(),
                     SystemTaskStatus::Skipped,
                     "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
@@ -957,6 +969,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
 
         let hourly_rollups_started_at = Instant::now();
         let hourly_rollups = tokio::select! {
+            biased;
             _ = cancel.cancelled() => None,
             result = bootstrap_hourly_rollups_for_runtime_startup(
                 &state.pool,
@@ -971,6 +984,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             );
             finish_runtime_startup_hourly_rollup_bootstrap_task(
                 state.as_ref(),
+                &cancel,
                 task_run.as_ref(),
                 SystemTaskStatus::Skipped,
                 "background hourly rollup bootstrap cancelled during hourly rollup repair",
@@ -984,6 +998,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
             finish_runtime_startup_hourly_rollup_bootstrap_task(
                 state.as_ref(),
+                &cancel,
                 task_run.as_ref(),
                 SystemTaskStatus::Failed,
                 "background hourly rollup bootstrap failed; existing rollups remain available",
@@ -1005,6 +1020,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
 
         let summary_rollups_started_at = Instant::now();
         let summary_rollups = tokio::select! {
+            biased;
             _ = cancel.cancelled() => None,
             result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
         };
@@ -1016,6 +1032,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             );
             finish_runtime_startup_hourly_rollup_bootstrap_task(
                 state.as_ref(),
+                &cancel,
                 task_run.as_ref(),
                 SystemTaskStatus::Skipped,
                 "background hourly rollup bootstrap cancelled during summary rollup repair",
@@ -1028,6 +1045,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
             pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
             finish_runtime_startup_hourly_rollup_bootstrap_task(
                 state.as_ref(),
+                &cancel,
                 task_run.as_ref(),
                 SystemTaskStatus::Failed,
                 "background hourly rollup bootstrap failed; existing rollups remain available",
@@ -1045,6 +1063,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
         finish_runtime_startup_hourly_rollup_bootstrap_task(
             state.as_ref(),
+            &cancel,
             task_run.as_ref(),
             SystemTaskStatus::Success,
             &format!(
@@ -1062,22 +1081,65 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     })
 }
 
-async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
+pub(crate) async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
     state: &AppState,
+    cancel: &CancellationToken,
     task_run: Option<&SystemTaskRunHandle>,
     status: SystemTaskStatus,
     summary: &str,
     detail: Option<String>,
 ) {
     if let Some(task_run) = task_run {
-        finish_system_task_run(
+        let summary = Some(summary.to_string());
+        let finish = finish_system_task_run(
             &state.pool,
             task_run,
             status,
-            Some(summary.to_string()),
-            detail,
-        )
-        .await;
+            summary.clone(),
+            detail.clone(),
+        );
+        if cancel.is_cancelled() {
+            if tokio::time::timeout(
+                STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT,
+                finish,
+            )
+            .await
+            .is_err()
+            {
+                warn!(
+                    task_kind = task_run.task_kind.as_str(),
+                    trigger_kind = %task_run.trigger_kind,
+                    timeout_ms = STARTUP_HOURLY_ROLLUP_BOOTSTRAP_CANCELLED_TASK_FINISH_TIMEOUT.as_millis() as u64,
+                    deferred = try_enqueue_system_task_run_finish(
+                        state,
+                        task_run,
+                        status,
+                        summary,
+                        detail,
+                    ),
+                    "deferred startup hourly rollup bootstrap task-history finish during shutdown"
+                );
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    warn!(
+                        task_kind = task_run.task_kind.as_str(),
+                        trigger_kind = %task_run.trigger_kind,
+                        deferred = try_enqueue_system_task_run_finish(
+                            state,
+                            task_run,
+                            status,
+                            summary,
+                            detail,
+                        ),
+                        "cancelled startup hourly rollup bootstrap task-history finish during shutdown"
+                    );
+                }
+                _ = finish => {}
+            }
+        }
     }
 }
 

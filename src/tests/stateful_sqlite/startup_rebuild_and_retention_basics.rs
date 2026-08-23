@@ -1074,6 +1074,165 @@ async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lo
 }
 
 #[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_cancels_while_task_history_start_is_locked() {
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-hourly-rollup-bootstrap-task-history-lock",
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )
+    .await;
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect task-history lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire task-history write lock");
+
+    let mut bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+    tokio::time::timeout(Duration::from_millis(100), &mut bootstrap_handle)
+        .await
+        .expect_err("bootstrap should wait for the task-history write lock");
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("background bootstrap should stop without waiting for sqlite busy timeout")
+        .expect("background bootstrap task should join");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release task-history write lock");
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_defers_task_history_finish_during_shutdown_lock()
+ {
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-hourly-rollup-bootstrap-task-history-finish-lock",
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )
+    .await;
+    let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+    wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
+
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect task-history lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire task-history write lock");
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("background bootstrap should defer its task-history finish during shutdown")
+        .expect("background bootstrap task should join");
+    drop(rollup_guard);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release task-history write lock");
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush deferred task-history finish");
+
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
+    assert_eq!(status, "skipped");
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+    );
+    assert!(detail.is_none());
+
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn startup_hourly_rollup_task_history_finish_defers_when_cancellation_races_with_write_lock()
+{
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-hourly-rollup-bootstrap-task-history-finish-cancel-race",
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )
+    .await;
+    let task_run = begin_system_task_run(
+        &state.pool,
+        SystemTaskKind::HourlyRollupBootstrap,
+        "startup",
+        Some("background hourly rollup bootstrap started".to_string()),
+    )
+    .await
+    .expect("record task-history start");
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect task-history lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire task-history write lock");
+
+    let cancel = CancellationToken::new();
+    let state_for_finish = state.clone();
+    let cancel_for_finish = cancel.clone();
+    let mut finish_handle = tokio::spawn(async move {
+        finish_runtime_startup_hourly_rollup_bootstrap_task(
+            state_for_finish.as_ref(),
+            &cancel_for_finish,
+            Some(&task_run),
+            SystemTaskStatus::Skipped,
+            "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
+            None,
+        )
+        .await;
+    });
+    tokio::time::timeout(Duration::from_millis(100), &mut finish_handle)
+        .await
+        .expect_err("task-history finish should wait for the sqlite write lock");
+
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(1), finish_handle)
+        .await
+        .expect("task-history finish should defer after cancellation")
+        .expect("task-history finish task should join");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release task-history write lock");
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush deferred task-history finish");
+
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
+    assert_eq!(status, "skipped");
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+    );
+    assert!(detail.is_none());
+
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_run_once_keeps_blocking_hourly_rollup_bootstrap() {
     let state = test_state_from_config(test_config(), false).await;
     let cli = CliArgs {

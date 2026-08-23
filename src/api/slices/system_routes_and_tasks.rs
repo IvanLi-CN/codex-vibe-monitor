@@ -1227,13 +1227,27 @@ pub(crate) async fn finish_system_task_run_batched(
     summary: Option<String>,
     detail: Option<String>,
 ) {
+    if try_enqueue_system_task_run_finish(state, handle, status, summary.clone(), detail.clone()) {
+        return;
+    }
+
+    finish_system_task_run(&state.pool, handle, status, summary, detail).await;
+}
+
+pub(crate) fn try_enqueue_system_task_run_finish(
+    state: &AppState,
+    handle: &SystemTaskRunHandle,
+    status: SystemTaskStatus,
+    summary: Option<String>,
+    detail: Option<String>,
+) -> bool {
     let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
         .started_at
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    if state
+    state
         .sqlite_batch_writer
         .enqueue(SqliteBatchWrite::SystemTaskFinish(
             BatchedSystemTaskFinish {
@@ -1241,17 +1255,12 @@ pub(crate) async fn finish_system_task_run_batched(
                 task_kind: handle.task_kind,
                 trigger_kind: handle.trigger_kind.clone(),
                 status,
-                summary: summary.clone(),
-                detail: detail.clone(),
+                summary,
+                detail,
                 finished_at,
                 duration_ms,
             },
         ))
-    {
-        return;
-    }
-
-    finish_system_task_run(&state.pool, handle, status, summary, detail).await;
 }
 
 pub(crate) async fn fetch_system_status(
