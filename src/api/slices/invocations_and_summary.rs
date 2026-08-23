@@ -7223,6 +7223,10 @@ impl SummaryProjectionFreshness {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SummaryProjection {
     records: Vec<SummaryProjectionRecord>,
+    // A Summary SSE base can safely omit a terminal overlay only after the durable record is
+    // known to be in this exact projection revision. Keep the bounded identity set alongside
+    // the canonical live records so reconnects never infer that coverage from a global cursor.
+    persisted_live_terminal_invoke_ids: HashSet<String>,
     // Buckets are an index over canonical records, not a second source of truth.  They bound
     // rolling/calendar selection work without approximating a timezone boundary.
     hourly_buckets: BTreeMap<i64, Vec<usize>>,
@@ -7293,6 +7297,10 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    pub(crate) fn contains_persisted_live_terminal(&self, invoke_id: &str) -> bool {
+        self.persisted_live_terminal_invoke_ids.contains(invoke_id)
+    }
+
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
         let refresh_due = |refreshed_at: Option<Instant>| {
             refreshed_at.is_none_or(|refreshed_at| {
@@ -10623,8 +10631,14 @@ async fn build_summary_projection(
     };
     let all_time_oldest_account_refreshed_at =
         all_time_account_refreshed_at.values().copied().min();
+    let persisted_live_terminal_invoke_ids = records
+        .iter()
+        .filter(|record| record.is_persisted_live_record)
+        .map(|record| record.row.invoke_id.clone())
+        .collect();
     let projection = SummaryProjection {
         records,
+        persisted_live_terminal_invoke_ids,
         hourly_buckets,
         recent_indexes,
         recent_index_complete,

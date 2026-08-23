@@ -47,6 +47,8 @@ const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
 const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
 const RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
+const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
+const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -736,6 +738,11 @@ struct SubscriptionHubState {
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
     summary_projection: Option<Arc<SummaryProjection>>,
+    // Terminal slices are ephemeral delivery batches. Retain a bounded exact Summary overlay
+    // until the next projection revision demonstrably contains each durable identity.
+    summary_terminal_overlay: VecDeque<DashboardActivityTerminalDelta>,
+    summary_terminal_overlay_bytes: usize,
+    summary_terminal_overlay_overflowed: bool,
     summary_http_interest_at: Option<Instant>,
     summary_http_all_time_interest_at: Option<Instant>,
     summary_projection_revision: u64,
@@ -996,6 +1003,10 @@ struct DashboardSummaryMaterializerState {
     current_revision: Option<u64>,
     terminal_revision: Option<u64>,
     terminal_sequence: u64,
+    // The initial memory-only Summary base may already have replayed a terminal overlay, while
+    // the hub's latest terminal slice still contains the same delta. Keep this bounded set only
+    // for the first materialization so reconnects neither double-count nor skip ACKed deltas.
+    initial_terminal_slice_suppressions: Option<HashSet<u64>>,
     range_start: Option<DateTime<Utc>>,
 }
 
@@ -1550,6 +1561,22 @@ impl DashboardSummaryMaterializerState {
             current_revision: None,
             terminal_revision: None,
             terminal_sequence,
+            initial_terminal_slice_suppressions: None,
+            range_start,
+        }
+    }
+
+    fn from_summary_projection(
+        response: StatsResponse,
+        initial_terminal_slice_suppressions: HashSet<u64>,
+        range_start: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            response,
+            current_revision: None,
+            terminal_revision: None,
+            terminal_sequence: 0,
+            initial_terminal_slice_suppressions: Some(initial_terminal_slice_suppressions),
             range_start,
         }
     }
@@ -2418,21 +2445,35 @@ impl DashboardTopicMaterializer {
                     );
                     base.current_revision = current.map(|slice| slice.revision);
                 }
+                let initial_terminal_slice_suppressions =
+                    base.initial_terminal_slice_suppressions.take();
                 if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
                     let DashboardSummaryMaterializerState {
                         response,
                         terminal_sequence,
                         ..
                     } = &mut *base;
-                    apply_dashboard_terminal_slice_to_summary_response(
-                        response,
-                        terminal_sequence,
-                        window,
-                        *reporting_tz,
-                        *source_scope,
-                        *upstream_account_id,
-                        terminal.expect("terminal slice checked above"),
-                    );
+                    if let Some(mut suppressions) = initial_terminal_slice_suppressions {
+                        apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
+                            response,
+                            &mut suppressions,
+                            window,
+                            *reporting_tz,
+                            *source_scope,
+                            *upstream_account_id,
+                            terminal.expect("terminal slice checked above"),
+                        );
+                    } else {
+                        apply_dashboard_terminal_slice_to_summary_response(
+                            response,
+                            terminal_sequence,
+                            window,
+                            *reporting_tz,
+                            *source_scope,
+                            *upstream_account_id,
+                            terminal.expect("terminal slice checked above"),
+                        );
+                    }
                     base.terminal_revision = terminal.map(|slice| slice.revision);
                 }
                 serde_json::to_vec(&base.response).map_err(ApiError::from)
@@ -3065,7 +3106,48 @@ impl SubscriptionHub {
     }
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
-        self.state.lock().await.summary_projection = Some(Arc::new(projection));
+        let mut state = self.state.lock().await;
+        state
+            .summary_terminal_overlay
+            .retain(|delta| !projection.contains_persisted_live_terminal(&delta.invoke_id));
+        state.summary_terminal_overlay_bytes = state
+            .summary_terminal_overlay
+            .iter()
+            .map(|delta| delta.estimated_bytes)
+            .sum();
+        state.summary_projection = Some(Arc::new(projection));
+    }
+
+    async fn summary_projection_terminal_overlay(
+        &self,
+        projection: &SummaryProjection,
+    ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
+        let state = self.state.lock().await;
+        if state.summary_terminal_overlay_overflowed {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary terminal overlay exceeded its bounded memory budget"
+            )));
+        }
+        let overlay = state
+            .summary_terminal_overlay
+            .iter()
+            .filter(|delta| !projection.contains_persisted_live_terminal(&delta.invoke_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut initial_slice_suppressions = overlay
+            .iter()
+            .map(|delta| delta.terminal_sequence)
+            .collect::<HashSet<_>>();
+        if let Some(slice) = state.dashboard_terminal_slice.as_deref() {
+            initial_slice_suppressions.extend(
+                slice
+                    .deltas
+                    .iter()
+                    .filter(|delta| projection.contains_persisted_live_terminal(&delta.invoke_id))
+                    .map(|delta| delta.terminal_sequence),
+            );
+        }
+        Ok((overlay, initial_slice_suppressions))
     }
 
     pub(crate) async fn ensure_summary_snapshot_key(&self, key: SummarySnapshotKey) -> bool {
@@ -4803,6 +4885,34 @@ impl SubscriptionHub {
                 .is_some_and(|terminal| terminal.revision >= slice.revision)
             {
                 return;
+            }
+            for delta in &slice.deltas {
+                if guard
+                    .summary_terminal_overlay
+                    .iter()
+                    .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+                {
+                    continue;
+                }
+                let exceeds_count =
+                    guard.summary_terminal_overlay.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+                let exceeds_bytes = guard
+                    .summary_terminal_overlay_bytes
+                    .saturating_add(delta.estimated_bytes)
+                    > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+                if exceeds_count || exceeds_bytes {
+                    guard.summary_terminal_overlay_overflowed = true;
+                    tracing::warn!(
+                        pending_terminal_count = guard.summary_terminal_overlay.len(),
+                        pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
+                        "summary terminal overlay reached its bounded memory budget"
+                    );
+                    break;
+                }
+                guard.summary_terminal_overlay_bytes = guard
+                    .summary_terminal_overlay_bytes
+                    .saturating_add(delta.estimated_bytes);
+                guard.summary_terminal_overlay.push_back(delta.clone());
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
@@ -9320,6 +9430,32 @@ fn apply_dashboard_terminal_slice_to_summary_response(
     }
 }
 
+fn apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
+    response: &mut StatsResponse,
+    suppressions: &mut HashSet<u64>,
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    slice: &DashboardTerminalProjectionSlice,
+) {
+    let range = summary_window_range(window, reporting_tz, Utc::now())
+        .ok()
+        .flatten()
+        .map(|(start, end)| ExactUtcRange { start, end });
+    for delta in &slice.deltas {
+        if suppressions.remove(&delta.terminal_sequence)
+            || !terminal_delta_matches_source_scope(delta, source_scope)
+            || upstream_account_id
+                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
+        {
+            continue;
+        }
+        apply_dashboard_activity_terminal_delta_to_stats(response, delta);
+    }
+}
+
 fn dashboard_network_timeseries_live_point<'a>(
     base: &'a DashboardNetworkTimeseriesResponse,
     upstream_account_id: Option<i64>,
@@ -10535,25 +10671,14 @@ impl SubscriptionTopic {
                     if let Some(projection) = projection {
                         let mut response = projection
                             .response_for_query(&query, state.config.list_limit_max as i64)?;
-                        // The immutable SummaryProjection represents the durable baseline. A
-                        // terminal accepted after that baseline may not yet be persisted or in
-                        // the next projection revision, so fold the established in-memory
-                        // pending overlay into a new topic before recording its watermark.
-                        // This is the same durable/pending split used by the legacy builder,
-                        // but it never re-enters SQLite once a projection is available.
-                        let (pending_terminal_deltas, terminal_sequence) = {
-                            let cache = state.dashboard_activity_snapshot_cache.lock().await;
-                            (
-                                cache
-                                    .read_model
-                                    .pending_terminal_deltas
-                                    .iter()
-                                    .filter(|delta| delta.persisted_row_id.is_none())
-                                    .cloned()
-                                    .collect(),
-                                cache.read_model.next_terminal_sequence,
-                            )
-                        };
+                        // The immutable SummaryProjection represents one durable baseline. A
+                        // terminal remains in the hub-owned overlay until that exact projection
+                        // contains its durable identity, including after SQLite ACK but before a
+                        // background projection swap. This stays entirely in memory.
+                        let (pending_terminal_deltas, initial_terminal_slice_suppressions) = state
+                            .subscription_hub
+                            .summary_projection_terminal_overlay(projection.as_ref())
+                            .await?;
                         let mut replayed_terminal_sequence = 0;
                         apply_dashboard_terminal_slice_to_summary_response(
                             &mut response,
@@ -10573,9 +10698,9 @@ impl SubscriptionTopic {
                         return Ok(BuiltSubscriptionTopicPayload::Dashboard(
                             DashboardTopicMaterializer::Summary {
                                 base: Arc::new(StdMutex::new(
-                                    DashboardSummaryMaterializerState::new(
+                                    DashboardSummaryMaterializerState::from_summary_projection(
                                         response,
-                                        terminal_sequence,
+                                        initial_terminal_slice_suppressions,
                                         range_start,
                                     ),
                                 )),
@@ -15558,6 +15683,178 @@ mod tests {
                 }),
             )
             .expect("serialize the memory-backed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_replays_acked_terminal_until_projection_catches_up() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before the terminal write");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_001;
+        terminal.invoke_id = "hydrated-summary-acked-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal after the previous projection revision");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        assert_eq!(delta.persisted_row_id, Some(terminal.id));
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("acked terminal remains in the memory-only Summary overlay")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the memory-backed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_does_not_replay_terminal_included_by_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate initial summary projection");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_002;
+        terminal.invoke_id = "hydrated-summary-projection-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before the refreshed projection");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh summary projection with the durable terminal");
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("refreshed Summary topic remains memory-only")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the refreshed Summary topic");
         let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
         assert_eq!(payload["totalCount"], json!(1));
         assert_eq!(payload["totalTokens"], json!(42));
