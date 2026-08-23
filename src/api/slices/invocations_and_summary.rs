@@ -7228,11 +7228,16 @@ pub(crate) struct SummaryProjection {
     // the canonical live records so reconnects never infer that coverage from a global cursor.
     persisted_live_terminal_invoke_ids: HashSet<String>,
     // Rolling refreshes may reuse the previous all-time aggregate. Until a successful all-time
-    // rebuild, that aggregate cannot suppress a newly acknowledged terminal delta.
+    // rebuild, that aggregate cannot suppress a newly acknowledged terminal delta. This flag is
+    // deliberately global-scope only; account eligibility is tracked independently in freshness.
     all_time_terminal_coverage_complete: bool,
     // The settled terminal watermark actually represented by the retained all-time aggregate.
     // Rolling-only revisions must not advance this proof while they reuse the old aggregate.
     all_time_terminal_sequence_watermark: u64,
+    // Exact persisted live identities observed by a complete global all-time rebuild. Keeping
+    // this separate from the rolling identity set closes the hydration race where a terminal is
+    // committed after the settled watermark sample but before the aggregate query sees it.
+    all_time_persisted_live_terminal_invoke_ids: HashSet<String>,
     // Captured immediately before the durable hydration queries. A settled sequence means every
     // preceding terminal write has committed, so a successful projection can safely recover a
     // bounded SSE overlay that overflowed before its next rebuild.
@@ -7326,6 +7331,30 @@ impl SummaryProjection {
 
     pub(crate) fn all_time_terminal_sequence_watermark(&self) -> u64 {
         self.all_time_terminal_sequence_watermark
+    }
+
+    pub(crate) fn all_time_terminal_scope_covers(
+        &self,
+        upstream_account_id: Option<i64>,
+        invoke_id: &str,
+        occurred_at: &str,
+        terminal_sequence: u64,
+    ) -> bool {
+        let account_eligible = upstream_account_id.is_some_and(|account_id| {
+            self.freshness
+                .account_all_time_eligible
+                .contains(&account_id)
+        });
+        summary_projection_all_time_scope_covered(
+            self.all_time_terminal_coverage_complete,
+            account_eligible,
+            self.all_time_terminal_sequence_watermark,
+            terminal_sequence,
+            self.all_time_terminal_coverage_complete
+                && self
+                    .all_time_persisted_live_terminal_invoke_ids
+                    .contains(&format!("{invoke_id}\0{occurred_at}")),
+        )
     }
 
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
@@ -7666,6 +7695,18 @@ fn summary_projection_all_time_sequence_watermark(
     } else {
         previous_all_time_terminal_sequence_watermark
     }
+}
+
+fn summary_projection_all_time_scope_covered(
+    global_coverage_complete: bool,
+    account_coverage_complete: bool,
+    terminal_sequence_watermark: u64,
+    terminal_sequence: u64,
+    identity_covered: bool,
+) -> bool {
+    (global_coverage_complete || account_coverage_complete)
+        && (terminal_sequence_watermark >= terminal_sequence
+            || (global_coverage_complete && identity_covered))
 }
 
 fn runtime_record_is_success_for_summary_row(row: &UpstreamAccountInvocationPreviewRow) -> bool {
@@ -9107,6 +9148,9 @@ async fn refresh_summary_snapshots_with_deadline(
                 projection.freshness.account_all_time_eligible.clone(),
                 projection.all_time_terminal_coverage_complete(),
                 projection.all_time_terminal_sequence_watermark(),
+                projection
+                    .all_time_persisted_live_terminal_invoke_ids
+                    .clone(),
             )
         });
     let had_previous_projection = previous_all_time.is_some();
@@ -9441,6 +9485,7 @@ async fn build_summary_projection(
         HashSet<i64>,
         bool,
         u64,
+        HashSet<String>,
     )>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -9455,6 +9500,7 @@ async fn build_summary_projection(
         previous_account_all_time_eligible,
         previous_all_time_terminal_coverage_complete,
         previous_all_time_terminal_sequence_watermark,
+        previous_all_time_persisted_live_terminal_invoke_ids,
     ) = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
@@ -10698,7 +10744,10 @@ async fn build_summary_projection(
         .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
         .collect();
     let all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
-        !global_all_time_source_unavailable && !account_all_time_unavailable
+        // Global all-time responses have an independent durable source contract. An account
+        // manifest gap must not make an otherwise exact global aggregate replay every terminal
+        // delta or exhaust the shared all-time overlay budget.
+        !global_all_time_source_unavailable
     } else {
         previous_all_time_terminal_coverage_complete
     };
@@ -10708,11 +10757,22 @@ async fn build_summary_projection(
         durable_terminal_sequence_watermark,
         previous_all_time_terminal_sequence_watermark,
     );
+    let all_time_persisted_live_terminal_invoke_ids =
+        if all_time_was_fully_rebuilt && all_time_terminal_coverage_complete {
+            records
+                .iter()
+                .filter(|record| record.is_persisted_live_record)
+                .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
+                .collect()
+        } else {
+            previous_all_time_persisted_live_terminal_invoke_ids
+        };
     let projection = SummaryProjection {
         records,
         persisted_live_terminal_invoke_ids,
         all_time_terminal_coverage_complete,
         all_time_terminal_sequence_watermark,
+        all_time_persisted_live_terminal_invoke_ids,
         durable_terminal_sequence_watermark,
         hourly_buckets,
         recent_indexes,
@@ -26458,6 +26518,33 @@ mod request_compression_query_tests {
             12,
             "only complete all-time hydration may advance its terminal watermark",
         );
+    }
+
+    #[test]
+    fn summary_projection_all_time_terminal_coverage_is_scope_specific() {
+        assert!(summary_projection_all_time_scope_covered(
+            true, false, 7, 7, false
+        ));
+        assert!(summary_projection_all_time_scope_covered(
+            false, true, 7, 7, false
+        ));
+        assert!(!summary_projection_all_time_scope_covered(
+            false, false, 7, 7, false
+        ));
+        assert!(summary_projection_all_time_scope_covered(
+            true, false, 7, 12, true
+        ));
+        assert!(!summary_projection_all_time_scope_covered(
+            true, false, 7, 12, false
+        ));
+
+        let mut projection = SummaryProjection::default();
+        projection.all_time_terminal_coverage_complete = true;
+        projection.all_time_terminal_sequence_watermark = 7;
+        projection
+            .all_time_persisted_live_terminal_invoke_ids
+            .insert("race\0timestamp".to_string());
+        assert!(projection.all_time_terminal_scope_covers(None, "race", "timestamp", 12));
     }
 
     #[test]

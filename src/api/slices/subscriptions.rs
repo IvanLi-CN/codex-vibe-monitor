@@ -3137,8 +3137,12 @@ impl SubscriptionHub {
             );
         }
         state.summary_terminal_overlay_all_time.retain(|delta| {
-            !(projection.all_time_terminal_coverage_complete()
-                && projection.all_time_terminal_sequence_watermark() >= delta.terminal_sequence)
+            !projection.all_time_terminal_scope_covers(
+                delta.upstream_account_id,
+                &delta.invoke_id,
+                &delta.occurred_at,
+                delta.terminal_sequence,
+            )
         });
         state.summary_terminal_overlay_all_time_bytes = state
             .summary_terminal_overlay_all_time
@@ -3166,6 +3170,7 @@ impl SubscriptionHub {
         &self,
         projection: &SummaryProjection,
         all_time: bool,
+        upstream_account_id: Option<i64>,
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
         let overflowed = if all_time {
@@ -3177,7 +3182,29 @@ impl SubscriptionHub {
                 .summary_terminal_overlay_overflowed_through_sequence
                 .is_some()
         };
-        if overflowed {
+        let overflow_is_covered = all_time
+            && upstream_account_id
+                .map(|account_id| {
+                    projection.all_time_terminal_scope_covers(
+                        Some(account_id),
+                        "",
+                        "",
+                        state
+                            .summary_terminal_overlay_all_time_overflowed_through_sequence
+                            .unwrap_or_default(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    projection.all_time_terminal_scope_covers(
+                        None,
+                        "",
+                        "",
+                        state
+                            .summary_terminal_overlay_all_time_overflowed_through_sequence
+                            .unwrap_or_default(),
+                    )
+                });
+        if overflowed && !overflow_is_covered {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
@@ -3194,9 +3221,12 @@ impl SubscriptionHub {
                     && projection
                         .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at))
                     || (all_time
-                        && projection.all_time_terminal_coverage_complete()
-                        && projection.all_time_terminal_sequence_watermark()
-                            >= delta.terminal_sequence))
+                        && projection.all_time_terminal_scope_covers(
+                            upstream_account_id,
+                            &delta.invoke_id,
+                            &delta.occurred_at,
+                            delta.terminal_sequence,
+                        )))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -3216,9 +3246,12 @@ impl SubscriptionHub {
                                 &delta.occurred_at,
                             ))
                             || (all_time
-                                && projection.all_time_terminal_coverage_complete()
-                                && projection.all_time_terminal_sequence_watermark()
-                                    >= delta.terminal_sequence)
+                                && projection.all_time_terminal_scope_covers(
+                                    upstream_account_id,
+                                    &delta.invoke_id,
+                                    &delta.occurred_at,
+                                    delta.terminal_sequence,
+                                ))
                     })
                     .map(|delta| delta.terminal_sequence),
             );
@@ -10812,6 +10845,7 @@ impl SubscriptionTopic {
                             .summary_projection_terminal_overlay(
                                 projection.as_ref(),
                                 matches!(&summary_window, SummaryWindow::All),
+                                *upstream_account_id,
                             )
                             .await?;
                         let mut replayed_terminal_sequence = 0;
@@ -16119,7 +16153,7 @@ mod tests {
         assert!(
             state
                 .subscription_hub
-                .summary_projection_terminal_overlay(&projection, false)
+                .summary_projection_terminal_overlay(&projection, false, None)
                 .await
                 .is_ok(),
             "an all-time replay budget exhaustion must not make rolling Summary unavailable"
@@ -16127,7 +16161,7 @@ mod tests {
         assert!(matches!(
             state
                 .subscription_hub
-                .summary_projection_terminal_overlay(&projection, true)
+                .summary_projection_terminal_overlay(&projection, true, None)
                 .await,
             Err(ApiError::Unavailable(_))
         ));
