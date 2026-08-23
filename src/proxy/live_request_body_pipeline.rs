@@ -3,6 +3,54 @@ use super::*;
 const LIVE_ROUTE_PREFIX_BUFFER_BYTES: usize = 64 * 1024;
 const LIVE_LOGICAL_OUTPUT_BUFFER_BYTES: usize = 16 * 1024;
 
+#[derive(Debug)]
+struct InvalidLiveJsonError(String);
+
+impl std::fmt::Display for InvalidLiveJsonError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidLiveJsonError {}
+
+#[derive(Debug)]
+struct LiveDecodedRequestBodyError(io::Error);
+
+impl std::fmt::Display for LiveDecodedRequestBodyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for LiveDecodedRequestBodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+struct LiveDecodedRequestBodyReader<R> {
+    inner: R,
+}
+
+impl<R> AsyncRead for LiveDecodedRequestBodyReader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        match std::pin::Pin::new(&mut self.inner).poll_read(context, buffer) {
+            std::task::Poll::Ready(Err(error)) => {
+                std::task::Poll::Ready(Err(live_decoded_request_body_error(error)))
+            }
+            other => other,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LiveOauthResponsesTransform {
     pub(crate) account_id: Option<i64>,
@@ -28,6 +76,9 @@ pub(crate) struct LiveResponsesRequestBodyPipeline {
     pub(crate) first_upstream_body_poll_at_rx: watch::Receiver<Option<Instant>>,
     pub(crate) original_request_stream_rx: watch::Receiver<Option<bool>>,
     pub(crate) request_body_error_rx: watch::Receiver<Option<RequestBodyReadError>>,
+    pub(crate) resolved_request_content_encoding_rx:
+        watch::Receiver<Option<RequestBodyContentEncoding>>,
+    pub(crate) finalization_rx: watch::Receiver<bool>,
     pub(crate) oauth_rewrite_rx:
         watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
     config_tx: Option<oneshot::Sender<LiveResponsesBodyTransformConfig>>,
@@ -41,10 +92,10 @@ impl LiveResponsesRequestBodyPipeline {
     }
 }
 
-/// Starts a replay-backed live request pipeline. It decodes the downstream
-/// body before inspecting the root JSON object, waits for account-specific
-/// configuration after the model is known, then streams logical JSON through
-/// the configured encoder. The raw replay snapshot remains owned by the caller.
+/// Starts a replay-backed request-body transformer. The routing probe can be
+/// published while the root object is still open only when a future-safe route
+/// commit is proven; otherwise it remains buffered until the complete root
+/// object has been parsed.
 pub(crate) fn spawn_live_responses_request_body_pipeline(
     raw_body: Body,
     downstream_content_encoding: Option<String>,
@@ -56,6 +107,8 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
     let (first_poll_tx, first_poll_rx) = watch::channel(None);
     let (request_stream_tx, request_stream_rx) = watch::channel(None);
     let (request_body_error_tx, request_body_error_rx) = watch::channel(None);
+    let (resolved_encoding_tx, resolved_encoding_rx) = watch::channel(None);
+    let (finalization_tx, finalization_rx) = watch::channel(false);
     let (oauth_rewrite_tx, oauth_rewrite_rx) = watch::channel(None);
 
     tokio::spawn(async move {
@@ -71,6 +124,7 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
             output_tx.clone(),
             request_stream_tx,
             oauth_rewrite_tx,
+            resolved_encoding_tx,
         )
         .await;
         if let Err(err) = result {
@@ -82,15 +136,18 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
                     PoolReplayBodyKeyProbe::default(),
                 ));
             }
-            if err.kind() == io::ErrorKind::InvalidData {
+            if let Some(request_body_error) = live_request_body_pipeline_error(&err) {
                 let _ = request_body_error_tx.send(Some(RequestBodyReadError {
-                    status: StatusCode::BAD_REQUEST,
-                    message: format!("request body must be valid JSON: {err}"),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+                    status: request_body_error.0,
+                    message: request_body_error.1,
+                    failure_kind: request_body_error.2,
                     partial_body: Vec::new(),
                 }));
             }
+            let _ = finalization_tx.send(true);
             let _ = output_tx.send(Err(err)).await;
+        } else {
+            let _ = finalization_tx.send(true);
         }
     });
 
@@ -103,6 +160,8 @@ pub(crate) fn spawn_live_responses_request_body_pipeline(
         first_upstream_body_poll_at_rx: first_poll_rx,
         original_request_stream_rx: request_stream_rx,
         request_body_error_rx,
+        resolved_request_content_encoding_rx: resolved_encoding_rx,
+        finalization_rx,
         oauth_rewrite_rx,
         config_tx: Some(config_tx),
     }
@@ -114,13 +173,18 @@ pub(crate) fn live_responses_target_request_content_encoding(
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
     let downstream =
         resolve_request_body_content_encoding_from_prefix(None, downstream_content_encoding)?;
+    live_responses_target_request_content_encoding_with_resolved(downstream, requested)
+}
+
+pub(crate) fn live_responses_target_request_content_encoding_with_resolved(
+    downstream: RequestBodyContentEncoding,
+    requested: RequestCompressionAlgorithm,
+) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
     Ok(match requested {
         RequestCompressionAlgorithm::Follow => match downstream {
-            RequestBodyContentEncoding::Deflate { .. } => RequestBodyContentEncoding::Deflate {
-                // The Content-Encoding header cannot express the wrapper. Use
-                // zlib for re-encoded follow traffic, which is RFC-compatible.
-                zlib_wrapper: true,
-            },
+            RequestBodyContentEncoding::Deflate { zlib_wrapper } => {
+                RequestBodyContentEncoding::Deflate { zlib_wrapper }
+            }
             other => other,
         },
         RequestCompressionAlgorithm::Identity => RequestBodyContentEncoding::Identity,
@@ -143,8 +207,14 @@ async fn run_live_responses_request_body_pipeline(
     output_tx: mpsc::Sender<Result<Bytes, io::Error>>,
     request_stream_tx: watch::Sender<Option<bool>>,
     oauth_rewrite_tx: watch::Sender<Option<oauth_bridge::OauthResponsesRewriteSummary>>,
+    resolved_encoding_tx: watch::Sender<Option<RequestBodyContentEncoding>>,
 ) -> io::Result<()> {
-    let mut reader = live_decoded_request_reader(raw_body, downstream_content_encoding).await?;
+    let (reader, resolved_encoding) =
+        live_decoded_request_reader(raw_body, downstream_content_encoding)
+            .await
+            .map_err(live_decoded_request_body_error)?;
+    let _ = resolved_encoding_tx.send(Some(resolved_encoding));
+    let mut reader = LiveDecodedRequestBodyReader { inner: reader };
     let Some(first) = read_non_whitespace(&mut reader).await? else {
         let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
             PoolReplayBodyKeyProbe::default(),
@@ -159,6 +229,8 @@ async fn run_live_responses_request_body_pipeline(
     let mut pending_bytes = 0usize;
     let mut config_rx = Some(config_rx);
     let mut delimiter = None;
+    let mut selected_writer = None;
+    let mut selected_transformer = None;
 
     loop {
         let mut next = match delimiter.take() {
@@ -172,56 +244,61 @@ async fn run_live_responses_request_body_pipeline(
             next = read_non_whitespace(&mut reader)
                 .await?
                 .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
+            if next == b'}' {
+                return Err(invalid_live_json("request object has a trailing ','"));
+            }
         }
         if next == b'}' {
-            let probe = live_routing_probe_from_fields(&pending_fields);
-            let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(probe));
-            let Ok(selected_config) = config_rx
-                .take()
-                .expect("live configuration is awaited once")
-                .await
-            else {
-                // A control cohort or a routing fallback owns the snapshot and
-                // deliberately drops the live consumer.
-                return Ok(());
-            };
-            start_live_encoder(
-                logical_rx
-                    .take()
-                    .expect("live logical receiver starts exactly once"),
-                output_tx.clone(),
-                selected_config.target_encoding,
-                selected_config.compression_level,
-            );
-            let mut selected_writer = LiveLogicalJsonWriter::new(
-                logical_tx
-                    .as_ref()
-                    .expect("live logical sender remains open")
-                    .clone(),
-            );
-            selected_writer.write_raw(b"{").await?;
-            let mut selected_transformer =
-                LiveRootFieldTransformer::new(selected_config, request_stream_tx.clone());
-            for (pending_key, pending_value) in pending_fields.drain(..) {
-                selected_transformer
-                    .write_buffered_field(
-                        &mut selected_writer,
-                        pending_key.as_str(),
-                        &pending_value,
-                    )
-                    .await?;
-            }
-            selected_writer.flush().await?;
-
             if read_non_whitespace(&mut reader).await?.is_some() {
                 return Err(invalid_live_json("request body has trailing content"));
             }
-            selected_transformer.finish(&mut selected_writer).await?;
-            if let Some(summary) = selected_transformer.oauth_rewrite_summary() {
+            if selected_writer.is_none() {
+                let probe = live_routing_probe_from_fields(&pending_fields, true);
+                let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(probe));
+                let Ok(selected_config) = config_rx
+                    .take()
+                    .expect("live configuration is awaited once")
+                    .await
+                else {
+                    return Ok(());
+                };
+                start_live_encoder(
+                    logical_rx
+                        .take()
+                        .expect("live logical receiver starts exactly once"),
+                    output_tx.clone(),
+                    selected_config.target_encoding,
+                    selected_config.compression_level,
+                );
+                let mut writer = LiveLogicalJsonWriter::new(
+                    logical_tx
+                        .as_ref()
+                        .expect("live logical sender remains open")
+                        .clone(),
+                );
+                writer.write_raw(b"{").await?;
+                let mut transformer =
+                    LiveRootFieldTransformer::new(selected_config, request_stream_tx.clone());
+                for (pending_key, pending_value) in pending_fields.drain(..) {
+                    transformer
+                        .write_buffered_field(&mut writer, pending_key.as_str(), &pending_value)
+                        .await?;
+                }
+                selected_writer = Some(writer);
+                selected_transformer = Some(transformer);
+            }
+            let mut writer = selected_writer
+                .take()
+                .expect("live writer is selected before root completion");
+            let mut transformer = selected_transformer
+                .take()
+                .expect("live transformer is selected before root completion");
+            transformer.finish(&mut writer).await?;
+            if let Some(summary) = transformer.oauth_rewrite_summary() {
                 let _ = oauth_rewrite_tx.send(Some(summary));
             }
-            selected_writer.write_raw(b"}").await?;
-            selected_writer.finish().await?;
+            writer.write_raw(b"}").await?;
+            writer.finish().await?;
             logical_tx.take();
             return Ok(());
         }
@@ -253,6 +330,79 @@ async fn run_live_responses_request_body_pipeline(
             return Err(invalid_live_json("request object value is missing"));
         };
 
+        // Once the required model, all enabled route metadata seen so far, and
+        // the potentially route-affecting input field are buffered, commit the
+        // route before consuming the next ordinary value. Until `input` has
+        // been observed, a later field may still introduce image capability or
+        // encrypted-content requirements, so an ordinary field must remain in
+        // the prefix buffer even when the model is already known.
+        let input_seen = pending_fields
+            .iter()
+            .any(|(pending_key, _)| pending_key == "input");
+        if selected_writer.is_none()
+            && pending_fields
+                .iter()
+                .any(|(pending_key, _)| pending_key == "model")
+            && !is_precommit_routing_root_field(&key)
+            && input_seen
+            && !should_defer_route_commit(&key, value_start)
+        {
+            let _ = probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                live_routing_probe_from_fields(&pending_fields, false),
+            ));
+            let Ok(selected_config) = config_rx
+                .take()
+                .expect("live configuration is awaited once")
+                .await
+            else {
+                return Ok(());
+            };
+            start_live_encoder(
+                logical_rx
+                    .take()
+                    .expect("live logical receiver starts exactly once"),
+                output_tx.clone(),
+                selected_config.target_encoding,
+                selected_config.compression_level,
+            );
+            let mut writer = LiveLogicalJsonWriter::new(
+                logical_tx
+                    .as_ref()
+                    .expect("live logical sender remains open")
+                    .clone(),
+            );
+            writer.write_raw(b"{").await?;
+            let mut transformer =
+                LiveRootFieldTransformer::new(selected_config, request_stream_tx.clone());
+            for (pending_key, pending_value) in pending_fields.drain(..) {
+                transformer
+                    .write_buffered_field(&mut writer, pending_key.as_str(), &pending_value)
+                    .await?;
+            }
+            if transformer.buffers_field(&key) {
+                let (value, terminal) = read_json_value_to_vec(
+                    &mut reader,
+                    value_start,
+                    LIVE_ROUTE_PREFIX_BUFFER_BYTES,
+                )
+                .await?;
+                transformer
+                    .write_buffered_field(&mut writer, &key, &value)
+                    .await?;
+                selected_writer = Some(writer);
+                selected_transformer = Some(transformer);
+                delimiter = Some(terminal);
+                continue;
+            }
+            writer.begin_field(&key).await?;
+            writer.flush().await?;
+            let terminal = forward_json_value(&mut reader, value_start, &mut writer).await?;
+            selected_writer = Some(writer);
+            selected_transformer = Some(transformer);
+            delimiter = Some(terminal);
+            continue;
+        }
+
         let (value, terminal) =
             match read_json_value_to_vec(&mut reader, value_start, LIVE_ROUTE_PREFIX_BUFFER_BYTES)
                 .await
@@ -266,8 +416,22 @@ async fn run_live_responses_request_body_pipeline(
                 }
                 Err(err) => return Err(err),
             };
+        if std::str::from_utf8(&value).is_err() {
+            return Err(invalid_live_json("request string is not valid UTF-8"));
+        }
         if serde_json::from_slice::<Value>(&value).is_err() {
             return Err(invalid_live_json("request field value is invalid"));
+        }
+        if let (Some(mut writer), Some(mut transformer)) =
+            (selected_writer.take(), selected_transformer.take())
+        {
+            transformer
+                .write_buffered_field(&mut writer, &key, &value)
+                .await?;
+            selected_writer = Some(writer);
+            selected_transformer = Some(transformer);
+            delimiter = Some(terminal);
+            continue;
         }
         pending_bytes = pending_bytes
             .saturating_add(key.len())
@@ -309,7 +473,7 @@ fn start_live_encoder(
 async fn live_decoded_request_reader(
     raw_body: Body,
     content_encoding: Option<&str>,
-) -> io::Result<BoxedPoolRequestReader> {
+) -> io::Result<(BoxedPoolRequestReader, RequestBodyContentEncoding)> {
     let needs_deflate_prefix = parse_content_encodings(content_encoding)
         .iter()
         .any(|encoding| encoding == "deflate");
@@ -333,12 +497,16 @@ async fn live_decoded_request_reader(
     let prefix_stream = stream::iter(prefix.into_iter().map(Ok::<Bytes, io::Error>));
     let raw_reader: BoxedPoolRequestReader =
         Box::pin(StreamReader::new(prefix_stream.chain(source)));
-    decode_pool_request_reader(raw_reader, encoding)
+    let decoded = decode_pool_request_reader(raw_reader, encoding)
         .await
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.message))
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.message))?;
+    Ok((decoded, encoding))
 }
 
-fn live_routing_probe_from_fields(fields: &[(String, Vec<u8>)]) -> PoolReplayBodyKeyProbe {
+fn live_routing_probe_from_fields(
+    fields: &[(String, Vec<u8>)],
+    root_object_complete: bool,
+) -> PoolReplayBodyKeyProbe {
     let mut object = serde_json::Map::new();
     for (key, value) in fields {
         let Ok(value) = serde_json::from_slice::<Value>(value) else {
@@ -347,6 +515,8 @@ fn live_routing_probe_from_fields(fields: &[(String, Vec<u8>)]) -> PoolReplayBod
         object.insert(key.clone(), value);
     }
     let value = Value::Object(object);
+    let image_intent =
+        infer_hosted_image_intent_from_request_body(ProxyCaptureTarget::Responses, &value);
     PoolReplayBodyKeyProbe {
         sticky_key: extract_sticky_key_from_request_body(&value),
         prompt_cache_key: extract_prompt_cache_key_from_request_body(&value),
@@ -355,11 +525,39 @@ fn live_routing_probe_from_fields(fields: &[(String, Vec<u8>)]) -> PoolReplayBod
             .and_then(Value::as_str)
             .map(str::to_string),
         contains_encrypted_content: value_contains_encrypted_content(&value),
-        image_intent: infer_hosted_image_intent_from_request_body(
-            ProxyCaptureTarget::Responses,
-            &value,
-        ),
+        // Until the root object ends, a later `tools`, `tool_choice`, or
+        // `input` field may still require an image-capable account. The live
+        // attempt treats this as provisional and cancels on such a field.
+        image_intent: if root_object_complete || image_intent == ImageIntent::Yes {
+            image_intent
+        } else {
+            ImageIntent::Unknown
+        },
+        root_object_complete,
     }
+}
+
+fn is_precommit_routing_root_field(key: &str) -> bool {
+    matches!(
+        key,
+        "model"
+            | "tools"
+            | "tool_choice"
+            | "metadata"
+            | "sticky_key"
+            | "stickyKey"
+            | "prompt_cache_key"
+            | "promptCacheKey"
+    )
+}
+
+fn should_defer_route_commit(_key: &str, _value_start: u8) -> bool {
+    // JSON object fields are unordered and optional. After any ordinary field
+    // there may still be a later input, tools, metadata, sticky, prompt-cache,
+    // or encrypted-content field that changes the route. Without a schema-level
+    // end marker, EOF is the only proof that the route-affecting root set is
+    // complete, so the live encoder must stay uncommitted until root EOF.
+    true
 }
 
 struct LiveRootFieldTransformer {
@@ -657,57 +855,6 @@ impl LiveLogicalJsonWriter {
     }
 }
 
-async fn read_non_whitespace<R>(reader: &mut R) -> io::Result<Option<u8>>
-where
-    R: AsyncRead + Unpin,
-{
-    loop {
-        match reader.read_u8().await {
-            Ok(byte) if byte.is_ascii_whitespace() => {}
-            Ok(byte) => return Ok(Some(byte)),
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-async fn read_json_string<R>(reader: &mut R, first: u8, limit: usize) -> io::Result<Vec<u8>>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut value = vec![first];
-    let mut escaped = false;
-    loop {
-        let byte = reader.read_u8().await?;
-        value.push(byte);
-        if value.len() > limit {
-            return Err(invalid_live_json(
-                "routing field exceeds the live prefix budget",
-            ));
-        }
-        if escaped {
-            escaped = false;
-        } else if byte == b'\\' {
-            escaped = true;
-        } else if byte == b'"' {
-            return Ok(value);
-        }
-    }
-}
-
-async fn read_json_value_to_vec<R>(
-    reader: &mut R,
-    first: u8,
-    limit: usize,
-) -> io::Result<(Vec<u8>, u8)>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut value = Vec::new();
-    let terminal = collect_json_value(reader, first, Some(&mut value), limit).await?;
-    Ok((value, terminal))
-}
-
 async fn forward_json_value<R>(
     reader: &mut R,
     first: u8,
@@ -742,7 +889,6 @@ where
     if next == b'}' {
         return writer.write_raw(&[next]).await;
     }
-
     loop {
         if next != b'"' {
             return Err(invalid_live_json(
@@ -768,6 +914,9 @@ where
                 next = read_non_whitespace(reader)
                     .await?
                     .ok_or_else(|| invalid_live_json("request object ended after ','"))?;
+                if next == b'}' {
+                    return Err(invalid_live_json("request object has a trailing ','"));
+                }
             }
             b'}' => return writer.write_raw(&[delimiter]).await,
             _ => {
@@ -789,7 +938,6 @@ where
     if value_start == b']' {
         return writer.write_raw(&[value_start]).await;
     }
-
     loop {
         let delimiter = forward_json_value(reader, value_start, writer).await?;
         match delimiter {
@@ -821,8 +969,9 @@ where
 {
     let mut escaped = false;
     let mut unicode_digits_remaining = 0_u8;
+    let mut utf8_tail = Vec::new();
     loop {
-        let byte = reader.read_u8().await?;
+        let byte = read_json_string_byte(reader).await?;
         writer.write_raw(&[byte]).await?;
         if unicode_digits_remaining > 0 {
             if !byte.is_ascii_hexdigit() {
@@ -844,6 +993,7 @@ where
             }
             continue;
         }
+        validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
         match byte {
             b'"' => return Ok(()),
             b'\\' => escaped = true,
@@ -928,6 +1078,93 @@ fn is_valid_json_number(token: &[u8]) -> bool {
     index == token.len()
 }
 
+async fn read_non_whitespace<R>(reader: &mut R) -> io::Result<Option<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    loop {
+        match reader.read_u8().await {
+            Ok(byte) if byte.is_ascii_whitespace() => {}
+            Ok(byte) => return Ok(Some(byte)),
+            Err(err)
+                if err.kind() == io::ErrorKind::UnexpectedEof
+                    && !is_live_decoded_request_body_error(&err) =>
+            {
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+async fn read_json_string_byte<R>(reader: &mut R) -> io::Result<u8>
+where
+    R: AsyncRead + Unpin,
+{
+    match reader.read_u8().await {
+        Ok(byte) => Ok(byte),
+        Err(err)
+            if err.kind() == io::ErrorKind::UnexpectedEof
+                && !is_live_decoded_request_body_error(&err) =>
+        {
+            Err(invalid_live_json("request string ended before closing"))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn validate_json_string_utf8_byte(tail: &mut Vec<u8>, byte: u8) -> io::Result<()> {
+    tail.push(byte);
+    match std::str::from_utf8(tail) {
+        Ok(_) => tail.clear(),
+        Err(error) if error.error_len().is_none() => {}
+        Err(_) => return Err(invalid_live_json("request string is not valid UTF-8")),
+    }
+    Ok(())
+}
+
+async fn read_json_string<R>(reader: &mut R, first: u8, limit: usize) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut value = vec![first];
+    let mut escaped = false;
+    let mut utf8_tail = Vec::new();
+    loop {
+        let byte = read_json_string_byte(reader).await?;
+        value.push(byte);
+        if value.len() > limit {
+            return Err(invalid_live_json(
+                "routing field exceeds the live prefix budget",
+            ));
+        }
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
+            escaped = true;
+        } else if byte == b'"' {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
+            return Ok(value);
+        } else {
+            validate_json_string_utf8_byte(&mut utf8_tail, byte)?;
+        }
+    }
+}
+
+async fn read_json_value_to_vec<R>(
+    reader: &mut R,
+    first: u8,
+    limit: usize,
+) -> io::Result<(Vec<u8>, u8)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut value = Vec::new();
+    let terminal = collect_json_value(reader, first, Some(&mut value), limit).await?;
+    Ok((value, terminal))
+}
+
 async fn collect_json_value<R>(
     reader: &mut R,
     first: u8,
@@ -955,7 +1192,7 @@ where
             let Some(byte) = read_non_whitespace(reader).await? else {
                 return Err(invalid_live_json("request value is missing a delimiter"));
             };
-            if matches!(byte, b',' | b'}') {
+            if matches!(byte, b',' | b'}' | b']') {
                 append_live_value(&mut collected, &bytes, limit)?;
                 return Ok(byte);
             }
@@ -963,7 +1200,20 @@ where
             continue;
         }
 
-        let byte = reader.read_u8().await?;
+        let byte = match reader.read_u8().await {
+            Ok(byte) => byte,
+            Err(err)
+                if err.kind() == io::ErrorKind::UnexpectedEof
+                    && !is_live_decoded_request_body_error(&err) =>
+            {
+                return Err(invalid_live_json(if in_string {
+                    "request string ended before closing"
+                } else {
+                    "request value ended before closing"
+                }));
+            }
+            Err(err) => return Err(err),
+        };
         bytes.push(byte);
         if in_string {
             if escaped {
@@ -1021,14 +1271,50 @@ where
     R: AsyncRead + Unpin,
 {
     match read_non_whitespace(reader).await? {
-        Some(byte @ (b',' | b'}')) => Ok(byte),
+        Some(byte @ (b',' | b'}' | b']')) => Ok(byte),
         Some(_) => Err(invalid_live_json("request value has an invalid delimiter")),
         None => Err(invalid_live_json("request value is missing a delimiter")),
     }
 }
 
 fn invalid_live_json(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        InvalidLiveJsonError(message.to_string()),
+    )
+}
+
+fn live_decoded_request_body_error(error: io::Error) -> io::Error {
+    let kind = error.kind();
+    io::Error::new(kind, LiveDecodedRequestBodyError(error))
+}
+
+fn is_invalid_live_json_error(err: &io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(|source| source.is::<InvalidLiveJsonError>())
+}
+
+fn is_live_decoded_request_body_error(err: &io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(|source| source.is::<LiveDecodedRequestBodyError>())
+}
+
+fn live_request_body_pipeline_error(err: &io::Error) -> Option<(StatusCode, String, &'static str)> {
+    if is_invalid_live_json_error(err) {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            format!("request body must be valid JSON: {err}"),
+            PROXY_FAILURE_REQUEST_BODY_INVALID_JSON,
+        ));
+    }
+    if is_live_decoded_request_body_error(err) {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            format!("failed to decode request body: {err}"),
+            PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
+        ));
+    }
+    None
 }
 
 fn is_live_route_probe_budget_error(err: &io::Error) -> bool {
@@ -1050,7 +1336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_first_capture_responses_waits_for_complete_routing_context_before_eof() {
+    async fn final_route_gate_keeps_upstream_body_empty_until_downstream_eof() {
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
         tx.send(Ok(Bytes::from_static(
             br#"{"model":"gpt-5.6","input":"delayed "#,
@@ -1066,24 +1352,23 @@ mod tests {
                 Duration::from_millis(50),
                 wait_for_replay_body_sticky_key_probe(
                     &pipeline.routing_probe_rx,
-                    Duration::from_secs(1),
+                    Duration::from_secs(1)
                 ),
             )
             .await
-            .is_err(),
-            "routing must not be finalized before a late input field is complete"
+            .is_err()
         );
 
         tx.send(Ok(Bytes::from_static(br#"tail"}"#)))
             .await
             .expect("send delayed tail");
+        drop(tx);
         let probe = wait_for_replay_body_sticky_key_probe(
             &pipeline.routing_probe_rx,
             Duration::from_secs(1),
         )
         .await;
         assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-        assert_eq!(probe.image_intent, ImageIntent::No);
         assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
             target_encoding: RequestBodyContentEncoding::Identity,
             compression_level: RequestCompressionLevelPreset::Balanced,
@@ -1096,23 +1381,8 @@ mod tests {
             model_mapping_target: None,
         }));
 
-        let mut upstream = pipeline.body.into_data_stream();
-        let first = timeout(Duration::from_secs(1), upstream.next())
-            .await
-            .expect("upstream body should begin before downstream EOF")
-            .expect("upstream body should have a prefix")
-            .expect("upstream prefix should be valid");
-        assert_eq!(
-            first,
-            Bytes::from_static(br#"{"model":"gpt-5.6","input":"delayed tail""#)
-        );
+        let output = collect_body(pipeline.body).await;
         assert!(pipeline.first_upstream_body_poll_at_rx.borrow().is_some());
-
-        drop(tx);
-        let mut output = first.to_vec();
-        while let Some(chunk) = upstream.next().await {
-            output.extend_from_slice(&chunk.expect("upstream tail"));
-        }
         assert_eq!(
             serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
             serde_json::json!({"model":"gpt-5.6","input":"delayed tail"})
@@ -1120,7 +1390,236 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_applies_oauth_and_include_usage() {
+    async fn live_first_capture_responses_forwards_objects_inside_input_arrays() {
+        let source = br#"{"model":"gpt-5.6","input":[{}]}"#;
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(source)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::from_slice::<Value>(source).expect("decode source JSON")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_scalar_input_arrays_before_model() {
+        let source = br#"{"input":[1],"model":"gpt-5.6"}"#;
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(source)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::from_slice::<Value>(source).expect("decode source JSON")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_nested_input_arrays_across_chunks() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":[{"role":"user","content":["#,
+        )))
+        .await
+        .expect("send nested input prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        tx.send(Ok(Bytes::from_static(
+            br#"{"type":"input_text","text":"hello"}]}]}"#,
+        )))
+        .await
+        .expect("send nested input tail");
+        drop(tx);
+
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live forwarded JSON"),
+            serde_json::json!({
+                "model": "gpt-5.6",
+                "input": [{
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                }],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_capture_responses_forwards_utf8_input_across_chunks() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(br#"{"model":"gpt-5.6","input":""#)))
+            .await
+            .expect("send UTF-8 request prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        tx.send(Ok(Bytes::from_static(b"\xe4")))
+            .await
+            .expect("send UTF-8 leading byte");
+        tx.send(Ok(Bytes::from_static(b"\xbd\xa0\"}")))
+            .await
+            .expect("send UTF-8 trailing bytes");
+        drop(tx);
+
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output = collect_body(pipeline.body).await;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).expect("decode live UTF-8 body"),
+            serde_json::json!({"model": "gpt-5.6", "input": "你"})
+        );
+    }
+
+    #[tokio::test]
+    async fn final_route_gate_waits_for_late_routing_metadata_before_upstream_body() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":"hello","instructions":"stream","#,
+        )))
+        .await
+        .expect("send request prefix");
+        let mut pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+        assert!(
+            timeout(
+                Duration::from_millis(50),
+                wait_for_replay_body_sticky_key_probe(
+                    &pipeline.routing_probe_rx,
+                    Duration::from_secs(1)
+                ),
+            )
+            .await
+            .is_err()
+        );
+
+        tx.send(Ok(Bytes::from_static(
+            br#""metadata":{"sticky_key":"late"}}"#,
+        )))
+        .await
+        .expect("send late routing metadata");
+        drop(tx);
+
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(probe.sticky_key.as_deref(), Some("late"));
+        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
+            target_encoding: RequestBodyContentEncoding::Identity,
+            compression_level: RequestCompressionLevelPreset::Balanced,
+            enforce_include_usage: false,
+            oauth: None,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
+            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
+            codex_imagegen_protocol: None,
+            model_mapping_target: None,
+        }));
+
+        let output: Value = serde_json::from_slice(&collect_body(pipeline.body).await)
+            .expect("decode body after final route gate");
+        assert_eq!(output["metadata"]["sticky_key"], "late");
+    }
+
+    #[tokio::test]
+    async fn final_route_gate_waits_for_late_root_sticky_key_before_upstream_body() {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(
+                br#"{"model":"gpt-5.6","input":"hello","stickyKey":"late-root"}"#,
+            )),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+        assert_eq!(probe.sticky_key.as_deref(), Some("late-root"));
+    }
+
+    #[tokio::test]
+    async fn responses_route_finalization_transform_applies_oauth_and_include_usage() {
         let mut pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(
                 br#"{"model":"gpt-5.6","stream":false,"max_output_tokens":7,"client_metadata":{"x-codex-installation-id":"downstream","keep":true}}"#,
@@ -1173,7 +1672,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_applies_account_rewrites() {
+    async fn responses_route_finalization_transform_applies_account_rewrites() {
         let mut pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(
                 br#"{"model":"gpt-5.6","tools":[],"tool_choice":"auto"}"#,
@@ -1211,7 +1710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_rewrites_mapped_model_and_fails_closed() {
+    async fn responses_route_finalization_transform_rewrites_mapped_model_and_fails_closed() {
         let mut mapped = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(
                 br#"{"model":"client-fast","input":"hello"}"#,
@@ -1314,6 +1813,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_route_gate_rejects_trailing_content_before_upstream_body_starts() {
+        let (request_body_tx, request_body_rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        request_body_tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5.6","input":"hello"}"#,
+            )))
+            .await
+            .expect("send complete request root before trailing content");
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(request_body_rx)),
+            None,
+        );
+        let request_body_error_rx = pipeline.request_body_error_rx.clone();
+        request_body_tx
+            .send(Ok(Bytes::from_static(b" trailing")))
+            .await
+            .expect("send invalid trailing content after upstream body starts");
+        drop(request_body_tx);
+
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(probe.model.is_none());
+        let mut upstream_body = pipeline.body.into_data_stream();
+        let error = upstream_body
+            .next()
+            .await
+            .expect("invalid body should produce an error")
+            .expect_err("no upstream body bytes may be produced before validation");
+        assert!(error.to_string().contains("trailing content"));
+        assert_eq!(
+            request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_truncated_or_non_utf8_strings() {
+        let mut non_utf8 = br#"{"model":"gpt-5.6","input":""#.to_vec();
+        non_utf8.push(0xff);
+        non_utf8.extend_from_slice(br#""}"#);
+        for source in [
+            Bytes::from_static(br#"{"model":"gpt-5.6","input":"unterminated"#),
+            Bytes::from(non_utf8),
+        ] {
+            let pipeline = spawn_live_responses_request_body_pipeline(Body::from(source), None);
+            let probe = wait_for_replay_body_sticky_key_probe(
+                &pipeline.routing_probe_rx,
+                Duration::from_secs(1),
+            )
+            .await;
+            assert!(probe.model.is_none());
+            let mut stream = pipeline.body.into_data_stream();
+            let error = loop {
+                let Some(chunk) = stream.next().await else {
+                    panic!("invalid string must stop the live body");
+                };
+                if let Err(error) = chunk {
+                    break error;
+                }
+            };
+            assert!(error.to_string().contains("request string"));
+            assert_eq!(
+                pipeline
+                    .request_body_error_rx
+                    .borrow()
+                    .as_ref()
+                    .map(|error| error.failure_kind),
+                Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn live_first_cancellation_and_failover_rejects_invalid_nested_json() {
         let pipeline = spawn_live_responses_request_body_pipeline(
             Body::from(Bytes::from_static(
@@ -1354,15 +1932,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_first_cancellation_rejects_invalid_json_after_upstream_prefix() {
+    async fn final_route_gate_waits_for_late_input_after_ordinary_fields() {
         let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
         tx.send(Ok(Bytes::from_static(
-            br#"{"model":"gpt-5.6","input":"ready"}"#,
+            br#"{"model":"gpt-5.6","stream":true,"#,
         )))
         .await
-        .expect("send complete routing object");
-        let mut pipeline = spawn_live_responses_request_body_pipeline(
+        .expect("send ordinary prefix before input");
+        let pipeline = spawn_live_responses_request_body_pipeline(
             Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(matches!(
+            *pipeline.routing_probe_rx.borrow(),
+            PoolReplayBodyStickyKeyProbeStatus::Pending
+        ));
+
+        tx.send(Ok(Bytes::from_static(
+            br#""input":[{"type":"input_text","text":"hello"}]}"#,
+        )))
+        .await
+        .expect("send late route-affecting input");
+        drop(tx);
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_extra_array_delimiter() {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5.6","input":[{}]]}"#)),
             None,
         );
         let probe = wait_for_replay_body_sticky_key_probe(
@@ -1370,42 +1975,123 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-        assert!(pipeline.configure(LiveResponsesBodyTransformConfig {
-            target_encoding: RequestBodyContentEncoding::Identity,
-            compression_level: RequestCompressionLevelPreset::Balanced,
-            enforce_include_usage: false,
-            oauth: None,
-            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
-            image_tool_rewrite_mode: ImageToolRewriteMode::KeepOriginal,
-            codex_imagegen_rewrite_mode: CodexImagegenRewriteMode::KeepOriginal,
-            codex_imagegen_protocol: None,
-            model_mapping_target: None,
-        }));
+        assert!(probe.model.is_none());
 
-        let mut upstream = pipeline.body.into_data_stream();
-        let prefix = timeout(Duration::from_secs(1), upstream.next())
-            .await
-            .expect("upstream prefix should be emitted before downstream eof")
-            .expect("upstream stream should contain a prefix")
-            .expect("upstream prefix should be valid");
-        assert!(prefix.starts_with(br#"{"model":"gpt-5.6""#));
+        let mut stream = pipeline.body.into_data_stream();
+        let _error = loop {
+            let Some(chunk) = stream.next().await else {
+                panic!("extra array delimiter must stop the live body");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
 
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_trailing_comma_after_input_array() {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5.6","input":[{}],}"#)),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(probe.model.is_none());
+
+        let mut stream = pipeline.body.into_data_stream();
+        let _error = loop {
+            let Some(chunk) = stream.next().await else {
+                panic!("trailing object comma must stop the live body");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
+    async fn live_first_cancellation_and_failover_rejects_trailing_comma_inside_input_object() {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(
+                br#"{"model":"gpt-5.6","input":[{"content":{"text":"hello",}}]}"#,
+            )),
+            None,
+        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(probe.model.is_none());
+
+        let mut stream = pipeline.body.into_data_stream();
+        let _error = loop {
+            let Some(chunk) = stream.next().await else {
+                panic!("trailing nested object comma must stop the live body");
+            };
+            if let Err(error) = chunk {
+                break error;
+            }
+        };
+        assert_eq!(
+            pipeline
+                .request_body_error_rx
+                .borrow()
+                .as_ref()
+                .map(|error| error.status),
+            Some(StatusCode::BAD_REQUEST)
+        );
+    }
+
+    #[tokio::test]
+    async fn final_route_gate_rejects_invalid_json_without_upstream_prefix() {
+        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
+        tx.send(Ok(Bytes::from_static(
+            br#"{"model":"gpt-5.6","input":"ready"}"#,
+        )))
+        .await
+        .expect("send complete routing object");
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from_stream(ReceiverStream::new(rx)),
+            None,
+        );
         tx.send(Ok(Bytes::from_static(b"x")))
             .await
             .expect("send invalid trailing JSON");
         drop(tx);
-        let mut observed_error = None;
-        while let Some(chunk) = upstream.next().await {
-            if let Err(error) = chunk {
-                observed_error = Some(error);
-                break;
-            }
-        }
-        assert!(
-            observed_error.is_some(),
-            "invalid trailing JSON should cancel the upstream body"
-        );
+        let probe = wait_for_replay_body_sticky_key_probe(
+            &pipeline.routing_probe_rx,
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(probe.model.is_none());
+        let error = pipeline
+            .body
+            .into_data_stream()
+            .next()
+            .await
+            .expect("invalid body should produce an error")
+            .expect_err("invalid trailing JSON must not have an upstream prefix");
+        assert!(error.to_string().contains("trailing content"));
         assert_eq!(
             pipeline
                 .request_body_error_rx
@@ -1433,7 +2119,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_falls_back_for_large_rewrite_input() {
+    async fn final_route_gate_falls_back_for_large_root_field() {
         let mut input = String::with_capacity(LIVE_ROUTE_PREFIX_BUFFER_BYTES + 64);
         input.extend(std::iter::repeat_n(
             'x',
@@ -1462,13 +2148,13 @@ mod tests {
                 codex_imagegen_protocol: None,
                 model_mapping_target: None,
             }),
-            "large rewrite fields must choose the raw replay path rather than materializing"
+            "a probe-budget fallback must not create a live upstream body"
         );
         assert!(pipeline.request_body_error_rx.borrow().is_none());
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_decodes_supported_content_encodings() {
+    async fn responses_route_finalization_transform_decodes_supported_content_encodings() {
         let source = br#"{"model":"gpt-5.6","input":"compressed"}"#;
         let gzip = {
             let mut encoder = flate2::write::GzEncoder::new(Vec::new(), Compression::default());
@@ -1514,7 +2200,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn responses_streaming_transform_reencodes_supported_content_encodings() {
+    async fn responses_route_finalization_transform_keeps_corrupt_content_encoding_out_of_json_failure()
+     {
+        let pipeline = spawn_live_responses_request_body_pipeline(
+            Body::from(Bytes::from_static(b"not a gzip stream")),
+            Some("gzip".to_string()),
+        );
+        let mut upstream = pipeline.body.into_data_stream();
+        let _error = timeout(Duration::from_secs(1), upstream.next())
+            .await
+            .expect("corrupt gzip should resolve")
+            .expect("corrupt gzip should emit an upstream body error")
+            .expect_err("corrupt gzip must not produce a logical request body");
+        let mut finalization_rx = pipeline.finalization_rx.clone();
+        timeout(Duration::from_secs(1), async {
+            while !*finalization_rx.borrow() {
+                finalization_rx
+                    .changed()
+                    .await
+                    .expect("live pipeline finalization sender should remain available");
+            }
+        })
+        .await
+        .expect("corrupt gzip pipeline should finalize");
+        let request_body_error = pipeline
+            .request_body_error_rx
+            .borrow()
+            .clone()
+            .expect("corrupt gzip should be audited as a body decode failure");
+        assert_eq!(
+            request_body_error.failure_kind,
+            PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        );
+        assert!(
+            !request_body_error
+                .message
+                .contains("request body must be valid JSON")
+        );
+    }
+
+    #[tokio::test]
+    async fn responses_route_finalization_transform_reencodes_supported_content_encodings() {
         let source = br#"{"model":"gpt-5.6","input":"reencoded"}"#;
         for (encoding, target) in [
             ("gzip", RequestBodyContentEncoding::Gzip),
@@ -1553,7 +2279,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_streaming_transform_supports_existing_request_encodings() {
+    fn responses_route_finalization_transform_supports_existing_request_encodings() {
         assert_eq!(
             live_responses_target_request_content_encoding(
                 Some("gzip"),
@@ -1578,6 +2304,18 @@ mod tests {
             .expect("deflate follow")
             .as_str(),
             "deflate"
+        );
+        assert_eq!(
+            live_responses_target_request_content_encoding_with_resolved(
+                RequestBodyContentEncoding::Deflate {
+                    zlib_wrapper: false,
+                },
+                RequestCompressionAlgorithm::Follow,
+            )
+            .expect("raw deflate follow"),
+            RequestBodyContentEncoding::Deflate {
+                zlib_wrapper: false,
+            }
         );
     }
 }

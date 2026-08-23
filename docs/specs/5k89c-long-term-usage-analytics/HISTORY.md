@@ -4,6 +4,7 @@
 
 - 长期统计使用独立汇总表和独立 API，避免在现有 Stats 内容上叠加状态耦合。
 - Normal terminal finalization is projection-cursor work, not a natural-day correction. Only mutations that revise an already persisted fact enqueue a bounded exact rebuild of the affected date.
+- 已有 projection cursor 是可被 shutdown 取消的读取状态而非写入工作；初始化缺行才属于 P2 短写，且不得等待在 P1 terminal 或交互写入之前。P2 准入后但 SQLite 事务开始前抵达的高优先级写入同样使初始化让出。
 - 日汇总永久保存，小时汇总保留默认 400 天且最少 366 天；所有清理动作以日汇总 materialized 为前置条件。
 - 首次升级采用可恢复后台回填；回填未完成时只显示准备进度，避免把部分历史误报为完整结果。
 - 完整汇总可以作为保留 continuity 的下界，但不能作为部分候选的更新来源；候选必须整体过滤后才能进入 UPSERT，避免被删除出重建集合的日期从 partial map 漏写。

@@ -733,6 +733,48 @@ struct PreparedCaptureRequestBody {
     live_oauth_rewrite_rx:
         Option<watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>>,
     live_first_experiment_group: Option<String>,
+    live_route_finalization_measurement: Option<LiveRequestStreamingMeasurement>,
+}
+
+async fn wait_for_live_request_body_finalization(finalization_rx: &mut watch::Receiver<bool>) {
+    if *finalization_rx.borrow() {
+        return;
+    }
+    let _ = finalization_rx.changed().await;
+}
+
+async fn reject_live_first_provisional_response_after_body_failure(
+    state: &AppState,
+    response: &mut PoolUpstreamResponse,
+    request_body_error: &RequestBodyReadError,
+) {
+    let upstream_status = response.response.status();
+    let upstream_request_id = response
+        .response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    finalize_tracked_pool_attempt(
+        state,
+        response.pending_attempt_record.as_ref(),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+        Some(upstream_status),
+        Some(request_body_error.status),
+        Some(request_body_error.failure_kind),
+        None,
+        Some(request_body_error.message.as_str()),
+        Some(response.connect_latency_ms),
+        Some(response.first_byte_latency_ms),
+        None,
+        upstream_request_id,
+        "live-first request body failed after provisional response",
+    )
+    .await;
+    complete_deferred_pool_early_phase_cleanup_guard(
+        &mut response.deferred_early_phase_cleanup_guard,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -748,13 +790,11 @@ async fn prepare_capture_request_body(
     body_limit: usize,
     runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
     requester_ip: Option<&str>,
-    header_sticky_key_present: bool,
-    header_prompt_cache_key_present: bool,
+    header_sticky_key: Option<&str>,
+    header_prompt_cache_key: Option<&str>,
     req_read_started: Instant,
 ) -> PreparedCaptureRequestBody {
-    let live_eligible = capture_target == ProxyCaptureTarget::Responses
-        && !header_sticky_key_present
-        && !header_prompt_cache_key_present;
+    let live_eligible = capture_target == ProxyCaptureTarget::Responses;
 
     if !live_eligible {
         return PreparedCaptureRequestBody {
@@ -771,13 +811,18 @@ async fn prepare_capture_request_body(
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
             live_first_experiment_group: None,
+            live_route_finalization_measurement: None,
         };
     }
 
-    let live_routing_settings = load_pool_routing_settings(&state.pool).await.ok();
-    let live_settings = live_routing_settings
+    let live_routing_snapshot = load_pool_routing_runtime_cache_with_status(state.as_ref())
+        .await
+        .ok();
+    let live_routing_hot_cache_hit = live_routing_snapshot.as_ref().map(|(_, hit)| *hit);
+    let live_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
+    let live_settings = live_routing_snapshot
         .as_ref()
-        .map(resolve_live_request_streaming_settings);
+        .map(|(snapshot, _)| snapshot.live_request_streaming.clone());
     let Some(live_settings) = live_settings.filter(|settings| settings.enabled) else {
         return PreparedCaptureRequestBody {
             request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
@@ -793,8 +838,39 @@ async fn prepare_capture_request_body(
             live_first_request_body_first_byte_at: None,
             live_oauth_rewrite_rx: None,
             live_first_experiment_group: None,
+            live_route_finalization_measurement: None,
         };
     };
+
+    // Cohort assignment is independent of request contents. Decide it before
+    // attaching the new parser so the buffered control remains the existing
+    // request path; only treatment pays for route-finalization analysis.
+    let sampled_live_decision =
+        decide_live_request_streaming(&live_settings, invoke_id, capture_target, true, true);
+    if sampled_live_decision.variant != Some(LiveRequestStreamingExperimentVariant::Treatment) {
+        return PreparedCaptureRequestBody {
+            request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
+                body,
+                body_limit,
+                runtime_timeouts.request_read_timeout,
+                proxy_request_id,
+            )
+            .await,
+            live_first_pool_response: None,
+            prepared_live_request_streaming_decision: Some(sampled_live_decision),
+            live_first_attempt_failed: false,
+            live_first_request_body_first_byte_at: None,
+            live_oauth_rewrite_rx: None,
+            live_first_experiment_group: None,
+            live_route_finalization_measurement: None,
+        };
+    }
+
+    let encrypted_owner_routing_enabled = state
+        .proxy_model_settings
+        .read()
+        .await
+        .encrypted_session_owner_routing_enabled;
 
     let replayable_body = spawn_pool_replayable_request_body(
         body,
@@ -815,6 +891,11 @@ async fn prepare_capture_request_body(
         .expect("live pipeline is present before the first attempt")
         .request_body_error_rx
         .clone();
+    let mut live_request_body_finalization_rx = live_pipeline
+        .as_ref()
+        .expect("live pipeline is present before the first attempt")
+        .finalization_rx
+        .clone();
     let live_oauth_rewrite_rx = live_pipeline
         .as_ref()
         .expect("live pipeline is present before routing")
@@ -830,41 +911,125 @@ async fn prepare_capture_request_body(
         runtime_timeouts.request_read_timeout,
     )
     .await;
+    let live_resolved_content_encoding = live_pipeline
+        .as_ref()
+        .and_then(|pipeline| *pipeline.resolved_request_content_encoding_rx.borrow());
+    let live_route_finalization_ms = elapsed_ms(req_read_started);
     let response_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &Method::POST);
-    let live_candidate = live_body_key_probe.model.is_some()
-        && live_body_key_probe.sticky_key.is_none()
-        && live_body_key_probe.prompt_cache_key.is_none()
-        && !live_body_key_probe.contains_encrypted_content;
+    let live_body_sticky_key = live_body_key_probe
+        .sticky_key
+        .clone()
+        .or_else(|| header_sticky_key.map(str::to_string));
+    let live_prompt_cache_key = live_body_key_probe
+        .prompt_cache_key
+        .clone()
+        .or_else(|| header_prompt_cache_key.map(str::to_string));
+    let live_candidate = live_body_key_probe.model.is_some();
     let mut live_first_pool_response = None;
     let mut prepared_live_request_streaming_decision = None;
     let mut live_first_attempt_failed = false;
     let mut live_first_request_body_first_byte_at = None;
     let mut live_first_experiment_group = None;
+    let mut live_route_lookup_cache_hit = live_routing_hot_cache_hit;
 
-    if live_candidate {
+    if live_body_key_probe.root_object_complete
+        || !live_route_probe_can_start_before_eof(&live_body_key_probe)
+    {
+        // An EOF-complete probe has no overlap left to provide. Keep it on the
+        // established replay path so buffered requests retain the existing
+        // failover and retry semantics. A future pre-EOF probe may still take
+        // the live-first branch when its route is proven safe.
+        prepared_live_request_streaming_decision = Some(LiveRequestStreamingDecision {
+            transport_mode: RequestBodyTransportMode::Buffered,
+            eligible: false,
+            reason: "route_finalized_at_eof",
+            ..decide_live_request_streaming(&live_settings, invoke_id, capture_target, true, true)
+        });
+        drop(live_pipeline.take());
+    } else if live_candidate {
         let mut no_available_wait_deadline = None;
-        let resolution =
-            resolve_pool_account_for_request_with_wait_and_image_intent_and_codex_imagegen_request(
-                state.as_ref(),
-                None,
-                live_body_key_probe.model.as_deref(),
-                &[],
-                &HashSet::new(),
-                None,
-                true,
-                &mut no_available_wait_deadline,
-                None,
-                capture_target.endpoint(),
-                live_body_key_probe.image_intent,
-                codex_imagegen_protocol_from_headers(headers).is_some(),
-            )
-            .await;
+        let resolution = match load_via_pool_effective_routing_with_cache(
+            state.as_ref(),
+            live_prompt_cache_key.as_deref(),
+            live_body_key_probe.contains_encrypted_content,
+        )
+        .await
+        {
+            Ok((
+                prompt_cache_binding_constraint,
+                _owner_auto_guard_active,
+                conversation_override,
+                cache_hit,
+            )) => {
+                live_route_lookup_cache_hit = Some(cache_hit);
+                if prompt_cache_binding_constraint.is_some() || conversation_override.is_some() {
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        live_body_key_probe.model.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        prompt_cache_binding_constraint.as_ref(),
+                        conversation_override.as_ref(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        None,
+                        capture_target.endpoint(),
+                        live_body_key_probe.image_intent,
+                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                        Some(live_routing_reservation_key.as_str()),
+                    )
+                    .await
+                } else {
+                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+                        state.as_ref(),
+                        live_body_sticky_key.as_deref(),
+                        live_body_key_probe.model.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        None,
+                        None,
+                        None,
+                        true,
+                        &mut no_available_wait_deadline,
+                        None,
+                        capture_target.endpoint(),
+                        live_body_key_probe.image_intent,
+                        codex_imagegen_protocol_from_headers(headers).is_some(),
+                        Some(live_routing_reservation_key.as_str()),
+                    )
+                    .await
+                }
+            }
+            Err((status, message)) => {
+                warn!(
+                    proxy_request_id,
+                    ?status,
+                    %message,
+                    "live-first routing metadata could not be resolved; replaying buffered request"
+                );
+                drop(live_pipeline.take());
+                prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
+                    &live_settings,
+                    invoke_id,
+                    capture_target,
+                    false,
+                    false,
+                ));
+                Err(anyhow::anyhow!(message))
+            }
+        };
         if let Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
             initial_account,
         ))) = resolution
         {
             live_first_experiment_group = initial_account.group_name.clone();
+            let mut live_route_reservation_guard = Some(PoolRoutingReservationDropGuard::new(
+                state.clone(),
+                live_routing_reservation_key.clone(),
+            ));
             let decision = decide_live_request_streaming(
                 &live_settings,
                 invoke_id,
@@ -883,15 +1048,24 @@ async fn prepare_capture_request_body(
                     invoke_id: invoke_id.to_string(),
                     occurred_at: occurred_at.to_string(),
                     endpoint: capture_target.endpoint().to_string(),
-                    sticky_key: None,
+                    sticky_key: live_body_sticky_key.clone(),
                     requester_ip: requester_ip.map(str::to_string),
                     upstream_base_url_host: None,
                     request_model: live_body_key_probe.model.clone(),
                 };
-                let target_encoding = live_responses_target_request_content_encoding(
-                    downstream_content_encoding.as_deref(),
-                    initial_account.request_compression_algorithm,
-                );
+                let target_encoding = live_resolved_content_encoding
+                    .map(|resolved| {
+                        live_responses_target_request_content_encoding_with_resolved(
+                            resolved,
+                            initial_account.request_compression_algorithm,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        live_responses_target_request_content_encoding(
+                            downstream_content_encoding.as_deref(),
+                            initial_account.request_compression_algorithm,
+                        )
+                    });
                 let Ok(target_encoding) = target_encoding else {
                     warn!(
                         proxy_request_id,
@@ -932,6 +1106,20 @@ async fn prepare_capture_request_body(
                         live_first_request_body_first_byte_at: None,
                         live_oauth_rewrite_rx: None,
                         live_first_experiment_group,
+                        live_route_finalization_measurement: Some(
+                            LiveRequestStreamingMeasurement {
+                                route_finalization_ms: Some(live_route_finalization_ms),
+                                route_finalization_outcome: Some("buffered_encoding"),
+                                route_dependency_factors: live_route_dependency_factors(
+                                    &live_body_key_probe,
+                                    encrypted_owner_routing_enabled,
+                                ),
+                                routing_hot_cache_hit: live_route_lookup_cache_hit,
+                                routing_hot_cache_cold_load: live_route_lookup_cache_hit
+                                    .map(|hit| !hit),
+                                ..LiveRequestStreamingMeasurement::default()
+                            },
+                        ),
                     };
                 };
                 let oauth = match &initial_account.auth {
@@ -941,10 +1129,9 @@ async fn prepare_capture_request_body(
                     }),
                     PoolResolvedAuth::ApiKey { .. } => None,
                 };
-                let compression_level = live_routing_settings
+                let compression_level = live_routing_snapshot
                     .as_ref()
-                    .and_then(|settings| settings.request_compression_level_preset.as_deref())
-                    .map(RequestCompressionLevelPreset::from_str)
+                    .map(|(snapshot, _)| snapshot.request_compression.level_preset)
                     .unwrap_or_default();
                 let model_mapping = match load_model_mapping_for_account(
                     state.as_ref(),
@@ -1011,8 +1198,8 @@ async fn prepare_capture_request_body(
                         original_uri,
                         &live_headers,
                         pipeline.body,
-                        None,
-                        None,
+                        live_prompt_cache_key.as_deref(),
+                        live_body_sticky_key.as_deref(),
                         live_body_key_probe.image_intent,
                         proxy_upstream_send_timeout_for_capture_target(
                             runtime_timeouts,
@@ -1020,23 +1207,56 @@ async fn prepare_capture_request_body(
                         ),
                         response_timeout,
                         response_timeout.map(|_| req_read_started),
-                        None,
+                        live_body_sticky_key.as_deref(),
                         initial_account,
                         model_mapping,
                         Some(&trace_context),
+                        live_route_reservation_guard.take(),
                         &replay_status_rx,
                         &first_upstream_body_poll_at_rx,
                         Some(original_request_stream_rx),
                     )
                     .await
                     {
-                        Ok(response) => {
-                            live_first_request_body_first_byte_at =
-                                response.live_request_body_first_byte_at;
-                            live_first_pool_response = Some(response);
+                        Ok(mut response) => {
+                            // An upstream is allowed to respond before it has
+                            // consumed the complete HTTP request body. Do not
+                            // accept that provisional response until the local
+                            // parser confirms that no later JSON field changed
+                            // the selected route.
+                            wait_for_live_request_body_finalization(
+                                &mut live_request_body_finalization_rx,
+                            )
+                            .await;
+                            let request_body_error =
+                                { live_request_body_error_rx.borrow().clone() };
+                            if let Some(request_body_error) = request_body_error {
+                                live_first_attempt_failed = true;
+                                live_first_request_body_first_byte_at =
+                                    live_first_request_body_first_byte_at
+                                        .or_else(|| *first_upstream_body_poll_at_rx.borrow());
+                                warn!(
+                                    proxy_request_id,
+                                    status = %request_body_error.status,
+                                    failure_kind = request_body_error.failure_kind,
+                                    "live-first request body validation cancelled a provisional upstream response"
+                                );
+                                reject_live_first_provisional_response_after_body_failure(
+                                    state.as_ref(),
+                                    &mut response,
+                                    &request_body_error,
+                                )
+                                .await;
+                            } else {
+                                live_first_request_body_first_byte_at =
+                                    response.live_request_body_first_byte_at;
+                                live_first_pool_response = Some(response);
+                            }
                         }
                         Err(error) => {
                             live_first_attempt_failed = true;
+                            live_first_request_body_first_byte_at =
+                                *first_upstream_body_poll_at_rx.borrow();
                             warn!(
                                 proxy_request_id,
                                 error = %error.message,
@@ -1052,45 +1272,154 @@ async fn prepare_capture_request_body(
             drop(live_pipeline.take());
         }
     } else {
+        prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
+            &live_settings,
+            invoke_id,
+            capture_target,
+            false,
+            false,
+        ));
         drop(live_pipeline.take());
     }
 
     drop(live_pipeline);
 
-    PreparedCaptureRequestBody {
-        request_body_snapshot_result: {
-            let snapshot_result = wait_for_replay_body_snapshot(
-                state.as_ref(),
-                original_uri,
-                &Method::POST,
-                &replay_status_rx,
-                &replay_cancel,
-                runtime_timeouts.request_read_timeout,
-                response_timeout.map(|_| req_read_started),
-            )
-            .await
-            .map_err(|(status, message)| RequestBodyReadError {
-                status,
-                message,
-                failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
-                    PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
-                } else {
-                    PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
-                },
-                partial_body: Vec::new(),
-            });
-            live_request_body_error_rx
+    let request_body_snapshot_result = {
+        let snapshot_result = wait_for_replay_body_snapshot(
+            state.as_ref(),
+            original_uri,
+            &Method::POST,
+            &replay_status_rx,
+            &replay_cancel,
+            runtime_timeouts.request_read_timeout,
+            response_timeout.map(|_| req_read_started),
+        )
+        .await
+        .map_err(|(status, message)| RequestBodyReadError {
+            status,
+            message,
+            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
+                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
+            } else {
+                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+            },
+            partial_body: Vec::new(),
+        });
+        if snapshot_result.is_ok() || live_first_pool_response.is_some() {
+            wait_for_live_request_body_finalization(&mut live_request_body_finalization_rx).await;
+        }
+        match snapshot_result {
+            Err(error) => Err(error),
+            Ok(snapshot) => live_request_body_error_rx
                 .borrow()
                 .clone()
-                .map_or(snapshot_result, Err)
-        },
+                .map_or(Ok(snapshot), Err),
+        }
+    };
+    if let Err(request_body_error) = &request_body_snapshot_result
+        && let Some(mut response) = live_first_pool_response.take()
+    {
+        live_first_attempt_failed = true;
+        live_first_request_body_first_byte_at =
+            live_first_request_body_first_byte_at.or(response.live_request_body_first_byte_at);
+        warn!(
+            proxy_request_id,
+            status = %request_body_error.status,
+            failure_kind = request_body_error.failure_kind,
+            "live-first request body failure cancelled a provisional upstream response"
+        );
+        reject_live_first_provisional_response_after_body_failure(
+            state.as_ref(),
+            &mut response,
+            request_body_error,
+        )
+        .await;
+    }
+
+    let route_finalization_outcome = if live_body_key_probe.root_object_complete && live_candidate {
+        "buffered_eof_final_route"
+    } else {
+        match prepared_live_request_streaming_decision
+            .as_ref()
+            .map(|decision| decision.transport_mode)
+        {
+            Some(RequestBodyTransportMode::LiveFirst) => "live_first_model_ready",
+            _ if live_candidate => "buffered_eof_final_route",
+            _ => "buffered_no_model",
+        }
+    };
+
+    PreparedCaptureRequestBody {
+        request_body_snapshot_result,
         live_first_pool_response,
         prepared_live_request_streaming_decision,
         live_first_attempt_failed,
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
         live_first_experiment_group,
+        live_route_finalization_measurement: Some(LiveRequestStreamingMeasurement {
+            route_finalization_ms: Some(live_route_finalization_ms),
+            route_finalization_outcome: Some(route_finalization_outcome),
+            route_dependency_factors: live_route_dependency_factors(
+                &live_body_key_probe,
+                encrypted_owner_routing_enabled,
+            ),
+            routing_hot_cache_hit: live_route_lookup_cache_hit,
+            routing_hot_cache_cold_load: live_route_lookup_cache_hit.map(|hit| !hit),
+            ..LiveRequestStreamingMeasurement::default()
+        }),
     }
+}
+
+fn live_route_dependency_factors(
+    probe: &PoolReplayBodyKeyProbe,
+    encrypted_owner_routing_enabled: bool,
+) -> Vec<&'static str> {
+    let mut factors = vec!["model"];
+    if probe.sticky_key.is_some() {
+        factors.push("sticky");
+    }
+    if probe.prompt_cache_key.is_some() {
+        factors.push("prompt_cache");
+    }
+    if encrypted_owner_routing_enabled && probe.contains_encrypted_content {
+        factors.push("encrypted_owner");
+    }
+    if matches!(
+        probe.image_intent,
+        ImageIntent::Yes | ImageIntent::DirectImage
+    ) {
+        factors.push("image_capability");
+    }
+    factors
+}
+
+fn normalize_live_request_streaming_decision_for_measurement(
+    decision: Option<&LiveRequestStreamingDecision>,
+    route_measurement: Option<&LiveRequestStreamingMeasurement>,
+) -> Option<LiveRequestStreamingDecision> {
+    let decision = decision?;
+    let route_finalized_at_eof = route_measurement.is_some_and(|measurement| {
+        measurement.route_finalization_outcome == Some("buffered_eof_final_route")
+    });
+    if route_finalized_at_eof {
+        Some(LiveRequestStreamingDecision {
+            transport_mode: RequestBodyTransportMode::Buffered,
+            eligible: false,
+            reason: "route_finalized_at_eof",
+            ..decision.clone()
+        })
+    } else {
+        Some(decision.clone())
+    }
+}
+
+/// A live probe is safe to commit once the model is known and image routing is
+/// not positively required. The pipeline separately records whether that
+/// probe was finalized at EOF; EOF-finalized samples remain buffered for
+/// measurement even though the established route/failover path is reused.
+fn live_route_probe_can_start_before_eof(probe: &PoolReplayBodyKeyProbe) -> bool {
+    probe.model.is_some() && probe.image_intent != ImageIntent::Yes
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1186,6 +1515,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         live_first_request_body_first_byte_at,
         live_oauth_rewrite_rx,
         live_first_experiment_group,
+        mut live_route_finalization_measurement,
     } = Box::pin(prepare_capture_request_body(
         state.clone(),
         proxy_request_id,
@@ -1198,8 +1528,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         body_limit,
         &runtime_timeouts,
         requester_ip.as_deref(),
-        header_sticky_key.is_some(),
-        header_prompt_cache_key.is_some(),
+        header_sticky_key.as_deref(),
+        header_prompt_cache_key.as_deref(),
         req_read_started,
     ))
     .await;
@@ -1230,8 +1560,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
-            let capture_failure_decision = prepared_live_request_streaming_decision
-                .clone()
+            let capture_failure_decision =
+                normalize_live_request_streaming_decision_for_measurement(
+                    prepared_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
+                )
                 .unwrap_or_else(|| {
                     LiveRequestStreamingDecision::buffered("request_body_capture_failed")
                 });
@@ -1353,7 +1686,11 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     }),
                     &capture_failure_decision,
                     &LiveRequestStreamingMeasurement {
+                        first_attempt_failed: live_first_attempt_failed,
+                        fallback_or_retry: false,
                         capture_failed: true,
+                        ambiguous_upstream_delivery: live_first_attempt_failed
+                            && live_first_request_body_first_byte_at.is_some(),
                         experiment_account_group: live_first_experiment_group.clone(),
                         ..LiveRequestStreamingMeasurement::default()
                     },
@@ -1389,8 +1726,39 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
+    let persisted_live_request_streaming_decision =
+        normalize_live_request_streaming_decision_for_measurement(
+            prepared_live_request_streaming_decision.as_ref(),
+            live_route_finalization_measurement.as_ref(),
+        );
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
+    let logical_request_body_bytes = if live_route_finalization_measurement.is_some() {
+        pool_request_snapshot_logical_body_bytes(
+            &request_body_snapshot,
+            headers
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await
+        .ok()
+    } else {
+        None
+    };
+    if let Some(route_measurement) = live_route_finalization_measurement.as_mut() {
+        route_measurement.route_finalization_raw_bytes = Some(request_body_bytes_len);
+        route_measurement.route_finalization_logical_bytes = logical_request_body_bytes;
+        route_measurement.route_finalization_raw_ratio = Some(1.0);
+        route_measurement.route_finalization_logical_ratio =
+            logical_request_body_bytes.map(|_| 1.0);
+    }
+    let live_first_eligible = persisted_live_request_streaming_decision
+        .as_ref()
+        .is_some_and(|decision| decision.eligible);
+    let live_first_reason = persisted_live_request_streaming_decision
+        .as_ref()
+        .map(|decision| decision.reason)
+        .unwrap_or("not_live_candidate");
     if capture_request_body_read_log_at_info(request_body_bytes_len, t_req_read_ms) {
         info!(
             proxy_request_id,
@@ -1399,8 +1767,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible = false,
-            live_first_reason = "capture_requires_full_request_semantics",
+            live_first_eligible,
+            live_first_reason,
             "openai proxy capture request body read completed"
         );
     } else {
@@ -1411,8 +1779,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible = false,
-            live_first_reason = "capture_requires_full_request_semantics",
+            live_first_eligible,
+            live_first_reason,
             "openai proxy capture request body read completed"
         );
     }
@@ -1523,8 +1891,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    None,
-                    None,
+                    persisted_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1575,8 +1943,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    None,
-                    None,
+                    persisted_live_request_streaming_decision.as_ref(),
+                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1649,9 +2017,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
             t_req_parse_ms,
-            live_request_streaming_decision: prepared_live_request_streaming_decision.clone(),
+            live_request_streaming_decision: persisted_live_request_streaming_decision.clone(),
             live_request_streaming_experiment_group: live_first_experiment_group.clone(),
             live_first_attempt_failed,
+            live_first_request_body_first_byte_at,
         });
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, Some(capture_target));
@@ -1816,21 +2185,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         context.live_request_streaming_decision.as_ref().map(|_| {
                             let risk = live_request_streaming_risk_flags(
                                 context.live_first_attempt_failed,
+                                context.live_first_request_body_first_byte_at.is_some(),
                                 err.attempt_summary.pool_attempt_count,
                             );
-                            LiveRequestStreamingMeasurement {
-                                first_attempt_failed: risk.first_attempt_failed,
-                                fallback_or_retry: risk.fallback_or_retry,
-                                ambiguous_upstream_delivery: risk.ambiguous_upstream_delivery,
-                                upstream_account_group: err
-                                    .account
-                                    .as_ref()
-                                    .and_then(|account| account.group_name.clone()),
-                                experiment_account_group: context
-                                    .live_request_streaming_experiment_group
-                                    .clone(),
-                                ..LiveRequestStreamingMeasurement::default()
-                            }
+                            let mut measurement = live_route_finalization_measurement
+                                .clone()
+                                .unwrap_or_default();
+                            measurement.first_attempt_failed = risk.first_attempt_failed;
+                            measurement.fallback_or_retry = risk.fallback_or_retry;
+                            measurement.ambiguous_upstream_delivery =
+                                risk.ambiguous_upstream_delivery;
+                            measurement.upstream_account_group = err
+                                .account
+                                .as_ref()
+                                .and_then(|account| account.group_name.clone());
+                            measurement.experiment_account_group =
+                                context.live_request_streaming_experiment_group.clone();
+                            measurement
                         })
                     });
                 let mut record = ProxyCaptureRecord {
@@ -2513,13 +2884,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
     let live_request_streaming_decision = if let Some(decision) =
-        prepared_live_request_streaming_decision
+        persisted_live_request_streaming_decision
     {
         decision
     } else if capture_target == ProxyCaptureTarget::Responses {
-        match load_pool_routing_settings(&state.pool).await {
-            Ok(settings) => decide_live_request_streaming(
-                &resolve_live_request_streaming_settings(&settings),
+        match load_pool_routing_runtime_cache(state.as_ref()).await {
+            Ok(snapshot) => decide_live_request_streaming(
+                &snapshot.live_request_streaming,
                 &invoke_id,
                 capture_target,
                 true,
@@ -2533,14 +2904,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     } else {
         LiveRequestStreamingDecision::buffered("endpoint_not_supported")
     };
-    let logical_request_body_bytes = pool_request_snapshot_logical_body_bytes(
-        &request_body_snapshot,
-        headers
-            .get(header::CONTENT_ENCODING)
-            .and_then(|value| value.to_str().ok()),
-    )
-    .await
-    .ok();
     let upstream_request_first_byte_ms = live_first_request_body_first_byte_at.map(|sent_at| {
         sent_at
             .saturating_duration_since(req_read_started)
@@ -2549,9 +2912,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     });
     let live_request_streaming_risk = live_request_streaming_risk_flags(
         live_first_attempt_failed,
+        live_first_request_body_first_byte_at.is_some(),
         pending_pool_attempt_summary.pool_attempt_count,
     );
-    let live_request_streaming_measurement = LiveRequestStreamingMeasurement {
+    let mut live_request_streaming_measurement = LiveRequestStreamingMeasurement {
         raw_body_bytes: Some(request_body_bytes_len),
         logical_body_bytes: logical_request_body_bytes,
         upstream_request_first_byte_ms,
@@ -2576,6 +2940,25 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         experiment_account_group: live_first_experiment_group,
         ..LiveRequestStreamingMeasurement::default()
     };
+    if let Some(route_measurement) = live_route_finalization_measurement {
+        live_request_streaming_measurement.route_finalization_ms =
+            route_measurement.route_finalization_ms;
+        live_request_streaming_measurement.route_finalization_outcome =
+            route_measurement.route_finalization_outcome;
+        live_request_streaming_measurement.route_dependency_factors =
+            route_measurement.route_dependency_factors;
+        live_request_streaming_measurement.routing_hot_cache_hit =
+            route_measurement.routing_hot_cache_hit;
+        live_request_streaming_measurement.routing_hot_cache_cold_load =
+            route_measurement.routing_hot_cache_cold_load;
+        live_request_streaming_measurement.route_finalization_raw_bytes =
+            Some(request_body_bytes_len);
+        live_request_streaming_measurement.route_finalization_logical_bytes =
+            logical_request_body_bytes;
+        live_request_streaming_measurement.route_finalization_raw_ratio = Some(1.0);
+        live_request_streaming_measurement.route_finalization_logical_ratio =
+            logical_request_body_bytes.map(|_| 1.0);
+    }
     let mut response_running_record = build_running_proxy_capture_record(
         &invoke_id,
         &occurred_at,
@@ -2764,25 +3147,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 stream_response_parser.successful_terminal_seen();
             let decoded_chunk = stream_response_decoder.ingest(&chunk);
             let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
-            if should_capture_ttft(capture_target, &request_info_for_task) && token_observed {
-                let observed_ms = chunk_received_at
-                    .saturating_duration_since(proxy_request_started_at_for_task)
-                    .as_secs_f64()
-                    * 1_000.0;
-                first_token_ms = Some(observed_ms);
-                live_request_streaming_measurement_for_task.first_token_ms = Some(
-                    chunk_received_at
-                        .saturating_duration_since(request_body_consumption_started_at_for_task)
-                        .as_secs_f64()
-                        * 1_000.0,
-                );
-                broadcast_proxy_capture_first_token_runtime_snapshot(
-                    state_for_task.as_ref(),
-                    &invoke_id_for_task,
-                    &occurred_at_for_task,
-                    observed_ms,
-                );
-            }
             let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                 && stream_response_parser.successful_terminal_seen();
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -2829,7 +3193,32 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     downstream_write_error_kind = Some("receiver_dropped");
                     let _ = proxy_request_permit_for_task.take();
                 } else {
-                    last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                    let forwarded_at = Instant::now();
+                    last_downstream_forwarded_chunk_at = Some(forwarded_at);
+                    if first_token_ms.is_none()
+                        && should_capture_ttft(capture_target, &request_info_for_task)
+                        && token_observed
+                    {
+                        let observed_ms = forwarded_at
+                            .saturating_duration_since(proxy_request_started_at_for_task)
+                            .as_secs_f64()
+                            * 1_000.0;
+                        first_token_ms = Some(observed_ms);
+                        live_request_streaming_measurement_for_task.first_token_ms = Some(
+                            forwarded_at
+                                .saturating_duration_since(
+                                    request_body_consumption_started_at_for_task,
+                                )
+                                .as_secs_f64()
+                                * 1_000.0,
+                        );
+                        broadcast_proxy_capture_first_token_runtime_snapshot(
+                            state_for_task.as_ref(),
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            observed_ms,
+                        );
+                    }
                     if !downstream_first_byte_logged {
                         downstream_first_byte_logged = true;
                         let downstream_first_byte_elapsed =
@@ -3106,19 +3495,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_response_parser.successful_terminal_seen();
                     let decoded_chunk = stream_response_decoder.ingest(&chunk);
                     let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
-                    if should_capture_ttft(capture_target, &request_info_for_task) && token_observed
-                    {
-                        let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
-                        first_token_ms = Some(observed_ms);
-                        live_request_streaming_measurement_for_task.first_token_ms =
-                            Some(elapsed_ms(request_body_consumption_started_at_for_task));
-                        broadcast_proxy_capture_first_token_runtime_snapshot(
-                            state_for_task.as_ref(),
-                            &invoke_id_for_task,
-                            &occurred_at_for_task,
-                            observed_ms,
-                        );
-                    }
                     let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                         && stream_response_parser.successful_terminal_seen();
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -3185,7 +3561,23 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             last_upstream_chunk_gap_ms = gap_before_send_ms;
                             let _ = proxy_request_permit_for_task.take();
                         } else {
-                            last_downstream_forwarded_chunk_at = Some(chunk_received_at);
+                            let forwarded_at = Instant::now();
+                            last_downstream_forwarded_chunk_at = Some(forwarded_at);
+                            if first_token_ms.is_none()
+                                && should_capture_ttft(capture_target, &request_info_for_task)
+                                && token_observed
+                            {
+                                let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
+                                first_token_ms = Some(observed_ms);
+                                live_request_streaming_measurement_for_task.first_token_ms =
+                                    Some(elapsed_ms(request_body_consumption_started_at_for_task));
+                                broadcast_proxy_capture_first_token_runtime_snapshot(
+                                    state_for_task.as_ref(),
+                                    &invoke_id_for_task,
+                                    &occurred_at_for_task,
+                                    observed_ms,
+                                );
+                            }
                             if !downstream_first_byte_logged {
                                 downstream_first_byte_logged = true;
                                 let downstream_first_byte_elapsed =
@@ -4474,6 +4866,94 @@ pub(crate) fn resolve_compaction_response_kind_for_payload(
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
+
+    #[test]
+    fn final_route_gate_allows_resolvable_binding_routes() {
+        assert!(!live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe::default()
+        ));
+        assert!(live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                sticky_key: Some("sticky".to_string()),
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                prompt_cache_key: Some("prompt".to_string()),
+                contains_encrypted_content: true,
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+        assert!(!live_route_probe_can_start_before_eof(
+            &PoolReplayBodyKeyProbe {
+                model: Some("gpt-5.6".to_string()),
+                image_intent: ImageIntent::Yes,
+                ..PoolReplayBodyKeyProbe::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn route_dependency_profile_uses_only_active_routing_factors() {
+        let mut probe = PoolReplayBodyKeyProbe {
+            sticky_key: Some("sticky".to_string()),
+            prompt_cache_key: Some("prompt".to_string()),
+            contains_encrypted_content: true,
+            image_intent: ImageIntent::Yes,
+            ..PoolReplayBodyKeyProbe::default()
+        };
+        assert_eq!(
+            live_route_dependency_factors(&probe, false),
+            vec!["model", "sticky", "prompt_cache", "image_capability"]
+        );
+        assert_eq!(
+            live_route_dependency_factors(&probe, true),
+            vec![
+                "model",
+                "sticky",
+                "prompt_cache",
+                "encrypted_owner",
+                "image_capability"
+            ]
+        );
+        probe.image_intent = ImageIntent::No;
+        assert!(!live_route_dependency_factors(&probe, true).contains(&"image_capability"));
+    }
+
+    #[test]
+    fn eof_route_measurement_normalizes_buffered_decision_reasons() {
+        let decision = LiveRequestStreamingDecision {
+            transport_mode: RequestBodyTransportMode::Buffered,
+            revision: Some(LIVE_REQUEST_STREAMING_REVISION),
+            variant: Some(LiveRequestStreamingExperimentVariant::Treatment),
+            eligible: false,
+            reason: "routing_metadata_incomplete",
+        };
+        let measurement = LiveRequestStreamingMeasurement {
+            route_finalization_outcome: Some("buffered_eof_final_route"),
+            ..LiveRequestStreamingMeasurement::default()
+        };
+        let normalized = normalize_live_request_streaming_decision_for_measurement(
+            Some(&decision),
+            Some(&measurement),
+        )
+        .expect("EOF route decision should remain present");
+        assert_eq!(
+            normalized.transport_mode,
+            RequestBodyTransportMode::Buffered
+        );
+        assert_eq!(normalized.reason, "route_finalized_at_eof");
+        assert_eq!(normalized.variant, decision.variant);
+    }
 
     #[tokio::test]
     async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {

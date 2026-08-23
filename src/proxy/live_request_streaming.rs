@@ -2,7 +2,7 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
-pub(crate) const LIVE_REQUEST_STREAMING_REVISION: &str = "responses-live-request-body-v1";
+pub(crate) const LIVE_REQUEST_STREAMING_REVISION: &str = "responses-live-request-body-v2";
 pub(crate) const LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES: i64 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,10 @@ impl LiveRequestStreamingDecision {
             eligible: false,
             reason,
         }
+    }
+
+    pub(crate) fn collects_metrics(&self) -> bool {
+        self.revision == Some(LIVE_REQUEST_STREAMING_REVISION) && self.variant.is_some()
     }
 }
 
@@ -133,6 +137,15 @@ pub(crate) struct LiveRequestStreamingMeasurement {
     pub(crate) request_upstream_overlap_ms: Option<f64>,
     pub(crate) first_response_byte_total_ms: Option<f64>,
     pub(crate) first_token_ms: Option<f64>,
+    pub(crate) route_finalization_raw_bytes: Option<usize>,
+    pub(crate) route_finalization_logical_bytes: Option<usize>,
+    pub(crate) route_finalization_raw_ratio: Option<f64>,
+    pub(crate) route_finalization_logical_ratio: Option<f64>,
+    pub(crate) route_finalization_ms: Option<f64>,
+    pub(crate) route_finalization_outcome: Option<&'static str>,
+    pub(crate) route_dependency_factors: Vec<&'static str>,
+    pub(crate) routing_hot_cache_hit: Option<bool>,
+    pub(crate) routing_hot_cache_cold_load: Option<bool>,
     pub(crate) first_attempt_failed: bool,
     pub(crate) fallback_or_retry: bool,
     pub(crate) capture_failed: bool,
@@ -150,13 +163,14 @@ pub(crate) struct LiveRequestStreamingRiskFlags {
 
 pub(crate) fn live_request_streaming_risk_flags(
     live_first_attempt_failed: bool,
+    upstream_body_started: bool,
     pool_attempt_count: usize,
 ) -> LiveRequestStreamingRiskFlags {
     let pool_retry = pool_attempt_count > 1;
     LiveRequestStreamingRiskFlags {
         first_attempt_failed: live_first_attempt_failed || pool_retry,
         fallback_or_retry: live_first_attempt_failed || pool_retry,
-        ambiguous_upstream_delivery: live_first_attempt_failed,
+        ambiguous_upstream_delivery: live_first_attempt_failed && upstream_body_started,
     }
 }
 
@@ -206,7 +220,7 @@ mod tests {
     #[test]
     fn live_first_risk_flags_keep_control_retry_separate_from_ambiguous_delivery() {
         assert_eq!(
-            live_request_streaming_risk_flags(false, 2),
+            live_request_streaming_risk_flags(false, false, 2),
             LiveRequestStreamingRiskFlags {
                 first_attempt_failed: true,
                 fallback_or_retry: true,
@@ -214,13 +228,14 @@ mod tests {
             }
         );
         assert_eq!(
-            live_request_streaming_risk_flags(true, 1),
+            live_request_streaming_risk_flags(true, true, 1),
             LiveRequestStreamingRiskFlags {
                 first_attempt_failed: true,
                 fallback_or_retry: true,
                 ambiguous_upstream_delivery: true,
             }
         );
+        assert!(!live_request_streaming_risk_flags(true, false, 1).ambiguous_upstream_delivery);
     }
 
     #[test]

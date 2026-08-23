@@ -1512,6 +1512,9 @@ pub(crate) async fn create_api_key_account_inner(
         .account_ops
         .run_post_create_sync(state.clone(), inserted_id)
         .await;
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
     publish_new_account_routing_availability_if_selectable(state.as_ref(), inserted_id).await;
     let detail = detail.map_err(request_runtime_error_tuple)?;
     Ok(detail)

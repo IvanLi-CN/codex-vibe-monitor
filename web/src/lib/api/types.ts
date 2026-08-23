@@ -131,6 +131,8 @@ export type {
   LiveRequestStreamingCohortStats,
   LiveRequestStreamingPercentiles,
   LiveRequestStreamingPerf,
+  LiveRequestStreamingRouteFinalizationStats,
+  LiveRequestStreamingValuePercentiles,
   LocalLimitSnapshot,
   LoginSessionStatusResponse,
   ModelMapping,

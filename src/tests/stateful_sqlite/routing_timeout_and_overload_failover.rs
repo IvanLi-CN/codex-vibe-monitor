@@ -171,17 +171,17 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
 }
 
 #[test]
-fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason() {
+fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason()
+{
     run_timeout_failover_test_with_large_stack(
-        capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason_case(),
+        capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason_case(),
     );
 }
 
-async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason_case()
+async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason_case()
  {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
-        upstream_route_key: Option<String>,
         attempt_index: i64,
         distinct_account_index: i64,
         same_account_retry_index: i64,
@@ -277,12 +277,11 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT
-            upstream_route_key,
             attempt_index,
             distinct_account_index,
             same_account_retry_index,
@@ -294,32 +293,17 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load timeout replay no-alternate rows");
-    assert_eq!(attempt_rows.len(), 2);
+    .expect("load timeout final-route-gate no-alternate rows");
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
-    assert_eq!(attempt_rows[1].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
-    assert_eq!(attempt_rows[1].distinct_account_index, 1);
-    assert_eq!(attempt_rows[0].same_account_retry_index, 0);
-    assert_eq!(attempt_rows[1].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert_eq!(
-        attempt_rows[0].upstream_route_key,
-        attempt_rows[1].upstream_route_key,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
     );
     assert_eq!(
         attempt_rows[0].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-    );
-    assert_eq!(
-        attempt_rows[1].failure_kind.as_deref(),
         Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
     );
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
@@ -332,27 +316,45 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load timeout replay no-alternate payload");
+    .expect("load timeout final-route-gate no-alternate payload");
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("timeout replay no-alternate payload should be present"),
+            .expect("timeout final-route-gate no-alternate payload should be present"),
     )
-    .expect("decode timeout replay no-alternate payload");
+    .expect("decode timeout final-route-gate no-alternate payload");
     assert!(row.error_message.as_deref().is_some_and(|msg| {
         msg.contains("no alternate upstream route is available after timeout")
     }));
+    // The final route is buffered at EOF, so this terminal path has no
+    // provisional live-first attempt to replay.
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
-    assert_eq!(payload["requestBodyTransportMode"], "live_first");
+    assert_eq!(payload["requestBodyTransportMode"], "buffered");
+    assert_eq!(
+        payload["routeFinalizationOutcome"],
+        "buffered_eof_final_route"
+    );
+    assert!(
+        payload["routeFinalizationRawBytes"]
+            .as_i64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(payload["routeFinalizationRawRatio"], 1.0);
+    assert!(
+        payload["routeFinalizationLogicalBytes"]
+            .as_i64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(payload["routeFinalizationLogicalRatio"], 1.0);
     assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
-    assert_eq!(payload["liveFirstAttemptFailed"], true);
-    assert_eq!(payload["liveFirstFallbackOrRetry"], true);
-    assert_eq!(payload["ambiguousUpstreamDelivery"], true);
+    assert_eq!(payload["liveFirstAttemptFailed"], false);
+    assert_eq!(payload["liveFirstFallbackOrRetry"], false);
+    assert_eq!(payload["ambiguousUpstreamDelivery"], false);
     assert!(payload["upstreamErrorMessage"].is_null());
 
     shared_upstream_handle.abort();

@@ -3070,6 +3070,9 @@ pub(crate) fn with_live_request_streaming_payload_summary(
     decision: &LiveRequestStreamingDecision,
     measurement: &LiveRequestStreamingMeasurement,
 ) -> String {
+    if !decision.collects_metrics() {
+        return payload;
+    }
     let Ok(mut value) = serde_json::from_str::<Value>(&payload) else {
         return payload;
     };
@@ -3133,6 +3136,62 @@ pub(crate) fn with_live_request_streaming_payload_summary(
         measurement.first_response_byte_total_ms,
     );
     insert_payload_optional_f64(object, "firstTokenTotalMs", measurement.first_token_ms);
+    if decision.variant == Some(LiveRequestStreamingExperimentVariant::Treatment) {
+        insert_payload_optional_usize(
+            object,
+            "routeFinalizationRawBytes",
+            measurement.route_finalization_raw_bytes,
+        );
+        insert_payload_optional_usize(
+            object,
+            "routeFinalizationLogicalBytes",
+            measurement.route_finalization_logical_bytes,
+        );
+        insert_payload_optional_f64(
+            object,
+            "routeFinalizationRawRatio",
+            measurement.route_finalization_raw_ratio,
+        );
+        insert_payload_optional_f64(
+            object,
+            "routeFinalizationLogicalRatio",
+            measurement.route_finalization_logical_ratio,
+        );
+        insert_payload_optional_f64(
+            object,
+            "routeFinalizationMs",
+            measurement.route_finalization_ms,
+        );
+        insert_payload_optional_text(
+            object,
+            "routeFinalizationOutcome",
+            measurement.route_finalization_outcome,
+        );
+        object.insert(
+            "routeDependencyFactors".to_string(),
+            Value::Array(
+                measurement
+                    .route_dependency_factors
+                    .iter()
+                    .map(|factor| Value::String((*factor).to_string()))
+                    .collect(),
+            ),
+        );
+        object.insert(
+            "routingHotCacheHit".to_string(),
+            measurement
+                .routing_hot_cache_hit
+                .map(Value::Bool)
+                .unwrap_or(Value::Null),
+        );
+        object.insert(
+            "routingHotCacheColdLoad".to_string(),
+            measurement
+                .routing_hot_cache_cold_load
+                .map(Value::Bool)
+                .unwrap_or(Value::Null),
+        );
+    }
     object.insert(
         "liveFirstAttemptFailed".to_string(),
         Value::Bool(measurement.first_attempt_failed),
@@ -3150,6 +3209,72 @@ pub(crate) fn with_live_request_streaming_payload_summary(
         Value::Bool(measurement.ambiguous_upstream_delivery),
     );
     serde_json::to_string(&value).unwrap_or(payload)
+}
+
+#[cfg(test)]
+mod live_request_streaming_payload_tests {
+    use super::*;
+
+    fn settings(treatment_percent: u8) -> LiveRequestStreamingSettings {
+        LiveRequestStreamingSettings {
+            enabled: true,
+            treatment_percent,
+        }
+    }
+
+    #[test]
+    fn live_first_metrics_payload_records_route_location_only_for_v2_treatment() {
+        let measurement = LiveRequestStreamingMeasurement {
+            route_finalization_raw_bytes: Some(128),
+            route_finalization_logical_bytes: Some(96),
+            route_finalization_raw_ratio: Some(1.0),
+            route_finalization_logical_ratio: Some(1.0),
+            route_finalization_outcome: Some("buffered_eof_final_route"),
+            route_dependency_factors: vec!["model", "sticky"],
+            routing_hot_cache_hit: Some(true),
+            routing_hot_cache_cold_load: Some(false),
+            ..LiveRequestStreamingMeasurement::default()
+        };
+        let payload = r#"{"endpoint":"/v1/responses"}"#.to_string();
+        let treatment = decide_live_request_streaming(
+            &settings(100),
+            "payload-treatment",
+            ProxyCaptureTarget::Responses,
+            true,
+            true,
+        );
+        let control = decide_live_request_streaming(
+            &settings(0),
+            "payload-control",
+            ProxyCaptureTarget::Responses,
+            true,
+            true,
+        );
+
+        let treatment_payload = serde_json::from_str::<Value>(
+            &with_live_request_streaming_payload_summary(payload.clone(), &treatment, &measurement),
+        )
+        .expect("treatment payload json");
+        assert_eq!(
+            treatment_payload
+                .get("routeFinalizationRawBytes")
+                .and_then(Value::as_u64),
+            Some(128)
+        );
+        assert_eq!(
+            treatment_payload
+                .get("routeFinalizationOutcome")
+                .and_then(Value::as_str),
+            Some("buffered_eof_final_route")
+        );
+
+        let control_payload = serde_json::from_str::<Value>(
+            &with_live_request_streaming_payload_summary(payload, &control, &measurement),
+        )
+        .expect("control payload json");
+        assert!(control_payload.get("routeFinalizationRawBytes").is_none());
+        assert!(control_payload.get("routeFinalizationOutcome").is_none());
+    }
 }
 
 fn insert_payload_optional_text(

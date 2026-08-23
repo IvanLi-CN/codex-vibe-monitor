@@ -831,6 +831,7 @@ pub(crate) fn classify_invocation_failure_with_kind(
         // Upstream rate limiting is retryable and should be surfaced as service-impacting.
         FailureClass::ServiceFailure
     } else if failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
+        || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_INVALID_JSON
         || err_lower.contains("invalid api key format")
         || err_lower.contains("api key format is invalid")
         || err_lower.contains("incorrect api key provided")
@@ -2037,7 +2038,8 @@ async fn query_live_request_streaming_perf(
         .live_first_revision
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .unwrap_or(LIVE_REQUEST_STREAMING_REVISION);
     let requested_cohort = params
         .cohort
         .as_deref()
@@ -2047,6 +2049,7 @@ async fn query_live_request_streaming_perf(
     let mut measured_invocation_count = 0_i64;
     let mut by_cohort =
         std::collections::BTreeMap::<String, LiveRequestStreamingCohortAccumulator>::new();
+    let mut route_finalization = LiveRequestStreamingRouteFinalizationAccumulator::default();
 
     for row in rows {
         let Some(payload) = row
@@ -2076,14 +2079,6 @@ async fn query_live_request_streaming_perf(
         }) {
             continue;
         }
-        if requested_revision.is_some_and(|revision| {
-            payload
-                .get("liveFirstRevision")
-                .and_then(serde_json::Value::as_str)
-                != Some(revision)
-        }) {
-            continue;
-        }
         let cohort = payload
             .get("liveFirstExperimentVariant")
             .and_then(serde_json::Value::as_str)
@@ -2091,7 +2086,18 @@ async fn query_live_request_streaming_perf(
         if requested_cohort.is_some_and(|requested| requested != cohort) {
             continue;
         }
+        // Coverage answers how much of the selected /v1/responses traffic has
+        // a usable measurement. Revision filtering happens below so v1 and
+        // historical records remain visible in the denominator as unknown,
+        // never as buffered control samples.
         response_invocation_count += 1;
+        if payload
+            .get("liveFirstRevision")
+            .and_then(serde_json::Value::as_str)
+            != Some(requested_revision)
+        {
+            continue;
+        }
         let transport_mode = payload
             .get("requestBodyTransportMode")
             .and_then(serde_json::Value::as_str)
@@ -2107,6 +2113,7 @@ async fn query_live_request_streaming_perf(
         entry.capture_failure_count += i64::from(payload_bool(&payload, "liveFirstCaptureFailed"));
         entry.ambiguous_upstream_delivery_count +=
             i64::from(payload_bool(&payload, "ambiguousUpstreamDelivery"));
+        route_finalization.observe(&payload);
         if row.status.as_deref() != Some("success") || row.failure_kind.is_some() {
             continue;
         }
@@ -2131,13 +2138,25 @@ async fn query_live_request_streaming_perf(
                 .split_once(':')
                 .map(|(cohort, mode)| (cohort.to_string(), mode.to_string()))
                 .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+            let first_response_byte_sample_count =
+                i64::try_from(entry.first_response_byte_total_ms.len()).unwrap_or(i64::MAX);
+            let first_token_sample_count =
+                i64::try_from(entry.first_token_ms.len()).unwrap_or(i64::MAX);
+            let request_upstream_overlap_sample_count =
+                i64::try_from(entry.request_upstream_overlap_ms.len()).unwrap_or(i64::MAX);
             LiveRequestStreamingCohortStats {
                 cohort,
                 transport_mode,
                 success_sample_count: entry.success_sample_count,
                 invocation_count: entry.invocation_count,
-                sufficient_samples: entry.success_sample_count
-                    >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+                sufficient_samples: first_response_byte_sample_count
+                    >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+                    && first_token_sample_count >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES
+                    && request_upstream_overlap_sample_count
+                        >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+                first_response_byte_sample_count,
+                first_token_sample_count,
+                request_upstream_overlap_sample_count,
                 first_response_byte_total_ms: live_request_streaming_percentiles(
                     &mut entry.first_response_byte_total_ms,
                 ),
@@ -2170,6 +2189,7 @@ async fn query_live_request_streaming_perf(
         measured_invocation_count,
         response_invocation_count,
         cohorts,
+        route_finalization: route_finalization.into_response(),
     })
 }
 
@@ -2201,6 +2221,128 @@ fn live_request_streaming_percentiles(
         p50_ms: percentile_sorted_f64(values, 0.50),
         p90_ms: percentile_sorted_f64(values, 0.90),
         p99_ms: percentile_sorted_f64(values, 0.99),
+    })
+}
+
+#[derive(Debug, Default)]
+struct LiveRequestStreamingRouteFinalizationAccumulator {
+    sample_count: i64,
+    raw_bytes: Vec<f64>,
+    logical_bytes: Vec<f64>,
+    raw_ratio: Vec<f64>,
+    logical_ratio: Vec<f64>,
+    finalization_ms: Vec<f64>,
+    eof_finalized_count: i64,
+    conservative_buffered_count: i64,
+    dependency_factor_counts: std::collections::BTreeMap<String, i64>,
+    hot_cache_hit_count: i64,
+    hot_cache_sample_count: i64,
+    cold_load_count: i64,
+    cold_load_sample_count: i64,
+}
+
+impl LiveRequestStreamingRouteFinalizationAccumulator {
+    fn observe(&mut self, payload: &serde_json::Value) {
+        let Some(outcome) = payload
+            .get("routeFinalizationOutcome")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        self.sample_count += 1;
+        self.eof_finalized_count += i64::from(outcome.contains("eof"));
+        self.conservative_buffered_count += i64::from(outcome.starts_with("buffered_"));
+        push_payload_value(&mut self.raw_bytes, payload, "routeFinalizationRawBytes");
+        push_payload_value(
+            &mut self.logical_bytes,
+            payload,
+            "routeFinalizationLogicalBytes",
+        );
+        push_payload_value(&mut self.raw_ratio, payload, "routeFinalizationRawRatio");
+        push_payload_value(
+            &mut self.logical_ratio,
+            payload,
+            "routeFinalizationLogicalRatio",
+        );
+        push_payload_value(&mut self.finalization_ms, payload, "routeFinalizationMs");
+        for factor in payload
+            .get("routeDependencyFactors")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            *self
+                .dependency_factor_counts
+                .entry(factor.to_string())
+                .or_default() += 1;
+        }
+        if let Some(hit) = payload
+            .get("routingHotCacheHit")
+            .and_then(serde_json::Value::as_bool)
+        {
+            self.hot_cache_sample_count += 1;
+            self.hot_cache_hit_count += i64::from(hit);
+        }
+        if let Some(cold_load) = payload
+            .get("routingHotCacheColdLoad")
+            .and_then(serde_json::Value::as_bool)
+        {
+            self.cold_load_sample_count += 1;
+            self.cold_load_count += i64::from(cold_load);
+        }
+    }
+
+    fn into_response(mut self) -> LiveRequestStreamingRouteFinalizationStats {
+        LiveRequestStreamingRouteFinalizationStats {
+            sample_count: self.sample_count,
+            sufficient_samples: self.sample_count >= LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES,
+            raw_bytes: live_request_streaming_value_percentiles(&mut self.raw_bytes),
+            logical_bytes: live_request_streaming_value_percentiles(&mut self.logical_bytes),
+            raw_ratio: live_request_streaming_value_percentiles(&mut self.raw_ratio),
+            logical_ratio: live_request_streaming_value_percentiles(&mut self.logical_ratio),
+            finalization_ms: live_request_streaming_percentiles(&mut self.finalization_ms),
+            eof_finalized_rate: live_request_streaming_rate(
+                self.eof_finalized_count,
+                self.sample_count,
+            ),
+            conservative_buffered_rate: live_request_streaming_rate(
+                self.conservative_buffered_count,
+                self.sample_count,
+            ),
+            dependency_factor_counts: self.dependency_factor_counts,
+            hot_cache_hit_rate: live_request_streaming_rate(
+                self.hot_cache_hit_count,
+                self.hot_cache_sample_count,
+            ),
+            cold_load_rate: live_request_streaming_rate(
+                self.cold_load_count,
+                self.cold_load_sample_count,
+            ),
+        }
+    }
+}
+
+fn push_payload_value(values: &mut Vec<f64>, payload: &serde_json::Value, key: &str) {
+    if let Some(value) = payload.get(key).and_then(serde_json::Value::as_f64)
+        && value.is_finite()
+        && value >= 0.0
+    {
+        values.push(value);
+    }
+}
+
+fn live_request_streaming_value_percentiles(
+    values: &mut [f64],
+) -> Option<LiveRequestStreamingValuePercentiles> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    Some(LiveRequestStreamingValuePercentiles {
+        p50: percentile_sorted_f64(values, 0.50),
+        p90: percentile_sorted_f64(values, 0.90),
+        p99: percentile_sorted_f64(values, 0.99),
     })
 }
 

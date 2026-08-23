@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 #[test]
 fn explicit_model_failure_recognizes_standard_not_found_and_rate_limit_shapes() {
@@ -117,6 +118,466 @@ async fn insert_model_failure_attempt(
     .await
     .expect("insert temporary model failure attempt")
     .last_insert_rowid()
+}
+
+#[tokio::test]
+async fn model_routing_timeline_queries_use_epoch_and_latest_event_indexes() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("timeline schema migration should be idempotent");
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline index account",
+        "timeline-index-api-key",
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-timeline-index";
+    let now = Utc::now();
+    let recent_local = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let recent_utc = format_utc_iso(now - ChronoDuration::seconds(1));
+    let expired_utc = format_utc_iso(now - ChronoDuration::minutes(20));
+    let expired_local = format_naive(
+        (now - ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let attempt_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id,
+            upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
+            status
+        ) VALUES (?1, ?2, '/v1/responses', 'pool', ?3, ?4, 'timeline-index', 1, 1, 0, 'success')
+        RETURNING id
+        "#,
+    )
+    .bind("timeline-index-attempt")
+    .bind(&recent_local)
+    .bind(model)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert local-timestamp timeline attempt");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, attempt_id, model,
+            model_route_state_before, model_route_state_after, created_at
+        ) VALUES
+            (?1, ?2, 'model_route_state_changed', 'call', ?3, ?4, 'available', 'degraded', ?2),
+            (?1, ?5, 'model_route_state_changed', 'call', ?3, ?4, 'degraded', 'available', ?5),
+            (?1, ?6, 'model_route_state_changed', 'call', NULL, ?4, 'available', 'degraded', ?6),
+            (?1, ?7, 'model_route_state_changed', 'call', NULL, ?4, 'available', 'degraded', ?7)
+        "#,
+    )
+    .bind(account_id)
+    .bind(&recent_local)
+    .bind(attempt_id)
+    .bind(model)
+    .bind(&recent_utc)
+    .bind(&recent_utc)
+    .bind(&expired_local)
+    .execute(&state.pool)
+    .await
+    .expect("insert linked and standalone timeline events");
+
+    let cutoff_epoch_ms = (Utc::now() - ChronoDuration::minutes(15)).timestamp_millis();
+    let attempt_plan = build_model_routing_attempt_timeline_query(
+        "EXPLAIN QUERY PLAN ",
+        None,
+        None,
+        cutoff_epoch_ms,
+        10,
+        None,
+        None,
+    )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(&state.pool)
+    .await
+    .expect("explain production attempt timeline query")
+    .into_iter()
+    .map(|(_, _, _, detail)| detail)
+    .collect::<Vec<_>>();
+    assert!(
+        attempt_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH attempts USING INDEX idx_pool_upstream_request_attempts_timeline_epoch",
+            )
+        }),
+        "attempt timeline query must use the epoch range index: {attempt_plan:?}"
+    );
+    assert!(
+        attempt_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH latest USING INDEX idx_pool_upstream_account_events_attempt_latest",
+            )
+        }),
+        "latest event subquery must use the attempt index: {attempt_plan:?}"
+    );
+    assert!(
+        attempt_plan
+            .iter()
+            .all(|detail| !detail.contains("TEMP B-TREE")),
+        "attempt timeline query must not sort through a temporary B-tree: {attempt_plan:?}"
+    );
+
+    let event_plan = build_model_routing_event_timeline_query(
+        "EXPLAIN QUERY PLAN ",
+        None,
+        None,
+        cutoff_epoch_ms,
+        10,
+        None,
+        None,
+    )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(&state.pool)
+    .await
+    .expect("explain production standalone event timeline query")
+    .into_iter()
+    .map(|(_, _, _, detail)| detail)
+    .collect::<Vec<_>>();
+    assert!(
+        event_plan.iter().any(|detail| {
+            detail.contains(
+                "SEARCH event USING INDEX idx_pool_upstream_account_events_timeline_unlinked_epoch",
+            )
+        }),
+        "standalone event timeline query must use the epoch range index: {event_plan:?}"
+    );
+    assert!(
+        event_plan
+            .iter()
+            .all(|detail| !detail.contains("TEMP B-TREE")),
+        "standalone event timeline query must not sort through a temporary B-tree: {event_plan:?}"
+    );
+
+    let Json(live) = get_model_routing_live(
+        State(state.clone()),
+        Query(ModelRoutingLiveQuery {
+            window: Some("15m".to_string()),
+            model: Some(model.to_string()),
+            state: None,
+            limit: Some(10),
+        }),
+    )
+    .await
+    .expect("load mixed-format model routing timeline");
+    assert!(
+        live.records
+            .iter()
+            .any(|record| record.id == format!("attempt:{attempt_id}")),
+        "the local-timestamp attempt should remain visible in the 15-minute window"
+    );
+    assert_eq!(
+        live.records
+            .iter()
+            .find(|record| record.id == format!("attempt:{attempt_id}"))
+            .and_then(|record| record.model_route_state_after.as_deref()),
+        Some("degraded"),
+        "the attempt must use its latest linked transition across timestamp formats"
+    );
+    assert!(
+        live.records
+            .iter()
+            .any(|record| record.kind == "event" && record.occurred_at == recent_utc),
+        "the RFC3339 standalone event should remain visible in the 15-minute window"
+    );
+    assert!(
+        live.records
+            .iter()
+            .all(|record| record.occurred_at != expired_utc),
+        "the expired standalone event must remain outside the 15-minute window"
+    );
+
+    let Json(first_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: None,
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the first mixed-format model routing history page");
+    assert_eq!(first_page.items.len(), 1);
+    assert_eq!(first_page.items[0].id, format!("attempt:{attempt_id}"));
+    let cursor = first_page
+        .next_cursor
+        .expect("the standalone event should produce a second history page");
+
+    let Json(second_page) = list_upstream_account_model_routing_events(
+        State(state.clone()),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the second mixed-format model routing history page");
+    assert_eq!(second_page.items.len(), 1);
+    assert_eq!(second_page.items[0].kind, "event");
+    assert_eq!(second_page.items[0].occurred_at, recent_utc);
+    assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    let cursor = second_page
+        .next_cursor
+        .expect("the older standalone event should produce a third history page");
+
+    let Json(third_page) = list_upstream_account_model_routing_events(
+        State(state),
+        AxumPath(account_id),
+        Query(ModelRoutingHistoryQuery {
+            model: model.to_string(),
+            cursor: Some(cursor),
+            page_size: Some(1),
+        }),
+    )
+    .await
+    .expect("load the third mixed-format model routing history page");
+    assert_eq!(third_page.items.len(), 1);
+    assert_eq!(third_page.items[0].kind, "event");
+    assert_eq!(third_page.items[0].occurred_at, expired_utc);
+    assert_ne!(first_page.items[0].id, third_page.items[0].id);
+    assert_ne!(second_page.items[0].id, third_page.items[0].id);
+    assert!(third_page.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn model_routing_live_query_stays_bounded_for_dense_recent_timeline() {
+    const TIMELINE_ROWS: usize = 4_000;
+    const INSERT_BATCH_SIZE: usize = 250;
+    const ATTEMPT_ID_BASE: i64 = 10_000_000;
+    const LINKED_EVENT_ID_BASE: i64 = 20_000_000;
+    const STANDALONE_EVENT_ID_BASE: i64 = 40_000_000;
+
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline load account",
+        "timeline-load-api-key",
+        None,
+        None,
+    )
+    .await;
+    let model = "gpt-timeline-load";
+    let now = Utc::now();
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .expect("begin dense timeline fixture transaction");
+
+    for batch_start in (0..TIMELINE_ROWS).step_by(INSERT_BATCH_SIZE) {
+        let batch_end = (batch_start + INSERT_BATCH_SIZE).min(TIMELINE_ROWS);
+        let mut attempts = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_request_attempts (id, invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, status) ",
+        );
+        attempts.push_values(batch_start..batch_end, |mut row, index| {
+            let occurred_at = format_utc_iso(now - ChronoDuration::seconds((index % 720) as i64));
+            row.push_bind(ATTEMPT_ID_BASE + index as i64)
+                .push_bind(format!("timeline-load-attempt-{index}"))
+                .push_bind(occurred_at)
+                .push_bind("/v1/responses")
+                .push_bind("pool")
+                .push_bind(model)
+                .push_bind(account_id)
+                .push_bind("timeline-load")
+                .push_bind(1_i64)
+                .push_bind(1_i64)
+                .push_bind(0_i64)
+                .push_bind("success");
+        });
+        attempts
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense timeline attempts");
+
+        let mut linked_events = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_account_events (id, account_id, occurred_at, action, source, attempt_id, model, model_route_state_before, model_route_state_after, created_at) ",
+        );
+        linked_events.push_values(
+            (batch_start..batch_end).flat_map(|attempt_index| {
+                (0..3).map(move |event_index| (attempt_index, event_index))
+            }),
+            |mut row, (attempt_index, event_index)| {
+                let occurred_at =
+                    format_utc_iso(now - ChronoDuration::seconds((attempt_index % 720) as i64));
+                row.push_bind(LINKED_EVENT_ID_BASE + (attempt_index * 3 + event_index) as i64)
+                    .push_bind(account_id)
+                    .push_bind(occurred_at.clone())
+                    .push_bind("model_route_state_changed")
+                    .push_bind("call")
+                    .push_bind(ATTEMPT_ID_BASE + attempt_index as i64)
+                    .push_bind(model)
+                    .push_bind("available")
+                    .push_bind(if event_index == 2 {
+                        "degraded"
+                    } else {
+                        "available"
+                    })
+                    .push_bind(occurred_at);
+            },
+        );
+        linked_events
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense linked timeline events");
+
+        let mut standalone_events = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "INSERT INTO pool_upstream_account_events (id, account_id, occurred_at, action, source, attempt_id, model, model_route_state_before, model_route_state_after, created_at) ",
+        );
+        standalone_events.push_values(batch_start..batch_end, |mut row, index| {
+            let occurred_at = format_utc_iso(now - ChronoDuration::seconds((index % 720) as i64));
+            row.push_bind(STANDALONE_EVENT_ID_BASE + index as i64)
+                .push_bind(account_id)
+                .push_bind(occurred_at.clone())
+                .push_bind("model_route_state_changed")
+                .push_bind("call")
+                .push_bind(Option::<i64>::None)
+                .push_bind(model)
+                .push_bind("available")
+                .push_bind("degraded")
+                .push_bind(occurred_at);
+        });
+        standalone_events
+            .build()
+            .execute(&mut *transaction)
+            .await
+            .expect("insert dense standalone timeline events");
+    }
+    transaction
+        .commit()
+        .await
+        .expect("commit dense timeline fixture");
+
+    let started = Instant::now();
+    let Json(live) = get_model_routing_live(
+        State(state),
+        Query(ModelRoutingLiveQuery {
+            window: Some("15m".to_string()),
+            model: None,
+            state: None,
+            limit: Some(1),
+        }),
+    )
+    .await
+    .expect("load the production dense 15-minute timeline");
+    let elapsed = started.elapsed();
+
+    assert_eq!(live.records.len(), 1);
+    assert_eq!(live.records[0].kind, "attempt");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the dense production timeline request must remain bounded; elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn model_routing_timeline_schema_upgrade_adds_epoch_columns_and_indexes() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeline upgrade account",
+        "timeline-upgrade-api-key",
+        None,
+        None,
+    )
+    .await;
+    let now = Utc::now();
+    let legacy_attempt_time = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let legacy_event_time = format_utc_iso(now - ChronoDuration::seconds(1));
+
+    for index in [
+        "idx_pool_upstream_request_attempts_timeline_epoch",
+        "idx_pool_upstream_account_events_attempt_latest",
+        "idx_pool_upstream_account_events_timeline_unlinked_epoch",
+    ] {
+        sqlx::query(&format!("DROP INDEX {index}"))
+            .execute(&state.pool)
+            .await
+            .expect("remove current timeline index before upgrade migration");
+    }
+    sqlx::query("ALTER TABLE pool_upstream_request_attempts DROP COLUMN occurred_epoch_ms")
+        .execute(&state.pool)
+        .await
+        .expect("restore the pre-epoch attempts table");
+    sqlx::query("ALTER TABLE pool_upstream_account_events DROP COLUMN occurred_epoch_ms")
+        .execute(&state.pool)
+        .await
+        .expect("restore the pre-epoch events table");
+
+    let attempt_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id, occurred_at, endpoint, route_mode, request_model, upstream_account_id,
+            upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index,
+            status
+        ) VALUES ('timeline-upgrade-attempt', ?1, '/v1/responses', 'pool', 'gpt-timeline-upgrade', ?2, 'timeline-upgrade', 1, 1, 0, 'success')
+        RETURNING id
+        "#,
+    )
+    .bind(&legacy_attempt_time)
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert pre-migration timeline attempt");
+    let event_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, attempt_id, model,
+            model_route_state_before, model_route_state_after, created_at
+        ) VALUES (?1, ?2, 'model_route_state_changed', 'call', ?3, 'gpt-timeline-upgrade', 'available', 'degraded', ?2)
+        RETURNING id
+        "#,
+    )
+    .bind(account_id)
+    .bind(&legacy_event_time)
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert pre-migration linked event");
+
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("upgrade legacy timeline tables with epoch columns and indexes");
+    let attempt_epoch_ms: i64 = sqlx::query_scalar(
+        "SELECT occurred_epoch_ms FROM pool_upstream_request_attempts WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read generated epoch from migrated attempt");
+    let event_epoch_ms: i64 = sqlx::query_scalar(
+        "SELECT occurred_epoch_ms FROM pool_upstream_account_events WHERE id = ?1",
+    )
+    .bind(event_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read generated epoch from migrated event");
+    assert_eq!(attempt_epoch_ms, now.timestamp() * 1_000);
+    assert_eq!(
+        event_epoch_ms,
+        (now - ChronoDuration::seconds(1)).timestamp() * 1_000
+    );
+
+    let timeline_indexes = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('idx_pool_upstream_request_attempts_timeline_epoch', 'idx_pool_upstream_account_events_attempt_latest', 'idx_pool_upstream_account_events_timeline_unlinked_epoch') ORDER BY name",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("list migrated timeline indexes");
+    assert_eq!(timeline_indexes.len(), 3);
+    crate::ensure_schema(&state.pool)
+        .await
+        .expect("rerun upgraded timeline schema idempotently");
 }
 
 #[tokio::test]
@@ -348,6 +809,9 @@ async fn enable_cache_hit_protection(state: &AppState) {
     .execute(&state.pool)
     .await
     .expect("enable cache-hit protection");
+    refresh_pool_routing_runtime_cache(state)
+        .await
+        .expect("publish cache-hit protection settings");
 }
 
 async fn cache_hit_route_state(
@@ -950,6 +1414,9 @@ async fn cache_hit_protection_atomically_reserves_single_model_slot() {
     .execute(&state.pool)
     .await
     .expect("switch cache-hit overflow mode to reroute");
+    refresh_pool_routing_runtime_cache(state.as_ref())
+        .await
+        .expect("publish cache-hit overflow mode");
 
     let excluded_ids = Vec::new();
     let excluded_routes = HashSet::new();

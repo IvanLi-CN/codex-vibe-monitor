@@ -1,83 +1,66 @@
-# Repository Guidelines
+# Repository Agent Guide
 
-## Project Structure & Module Organization
+Use this file as the repository-specific decision map. Read the referenced script or workflow when a task enters that branch; keep this file focused on choices that are easy to get wrong.
 
-- `src/` — Rust backend (polling scheduler, Axum HTTP API, SSE fan-out, SQLite persistence). Start with `main.rs`. Configuration lives in `AppConfig` and reads `.env.local`.
-- `web/` — Vite + React + TypeScript SPA. `src/components/` hosts UI atoms (Tailwind + shadcn 风格基础组件), `src/hooks/` encapsulates API + SSE integration, and `vite.config.ts` wires the proxy to the Rust server.
-- `Dockerfile` — multi-stage build assembling the Rust binary and front-end assets.
-- Generated artifacts (`target/`, `web/dist/`, SQLite DBs) stay untracked.
+## Repository Map
 
-## Build, Test, and Development Commands
+- `src/` — Rust backend: Axum HTTP/SSE, polling, proxying, account routing, SQLite persistence, and maintenance.
+- `web/` — React/Vite/TypeScript application, unit tests, Storybook, and Playwright suites.
+- `docs-site/` — public documentation site. `docs/` — internal deployment notes, UI guidance, Specs, and reusable Solutions.
+- `.github/workflows/` and `.github/scripts/` — CI, quality-gate, release, and backend test contracts.
+- `Dockerfile` — production image assembly. Keep `target/`, `web/dist/`, and SQLite database files untracked.
 
-- `cargo fmt` — format Rust sources with project defaults.
-- `cargo check` — type-check backend without producing binaries.
-- `cargo run` — start the backend (reads `.env.local`, listens on `127.0.0.1:8080`).
-- `lefthook` — version `2.1.7` or newer must be available outside repo-local `node_modules/.bin` on `PATH` before installing shared hooks; linked worktree hooks use the globally available binary.
-- `bun install` — install repo-level tooling for hooks, worktree bootstrap, and docs checks.
-- `bun run hooks:install` — verify Lefthook and install the standard shared Git hooks for every linked worktree in this repository.
-- `bun run worktree:bootstrap` — manually rerun local resource sync and dependency recovery for the current worktree.
-- `bun run worktree:setup` — restore only stale root, `web/`, `docs-site/`, and Rust dependency surfaces from locked metadata; unchanged Bun surfaces validate manifest-direct package directories and Cargo validates its lockfile registry archives; pass `-- --force` to restore all four.
-- `bun run typecheck:web` — run the complete Web TypeScript build check.
-- `bun run verify:rust` — run complete Rust formatting and Clippy verification.
-- `cd web && bun install` — install SPA dependencies once per setup.
-- `cd web && bun run dev -- --host 127.0.0.1 --port 60080` — run the front-end dev server with proxy to the backend.
-- `cd web && bun run build` — produce production assets for `web/dist`.
-- `cd web && bun run test` — execute front-end unit tests (Vitest).
+## Verification Contract
 
-## Development Runtime (Background, Non-blocking)
+Choose the smallest complete validation path for the changed surface.
 
-Use non-blocking runtime management for long-lived services, but do not require any specific process manager.
+- Targeted Rust regression: run `cargo test <selector> -- --nocapture` for named tests. Keep tests in the matching resource bucket under `src/tests/` or `src/upstream_accounts/tests/`.
+- Backend resource profiles: use the shared runner, not a hand-built full-suite Cargo command:
+  - `bash .github/scripts/run-backend-tests.sh --profile lightweight`
+  - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+  - `bash .github/scripts/run-backend-tests.sh --profile archive-file-io`
+- Full local backend regression: run `bash .github/scripts/run-backend-tests.sh`. Without `--profile`, it runs the three profiles sequentially. `cargo-nextest` must be installed; a missing binary is an environment blocker.
+- CI full backend regression: the archive producer runs `cargo nextest archive --locked --all-features`, then the three profile jobs replay that archive independently. Treat those jobs as controlled parallel units; do not invent local background-process concurrency for them.
+- A task, Spec, or compatibility gate may explicitly request a Cargo compatibility command; run that command exactly. Do not infer a full `cargo test --all-features` entry point by copying `--all-features` from Clippy or nextest.
+- Rust checks: `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings`.
+- Web unit tests: `cd web && bun run test`. Use `cd web && bun run test-storybook`, `cd web && bun run test:e2e`, or `cd web && bun run test:e2e:pwa` only when the changed surface requires them. Use `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build` for the corresponding checks.
+- Changes to docs or repository tooling should use the relevant `bun` script and the focused contract script under `.github/scripts/` or `scripts/`.
 
-- Backend start: `cargo run` (default `127.0.0.1:8080`)
-- Frontend start: `cd web && bun install && bun run dev -- --host 127.0.0.1 --port 60080`
-- Readiness checks:
-  - Backend: `curl -sS -m 1 http://127.0.0.1:8080/health | grep -q ok`
-  - Frontend: `curl -sS -m 1 http://127.0.0.1:60080/ >/dev/null`
-- If any required port is occupied, resolve the conflict before starting services.
-- Keep logs and process ownership explicit so services can be stopped reliably.
-- Do not use `alarm` for long-running services; it is only suitable for one-off commands.
+Backend test placement follows the resource contract: database-only behavior belongs in `lightweight` or `stateful_sqlite`; real archive, file-path, gzip, corruption, and write-lock behavior stays in `archive_file_io`. Preserve production timing and thresholds unless the test-only seam is part of the task.
 
-## Coding Style & Naming Conventions
+## Runtime and Ports
 
-- Rust: rely on `rustfmt` defaults (4-space indent, snake_case for modules/variables, CamelCase for types). Use expressive error contexts via `anyhow::Context`.
-- TypeScript/React: prefer functional components, hooks, and explicit return types. Use PascalCase for components, camelCase for hooks/utilities. Tailwind utility classes stay in JSX; shared styles belong in `index.css`.
-- Keep comments purposeful—explain non-obvious logic rather than restating code.
+- Long-lived local services run in a non-blocking session with explicit logs and process ownership. Read `$global-port-manager` before starting any service that listens on a port.
+- Inspect a known/default port first, lease it to the current repository scope, and start the process only after the lease exists. If another scope owns it or an unknown process is listening, allocate a different port; never take over or kill it.
+- Backend default: `127.0.0.1:8080`. Override with `HTTP_BIND=127.0.0.1:<port> cargo run` or the CLI `--http-bind` option.
+- Frontend default: `127.0.0.1:60080`. Start with `cd web && VITE_APP_PORT=<port> VITE_BACKEND_PROXY=http://127.0.0.1:<backend-port> bun run dev -- --host 127.0.0.1 --port <port>` when either service uses a leased non-default port.
+- Readiness checks must target the leased ports: `curl -sS -m 1 http://127.0.0.1:<backend-port>/health | grep -q ok` and `curl -sS -m 1 http://127.0.0.1:<frontend-port>/ >/dev/null`.
+- Keep the lease alive for long-running services and share a localhost URL only while the current scope owns the active service lease and background session.
 
-## Testing Guidelines
+## Worktrees and Configuration
 
-- Backend tests should target polling, persistence, and aggregation (use `#[tokio::test]` + in-memory SQLite). Place files beside implementation or under `tests/` as integration suites.
-- Front-end testing uses Vitest + React Testing Library. Name files `ComponentName.test.tsx` and cover hooks (`useXyz.test.ts`).
-- Run relevant suites (`cargo test`, `cd web && bun run test`) before opening a PR; aim to cover new branches and SSE flows with mocks.
+- `lefthook` version `2.1.7` or newer must be available outside repo-local `node_modules/.bin` before `bun run hooks:install` or linked-worktree setup.
+- Use `bun run worktree:bootstrap` for manual recovery and `bun run worktree:setup` for locked dependency-surface restoration. The post-checkout hook copies only missing declared resources, never overwrites an existing `.env.local`, and never copies dependency or runtime directories. Automatic recovery may warn without blocking checkout; manual bootstrap returns non-zero when recovery fails.
+- Keep credentials and authentication cookies in ignored `.env.local`. Use `DATABASE_PATH` to select a non-default SQLite file in local or container environments; never commit database files or secrets.
+- Use `$shared-testbox-runner` for Docker/Compose integration tests. Keep remote writes under `/srv/codex/**`, use a unique run/project, and clean only resources created by that run.
 
-## Commit & Pull Request Guidelines
+## Code and UI Style
 
-- Follow Conventional Commits (`feat:`, `fix:`, `chore:`, etc.). Scope components with meaningful tags (`feat(web): add stats chart`).
-- Pull requests should include:
-  - Summary of changes and affected areas (backend API, SPA view, Docker, etc.).
-  - Linked issue or task reference where applicable.
-  - Verification steps or screenshots/gifs for UI updates.
-  - Notes about config or schema changes (e.g., migrating SQLite, new env vars).
+- Rust follows `rustfmt`, snake_case names, CamelCase types, and `anyhow::Context` for useful error context. Comments explain non-obvious reasoning, not syntax.
+- React/TypeScript uses functional components, hooks, explicit return types, PascalCase components, and camelCase hooks/utilities. Keep Tailwind utilities in JSX and shared styles in `index.css`.
+- UI or rendered-surface changes require the applicable `$ui-visual-evidence` workflow before claiming verification or entering PR delivery. Do not create visual evidence for non-UI work.
 
-## CI / CD (Release via PR labels)
+## Git, PR, and Release
 
-- PR checks run in `.github/workflows/ci-pr.yml`; old PR runs are preemptible so stale commits do not keep consuming runners.
-- Mainline verification runs in `.github/workflows/ci-main.yml`; each merged commit gets its own non-preemptive `main` run, so newer pushes do not cancel or replace older pending `CI Main` work.
-- Releases run in `.github/workflows/release.yml` after the first successful `CI Main` attempt on `main`, and can be manually backfilled with `workflow_dispatch(commit_sha)` when GitHub concurrency replaces an older pending release run; manual backfill is limited to commits that already passed `CI Main`.
-- Maintainers can also run a controlled manual release override for a specific `main` commit by providing `commit_sha`, exactly one of `version` or `bump`, `channel`, and `reason`. Manual overrides generate a job-local `manual-release-override` snapshot, bypass `type:skip` / `type:docs` only for that dispatch run, and write the override audit fields into the GitHub Release body.
-- Every PR must set exactly **one** release type label and exactly **one** release channel label
-  (enforced by `.github/workflows/label-gate.yml`).
-- Release type (`type:*`):
-  - `type:patch` | `type:minor` | `type:major` - trigger a release (semver bump).
-  - `type:docs` | `type:skip` - skip release (no image/tag/GitHub Release).
-- Release channel (`channel:*`):
-  - `channel:stable` - stable release (`vX.Y.Z`, also updates the Docker image `latest` tag).
-  - `channel:rc` - pre-release (`vX.Y.Z-rc.<sha7>`, does not update `latest`).
-- GitHub concurrency is not strict FIFO; if a merged commit's pending release is replaced by a newer pending run, use the manual release backfill entry instead of assuming every pending run will execute automatically.
-- For more details, see `README.md` and `.github/scripts/compute-version.sh`.
+- Work from a `th/` topic branch. Protect `main`: use a PR, do not push directly, and do not force-push or rewrite history without explicit authorization.
+- Commits use English Conventional Commits, cryptographic signing, and `--signoff`; these are separate requirements. Example: `git commit -S --signoff -m "fix(web): clarify runtime contract"`.
+- A PR targeting `main` must carry exactly one release-type label (`type:patch`, `type:minor`, `type:major`, `type:docs`, or `type:skip`) and exactly one channel label (`channel:stable` or `channel:rc`). The label gate does not apply to PRs targeting another base branch.
+- `type:patch|minor|major` enables a release; `type:docs|skip` skips publication. `channel:stable` publishes the stable tag and `latest`; `channel:rc` publishes a pre-release without updating `latest`.
+- Release queue, snapshot, manual backfill, and override behavior are defined by `.github/workflows/release.yml`, `.github/scripts/release_snapshot.py`, `.github/scripts/compute-version.sh`, and the release section of `README.md`. Follow those sources instead of duplicating their state machine here.
+- Before PR delivery, report the changed surfaces, relevant validation, config/schema changes, and UI evidence when applicable. Keep the current PR head and required checks fresh after every commit.
 
-## Security & Configuration Tips
+## Safety Boundaries
 
-- Store authentication cookies and secrets in `.env.local`; the file is ignored—never commit credentials.
-- Worktree bootstrap is driven by the standard Lefthook `post-checkout` hook. A repo-external Lefthook 2.1.7 or newer must be available on `PATH` before `bun run hooks:install` or creating linked worktrees; repo-local `node_modules/.bin/lefthook` is not sufficient. The hook calls the current checkout's `scripts/run-lefthook-hook.sh`, which copies missing resources declared in `scripts/worktree-sync.paths` and restores only stale dependency surfaces in linked worktrees. Its per-worktree Git-metadata state contains only surface status and input digest; unchanged ready worktrees do not run Bun/Cargo after checking manifest-direct Bun packages and `Cargo.lock` registry archives. Resource sync and automatic setup use nonblocking per-worktree advisory locks that release with the holding process, while manual setup serializes behind its lock. It syncs `.env.local` from the primary worktree without overwriting existing local files, never copies dependency or runtime directories, and uses locked Bun installs plus `cargo fetch --locked`. Automatic dependency failures warn once per digest and do not block checkout; manual `bun run worktree:bootstrap` retries and returns non-zero when any recovery step fails.
-- SQLite files default to `codex_vibe_monitor.db` in the repo root; add alternate paths via `DATABASE_PATH` if running in containers.
-- SSE and HTTP clients depend on stable polling; monitor logs (`RUST_LOG=info cargo run`) when adjusting concurrency or timeouts.
+- Preserve unrelated user changes. Do not reset, clean, stash, overwrite, or delete broad paths to make a task convenient.
+- Treat credentials, cookies, database files, raw payloads, and external service data as sensitive. Redact them from logs and responses.
+- External writes, uploads, permission changes, real-program screenshots, remote GitHub operations, and PR publication require the active flow's authorization. Login, CAPTCHA, and 2FA always pause for the owner.

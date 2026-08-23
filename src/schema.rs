@@ -10,6 +10,8 @@ pub(crate) const PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS: i64 = 300;
 pub(crate) const SHANGHAI_NOW_SQL: &str = "datetime('now', '+8 hours')";
 const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
     "invocation_rollup_hourly_token_components_v1";
+const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
+const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
 
 pub(crate) fn ensure_schema_lock_key(pool: &Pool<Sqlite>) -> String {
     let connect_options = pool.connect_options();
@@ -1193,6 +1195,115 @@ pub(crate) async fn reopen_upstream_account_stats_rollup_archives(
     Ok(())
 }
 
+async fn ensure_invocation_raw_codec_backfill(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS codex_invocation_raw_codec_migrations (
+            migration_name TEXT PRIMARY KEY,
+            completed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure raw codec migration marker table")?;
+
+    let already_completed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM codex_invocation_raw_codec_migrations WHERE migration_name = ?1)",
+    )
+    .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if already_completed {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin raw codec backfill migration")?;
+    let already_completed = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM codex_invocation_raw_codec_migrations WHERE migration_name = ?1)",
+    )
+    .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0;
+    if already_completed {
+        tx.commit()
+            .await
+            .context("failed to commit raw codec migration marker check")?;
+        return Ok(());
+    }
+
+    if !legacy_raw_blob_link_seed_completed(&mut tx).await? {
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET request_raw_codec = CASE
+                    WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
+                    ELSE 'identity'
+                END
+            WHERE COALESCE(TRIM(request_raw_codec), '') = ''
+               OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
+            "#,
+        )
+        .execute(tx.as_mut())
+        .await
+        .context("failed to backfill codex_invocations request_raw_codec")?;
+
+        sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET response_raw_codec = CASE
+                    WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
+                    ELSE 'identity'
+                END
+            WHERE COALESCE(TRIM(response_raw_codec), '') = ''
+               OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
+            "#,
+        )
+        .execute(tx.as_mut())
+        .await
+        .context("failed to backfill codex_invocations response_raw_codec")?;
+    }
+
+    sqlx::query("INSERT INTO codex_invocation_raw_codec_migrations (migration_name) VALUES (?1)")
+        .bind(INVOCATION_RAW_CODEC_MIGRATION_NAME)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to record raw codec backfill completion")?;
+    tx.commit()
+        .await
+        .context("failed to commit raw codec backfill migration")?;
+
+    Ok(())
+}
+
+async fn legacy_raw_blob_link_seed_completed(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<bool> {
+    let migration_table_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind("proxy_raw_payload_blob_link_migrations")
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0;
+    if !migration_table_exists {
+        return Ok(false);
+    }
+
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM proxy_raw_payload_blob_link_migrations WHERE migration_name = ?1)",
+    )
+    .bind(LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0)
+}
+
 pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let schema_lock = ensure_schema_lock(pool);
     let _schema_guard = schema_lock.lock_owned().await;
@@ -1264,35 +1375,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         }
     }
 
-    sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET request_raw_codec = CASE
-                WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
-                ELSE 'identity'
-            END
-        WHERE COALESCE(TRIM(request_raw_codec), '') = ''
-           OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to backfill codex_invocations request_raw_codec")?;
-
-    sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET response_raw_codec = CASE
-                WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
-                ELSE 'identity'
-            END
-        WHERE COALESCE(TRIM(response_raw_codec), '') = ''
-           OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
-        "#,
-    )
-    .execute(pool)
-    .await
-    .context("failed to backfill codex_invocations response_raw_codec")?;
+    ensure_invocation_raw_codec_backfill(pool).await?;
 
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
@@ -1437,6 +1520,24 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_upstream_account_occurred_at")?;
+
+    // The account Sticky-key preview ranks recent invocations within each key. Keep
+    // the JSON compatibility expressions identical to that query so SQLite can use
+    // the index for both predicates and the window ordering.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_account_sticky_key_recent
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END),
+            (CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END),
+            occurred_at DESC,
+            id DESC
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_account_sticky_key_recent")?;
 
     // The records analytics page compares trimmed lowercase text for exact-match filters.
     // Mirror those expressions in dedicated indexes so high-volume searches avoid full index scans.
@@ -1813,6 +1914,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             superseded_by INTEGER,
             coverage_start_at TEXT,
             coverage_end_at TEXT,
+            coverage_start_epoch INTEGER,
+            coverage_end_epoch INTEGER,
             archive_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(dataset, month_key, file_path)
@@ -1835,6 +1938,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("superseded_by", "INTEGER"),
         ("coverage_start_at", "TEXT"),
         ("coverage_end_at", "TEXT"),
+        ("coverage_start_epoch", "INTEGER"),
+        ("coverage_end_epoch", "INTEGER"),
         ("archive_expires_at", "TEXT"),
         ("upstream_activity_manifest_refreshed_at", "TEXT"),
         ("historical_rollups_materialized_at", "TEXT"),
@@ -1847,6 +1952,88 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .with_context(|| format!("failed to add archive_batches column {column}"))?;
         }
     }
+
+    // Archive writers retain the established text bounds for compatibility, while read-side
+    // coverage planners use these normalized epochs for indexed range lookups.
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET
+            coverage_start_epoch = CASE
+                WHEN coverage_start_at IS NULL THEN NULL
+                WHEN instr(coverage_start_at, 'T') > 0
+                    THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+            END,
+            coverage_end_epoch = CASE
+                WHEN coverage_end_at IS NULL THEN NULL
+                WHEN instr(coverage_end_at, 'T') > 0
+                    THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+            END
+        WHERE (coverage_start_at IS NULL AND coverage_start_epoch IS NOT NULL)
+           OR (coverage_start_at IS NOT NULL AND coverage_start_epoch IS NULL)
+           OR (coverage_end_at IS NULL AND coverage_end_epoch IS NOT NULL)
+           OR (coverage_end_at IS NOT NULL AND coverage_end_epoch IS NULL)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill normalized archive coverage epochs")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_archive_batches_coverage_epoch_insert
+        AFTER INSERT ON archive_batches
+        BEGIN
+            UPDATE archive_batches
+            SET
+                coverage_start_epoch = CASE
+                    WHEN coverage_start_at IS NULL THEN NULL
+                    WHEN instr(coverage_start_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+                END,
+                coverage_end_epoch = CASE
+                    WHEN coverage_end_at IS NULL THEN NULL
+                    WHEN instr(coverage_end_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+                END
+            WHERE id = NEW.id;
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive coverage epoch insert trigger")?;
+
+    sqlx::query(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_archive_batches_coverage_epoch_update
+        AFTER UPDATE OF coverage_start_at, coverage_end_at ON archive_batches
+        BEGIN
+            UPDATE archive_batches
+            SET
+                coverage_start_epoch = CASE
+                    WHEN coverage_start_at IS NULL THEN NULL
+                    WHEN instr(coverage_start_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_start_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_start_at || '+08:00') AS INTEGER)
+                END,
+                coverage_end_epoch = CASE
+                    WHEN coverage_end_at IS NULL THEN NULL
+                    WHEN instr(coverage_end_at, 'T') > 0
+                        THEN CAST(strftime('%s', coverage_end_at) AS INTEGER)
+                    ELSE CAST(strftime('%s', coverage_end_at || '+08:00') AS INTEGER)
+                END
+            WHERE id = NEW.id;
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive coverage epoch update trigger")?;
 
     sqlx::query(
         r#"
@@ -1887,6 +2074,33 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_rollup_materialization")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_invocation_coverage_epoch
+        ON archive_batches (coverage_end_epoch, coverage_start_epoch)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND coverage_start_epoch IS NOT NULL
+          AND coverage_end_epoch IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation archive coverage epoch index")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_invocation_legacy_coverage_month
+        ON archive_batches (month_key)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND (coverage_start_at IS NULL OR coverage_end_at IS NULL)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation archive legacy coverage month index")?;
 
     sqlx::query(
         r#"
@@ -3605,6 +3819,14 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             attempt_public_id TEXT,
             invoke_id TEXT NOT NULL,
             occurred_at TEXT NOT NULL,
+            occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL,
             endpoint TEXT NOT NULL,
             route_mode TEXT NOT NULL,
             sticky_key TEXT,
@@ -3859,6 +4081,33 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         }
     }
 
+    let pool_attempt_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_xinfo('pool_upstream_request_attempts')")
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect pool_upstream_request_attempts schema")?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+    if !pool_attempt_columns.contains("occurred_epoch_ms") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_request_attempts
+            ADD COLUMN occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_request_attempts.occurred_epoch_ms")?;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_weight_hourly (
@@ -3986,6 +4235,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_timeline_epoch
+        ON pool_upstream_request_attempts (occurred_epoch_ms DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_timeline_epoch")?;
 
     sqlx::query(
         r#"

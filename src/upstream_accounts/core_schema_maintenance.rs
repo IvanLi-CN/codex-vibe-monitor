@@ -699,6 +699,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL,
             occurred_at TEXT NOT NULL,
+            occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL,
             action TEXT NOT NULL,
             source TEXT NOT NULL,
             account_display_name TEXT,
@@ -723,6 +731,32 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_events table existence")?;
+    let upstream_account_event_columns: std::collections::HashSet<String> =
+        sqlx::query("PRAGMA table_xinfo('pool_upstream_account_events')")
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect pool_upstream_account_events schema")?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+    if !upstream_account_event_columns.contains("occurred_epoch_ms") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_events
+            ADD COLUMN occurred_epoch_ms INTEGER GENERATED ALWAYS AS (
+                CAST(ROUND((
+                    julianday(
+                        occurred_at,
+                        CASE WHEN instr(occurred_at, 'T') > 0 THEN '+0 hours' ELSE '-8 hours' END
+                    ) - 2440587.5
+                ) * 86400000.0) AS INTEGER)
+            ) VIRTUAL
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_events.occurred_epoch_ms")?;
+    }
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_account_time
@@ -803,6 +837,28 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_account_events_account_model_time")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_attempt_latest
+        ON pool_upstream_account_events (attempt_id, occurred_epoch_ms DESC, id DESC)
+        WHERE attempt_id IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_attempt_latest")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_timeline_unlinked_epoch
+        ON pool_upstream_account_events (occurred_epoch_ms DESC, id DESC)
+        WHERE attempt_id IS NULL AND model IS NOT NULL
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_timeline_unlinked_epoch")?;
 
     sqlx::query(
         r#"

@@ -1,6 +1,10 @@
 import { Alert } from "../../components/ui/alert";
 import { useTranslation } from "../../i18n";
-import type { LiveRequestStreamingCohortStats, LiveRequestStreamingPerf } from "../../lib/api";
+import type {
+  LiveRequestStreamingCohortStats,
+  LiveRequestStreamingPerf,
+  LiveRequestStreamingValuePercentiles,
+} from "../../lib/api";
 
 const MIN_SUCCESS_SAMPLES = 200;
 
@@ -13,9 +17,10 @@ export interface LiveRequestStreamingPerfPanelProps {
 function findCohort(
   cohorts: LiveRequestStreamingCohortStats[],
   cohort: string,
-  transportMode: string,
+  preferredTransportMode: string,
 ): LiveRequestStreamingCohortStats | undefined {
-  return cohorts.find((item) => item.cohort === cohort && item.transportMode === transportMode);
+  const matching = cohorts.filter((item) => item.cohort === cohort);
+  return matching.find((item) => item.transportMode === preferredTransportMode) ?? matching[0];
 }
 
 function formatMs(value: number | undefined): string {
@@ -24,6 +29,21 @@ function formatMs(value: number | undefined): string {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatDistribution(
+  value: LiveRequestStreamingValuePercentiles | undefined | null,
+  suffix: string,
+): string {
+  if (!value) return "-";
+  return `${Math.round(value.p50)} / ${Math.round(value.p90)} / ${Math.round(value.p99)} ${suffix}`;
+}
+
+function formatRatioDistribution(
+  value: LiveRequestStreamingValuePercentiles | undefined | null,
+): string {
+  if (!value) return "-";
+  return `${(value.p50 * 100).toFixed(1)} / ${(value.p90 * 100).toFixed(1)} / ${(value.p99 * 100).toFixed(1)}%`;
 }
 
 function formatBenefit(control: number | undefined, treatment: number | undefined): string {
@@ -48,7 +68,11 @@ function CohortColumn({
   cohort?: LiveRequestStreamingCohortStats;
 }) {
   const { t } = useTranslation();
-  const sampleCount = cohort?.successSampleCount ?? 0;
+  const successSampleCount = cohort?.successSampleCount ?? 0;
+  const firstResponseSampleCount = cohort?.firstResponseByteSampleCount ?? successSampleCount;
+  const firstTokenSampleCount = cohort?.firstTokenSampleCount ?? successSampleCount;
+  const overlapSampleCount = cohort?.requestUpstreamOverlapSampleCount ?? successSampleCount;
+  const sampleCount = Math.min(firstResponseSampleCount, firstTokenSampleCount, overlapSampleCount);
   const sampleSufficient = cohort?.sufficientSamples ?? false;
   return (
     <div className="min-w-0 border-l border-base-300/70 pl-4 first:border-l-0 first:pl-0">
@@ -68,14 +92,17 @@ function CohortColumn({
         <Metric
           label={t("stats.liveRequestStreaming.firstResponse")}
           value={formatMs(cohort?.firstResponseByteTotalMs?.p50Ms)}
+          sampleCount={firstResponseSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.firstToken")}
           value={formatMs(cohort?.firstTokenMs?.p50Ms)}
+          sampleCount={firstTokenSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.overlap")}
           value={formatMs(cohort?.requestUpstreamOverlapMs?.p50Ms)}
+          sampleCount={overlapSampleCount}
         />
         <Metric
           label={t("stats.liveRequestStreaming.retryRisk")}
@@ -86,10 +113,23 @@ function CohortColumn({
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  sampleCount,
+}: {
+  label: string;
+  value: string;
+  sampleCount?: number;
+}) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <dt className="text-base-content/65">{label}</dt>
+      <dt className="flex min-w-0 items-baseline gap-1 text-base-content/65">
+        <span>{label}</span>
+        {sampleCount != null ? (
+          <span className="font-mono text-xs text-base-content/45">n={sampleCount}</span>
+        ) : null}
+      </dt>
       <dd className="font-mono text-base-content">{value}</dd>
     </div>
   );
@@ -103,7 +143,26 @@ export function LiveRequestStreamingPerfPanel({
   const { t } = useTranslation();
   const control = findCohort(data?.cohorts ?? [], "control", "buffered");
   const treatment = findCohort(data?.cohorts ?? [], "treatment", "live_first");
-  const benefitsReady = Boolean(control?.sufficientSamples && treatment?.sufficientSamples);
+  const metricHasEnoughSamples = (
+    cohort: LiveRequestStreamingCohortStats | undefined,
+    metric:
+      | "firstResponseByteSampleCount"
+      | "firstTokenSampleCount"
+      | "requestUpstreamOverlapSampleCount",
+  ) => (cohort?.[metric] ?? cohort?.successSampleCount ?? 0) >= MIN_SUCCESS_SAMPLES;
+  const responseBenefitReady =
+    metricHasEnoughSamples(control, "firstResponseByteSampleCount") &&
+    metricHasEnoughSamples(treatment, "firstResponseByteSampleCount");
+  const tokenBenefitReady =
+    metricHasEnoughSamples(control, "firstTokenSampleCount") &&
+    metricHasEnoughSamples(treatment, "firstTokenSampleCount");
+  const overlapBenefitReady =
+    metricHasEnoughSamples(control, "requestUpstreamOverlapSampleCount") &&
+    metricHasEnoughSamples(treatment, "requestUpstreamOverlapSampleCount");
+  const routeFinalization = data?.routeFinalization;
+  const routeFactors = Object.entries(routeFinalization?.dependencyFactorCounts ?? {})
+    .map(([factor, count]) => `${factor}: ${count}`)
+    .join(" · ");
 
   return (
     <section className="surface-panel" data-testid="live-request-streaming-perf-panel">
@@ -138,7 +197,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.responseBenefit")}
                 value={
-                  benefitsReady
+                  responseBenefitReady
                     ? formatBenefit(
                         control?.firstResponseByteTotalMs?.p50Ms,
                         treatment?.firstResponseByteTotalMs?.p50Ms,
@@ -149,7 +208,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.tokenBenefit")}
                 value={
-                  benefitsReady
+                  tokenBenefitReady
                     ? formatBenefit(control?.firstTokenMs?.p50Ms, treatment?.firstTokenMs?.p50Ms)
                     : "-"
                 }
@@ -157,7 +216,7 @@ export function LiveRequestStreamingPerfPanel({
               <Metric
                 label={t("stats.liveRequestStreaming.overlapBenefit")}
                 value={
-                  benefitsReady
+                  overlapBenefitReady
                     ? formatBenefit(
                         control?.requestUpstreamOverlapMs?.p50Ms,
                         treatment?.requestUpstreamOverlapMs?.p50Ms,
@@ -166,6 +225,61 @@ export function LiveRequestStreamingPerfPanel({
                 }
               />
             </dl>
+            <div className="border-t border-base-300/70 pt-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <div className="text-sm font-semibold text-base-content">
+                  {t("stats.liveRequestStreaming.routeFinalization")}
+                </div>
+                <div className="font-mono text-xs text-base-content/65">
+                  n={routeFinalization?.sampleCount ?? 0}
+                </div>
+              </div>
+              {!routeFinalization?.sufficientSamples ? (
+                <div className="mt-1 text-xs text-warning">
+                  {t("stats.liveRequestStreaming.insufficient", {
+                    count: routeFinalization?.sampleCount ?? 0,
+                    minimum: MIN_SUCCESS_SAMPLES,
+                  })}
+                </div>
+              ) : null}
+              <dl className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeRawBytes")}
+                  value={formatDistribution(routeFinalization?.rawBytes, "B")}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeLogicalBytes")}
+                  value={formatDistribution(routeFinalization?.logicalBytes, "B")}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeRawRatio")}
+                  value={formatRatioDistribution(routeFinalization?.rawRatio)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeLogicalRatio")}
+                  value={formatRatioDistribution(routeFinalization?.logicalRatio)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeFinalizationMs")}
+                  value={formatMs(routeFinalization?.finalizationMs?.p50Ms)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeEofBuffered")}
+                  value={formatPercent(routeFinalization?.eofFinalizedRate ?? 0)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeCacheHit")}
+                  value={formatPercent(routeFinalization?.hotCacheHitRate ?? 0)}
+                />
+                <Metric
+                  label={t("stats.liveRequestStreaming.routeColdLoad")}
+                  value={formatPercent(routeFinalization?.coldLoadRate ?? 0)}
+                />
+              </dl>
+              {routeFactors ? (
+                <div className="mt-2 text-xs text-base-content/60">{routeFactors}</div>
+              ) : null}
+            </div>
           </>
         )}
       </div>

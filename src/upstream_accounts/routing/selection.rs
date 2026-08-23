@@ -70,6 +70,178 @@ async fn no_candidate_audit_for_request(
     Ok(audit)
 }
 
+async fn load_sticky_route_with_runtime_cache(
+    state: &AppState,
+    runtime_cache: &PoolRoutingRuntimeCache,
+    sticky_key: &str,
+    requested_model: Option<&str>,
+) -> Result<(Option<PoolStickyRouteRow>, i64)> {
+    let key = PoolRoutingStickyRouteCacheKey {
+        sticky_key: sticky_key.to_string(),
+        model_key: normalize_sticky_model_key(requested_model),
+    };
+    if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
+        && let Some(value) = cache.get(&key)
+    {
+        return Ok((value.route, value.affinity_generation));
+    }
+
+    // A single cold read fills both positive and empty sticky routes. This is
+    // deliberately shared with prompt-route misses so a burst on one key does
+    // not turn into a database fan-out.
+    let _cold_load_guard = state.pool_model_routing_cache_write_lock.lock().await;
+    if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
+        && let Some(value) = cache.get(&key)
+    {
+        return Ok((value.route, value.affinity_generation));
+    }
+    let sticky_cache_generation = runtime_cache
+        .sticky_route_cache
+        .lock()
+        .map(|cache| cache.generation())
+        .unwrap_or_default();
+    let (route, affinity_generation) =
+        load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model).await?;
+    if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
+        && cache.generation() == sticky_cache_generation
+    {
+        cache.insert(
+            key,
+            PoolRoutingStickyRouteCacheValue {
+                route: route.clone(),
+                affinity_generation,
+            },
+        );
+    }
+    Ok((route, affinity_generation))
+}
+
+fn model_route_penalties_from_runtime_snapshot(
+    snapshot: &PoolModelRoutingRuntimeCache,
+    account_ids: &[i64],
+    requested_model: Option<&str>,
+    now: DateTime<Utc>,
+) -> HashMap<i64, ModelRoutePenalty> {
+    let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return HashMap::new();
+    };
+    account_ids
+        .iter()
+        .filter_map(|account_id| {
+            snapshot
+                .model_route_runtime
+                .get(&(*account_id, model.to_string()))
+                .map(|route| (*account_id, route.penalty_at(now)))
+        })
+        .collect()
+}
+
+fn model_route_concurrency_limit_from_runtime_snapshot(
+    snapshot: &PoolModelRoutingRuntimeCache,
+    cache_hit_protection: &CacheHitProtectionSettings,
+    account_id: i64,
+    requested_model: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<i64> {
+    let model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())?;
+    snapshot
+        .model_route_runtime
+        .get(&(account_id, model.to_string()))
+        .and_then(|route| route.concurrency_limit_at(cache_hit_protection.enabled, now))
+}
+
+fn model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+    snapshot: &PoolModelRoutingRuntimeCache,
+    account_id: i64,
+    requested_model: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return false;
+    };
+    snapshot
+        .model_route_runtime
+        .get(&(account_id, model.to_string()))
+        .is_some_and(|route| route.requires_expired_cooldown_probe_at(now))
+}
+
+fn group_metadata_from_runtime_snapshot(
+    snapshot: &PoolModelRoutingRuntimeCache,
+    row: &UpstreamAccountRow,
+) -> UpstreamAccountGroupMetadata {
+    row.group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|group_name| !group_name.is_empty())
+        .and_then(|group_name| snapshot.group_metadata_by_name.get(group_name))
+        .cloned()
+        .unwrap_or_default()
+}
+
+async fn resolve_group_proxy_readiness_from_runtime_snapshot(
+    state: &AppState,
+    snapshot: &PoolModelRoutingRuntimeCache,
+    group_name: Option<&str>,
+) -> Result<PoolAccountGroupProxyRoutingReadiness> {
+    let group_name = group_name
+        .map(str::trim)
+        .filter(|group_name| !group_name.is_empty());
+    let metadata = group_name
+        .and_then(|group_name| snapshot.group_metadata_by_name.get(group_name))
+        .cloned()
+        .unwrap_or_default();
+    if metadata.node_shunt_enabled {
+        return Ok(match group_name {
+            Some(_) => PoolAccountGroupProxyRoutingReadiness::Ready(metadata),
+            None => {
+                PoolAccountGroupProxyRoutingReadiness::Blocked(missing_account_group_error_message())
+            }
+        });
+    }
+    let Some(group_name) = group_name else {
+        return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+            missing_account_group_error_message(),
+        ));
+    };
+    let canonical_bound_proxy_keys =
+        canonical_group_bound_proxy_keys(state, &metadata.bound_proxy_keys).await;
+    let scope =
+        match required_account_forward_proxy_scope(Some(group_name), canonical_bound_proxy_keys) {
+            Ok(scope) => scope,
+            Err(err) => {
+                return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+                    err.to_string(),
+                ));
+            }
+        };
+    let ForwardProxyRouteScope::BoundGroup {
+        group_name,
+        bound_proxy_keys,
+    } = scope
+    else {
+        unreachable!("strict pool account routing should always bind a group proxy")
+    };
+    let selectable = {
+        let manager = state.forward_proxy.lock().await;
+        manager.has_selectable_bound_proxy_keys(&bound_proxy_keys)
+    };
+    Ok(if selectable {
+        PoolAccountGroupProxyRoutingReadiness::Ready(metadata)
+    } else {
+        PoolAccountGroupProxyRoutingReadiness::Blocked(
+            missing_selectable_group_bound_proxy_error_message(&group_name),
+        )
+    })
+}
+
 fn model_route_penalty_code(score: u8) -> &'static str {
     match score {
         0 => "normal",
@@ -977,6 +1149,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolution> {
+    let routing_runtime = load_pool_routing_runtime_cache(state).await?;
+    let routing_snapshot = &routing_runtime.model_routing;
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -993,28 +1167,39 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut sticky_assigned_blocked = None;
     let mut group_proxy_blocked_messages = Vec::new();
     let mut node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
-    let route_binding_failure_penalties =
-        load_recent_route_binding_failure_penalties(&state.pool).await?;
+    let route_binding_failure_penalties = &routing_snapshot.route_binding_failure_penalties;
     let mut resolved_candidates = Vec::new();
     let mut sticky_queue_reservation_conflict: Option<(i64, String)> = None;
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
-        let (route, generation) =
-            load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
-                .await?;
+        let (route, generation) = load_sticky_route_with_runtime_cache(
+            state,
+            &routing_runtime,
+            sticky_key,
+            requested_model,
+        )
+        .await?;
         (route, Some(generation))
     } else {
         (None, None)
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
-    let sticky_model_penalties = load_model_route_penalties(
-        &state.pool,
+    let sticky_model_penalties = model_route_penalties_from_runtime_snapshot(
+        routing_snapshot,
         &sticky_source_id.into_iter().collect::<Vec<_>>(),
         requested_model,
-    )
-    .await?;
+        now,
+    );
     let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
-        let mut rule =
-            load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
+        let mut rule = routing_snapshot
+            .effective_rules_by_account
+            .get(&route.account_id)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!(
+                    "routing snapshot is missing sticky account {}",
+                    route.account_id
+                )
+            })?;
         apply_conversation_routing_override(&mut rule, conversation_override);
         Some(rule)
     } else {
@@ -1040,8 +1225,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     );
     let sticky_source_transport_decode_escape = if non_explicit_sticky_escape_enabled {
         if let Some(account_id) = sticky_source_id {
-            load_transport_decode_sticky_escape_states(&state.pool, &[account_id])
-                .await?
+            routing_snapshot
+                .transport_decode_sticky_escape_states
                 .contains_key(&account_id)
         } else {
             false
@@ -1071,30 +1256,33 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             && !sticky_source_transport_decode_escape
             && sticky_cut_out_blocked_by_policy
             && tried.contains(&route.account_id)
-            && load_upstream_account_row(&state.pool, route.account_id)
-                .await?
-                .is_some()
+            && routing_snapshot
+                .routing_account_rows_by_id
+                .contains_key(&route.account_id)
         {
             sticky_source_cut_out_guard_applies = true;
         }
         if !sticky_route_is_forced_binding_target
             && !tried.contains(&route.account_id)
-            && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            && let Some(row) = routing_snapshot
+                .routing_account_rows_by_id
+                .get(&route.account_id)
         {
             tried.insert(route.account_id);
             let sticky_route_matches_binding =
-                binding_constraint.is_none_or(|constraint| constraint.accepts_row(&row));
-            let sticky_candidate =
-                load_account_routing_candidate(&state.pool, route.account_id).await?;
+                binding_constraint.is_none_or(|constraint| constraint.accepts_row(row));
+            let sticky_candidate = routing_snapshot
+                .routing_candidates
+                .iter()
+                .find(|candidate| candidate.id == route.account_id)
+                .cloned();
             let sticky_snapshot_exhausted = sticky_candidate
                 .as_ref()
                 .is_some_and(routing_candidate_snapshot_is_exhausted);
-            let sticky_route_key = resolve_pool_account_upstream_base_url(
-                &row,
-                &state.config.openai_upstream_base_url,
-            )
-            .ok()
-            .map(|url| canonical_pool_upstream_route_key(&url));
+            let sticky_route_key =
+                resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)
+                    .ok()
+                    .map(|url| canonical_pool_upstream_route_key(&url));
             let sticky_route_matches_required =
                 required_upstream_route_key.is_none_or(|required| {
                     sticky_route_key
@@ -1122,21 +1310,21 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 ModelRoutePenalty::Normal
             };
             if !sticky_route_matches_binding {
-                if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
-                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                    || is_routing_eligible_account(&row)
+                if is_account_rate_limited_for_routing(row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(row)
                 {
                     saw_other_non_rate_limited_routing_candidate = true;
-                } else if is_pool_account_routing_candidate(&row) {
+                } else if is_pool_account_routing_candidate(row) {
                     saw_non_routing_candidate = true;
                 }
             } else if !sticky_route_matches_required {
-                if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
-                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                    || is_routing_eligible_account(&row)
+                if is_account_rate_limited_for_routing(row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(row)
                 {
                     saw_non_required_route_candidate = true;
-                } else if is_pool_account_routing_candidate(&row) {
+                } else if is_pool_account_routing_candidate(row) {
                     saw_non_routing_candidate = true;
                 }
             } else if sticky_source_transport_decode_escape {
@@ -1145,7 +1333,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 // A sticky account whose requested model is cooling down is still a
                 // model-level degraded candidate, not an unavailable account.
                 saw_degraded_candidate = true;
-            } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
+            } else if is_account_selectable_for_sticky_reuse(row, sticky_snapshot_exhausted, now) {
                 let sticky_model_accepted = match sticky_source_rule.as_ref() {
                     None => true,
                     Some(rule)
@@ -1237,21 +1425,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
                     let group_readiness = if row.bound_proxy_keys().is_empty() {
-                        resolve_pool_account_group_proxy_routing_readiness(
+                        resolve_group_proxy_readiness_from_runtime_snapshot(
                             state,
+                            routing_snapshot,
                             row.group_name.as_deref(),
                         )
                         .await?
                     } else {
                         PoolAccountGroupProxyRoutingReadiness::Ready(
-                            load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+                            group_metadata_from_runtime_snapshot(routing_snapshot, row),
                         )
                     };
                     match group_readiness {
                         PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
                             let mut evaluation = evaluate_live_pool_candidate(
                                 state,
-                                &row,
+                                row,
                                 sticky_candidate
                                     .as_ref()
                                     .unwrap_or(&AccountRoutingCandidateRow {
@@ -1295,7 +1484,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         route_binding_failure_penalty_for_account(
                                             state,
                                             &account,
-                                            &route_binding_failure_penalties,
+                                            route_binding_failure_penalties,
                                         )
                                         .await;
                                     sticky_fallback_handoff_enabled =
@@ -1309,6 +1498,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                         if sticky_source_cut_out_guard_applies {
                                             if reserve_sticky_model_route(
                                                 state,
+                                                routing_snapshot,
+                                                &routing_runtime.cache_hit_protection,
                                                 reservation_key,
                                                 &account,
                                                 requested_model,
@@ -1320,12 +1511,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                 ));
                                             }
                                             let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                                if model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+                                                    routing_snapshot,
                                                     account.account_id,
                                                     requested_model,
+                                                    now,
                                                 )
-                                                .await?
                                                 {
                                                     "expiredCooldownProbe"
                                                 } else {
@@ -1345,6 +1536,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                     } else {
                                         if reserve_sticky_model_route(
                                             state,
+                                            routing_snapshot,
+                                            &routing_runtime.cache_hit_protection,
                                             reservation_key,
                                             &account,
                                             requested_model,
@@ -1354,19 +1547,17 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             return Ok(PoolAccountResolution::Resolved(account));
                                         }
                                         let cache_hit_protection =
-                                            resolve_cache_hit_protection_settings(
-                                                &load_pool_routing_settings(&state.pool).await?,
-                                            );
+                                            routing_runtime.cache_hit_protection;
                                         if cache_hit_protection.overflow_mode
                                             == CacheHitOverflowMode::Queue
                                         {
                                             let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                                if model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+                                                    routing_snapshot,
                                                     account.account_id,
                                                     requested_model,
+                                                    now,
                                                 )
-                                                .await?
                                                 {
                                                     "expiredCooldownProbe"
                                                 } else {
@@ -1387,7 +1578,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                     sticky_route_excluded_by_route_key = true;
                                     sticky_route_was_excluded = true;
                                     if is_account_degraded_for_routing(
-                                        &row,
+                                        row,
                                         sticky_snapshot_exhausted,
                                         now,
                                     ) {
@@ -1421,7 +1612,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 group_proxy_blocked_messages.push(message.clone());
                                 sticky_assigned_blocked = build_assigned_blocked_account(
                                     state,
-                                    &row,
+                                    row,
                                     sticky_source_rule
                                         .as_ref()
                                         .expect("sticky source rule should be loaded"),
@@ -1436,7 +1627,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     if !sticky_route_was_excluded
                         && sticky_route_group_proxy_blocked_message.is_none()
                     {
-                        if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                        if is_account_degraded_for_routing(row, sticky_snapshot_exhausted, now) {
                             saw_degraded_candidate = true;
                         } else {
                             saw_other_non_rate_limited_routing_candidate = true;
@@ -1446,18 +1637,18 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     saw_other_non_rate_limited_routing_candidate = true;
                 }
             } else if sticky_route_is_excluded_by_route_key
-                && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
-                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
-                    || is_routing_eligible_account(&row))
+                && (is_account_rate_limited_for_routing(row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(row))
             {
                 saw_excluded_route_candidate = true;
-            } else if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted) {
+            } else if is_account_rate_limited_for_routing(row, sticky_snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
-            } else if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+            } else if is_account_degraded_for_routing(row, sticky_snapshot_exhausted, now) {
                 saw_degraded_candidate = true;
-            } else if is_routing_eligible_account(&row) {
+            } else if is_routing_eligible_account(row) {
                 saw_other_non_rate_limited_routing_candidate = true;
-            } else if is_pool_account_routing_candidate(&row) {
+            } else if is_pool_account_routing_candidate(row) {
                 saw_non_routing_candidate = true;
             }
         }
@@ -1471,10 +1662,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let message =
                 "sticky conversation cannot cut out of the current account because routing policy forbids it"
                     .to_string();
-            if let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            if let Some(row) = routing_snapshot
+                .routing_account_rows_by_id
+                .get(&route.account_id)
                 && let Some(assigned_blocked) = build_assigned_blocked_account(
                     state,
-                    &row,
+                    row,
                     sticky_source_rule
                         .as_ref()
                         .expect("sticky source rule should be loaded"),
@@ -1492,10 +1685,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
 
     let mut selection_audit_exclusions = Vec::new();
     for account_id in excluded_ids {
-        if let Some(row) = load_upstream_account_row(&state.pool, *account_id).await? {
+        if let Some(row) = routing_snapshot.routing_account_rows_by_id.get(account_id) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "previousAttemptExcluded",
             );
         }
@@ -1503,18 +1696,30 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     if let Some(account_id) = sticky_source_id
         && !excluded_ids.contains(&account_id)
         && tried.contains(&account_id)
-        && let Some(row) = load_upstream_account_row(&state.pool, account_id).await?
+        && let Some(row) = routing_snapshot.routing_account_rows_by_id.get(&account_id)
     {
         push_routing_selection_audit_exclusion(
             &mut selection_audit_exclusions,
-            &row,
+            row,
             "stickyReuseUnavailable",
         );
     }
 
-    let warmed_model_account_ids =
-        warmed_routing_account_ids_for_model(state, requested_model).await;
-    let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    let warmed_model_account_ids = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .and_then(|model| {
+            routing_snapshot
+                .warmed_model_account_ids
+                .get(&model.to_ascii_lowercase())
+                .cloned()
+        });
+    let mut candidates = routing_snapshot
+        .routing_candidates
+        .iter()
+        .filter(|candidate| !tried.contains(&candidate.id))
+        .cloned()
+        .collect::<Vec<_>>();
     if let Some(warmed_model_account_ids) = warmed_model_account_ids {
         let warmed_rank = warmed_model_account_ids
             .into_iter()
@@ -1534,14 +1739,16 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let candidate_count =
         candidates.len() + usize::from(sticky_queue_reservation_conflict.is_some());
     let sticky_escape_account_states = if non_explicit_sticky_escape_enabled {
-        load_transport_decode_sticky_escape_states(
-            &state.pool,
-            &candidates
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>(),
-        )
-        .await?
+        candidates
+            .iter()
+            .filter_map(|candidate| {
+                routing_snapshot
+                    .transport_decode_sticky_escape_states
+                    .get(&candidate.id)
+                    .copied()
+                    .map(|state| (candidate.id, state))
+            })
+            .collect()
     } else {
         HashMap::new()
     };
@@ -1553,44 +1760,49 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 candidate.active_sticky_conversations.saturating_sub(1);
         }
     }
-    let model_route_penalties = load_model_route_penalties(
-        &state.pool,
+    let model_route_penalties = model_route_penalties_from_runtime_snapshot(
+        routing_snapshot,
         &candidates
             .iter()
             .map(|candidate| candidate.id)
             .collect::<Vec<_>>(),
         requested_model,
-    )
-    .await?;
-    let mut candidate_effective_rules = load_effective_routing_rules_for_accounts(
-        &state.pool,
-        &candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+        now,
+    );
+    let mut candidate_effective_rules = candidates
+        .iter()
+        .filter_map(|candidate| {
+            routing_snapshot
+                .effective_rules_by_account
+                .get(&candidate.id)
+                .cloned()
+                .map(|rule| (candidate.id, rule))
+        })
+        .collect::<HashMap<_, _>>();
     for rule in candidate_effective_rules.values_mut() {
         apply_conversation_routing_override(rule, conversation_override);
     }
     for candidate in candidates {
-        let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
+        let Some(row) = routing_snapshot
+            .routing_account_rows_by_id
+            .get(&candidate.id)
+        else {
             continue;
         };
-        if binding_constraint.is_some_and(|constraint| !constraint.accepts_row(&row)) {
+        if binding_constraint.is_some_and(|constraint| !constraint.accepts_row(row)) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "bindingConstraint",
             );
-            if is_pool_account_routing_candidate(&row) {
+            if is_pool_account_routing_candidate(row) {
                 saw_other_non_rate_limited_routing_candidate = true;
             }
             continue;
         }
         let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
         let candidate_route_key =
-            resolve_pool_account_upstream_base_url(&row, &state.config.openai_upstream_base_url)
+            resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)
                 .ok()
                 .map(|url| canonical_pool_upstream_route_key(&url));
         let candidate_route_matches_required = required_upstream_route_key.is_none_or(|required| {
@@ -1604,12 +1816,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         if !candidate_route_matches_required {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "requiredRouteMismatch",
             );
-            if is_account_rate_limited_for_routing(&row, snapshot_exhausted)
-                || is_account_degraded_for_routing(&row, snapshot_exhausted, now)
-                || is_routing_eligible_account(&row)
+            if is_account_rate_limited_for_routing(row, snapshot_exhausted)
+                || is_account_degraded_for_routing(row, snapshot_exhausted, now)
+                || is_routing_eligible_account(row)
             {
                 saw_non_required_route_candidate = true;
             } else {
@@ -1620,7 +1832,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         if sticky_escape_account_states.contains_key(&candidate.id) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "recentTransportFailure",
             );
             saw_degraded_candidate = true;
@@ -1629,12 +1841,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         if candidate_route_is_excluded_by_route_key {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "previousAttemptExcluded",
             );
-            if is_account_rate_limited_for_routing(&row, snapshot_exhausted)
-                || is_account_degraded_for_routing(&row, snapshot_exhausted, now)
-                || is_routing_eligible_account(&row)
+            if is_account_rate_limited_for_routing(row, snapshot_exhausted)
+                || is_account_degraded_for_routing(row, snapshot_exhausted, now)
+                || is_routing_eligible_account(row)
             {
                 saw_excluded_route_candidate = true;
             } else {
@@ -1642,14 +1854,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
             continue;
         }
-        if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
-            let reason_code = if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
+        if !is_account_selectable_for_fresh_assignment(row, snapshot_exhausted, now) {
+            let reason_code = if is_account_rate_limited_for_routing(row, snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
                 "rateLimited"
-            } else if is_account_degraded_for_routing(&row, snapshot_exhausted, now) {
+            } else if is_account_degraded_for_routing(row, snapshot_exhausted, now) {
                 saw_degraded_candidate = true;
                 "degraded"
-            } else if is_routing_eligible_account(&row) {
+            } else if is_routing_eligible_account(row) {
                 saw_other_non_rate_limited_routing_candidate = true;
                 "notSelectableForFreshAssignment"
             } else {
@@ -1658,7 +1870,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             };
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 reason_code,
             );
             continue;
@@ -1676,7 +1888,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "notHigherPriorityThanStickyFallback",
             );
             continue;
@@ -1704,7 +1916,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         if !model_accepted {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "modelNotAllowed",
             );
             saw_other_non_rate_limited_routing_candidate = true;
@@ -1762,7 +1974,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         ) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "capabilityUnsupported",
             );
             saw_other_non_rate_limited_routing_candidate = true;
@@ -1775,7 +1987,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         ) {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "concurrencyLimit",
             );
             saw_other_non_rate_limited_routing_candidate = true;
@@ -1793,26 +2005,31 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "stickyPolicy",
             );
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }
         let group_readiness = if row.bound_proxy_keys().is_empty() {
-            resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
-                .await?
-        } else {
-            PoolAccountGroupProxyRoutingReadiness::Ready(
-                load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+            resolve_group_proxy_readiness_from_runtime_snapshot(
+                state,
+                routing_snapshot,
+                row.group_name.as_deref(),
             )
+            .await?
+        } else {
+            PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata_from_runtime_snapshot(
+                routing_snapshot,
+                row,
+            ))
         };
         let group_metadata = match group_readiness {
             PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
             PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
                 push_routing_selection_audit_exclusion(
                     &mut selection_audit_exclusions,
-                    &row,
+                    row,
                     "forwardProxyUnavailable",
                 );
                 group_proxy_blocked_messages.push(message);
@@ -1826,7 +2043,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         if model_penalty == ModelRoutePenalty::Excluded {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
-                &row,
+                row,
                 "modelTemporarilyExcluded",
             );
             saw_degraded_candidate = true;
@@ -1834,7 +2051,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         }
         let mut evaluation = evaluate_live_pool_candidate(
             state,
-            &row,
+            row,
             &candidate,
             effective_rule,
             &group_metadata,
@@ -1855,7 +2072,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         route_binding_failure_penalty_for_account(
                             state,
                             account,
-                            &route_binding_failure_penalties,
+                            route_binding_failure_penalties,
                         )
                         .await;
                 }
@@ -1864,7 +2081,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             PoolRoutingCandidateEligibility::HardBlocked => {
                 push_routing_selection_audit_exclusion(
                     &mut selection_audit_exclusions,
-                    &row,
+                    row,
                     "forwardProxyUnavailable",
                 );
                 if let Some(message) = evaluation.blocked_message {
@@ -1876,7 +2093,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             _ => {
                 push_routing_selection_audit_exclusion(
                     &mut selection_audit_exclusions,
-                    &row,
+                    row,
                     "notAssignable",
                 );
                 saw_other_non_rate_limited_routing_candidate = true;
@@ -1924,8 +2141,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 .collect(),
         })
     });
-    let cache_hit_protection =
-        resolve_cache_hit_protection_settings(&load_pool_routing_settings(&state.pool).await?);
+    let cache_hit_protection = routing_runtime.cache_hit_protection;
     let eligible_candidate_count = resolved_candidates.len();
     let mut reservation_conflict_count = 0_usize;
     if let Some((sticky_account_id, terminal_reason_code)) =
@@ -1935,9 +2151,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let Some(account) = evaluation.resolved_account.as_ref() else {
                 continue;
             };
-            let concurrency_limit =
-                model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
-                    .await?;
+            let concurrency_limit = model_route_concurrency_limit_from_runtime_snapshot(
+                routing_snapshot,
+                &cache_hit_protection,
+                account.account_id,
+                requested_model,
+                now,
+            );
             if !pool_routing_model_reservation_is_at_capacity(
                 state,
                 reservation_key.expect("sticky queue conflict requires a reservation key"),
@@ -1950,13 +2170,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             reservation_conflict_count += 1;
             let reason_code = if account.account_id == *sticky_account_id {
                 terminal_reason_code.as_str()
-            } else if model_route_requires_expired_cooldown_probe(
-                &state.pool,
+            } else if model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+                routing_snapshot,
                 account.account_id,
                 requested_model,
-            )
-            .await?
-            {
+                now,
+            ) {
                 "expiredCooldownProbe"
             } else {
                 "modelConcurrencyLimit"
@@ -1989,9 +2208,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     while let Some(evaluation) = resolved_candidates.next() {
         if let Some(account) = evaluation.resolved_account {
             if let Some(reservation_key) = reservation_key {
-                let concurrency_limit =
-                    model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
-                        .await?;
+                let concurrency_limit = model_route_concurrency_limit_from_runtime_snapshot(
+                    routing_snapshot,
+                    &cache_hit_protection,
+                    account.account_id,
+                    requested_model,
+                    now,
+                );
                 if !try_reserve_pool_routing_account_for_model(
                     state,
                     reservation_key,
@@ -2000,19 +2223,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     concurrency_limit,
                 ) {
                     reservation_conflict_count += 1;
-                    let reason_code = if model_route_requires_expired_cooldown_probe(
-                        &state.pool,
-                        account.account_id,
-                        requested_model,
-                    )
-                    .await?
-                    {
-                        "expiredCooldownProbe"
-                    } else if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
-                        "stickyRouteReservationConflict"
-                    } else {
-                        "modelConcurrencyLimit"
-                    };
+                    let reason_code =
+                        if model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+                            routing_snapshot,
+                            account.account_id,
+                            requested_model,
+                            now,
+                        ) {
+                            "expiredCooldownProbe"
+                        } else if account.routing_source == PoolRoutingSelectionSource::StickyReuse
+                        {
+                            "stickyRouteReservationConflict"
+                        } else {
+                            "modelConcurrencyLimit"
+                        };
                     if !selection_audit_exclusions
                         .iter()
                         .any(|candidate| candidate.account_id == account.account_id)
@@ -2030,12 +2254,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             let Some(remaining_account) = remaining.resolved_account else {
                                 continue;
                             };
-                            let remaining_limit = model_route_concurrency_limit(
-                                &state.pool,
-                                remaining_account.account_id,
-                                requested_model,
-                            )
-                            .await?;
+                            let remaining_limit =
+                                model_route_concurrency_limit_from_runtime_snapshot(
+                                    routing_snapshot,
+                                    &cache_hit_protection,
+                                    remaining_account.account_id,
+                                    requested_model,
+                                    now,
+                                );
                             if !pool_routing_model_reservation_is_at_capacity(
                                 state,
                                 reservation_key,
@@ -2046,21 +2272,21 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 continue;
                             }
                             reservation_conflict_count += 1;
-                            let remaining_reason = if model_route_requires_expired_cooldown_probe(
-                                &state.pool,
-                                remaining_account.account_id,
-                                requested_model,
-                            )
-                            .await?
-                            {
-                                "expiredCooldownProbe"
-                            } else if remaining_account.routing_source
-                                == PoolRoutingSelectionSource::StickyReuse
-                            {
-                                "stickyRouteReservationConflict"
-                            } else {
-                                "modelConcurrencyLimit"
-                            };
+                            let remaining_reason =
+                                if model_route_requires_expired_cooldown_probe_from_runtime_snapshot(
+                                    routing_snapshot,
+                                    remaining_account.account_id,
+                                    requested_model,
+                                    now,
+                                ) {
+                                    "expiredCooldownProbe"
+                                } else if remaining_account.routing_source
+                                    == PoolRoutingSelectionSource::StickyReuse
+                                {
+                                    "stickyRouteReservationConflict"
+                                } else {
+                                    "modelConcurrencyLimit"
+                                };
                             if !selection_audit_exclusions.iter().any(|candidate| {
                                 candidate.account_id == remaining_account.account_id
                             }) {
@@ -2193,6 +2419,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
 
 async fn reserve_sticky_model_route(
     state: &AppState,
+    routing_snapshot: &PoolModelRoutingRuntimeCache,
+    cache_hit_protection: &CacheHitProtectionSettings,
     reservation_key: Option<&str>,
     account: &PoolResolvedAccount,
     requested_model: Option<&str>,
@@ -2200,8 +2428,13 @@ async fn reserve_sticky_model_route(
     let Some(reservation_key) = reservation_key else {
         return Ok(true);
     };
-    let concurrency_limit =
-        model_route_concurrency_limit(&state.pool, account.account_id, requested_model).await?;
+    let concurrency_limit = model_route_concurrency_limit_from_runtime_snapshot(
+        routing_snapshot,
+        cache_hit_protection,
+        account.account_id,
+        requested_model,
+        Utc::now(),
+    );
     Ok(try_reserve_pool_routing_account_for_model(
         state,
         reservation_key,

@@ -235,11 +235,10 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
             (row.id, compiled_mappings)
         })
         .collect::<HashMap<_, _>>();
-    let routing_account_ids = rows
-        .iter()
-        .filter(|row| is_routing_eligible_account(row))
-        .map(|row| row.id)
-        .collect::<Vec<_>>();
+    // Sticky ownership and cut-out policy must still be evaluated for a
+    // cooling or otherwise non-assignable account. Keep the candidate set
+    // selective below, but snapshot routing rules for every live account.
+    let routing_account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let effective_rules =
         load_effective_routing_rules_for_accounts(pool, &routing_account_ids).await?;
     let mut available_models = Vec::new();
@@ -289,10 +288,41 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
                 .collect::<Vec<_>>();
         warmed_model_account_ids.insert(model.to_ascii_lowercase(), account_ids);
     }
+    let routing_candidates = load_account_routing_candidates(pool, &HashSet::new()).await?;
+    let routing_candidate_ids = routing_candidates
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    let group_names = rows
+        .iter()
+        .filter_map(|row| normalize_optional_text(row.group_name.clone()))
+        .collect::<HashSet<_>>();
+    let mut group_metadata_by_name = HashMap::with_capacity(group_names.len());
+    for group_name in group_names {
+        group_metadata_by_name.insert(
+            group_name.clone(),
+            load_group_metadata(pool, Some(&group_name)).await?,
+        );
+    }
+    let route_binding_failure_penalties = load_recent_route_binding_failure_penalties(pool).await?;
+    let transport_decode_sticky_escape_states =
+        load_transport_decode_sticky_escape_states(pool, &routing_candidate_ids).await?;
+    let model_route_runtime = load_model_route_runtime_snapshots(pool).await?;
+    let routing_account_rows_by_id = rows
+        .into_iter()
+        .map(|row| (row.id, std::sync::Arc::new(row)))
+        .collect::<HashMap<_, _>>();
 
     Ok(PoolModelRoutingRuntimeCache {
         generation: 0,
         mappings_by_account,
+        routing_account_rows_by_id,
+        routing_candidates,
+        effective_rules_by_account: effective_rules,
+        group_metadata_by_name,
+        route_binding_failure_penalties,
+        transport_decode_sticky_escape_states,
+        model_route_runtime,
         available_models,
         warmed_model_account_ids,
     })

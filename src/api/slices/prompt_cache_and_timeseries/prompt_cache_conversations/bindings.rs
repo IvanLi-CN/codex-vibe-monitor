@@ -1593,10 +1593,19 @@ async fn append_prompt_cache_conversation_operation_event(
     append_prompt_cache_conversation_operation_event_executor(pool, input).await
 }
 
-pub(crate) fn broadcast_prompt_cache_conversation_changed(
+pub(crate) async fn broadcast_prompt_cache_conversation_changed(
     state: &AppState,
     prompt_cache_key: &str,
 ) {
+    let runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    if let Some(runtime_cache) = runtime_cache.as_ref()
+        && let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
+    {
+        cache.invalidate_prompt_cache_key(prompt_cache_key);
+        if let Ok(mut sticky_cache) = runtime_cache.sticky_route_cache.lock() {
+            sticky_cache.invalidate_sticky_key(prompt_cache_key);
+        }
+    }
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::PromptCacheBindingChanged {
@@ -1612,12 +1621,22 @@ pub(crate) fn broadcast_prompt_cache_conversation_changed(
     }
 }
 
-pub(crate) fn broadcast_prompt_cache_conversation_sticky_route_changed(
+pub(crate) async fn invalidate_pool_routing_sticky_route_cache(state: &AppState, sticky_key: &str) {
+    let runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    if let Some(runtime_cache) = runtime_cache.as_ref()
+        && let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
+    {
+        cache.invalidate_sticky_key(sticky_key);
+    }
+}
+
+pub(crate) async fn broadcast_prompt_cache_conversation_sticky_route_changed(
     state: &AppState,
     sticky_key: &str,
     previous_upstream_account_id: i64,
     upstream_account_id: i64,
 ) {
+    invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::StickyRouteChanged {
@@ -2663,7 +2682,7 @@ pub(crate) async fn promote_prompt_cache_group_binding_to_upstream_account_and_b
     )
     .await?
     {
-        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
     Ok(())
 }
@@ -3001,7 +3020,7 @@ async fn clear_prompt_cache_conversation_affinity(
         }
     }
     drop(conn);
-    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }
@@ -3602,7 +3621,7 @@ async fn save_prompt_cache_conversation_binding_for_key(
         .await?;
     }
 
-    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key);
+    broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     load_prompt_cache_conversation_binding_response_for_key(state, prompt_cache_key.to_string())
         .await
 }

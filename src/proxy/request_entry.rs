@@ -1269,6 +1269,7 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
     pub(crate) live_request_streaming_experiment_group: Option<String>,
     pub(crate) live_first_attempt_failed: bool,
+    pub(crate) live_first_request_body_first_byte_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1653,6 +1654,7 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) model: Option<String>,
     pub(crate) contains_encrypted_content: bool,
     pub(crate) image_intent: ImageIntent,
+    pub(crate) root_object_complete: bool,
 }
 
 /// Immutable request semantics derived from the single replay snapshot.
@@ -5261,6 +5263,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                     &sticky_key_probe,
                                 ),
                             image_intent: ImageIntent::Unknown,
+                            root_object_complete: true,
                         },
                     ));
                 }
@@ -5348,6 +5351,7 @@ pub(crate) fn spawn_pool_replayable_request_body(
                             &sticky_key_probe,
                         ),
                     image_intent: ImageIntent::Unknown,
+                    root_object_complete: false,
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
@@ -6840,22 +6844,14 @@ mod tests {
         assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
 
         let mut status_rx = replay.status_rx.clone();
-        assert!(
-            timeout(Duration::from_millis(50), async {
-                loop {
-                    if !matches!(*status_rx.borrow(), PoolReplayBodyStatus::Reading) {
-                        break;
-                    }
-                    status_rx
-                        .changed()
-                        .await
-                        .expect("replay worker should stay alive");
-                }
-            })
-            .await
-            .is_err(),
-            "the bounded replay channel should wait for the live consumer"
-        );
+        // The final-route gate may consume the complete root object while it
+        // waits for route configuration, so the producer can legitimately
+        // finish before the transformed body has a consumer. In the older
+        // provisional path it remained Reading behind the bounded channel.
+        assert!(matches!(
+            *status_rx.borrow(),
+            PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Complete(_)
+        ));
 
         drop(pipeline);
         let snapshot = timeout(Duration::from_secs(1), async {
