@@ -27750,7 +27750,7 @@ mod request_compression_query_tests {
             3_600,
             0,
         );
-        let oversized_model = "m".repeat(SUMMARY_PROJECTION_MAX_ROLLUP_BYTES + 1);
+        let oversized_model = "🙂".repeat((SUMMARY_PROJECTION_MAX_ROLLUP_BYTES / 4) + 1);
         sqlx::query(
             "INSERT INTO upstream_account_usage_breakdown_hourly \
              (bucket_start_epoch, source, upstream_account_key, upstream_account_id, \

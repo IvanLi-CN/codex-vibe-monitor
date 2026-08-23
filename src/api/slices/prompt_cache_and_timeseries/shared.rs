@@ -1110,8 +1110,9 @@ pub(crate) async fn query_upstream_account_usage_breakdown_hourly_rollup_range_b
     let max_bytes = i64::try_from(max_bytes)
         .map_err(|_| anyhow!("usage rollup byte budget does not fit SQLite integer"))?;
     let mut budget_query = QueryBuilder::<Sqlite>::new(
-        "SELECT COALESCE(SUM(CAST(256 + length(COALESCE(normalized_model, '')) + \
-         length(COALESCE(normalized_reasoning_effort, '')) AS INTEGER)), 0) \
+        "SELECT COALESCE(SUM(CAST(256 + \
+         length(CAST(COALESCE(normalized_model, '') AS BLOB)) + \
+         length(CAST(COALESCE(normalized_reasoning_effort, '') AS BLOB)) AS INTEGER)), 0) \
          FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch >= ",
     );
     budget_query
