@@ -1597,11 +1597,14 @@ pub(crate) async fn broadcast_prompt_cache_conversation_changed(
     state: &AppState,
     prompt_cache_key: &str,
 ) {
-    let runtime_cache = state.pool_routing_runtime_cache.lock().await;
-    if let Some(runtime_cache) = runtime_cache.as_ref()
-        && let Ok(mut cache) = runtime_cache.prompt_route_cache.lock()
-    {
-        cache.invalidate_prompt_cache_key(prompt_cache_key);
+    let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    if let Some(runtime_cache) = runtime_cache.as_mut() {
+        runtime_cache
+            .live_request_route_dependencies
+            .mark_prompt_cache_routes_present();
+        if let Ok(mut cache) = runtime_cache.prompt_route_cache.lock() {
+            cache.invalidate_prompt_cache_key(prompt_cache_key);
+        }
         if let Ok(mut sticky_cache) = runtime_cache.sticky_route_cache.lock() {
             sticky_cache.invalidate_sticky_key(prompt_cache_key);
         }
@@ -1622,11 +1625,14 @@ pub(crate) async fn broadcast_prompt_cache_conversation_changed(
 }
 
 pub(crate) async fn invalidate_pool_routing_sticky_route_cache(state: &AppState, sticky_key: &str) {
-    let runtime_cache = state.pool_routing_runtime_cache.lock().await;
-    if let Some(runtime_cache) = runtime_cache.as_ref()
-        && let Ok(mut cache) = runtime_cache.sticky_route_cache.lock()
-    {
-        cache.invalidate_sticky_key(sticky_key);
+    let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
+    if let Some(runtime_cache) = runtime_cache.as_mut() {
+        runtime_cache
+            .live_request_route_dependencies
+            .mark_sticky_routes_present();
+        if let Ok(mut cache) = runtime_cache.sticky_route_cache.lock() {
+            cache.invalidate_sticky_key(sticky_key);
+        }
     }
 }
 

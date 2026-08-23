@@ -1655,6 +1655,10 @@ pub(crate) struct PoolReplayBodyKeyProbe {
     pub(crate) contains_encrypted_content: bool,
     pub(crate) image_intent: ImageIntent,
     pub(crate) root_object_complete: bool,
+    /// Transport and decoded JSON bytes observed when the live routing probe
+    /// became ready. Snapshot-based probes leave these absent.
+    pub(crate) raw_bytes_observed: Option<usize>,
+    pub(crate) logical_bytes_observed: Option<usize>,
 }
 
 /// Immutable request semantics derived from the single replay snapshot.
@@ -5264,6 +5268,8 @@ pub(crate) fn spawn_pool_replayable_request_body(
                                 ),
                             image_intent: ImageIntent::Unknown,
                             root_object_complete: true,
+                            raw_bytes_observed: None,
+                            logical_bytes_observed: None,
                         },
                     ));
                 }
@@ -5352,6 +5358,8 @@ pub(crate) fn spawn_pool_replayable_request_body(
                         ),
                     image_intent: ImageIntent::Unknown,
                     root_object_complete: false,
+                    raw_bytes_observed: None,
+                    logical_bytes_observed: None,
                 };
                 if key_probe.sticky_key.is_some()
                     || key_probe.prompt_cache_key.is_some()
