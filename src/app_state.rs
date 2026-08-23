@@ -443,6 +443,8 @@ fn dashboard_projection_record_from_invocation(
     ) {
         return None;
     }
+    let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
+        || previous.is_some_and(|record| record.is_retry);
     Some(DashboardRuntimeBaselineRecord {
         key,
         upstream_account_id: record
@@ -452,12 +454,8 @@ fn dashboard_projection_record_from_invocation(
             record.upstream_account_name.clone(),
         )
         .or_else(|| previous.and_then(|record| record.upstream_account_name.clone())),
-        is_retry: record.pool_attempt_count.unwrap_or_default() > 1
-            || previous.is_some_and(|record| record.is_retry),
-        live_phase: record
-            .live_phase
-            .clone()
-            .or_else(|| runtime_invocation_live_phase(record).map(str::to_string)),
+        is_retry,
+        live_phase: runtime_record_live_phase_with_retry(record, is_retry).map(str::to_string),
         wait_ms: normalized_wait_ms(record.t_upstream_ttfb_ms),
     })
 }

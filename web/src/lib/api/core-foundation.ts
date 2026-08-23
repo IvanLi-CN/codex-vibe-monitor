@@ -503,6 +503,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   errorMessage?: string | null;
   downstreamErrorMessage?: string | null;
   connectLatencyMs?: number | null;
+  firstTokenMs?: number | null;
   firstByteLatencyMs?: number | null;
   streamLatencyMs?: number | null;
   upstreamRequestId?: string | null;
@@ -809,6 +810,7 @@ export interface ApiInvocationWorkflowAttempt {
   errorMessage?: string | null;
   downstreamErrorMessage?: string | null;
   connectLatencyMs?: number | null;
+  firstTokenMs?: number | null;
   firstByteLatencyMs?: number | null;
   streamLatencyMs?: number | null;
   upstreamRequestId?: string | null;

@@ -573,9 +573,7 @@ impl DashboardNetworkSpeedCache {
             record.t_upstream_connect_ms,
             record.t_upstream_ttfb_ms,
         );
-        let live_first_token_ms = record
-            .first_token_ms
-            .filter(|value| value.is_finite() && *value >= 0.0);
+        let live_first_token_ms = runtime_record_first_token_ms(record);
         let observed_epoch_second = observed_at.timestamp();
         let mut inner = self
             .inner
@@ -660,17 +658,50 @@ impl DashboardNetworkSpeedCache {
             }
             _ => {}
         }
-        if tracked.live_first_token_ms.is_none()
-            && let Some(first_token_ms) = live_first_token_ms
-        {
-            tracked.live_first_token_epoch_second = Some(observed_epoch_second);
-            tracked.live_first_token_ms = Some(first_token_ms);
-            add_first_token_sample_for_scope_locked(
-                &mut inner,
-                tracked.upstream_account_id,
-                observed_epoch_second,
-                first_token_ms,
-            );
+        match (
+            tracked.live_first_token_epoch_second,
+            tracked.live_first_token_ms,
+            live_first_token_ms,
+        ) {
+            (Some(epoch_second), Some(previous_ms), None) => {
+                remove_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    previous_ms,
+                );
+                tracked.live_first_token_epoch_second = None;
+                tracked.live_first_token_ms = None;
+            }
+            (Some(epoch_second), Some(previous_ms), Some(next_ms))
+                if (previous_ms - next_ms).abs() >= 0.5 =>
+            {
+                remove_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    previous_ms,
+                );
+                tracked.live_first_token_epoch_second = Some(epoch_second);
+                tracked.live_first_token_ms = Some(next_ms);
+                add_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    epoch_second,
+                    next_ms,
+                );
+            }
+            (None, _, Some(first_token_ms)) => {
+                tracked.live_first_token_epoch_second = Some(observed_epoch_second);
+                tracked.live_first_token_ms = Some(first_token_ms);
+                add_first_token_sample_for_scope_locked(
+                    &mut inner,
+                    tracked.upstream_account_id,
+                    observed_epoch_second,
+                    first_token_ms,
+                );
+            }
+            _ => {}
         }
         inner.tracked_invocations.insert(key, tracked);
     }
@@ -704,9 +735,7 @@ impl DashboardNetworkSpeedCache {
         let terminal_total_ms = record
             .t_total_ms
             .filter(|value| value.is_finite() && *value >= 0.0);
-        let terminal_first_token_ms = record
-            .first_token_ms
-            .filter(|value| value.is_finite() && *value >= 0.0);
+        let terminal_first_token_ms = runtime_record_first_token_ms(record);
         let terminal_qualified_tokens = if is_success && record.cost.is_some() {
             record.total_tokens.unwrap_or_default().max(0)
         } else {
@@ -757,9 +786,8 @@ impl DashboardNetworkSpeedCache {
                 terminal_snapshot.total_latency_sample_count = 1;
                 terminal_snapshot.total_latency_sum_ms = total_ms;
             }
-            if let Some(response_duration_ms) = record
-                .t_upstream_stream_ms
-                .filter(|value| value.is_finite() && *value >= 0.0)
+            if let Some(response_duration_ms) =
+                measured_response_duration_ms(record.t_upstream_stream_ms)
             {
                 terminal_snapshot.response_duration_sample_count = 1;
                 terminal_snapshot.response_duration_sum_ms = response_duration_ms;
@@ -781,9 +809,18 @@ impl DashboardNetworkSpeedCache {
                 },
             );
         }
-        if tracked.live_first_token_ms.is_none()
-            && let Some(first_token_ms) = terminal_first_token_ms
-        {
+        if let (Some(epoch_second), Some(previous_ms)) = (
+            tracked.live_first_token_epoch_second,
+            tracked.live_first_token_ms,
+        ) {
+            remove_first_token_sample_for_scope_locked(
+                &mut inner,
+                upstream_account_id,
+                epoch_second,
+                previous_ms,
+            );
+        }
+        if let Some(first_token_ms) = terminal_first_token_ms {
             add_first_token_sample_for_scope_locked(
                 &mut inner,
                 upstream_account_id,
@@ -1124,6 +1161,10 @@ impl DashboardNetworkSpeedCache {
             });
         }
     }
+}
+
+fn measured_response_duration_ms(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > 0.0)
 }
 
 fn record_scope_delta_locked(
@@ -1666,6 +1707,16 @@ pub(crate) async fn flush_dashboard_network_socket_minute_rollups(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_duration_requires_a_finite_positive_measurement() {
+        assert_eq!(measured_response_duration_ms(Some(0.1)), Some(0.1));
+        assert_eq!(measured_response_duration_ms(Some(0.0)), None);
+        assert_eq!(measured_response_duration_ms(Some(-0.1)), None);
+        assert_eq!(measured_response_duration_ms(Some(f64::INFINITY)), None);
+        assert_eq!(measured_response_duration_ms(Some(f64::NAN)), None);
+        assert_eq!(measured_response_duration_ms(None), None);
+    }
 
     fn fixed_utc(second: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(second, 0)

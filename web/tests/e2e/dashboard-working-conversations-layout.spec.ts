@@ -30,6 +30,7 @@ type PromptCacheConversationInvocationPreview = {
   tReqParseMs?: number | null;
   tUpstreamConnectMs?: number | null;
   tUpstreamTtfbMs?: number | null;
+  firstTokenMs?: number | null;
   tUpstreamStreamMs?: number | null;
   tRespParseMs?: number | null;
   tPersistMs?: number | null;
@@ -73,11 +74,13 @@ function createPreview(
     tReqReadMs: overrides.tReqReadMs ?? 11,
     tReqParseMs: overrides.tReqParseMs ?? 7,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 84,
-    tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 91,
-    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
+    tUpstreamTtfbMs: "tUpstreamTtfbMs" in overrides ? (overrides.tUpstreamTtfbMs ?? null) : 91,
+    firstTokenMs: overrides.firstTokenMs,
+    tUpstreamStreamMs:
+      "tUpstreamStreamMs" in overrides ? (overrides.tUpstreamStreamMs ?? null) : 220,
     tRespParseMs: overrides.tRespParseMs ?? 10,
     tPersistMs: overrides.tPersistMs ?? 8,
-    tTotalMs: overrides.tTotalMs ?? 431,
+    tTotalMs: "tTotalMs" in overrides ? (overrides.tTotalMs ?? null) : 431,
   };
 }
 
@@ -118,7 +121,11 @@ function createConversation(
   };
 }
 
-function buildWorkingConversationsResponse() {
+function buildWorkingConversationsResponse({
+  currentFirstTokenMs = 740,
+}: {
+  currentFirstTokenMs?: number | null;
+} = {}) {
   const conversations = [
     createConversation("wc-current-1", [
       createPreview({
@@ -128,6 +135,9 @@ function buildWorkingConversationsResponse() {
         status: "running",
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
+        firstTokenMs: currentFirstTokenMs,
+        tUpstreamTtfbMs: null,
+        tUpstreamStreamMs: null,
         tTotalMs: null,
       }),
       createPreview({
@@ -136,6 +146,15 @@ function buildWorkingConversationsResponse() {
         occurredAt: "2026-04-06T11:57:20.000Z",
         status: "success",
         model: "gpt-5.4-mini",
+        upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
+        endpoint: "/v1/responses/compact",
+      }),
+      createPreview({
+        id: 15,
+        invokeId: "wc-1-c",
+        occurredAt: "2026-04-06T11:54:08.000Z",
+        status: "success",
+        model: "gpt-5.4-long-context-preview",
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
       }),
@@ -269,7 +288,7 @@ function buildWorkingConversationsResponse() {
         cacheInputTokens: 66,
       }),
       createPreview({
-        id: 15,
+        id: 16,
         invokeId: "wc-8-b",
         occurredAt: "2026-04-06T11:50:20.000Z",
         status: "success",
@@ -472,7 +491,52 @@ const VIEWPORTS: LayoutExpectation[] = [
   { viewport: { width: 1873, height: 900 }, expectedColumns: 4 },
 ];
 
-async function installDashboardRoutes(page: Page) {
+async function installDashboardRoutes(
+  page: Page,
+  options: { currentFirstTokenMs?: number | null } = {},
+) {
+  await page.route("**/events**", async (route) => {
+    const url = new URL(route.request().url());
+    const topicsParam = url.searchParams.get("topics");
+    if (!topicsParam) {
+      await route.fulfill({ status: 200, contentType: "text/event-stream", body: ": ready\n\n" });
+      return;
+    }
+
+    const topics = JSON.parse(Buffer.from(topicsParam, "base64url").toString("utf8")) as Array<{
+      topic: string;
+      params?: Record<string, string>;
+    }>;
+    const frames = topics
+      .filter(
+        (descriptor) =>
+          descriptor.topic === "dashboard.working-conversations.current" ||
+          descriptor.topic === "dashboard.activity.current",
+      )
+      .map((descriptor) =>
+        JSON.stringify({
+          type: "snapshot",
+          topic: descriptor,
+          topic_key: "e2e-dashboard-working-conversations",
+          schema_epoch: "e2e-schema-1",
+          cursor: 1,
+          payload:
+            descriptor.topic === "dashboard.activity.current"
+              ? buildDashboardActivityResponse()
+              : buildWorkingConversationsResponse(options),
+        }),
+      )
+      .map((frame) => `data: ${frame}\n\n`)
+      .join("");
+
+    await route.fulfill({
+      status: 200,
+      headers: { "Cache-Control": "no-cache" },
+      contentType: "text/event-stream",
+      body: frames || ": ready\n\n",
+    });
+  });
+
   await page.route("**/api/stats/summary**", async (route) => {
     const url = new URL(route.request().url());
     await route.fulfill({
@@ -495,7 +559,7 @@ async function installDashboardRoutes(page: Page) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(buildWorkingConversationsResponse()),
+      body: JSON.stringify(buildWorkingConversationsResponse(options)),
     });
   });
 
@@ -513,7 +577,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     test(`keeps ${expectedColumns} columns at ${viewport.width}px`, async ({ page }) => {
       await installDashboardRoutes(page);
       await page.setViewportSize(viewport);
-      await page.goto("/dashboard");
+      await page.goto("/#/dashboard");
 
       await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
       await expect(page.getByTestId("dashboard-working-conversation-card")).toHaveCount(8);
@@ -569,12 +633,58 @@ test.describe("Dashboard working conversations responsive layout", () => {
     });
   }
 
-  test("keeps account metadata inline on wide desktop cards and shows compact endpoint badges", async ({
-    page,
-  }) => {
+  test("keeps measured in-flight TTFT while response duration is unfinished", async ({ page }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 1660, height: 1180 });
-    await page.goto("/dashboard");
+    await page.goto("/#/dashboard");
+
+    const currentSlot = page.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
+      "0.7 s",
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+  });
+
+  test("keeps zero TTFT measured and invalid live timing unavailable", async ({ page }) => {
+    await installDashboardRoutes(page, { currentFirstTokenMs: 0 });
+    await page.setViewportSize({ width: 1660, height: 1180 });
+    await page.goto("/#/dashboard");
+
+    const currentSlot = page.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
+      "0 s",
+    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+
+    await page.close();
+    const invalidPage = await page.context().newPage();
+    await installDashboardRoutes(invalidPage, { currentFirstTokenMs: -1 });
+    await invalidPage.setViewportSize({ width: 1660, height: 1180 });
+    await invalidPage.goto("/#/dashboard");
+
+    const invalidSlot = invalidPage.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    const invalidFirstToken = invalidSlot.getByTestId("dashboard-compact-latency-first-byte");
+    await expect(invalidFirstToken).toContainText("--");
+    expect(await invalidFirstToken.getAttribute("class")).not.toContain("text-success");
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+      "--",
+    );
+  });
+
+  test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
+    await installDashboardRoutes(page);
+    await page.setViewportSize({ width: 1660, height: 1180 });
+    await page.goto("/#/dashboard");
 
     const compactBadge = page.locator(
       '[data-testid="invocation-endpoint-badge"][data-endpoint-kind="compact"]',
@@ -601,30 +711,167 @@ test.describe("Dashboard working conversations responsive layout", () => {
       const accountChip = slot?.querySelector<HTMLElement>(
         '[data-testid="dashboard-working-conversation-account-chip"]',
       );
-      const accountMeta = slot?.querySelector<HTMLElement>(
-        '[data-testid="dashboard-working-conversation-account-meta"]',
+      const slotModel = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-slot-model"]',
       );
-      if (!slot || !accountLine || !accountChip || !accountMeta) {
+      const usageLine = slot?.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-usage-line"]',
+      );
+      if (!slot || !accountLine || !accountChip || !slotModel || !usageLine) {
         throw new Error("missing account line geometry anchors");
       }
 
       const slotRect = slot.getBoundingClientRect();
       const lineRect = accountLine.getBoundingClientRect();
       const chipRect = accountChip.getBoundingClientRect();
-      const metaRect = accountMeta.getBoundingClientRect();
+      const modelRect = slotModel.getBoundingClientRect();
+      const usageRect = usageLine.getBoundingClientRect();
+      const slotTime = slot.querySelector<HTMLElement>(
+        '[data-testid="dashboard-working-conversation-slot-time"]',
+      );
+      if (!slotTime) throw new Error("missing slot time geometry anchor");
+      const timeRect = slotTime.getBoundingClientRect();
+      const reasoningTextOverflow = Array.from(
+        card.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
+        ),
+      ).some((text) => text.scrollWidth > text.clientWidth);
+      const reasoningContextGap = Math.max(
+        0,
+        ...Array.from(
+          slot.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => {
+          const modelIdentity = reasoningEffort
+            .closest<HTMLElement>('[data-testid="dashboard-working-conversation-slot-model"]')
+            ?.querySelector<HTMLElement>(
+              '[data-testid="dashboard-working-conversation-model-name"]',
+            );
+          if (!modelIdentity) throw new Error("missing model geometry anchor");
+          return (
+            reasoningEffort.getBoundingClientRect().left -
+            modelIdentity.getBoundingClientRect().right
+          );
+        }),
+      );
+      const reasoningChipHeight = Math.max(
+        0,
+        ...Array.from(
+          slot.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
+      );
 
       return {
-        chipMetaTopDelta: Math.abs(chipRect.top - metaRect.top),
+        chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
+        modelAfterTime: modelRect.left >= timeRect.right,
+        usageRightDelta: Math.abs(usageRect.right - accountLine.getBoundingClientRect().right),
         lineOverflowRight: lineRect.right - slotRect.right,
         lineHeight: lineRect.height,
-        chipBottomDelta: Math.abs(chipRect.bottom - metaRect.bottom),
+        reasoningTextOverflow,
+        reasoningContextGap,
+        reasoningChipHeight,
       };
     });
 
-    expect(layout.chipMetaTopDelta).toBeLessThanOrEqual(4);
-    expect(layout.chipBottomDelta).toBeLessThanOrEqual(8);
+    expect(layout.chipModelTopDelta).toBeLessThanOrEqual(4);
+    expect(layout.modelAfterTime).toBe(true);
+    expect(layout.usageRightDelta).toBeLessThanOrEqual(1);
     expect(layout.lineOverflowRight).toBeLessThanOrEqual(1);
     expect(layout.lineHeight).toBeLessThan(32);
+    expect(layout.reasoningTextOverflow).toBe(false);
+    expect(layout.reasoningContextGap).toBeLessThanOrEqual(8);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+  });
+
+  test("keeps three slots and two-line records inside a narrow viewport", async ({ page }) => {
+    await installDashboardRoutes(page);
+    await page.setViewportSize({ width: 393, height: 852 });
+    await page.goto("/#/dashboard");
+
+    await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
+    const layout = await page.evaluate(() => {
+      const root = document.documentElement;
+      const cards = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ),
+      );
+      const slots = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-slot"]',
+        ),
+      );
+      const placeholders = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-placeholder"]',
+        ),
+      );
+      const labels = document.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-slot-label"]',
+      );
+      const usageLines = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-usage-line"]',
+        ),
+      );
+      const accountLines = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-account-line"]',
+        ),
+      );
+      const reasoningTextOverflow = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-reasoning-effort"] span',
+        ),
+      ).some((text) => text.scrollWidth > text.clientWidth);
+      const reasoningChipHeight = Math.max(
+        0,
+        ...Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+          ),
+        ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
+      );
+      return {
+        rootOverflow: root.scrollWidth - root.clientWidth,
+        cards: cards.length,
+        slotCount: slots.length + placeholders.length,
+        labels: labels.length,
+        usageRightAligned: usageLines.every((line) => {
+          const accountLine = line.closest<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-account-line"]',
+          );
+          return (
+            accountLine != null &&
+            Math.abs(
+              line.getBoundingClientRect().right - accountLine.getBoundingClientRect().right,
+            ) <= 1
+          );
+        }),
+        accountLineOverflow: Math.max(
+          0,
+          ...accountLines.map(
+            (line) =>
+              line.getBoundingClientRect().right -
+              line.parentElement!.getBoundingClientRect().right,
+          ),
+        ),
+        reasoningTextOverflow,
+        reasoningChipHeight,
+      };
+    });
+
+    expect(layout.rootOverflow).toBeLessThanOrEqual(1);
+    expect(layout.cards).toBeGreaterThan(0);
+    expect(layout.slotCount).toBeGreaterThanOrEqual(layout.cards * 3);
+    expect(layout.labels).toBe(0);
+    expect(layout.usageRightAligned).toBe(true);
+    expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
+    expect(layout.reasoningTextOverflow).toBe(false);
+    expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
   });
 
   test("keeps long recent error summaries inside their upstream account cards", async ({
@@ -632,7 +879,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
   }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 1660, height: 1180 });
-    await page.goto("/dashboard");
+    await page.goto("/#/dashboard");
 
     await page.getByRole("tab", { name: "上游账号" }).click();
     await expect(page.getByTestId("dashboard-upstream-account-card")).toHaveCount(2);

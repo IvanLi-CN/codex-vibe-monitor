@@ -285,7 +285,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "must run both Playwright regression specs" "$tmp_dir/e2e-spec.log"
+grep -q "must run all required Playwright regression specs" "$tmp_dir/e2e-spec.log"
 
 informational_repo="$tmp_dir/informational-repo"
 copy_repo_snapshot "$baseline_repo" "$informational_repo"

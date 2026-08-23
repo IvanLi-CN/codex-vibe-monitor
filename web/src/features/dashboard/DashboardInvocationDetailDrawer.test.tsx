@@ -461,6 +461,21 @@ describe("DashboardInvocationDetailDrawer model details", () => {
       ),
     );
   });
+
+  it("labels the third slot as an earlier invocation", async () => {
+    const selection = { ...createSelection(), slotKind: "earlier" as const };
+    const record = selection.invocation.record;
+    apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([record]));
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(createWorkflowDetailFixture(record));
+
+    render(<DashboardInvocationDetailDrawer open selection={selection} onClose={() => {}} />);
+
+    await waitFor(() =>
+      expect(document.body.textContent ?? "").toContain(
+        "dashboard.workingConversations.earlierInvocation",
+      ),
+    );
+  });
 });
 
 describe("DashboardInvocationDetailDrawer", () => {

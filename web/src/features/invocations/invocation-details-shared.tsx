@@ -27,6 +27,10 @@ import {
   resolveInvocationImageIntentDisplay,
   resolveInvocationModelDisplay,
 } from "../../lib/invocation";
+import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
 import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
@@ -133,7 +137,7 @@ function isZhLocale(locale: string) {
 }
 
 export function formatMilliseconds(value: number | null | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
   return `${value.toFixed(1)} ms`;
 }
 
@@ -146,10 +150,11 @@ export function resolveInvocationCollapsedErrorSummary(
 }
 
 export function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+  if (!isFiniteNonNegativeMilliseconds(value)) return FALLBACK_CELL;
 
   const seconds = value / 1000;
-  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3;
+  const roundedToTenths = Number(seconds.toFixed(1));
+  const precision = roundedToTenths >= 100 ? 0 : 1;
   const rounded = Number(seconds.toFixed(precision));
 
   return `${rounded.toLocaleString(localeTag, {
@@ -162,7 +167,7 @@ function formatPositiveSecondsFromMilliseconds(
   value: number | null | undefined,
   localeTag: string,
 ) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+  if (!isFinitePositiveMilliseconds(value)) {
     return FALLBACK_CELL;
   }
   return formatSecondsFromMilliseconds(value, localeTag);
@@ -1864,6 +1869,8 @@ function TimingRail({ timingPairs }: { timingPairs: Array<{ label: string; value
               "rounded-lg border px-3 py-2",
               isTotal ? "border-primary/24 bg-primary/8" : "border-base-300/60 bg-base-200/42",
             )}
+            data-testid="invocation-timing-stage"
+            data-timing-label={entry.label}
           >
             <div className="flex items-center gap-2">
               <span

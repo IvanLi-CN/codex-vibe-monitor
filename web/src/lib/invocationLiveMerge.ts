@@ -17,6 +17,48 @@ function hasComparableNumber(value: number | null | undefined) {
   return comparableNumber(value) !== null;
 }
 
+function comparableTimingNumber(value: number | null | undefined) {
+  const normalized = comparableNumber(value);
+  return normalized !== null && normalized >= 0 ? normalized : null;
+}
+
+function comparablePositiveTimingNumber(value: number | null | undefined) {
+  const normalized = comparableNumber(value);
+  return normalized !== null && normalized > 0 ? normalized : null;
+}
+
+function comparableTimingField(field: keyof ApiInvocation, value: number | null | undefined) {
+  return field === "tUpstreamStreamMs"
+    ? comparablePositiveTimingNumber(value)
+    : comparableTimingNumber(value);
+}
+
+function hasComparableTimingField(field: keyof ApiInvocation, value: number | null | undefined) {
+  return comparableTimingField(field, value) !== null;
+}
+
+const TIMING_FIELDS: ReadonlyArray<keyof ApiInvocation> = [
+  "tReqReadMs",
+  "tReqParseMs",
+  "tUpstreamConnectMs",
+  "tUpstreamTtfbMs",
+  "firstTokenMs",
+  "tUpstreamStreamMs",
+  "tRespParseMs",
+  "tPersistMs",
+  "tTotalMs",
+];
+
+function sanitizeInvocationTimingFields(record: ApiInvocation) {
+  for (const field of TIMING_FIELDS) {
+    const value = record[field];
+    if (typeof value === "number" && !hasComparableTimingField(field, value)) {
+      record[field] = null as never;
+    }
+  }
+  return record;
+}
+
 function invocationHasTerminalFailure(record: ApiInvocation) {
   const status = normalizeStatus(record.status);
   if (status === "running" || status === "pending") return false;
@@ -90,6 +132,13 @@ function recordCompletenessScore(record: ApiInvocation) {
     score += 2;
   }
   if (
+    typeof record.firstTokenMs === "number" &&
+    Number.isFinite(record.firstTokenMs) &&
+    record.firstTokenMs >= 0
+  ) {
+    score += 2;
+  }
+  if (
     typeof record.tTotalMs === "number" &&
     Number.isFinite(record.tTotalMs) &&
     record.tTotalMs > 0
@@ -125,11 +174,15 @@ function compareRecordRuntimeProgress(current: ApiInvocation, next: ApiInvocatio
       comparableNumber(current.poolDistinctAccountCount),
       comparableNumber(next.poolDistinctAccountCount),
     ],
-    [comparableNumber(current.tUpstreamTtfbMs), comparableNumber(next.tUpstreamTtfbMs)],
-    [comparableNumber(current.tUpstreamStreamMs), comparableNumber(next.tUpstreamStreamMs)],
-    [comparableNumber(current.tRespParseMs), comparableNumber(next.tRespParseMs)],
-    [comparableNumber(current.tPersistMs), comparableNumber(next.tPersistMs)],
-    [comparableNumber(current.tTotalMs), comparableNumber(next.tTotalMs)],
+    [comparableTimingNumber(current.firstTokenMs), comparableTimingNumber(next.firstTokenMs)],
+    [comparableTimingNumber(current.tUpstreamTtfbMs), comparableTimingNumber(next.tUpstreamTtfbMs)],
+    [
+      comparablePositiveTimingNumber(current.tUpstreamStreamMs),
+      comparablePositiveTimingNumber(next.tUpstreamStreamMs),
+    ],
+    [comparableTimingNumber(current.tRespParseMs), comparableTimingNumber(next.tRespParseMs)],
+    [comparableTimingNumber(current.tPersistMs), comparableTimingNumber(next.tPersistMs)],
+    [comparableTimingNumber(current.tTotalMs), comparableTimingNumber(next.tTotalMs)],
   ];
 
   for (const [currentValue, nextValue] of fields) {
@@ -181,7 +234,7 @@ export function mergeInvocationRecordDetails(
   preferred: ApiInvocation,
   fallback: ApiInvocation | undefined,
 ) {
-  if (!fallback) return preferred;
+  if (!fallback) return sanitizeInvocationTimingFields({ ...preferred });
 
   const merged: ApiInvocation = { ...preferred };
   if (
@@ -258,6 +311,7 @@ export function mergeInvocationRecordDetails(
     "tReqParseMs",
     "tUpstreamConnectMs",
     "tUpstreamTtfbMs",
+    "firstTokenMs",
     "tUpstreamStreamMs",
     "tRespParseMs",
     "tPersistMs",
@@ -267,11 +321,19 @@ export function mergeInvocationRecordDetails(
   for (const field of fillNumberFields) {
     const preferredValue = merged[field];
     const fallbackValue = fallback[field];
-    if (
-      !hasComparableNumber(typeof preferredValue === "number" ? preferredValue : undefined) &&
-      hasComparableNumber(typeof fallbackValue === "number" ? fallbackValue : undefined)
-    ) {
+    const isTimingField = TIMING_FIELDS.includes(field);
+    const preferredNumber = typeof preferredValue === "number" ? preferredValue : undefined;
+    const fallbackNumber = typeof fallbackValue === "number" ? fallbackValue : undefined;
+    const preferredComparable = isTimingField
+      ? hasComparableTimingField(field, preferredNumber)
+      : hasComparableNumber(preferredNumber);
+    const fallbackComparable = isTimingField
+      ? hasComparableTimingField(field, fallbackNumber)
+      : hasComparableNumber(fallbackNumber);
+    if (!preferredComparable && fallbackComparable) {
       merged[field] = fallbackValue as never;
+    } else if (isTimingField && typeof preferredValue === "number" && !preferredComparable) {
+      merged[field] = null as never;
     }
   }
 
@@ -283,7 +345,7 @@ export function mergeInvocationRecordDetails(
     merged.isActionable = fallback.isActionable;
   }
 
-  return merged;
+  return sanitizeInvocationTimingFields(merged);
 }
 
 export function sortInvocationRecords(records: ApiInvocation[]) {

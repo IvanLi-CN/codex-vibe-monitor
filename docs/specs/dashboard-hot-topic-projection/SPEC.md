@@ -14,7 +14,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 
 - 将订阅 topic 强制分类为 `HotProjection`、`ClosedSnapshot` 或 `BoundedColdHydrate`。
 - 将 working-conversations、parallel-work open range 与 open-window timeseries 迁入 revision-aware typed projection。
-- 保持 Dashboard HTTP/SSE wire shape、topic、排序、range、recent 与 owner-facing 交互不变。
+- 保持 Dashboard HTTP/SSE wire shape、topic、排序、range、recent 上限与调用详情/账号跳转交互不变；working-conversations 卡片允许通过客户端投影收紧 owner-facing 信息密度。
 - 每个 topic revision 只生成一个共享不可变 serialized frame，订阅者数量不增加 builder、serialization 或数据库读取。
 - 通过 additive `runtimePressureHealth.dashboardHotTopics` 准确报告 hot topic 的事实源、负载与退化状态。
 
@@ -49,6 +49,11 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - `HotProjection` 必须提供 typed materializer；穷举分派不得落入通用 `build_payload`、通用 JSON overlay 或健康路径 SQL fallback。
 - working-conversations 首订阅必须建立同一事务 cursor baseline，后续只应用 compact delta；旧 key 重入、metadata 变化和候选补位只允许按 key 或 identity 有界 hydrate。
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
+- working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留两行中性占位。该展示数量不改变 HTTP/SSE wire shape、`recentInvocationLimit=16` 或后端 compact 默认值。
+- 三个槽位的正常/进行中记录与缺失占位均保持两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。
+- 工作对话卡片、上游账号卡片的 recent 调用行与账号详情调用记录使用同一组紧凑延迟合同：秒值最多保留一位小数；按十分之一秒四舍五入后达到 `100 s` 时显示整数。TTFT 使用 `firstTokenMs`，响应耗时始终使用 `tUpstreamStreamMs`；有限且非负的 `firstTokenMs`（包括 `0 ms`）是已测得的合法 TTFT，响应耗时只有有限且严格大于零才是已完成测量，`null`、零、负值或非有限值均显示 `--`。调用级 TTFT 只能归属同一调用的最终真实 upstream attempt，持久化列表与两条工作流 hydration 路径均按 `attempt_index DESC, id DESC` 选择该行，最终 attempt 必须已经进入终态，`budget_exhausted_final` 等伪终态不参与选择，较早 retry 显示 `--`；失败终态的零毫秒 TTFT 只有在最终 attempt 的 first-byte 也为零时保留，正值必须有最终 attempt 的 stream 证据，不能用 earlier retry 的 first-byte 进度冒充完成测量。仅含 `codex_invocations` 的历史归档没有重试明细表，归档聚合必须使用其已存储且经有限值校验的 `firstTokenMs` 与 `tUpstreamStreamMs`，不得引用缺失的重试表或从旧归档推断 attempt 归属。HTTP、SSE、运行时 hydration 叠加与 Demo 数据都必须保留有限的 `0 ms` TTFT，并且只能在该值已测得时声明“响应中”；负值或非有限值不是测量结果，必须按不可用显示且不得采用成功色。格式化、颜色、汇总样本与工作流展示必须分别复用“有限且非负 TTFT”和“有限且为正响应耗时”判定；无效响应耗时不得遮蔽有效 TTFT。持久化 SQL、JSON DTO 与客户端合并都必须在输出前排除负值和非有限测量；hourly `upstreamStream` rollup 也不得计入零时长样本。持久化 SQL 必须在阶段推断、均值、P95、账号汇总和性能汇总中排除非有限测量。不得以 `tUpstreamTtfbMs`、流耗时或 `now - occurredAt` 的经过时长替代。请求或排队中两项未产生时显示 `--`，响应中必须已有并显示 TTFT，而尚未结束或无效的响应耗时显示 `--`；Demo workflow detail 同样不得为其伪造完成流耗时。TTFT 使用与其他成功指标一致的绿色。
+- 上述终态要求约束完成态归属；进行中的最终真实 attempt 是唯一例外：只有该 attempt 自身的 phase 已进入 `responding` 或 `streaming_response`，且调用已记录有限非负 `firstTokenMs` 时，实时列表与 workflow hydration 才显示 TTFT。仅为 `running`、`waiting_first_byte` 或缺少当前 attempt 响应阶段证据时不得继承 earlier retry 的 TTFT；响应耗时仍须等待最终 attempt 的有限正 stream 测量。普通调用 summary 的均值/P95、Dashboard 汇总与上游账号 model-performance 必须复用同一最终 attempt timing predicate；终态运行时 delta 必须保留最终 retry 已写回的合法 TTFT，不能继续套用进行中 retry 的屏蔽规则。
+- 所有 owner-facing invocation JSON DTO（包括 `ApiInvocation`、Prompt Cache preview 及其嵌套账号 recent 记录）必须在 serde 序列化边界复用有限非负/有限正谓词；不得让原始数据库浮点值绕过该边界进入 HTTP 或 SSE。账号 recent 行的整行调用动作使用独立的原生按钮，账号、错误摘要等子动作保持各自的键盘与点击语义，不得嵌套交互元素。
 - parallel-work 必须复用既有 minute-key/hourly rollup baseline，并以 current boundary identities 和 runtime overlay 精确维护 `today`、`1d`、`7d`；`yesterday` 必须作为 `ClosedSnapshot`，不受当前 mutation 触发。
 - open-window timeseries 必须复用 `timeseries_minute_projection_v2`，并以 terminal/runtime revisions 更新当前桶；健康发布不得调用通用 timeseries fetch builder。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
@@ -81,6 +86,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - Metadata 变更只影响相关 key/account，不得触发 working full-window hydrate。
 - Timezone、DST、account scope、unassigned 和 conversation spans 必须与既有 exact builder 保持精确一致。
 - SSE selection 只有显式导航、分页、range 或 filter 变化时才允许触发 `topic-change` reconnect；recent 可见数量变化不得改变连接签名。
+- 三槽位选择的 `slotKind` 为 `current | previous | earlier`；第三槽位在详情抽屉、aria 名称和缺失说明中称为“更早调用”，但卡片表面不显示该槽位名称。第三槽位仍参与进行中与 blocked-binding 诊断。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -119,10 +125,12 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - Rust stateful/contract tests 覆盖 projection delta、cursor baseline、bounded hydrate、closed-window 门控和 dirty recovery。
 - Subscription topology benchmark 覆盖完整 Dashboard topic bundle、1 到 N subscriber 以及 10,000 mutation。
 - Web tests 覆盖固定 `recentLimit=16`、本地截断和无非预期 SSE reconnect。
+- CI 的 Dashboard Playwright producer 必须同时运行 records overlay、demo runtime 与 working-conversations layout 三组回归，并为每组写入独立结果目录和 HTML report；后台服务退出状态必须通过 `dashboard_status` 传递到最终 `exit`，不能被后续命令覆盖。
 
 ### UI / Storybook (if applicable)
 
 - System Status mock states 覆盖 healthy、deferred、hot-DB-read 与 cadence-miss。
+- working-conversations Storybook states 必须显式初始化 `conversations` workspace view；依赖持久化 workspace view 的 Story 不得因前一条 Story 的 `localStorage` 状态渲染错误的上游账号骨架。
 - 使用真实桌面和移动浏览器视口生成 mock-only 视觉证据。
 
 ### Quality checks
@@ -145,7 +153,6 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsHotDbRead
 state: hot-db-read
 evidence_note: System Status renders all seven Dashboard hot topics and marks parallel work degraded when the mock reports three live-path database reads.
 
-PR: include
 ![System Status Dashboard hot topics desktop hot DB read](./assets/system-status-hot-topics-desktop.jpg)
 
 source_type: storybook_canvas
@@ -160,8 +167,121 @@ story_id_or_title: System/SystemWorkspace/StatusHotTopicsCadenceMiss
 state: cadence-miss
 evidence_note: The mobile System Status layout keeps every topic and the activity cadence miss readable at the source-managed mobile viewport.
 
-PR: include
 ![System Status Dashboard hot topics mobile cadence miss](./assets/system-status-hot-topics-mobile.jpg)
+
+### Dashboard working conversations
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1440x900
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--current-and-previous
+state: complete conversation state matrix: missing slots, responding with unavailable response duration, failure summary, success, pending, running, and warning
+evidence_note: The 1440px Dashboard workspace uses its native two-column grid: workspace width is 1392px, every visible card is 667px wide, and horizontal overflow is 0px. The full grid provides size reference while covering the supported invocation states.
+
+![Dashboard working conversations three slots desktop](./assets/dashboard-working-conversations-three-slots-desktop.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1660x900
+viewport_strategy: exact main-line desktop1660 breakpoint
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--four-card-parallel-three-slot-proof
+state: native four-card row with a current/previous/earlier three-real-invocation card
+evidence_note: This capture matches the main application shell maximum and `desktop1660` breakpoint. The 1612px workspace contains four 380.5px cards in one row with 0px horizontal overflow. The fourth card contains three real invocation slots and no placeholders.
+
+PR: include
+![Dashboard working conversations four cards and three real slots](./assets/dashboard-working-conversations-four-card-parallel-three-slots-desktop.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 393x852
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--mobile-390
+state: one invocation with previous and earlier missing placeholders
+evidence_note: The source-managed 393px Dashboard viewport keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
+
+The mobile viewport capture keeps the Storybook `bg-base-200` surface; no synthetic gray frame is added.
+
+PR: include
+![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
+
+### Dashboard upstream account recents
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1660x900
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: dashboard-workingconversationssection--upstream-account-recent-layout
+state: paired account cards with completed, failed, and in-flight recent invocations
+evidence_note: The 1660px Dashboard workspace uses its native two-column upstream-account grid: workspace width is 1612px, each account card is 777px wide, horizontal overflow is 0px, TTFT remains green, and an in-flight response duration remains `--`.
+
+PR: include
+![Dashboard upstream account recent invocation layout](./assets/dashboard-upstream-account-recent-layout-desktop.png)
+
+### Account detail invocations
+
+source_type: ui_demo
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: browser-default
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+demo_route: /account-pool/upstream-accounts?upstreamAccountId=101&demoScene=operational&demoTheme=dark&demoEmbed=1
+state: account request timeline with responding and completed attempts
+evidence_note: The deterministic account detail request panel loads without a 501 response, has no horizontal overflow, and keeps in-flight first-token data separate from an unavailable completed stream duration.
+
+PR: include
+![Account detail invocation in-flight timing unavailable desktop](./assets/account-detail-invocation-inflight-timing-desktop.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: storybook-viewport
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+story_id_or_title: account-pool-components-upstream-account-attempt-timeline--full-workflow-success-attempt-page
+state: focused successful account attempt after request and response body details are closed
+evidence_note: The account attempt focus outline is rendered above its full-width detail block, so all four rounded sides remain visible while the inner rail keeps its own clipping behavior.
+
+PR: include
+![Account detail invocation focus outline desktop](./assets/account-detail-invocation-focus-outline-desktop.png)
+
+### Live invocation timing
+
+source_type: ui_demo
+target_program: mock-only
+capture_scope: browser-viewport
+requested_viewport: 1280x720
+viewport_strategy: browser-default
+margin_policy: trim_only
+evidence_surface: page
+sensitive_exclusion: N/A
+demo_route: /live?demoScene=operational&demoTheme=dark&demoEmbed=1
+state: responding invocation with measured `firstTokenMs` and no `tUpstreamStreamMs`
+evidence_note: The product invocation list shows a green measured TTFT and `响应 --` for an in-flight response, without using elapsed time as a response duration.
+
+PR: include
+![Live invocation in-flight timing unavailable](./assets/live-invocation-inflight-timing-demo.png)
 
 ## Related PRs
 

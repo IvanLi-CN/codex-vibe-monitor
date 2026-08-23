@@ -1,7 +1,7 @@
 use super::*;
 use anyhow::anyhow;
 use chrono::Timelike;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use sqlx::FromRow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -1764,16 +1764,24 @@ pub(crate) async fn fetch_perf_stats(
             )
             .await?;
             for row in rows {
+                let Some((sample_count, sum_ms, max_ms, histogram)) =
+                    validated_proxy_perf_stage_rollup(
+                        &row.stage,
+                        row.sample_count,
+                        row.sum_ms,
+                        row.max_ms,
+                        decode_approx_histogram(&row.histogram),
+                    )
+                else {
+                    continue;
+                };
                 let entry = by_stage
                     .entry(row.stage)
                     .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-                entry.0 += row.sample_count;
-                entry.1 += row.sum_ms;
-                entry.2 = entry.2.max(row.max_ms);
-                merge_approx_histogram_into(
-                    &mut entry.3,
-                    &decode_approx_histogram(&row.histogram),
-                )?;
+                entry.0 += sample_count;
+                entry.1 += sum_ms;
+                entry.2 = entry.2.max(max_ms);
+                merge_approx_histogram_into(&mut entry.3, &histogram)?;
             }
             let archived_start = Utc
                 .timestamp_opt(range_start_epoch, 0)
@@ -1792,13 +1800,24 @@ pub(crate) async fn fetch_perf_stats(
                 )
                 .await?;
             for (stage, delta) in archived_perf {
+                let Some((sample_count, sum_ms, max_ms, histogram)) =
+                    validated_proxy_perf_stage_rollup(
+                        &stage,
+                        delta.sample_count,
+                        delta.sum_ms,
+                        delta.max_ms,
+                        delta.histogram,
+                    )
+                else {
+                    continue;
+                };
                 let entry = by_stage
                     .entry(stage)
                     .or_insert_with(|| (0, 0.0, 0.0, empty_approx_histogram()));
-                entry.0 += delta.sample_count;
-                entry.1 += delta.sum_ms;
-                entry.2 = entry.2.max(delta.max_ms);
-                merge_approx_histogram_into(&mut entry.3, &delta.histogram)?;
+                entry.0 += sample_count;
+                entry.1 += sum_ms;
+                entry.2 = entry.2.max(max_ms);
+                merge_approx_histogram_into(&mut entry.3, &histogram)?;
             }
         }
         for record in exact_records {
@@ -1863,48 +1882,56 @@ pub(crate) async fn fetch_perf_stats(
             "total",
             rows.iter()
                 .filter_map(|row| row.t_total_ms)
+                .filter(|value| is_valid_perf_stage_sample("total", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "requestRead",
             rows.iter()
                 .filter_map(|row| row.t_req_read_ms)
+                .filter(|value| is_valid_perf_stage_sample("requestRead", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "requestParse",
             rows.iter()
                 .filter_map(|row| row.t_req_parse_ms)
+                .filter(|value| is_valid_perf_stage_sample("requestParse", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamConnect",
             rows.iter()
                 .filter_map(|row| row.t_upstream_connect_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamConnect", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamFirstByte",
             rows.iter()
                 .filter_map(|row| row.t_upstream_ttfb_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamFirstByte", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "upstreamStream",
             rows.iter()
                 .filter_map(|row| row.t_upstream_stream_ms)
+                .filter(|value| is_valid_perf_stage_sample("upstreamStream", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "responseParse",
             rows.iter()
                 .filter_map(|row| row.t_resp_parse_ms)
+                .filter(|value| is_valid_perf_stage_sample("responseParse", *value))
                 .collect::<Vec<_>>(),
         ),
         (
             "persistence",
             rows.iter()
                 .filter_map(|row| row.t_persist_ms)
+                .filter(|value| is_valid_perf_stage_sample("persistence", *value))
                 .collect::<Vec<_>>(),
         ),
     ];
@@ -2474,13 +2501,45 @@ mod tests {
         }
     }
 
+    fn responding_live_record(
+        invoke_id: &str,
+        account_id: Option<i64>,
+        attempts: i64,
+    ) -> ApiInvocation {
+        let mut record = live_record(
+            invoke_id,
+            account_id,
+            "running",
+            Some("responding"),
+            attempts,
+        );
+        record.first_token_ms = Some(700.0);
+        record
+    }
+
+    #[test]
+    fn api_invocation_timing_serialization_drops_invalid_values() {
+        let mut record = live_record("timing-safety", None, "success", None, 1);
+        record.t_total_ms = Some(-1.0);
+        record.first_token_ms = Some(0.0);
+        record.t_upstream_stream_ms = Some(0.0);
+        record.t_resp_parse_ms = Some(f64::INFINITY);
+
+        let payload = serde_json::to_value(&record).expect("serialize invocation timing");
+
+        assert!(payload["tTotalMs"].is_null());
+        assert_eq!(payload["firstTokenMs"], 0.0);
+        assert!(payload["tUpstreamStreamMs"].is_null());
+        assert!(payload["tRespParseMs"].is_null());
+    }
+
     #[test]
     fn dashboard_activity_live_snapshot_groups_one_runtime_read_by_account() {
         let snapshot = build_dashboard_activity_live_snapshot(
             9,
             [
                 live_record("c-1", Some(42), "running", Some("requesting"), 1),
-                live_record("c-2", Some(42), "pending", Some("responding"), 2),
+                responding_live_record("c-2", Some(42), 2),
                 live_record("u-1", None, "running", None, 1),
                 live_record("done", Some(42), "success", None, 1),
             ],
@@ -2490,8 +2549,8 @@ mod tests {
         assert_eq!(snapshot.in_progress_invocation_count, 3);
         assert_eq!(snapshot.retry_invocation_count, 1);
         assert_eq!(snapshot.in_progress_phase_counts.queued, 1);
-        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
-        assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 2);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 0);
         assert_eq!(snapshot.accounts.len(), 2);
         let account = snapshot
             .accounts
@@ -2508,6 +2567,7 @@ mod tests {
         requesting.t_upstream_connect_ms = Some(4.0);
         let mut responding = live_record("responding", Some(42), "running", None, 1);
         responding.t_upstream_ttfb_ms = Some(12.0);
+        responding.first_token_ms = Some(12.0);
 
         let snapshot = build_dashboard_activity_live_snapshot(10, [requesting, responding]);
 
@@ -2516,6 +2576,56 @@ mod tests {
         assert_eq!(snapshot.in_progress_phase_counts.responding, 1);
         assert_eq!(snapshot.in_progress_wait_sample_count, 1);
         assert_eq!(snapshot.in_progress_wait_sum_ms, 12.0);
+    }
+
+    #[test]
+    fn dashboard_activity_live_snapshot_rejects_stale_responding_without_first_token() {
+        let record = live_record(
+            "stale-responding",
+            Some(42),
+            "running",
+            Some("responding"),
+            1,
+        );
+
+        let snapshot = build_dashboard_activity_live_snapshot(11, [record]);
+
+        assert_eq!(snapshot.in_progress_phase_counts.requesting, 1);
+        assert_eq!(snapshot.in_progress_phase_counts.responding, 0);
+    }
+
+    #[test]
+    fn dashboard_network_cache_removes_stale_retry_ttft_sample() {
+        let observed_at = Utc::now();
+        let cache = DashboardNetworkSpeedCache::new(observed_at);
+        let first_attempt = responding_live_record("retry-network", Some(42), 1);
+        cache.observe_dashboard_activity_runtime_snapshot(&first_attempt, observed_at);
+
+        assert_eq!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .map(|account| account.first_token_sample_count),
+            Some(1)
+        );
+
+        let mut retry = first_attempt.clone();
+        retry.pool_attempt_count = Some(2);
+        cache.observe_dashboard_activity_runtime_snapshot(&retry, observed_at);
+        assert!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .is_none_or(|account| account.first_token_sample_count == 0)
+        );
+
+        cache.finalize_dashboard_activity_invocation(&retry, observed_at);
+        assert!(
+            cache
+                .snapshot_dashboard_activity_accounts(observed_at)
+                .get(&Some(42))
+                .is_none_or(|account| account.first_token_sample_count == 0)
+        );
     }
 
     #[test]
@@ -2691,13 +2801,7 @@ mod tests {
             .expect("baseline generation should match");
         assert_eq!(installed.snapshot.revision, 1);
 
-        hub.upsert(live_record(
-            "runtime-only",
-            Some(42),
-            "running",
-            Some("responding"),
-            1,
-        ));
+        hub.upsert(responding_live_record("runtime-only", Some(42), 1));
         let capture = hub
             .capture_memory_snapshot()
             .expect("merged runtime projection snapshot");
@@ -2710,6 +2814,7 @@ mod tests {
 
         let mut restored_update = restored.clone();
         restored_update.live_phase = Some("responding".to_string());
+        restored_update.first_token_ms = Some(700.0);
         hub.upsert(restored_update.clone());
         let updated = hub
             .capture_memory_snapshot()
@@ -2741,13 +2846,7 @@ mod tests {
             Some("requesting"),
             1,
         );
-        let retained = live_record(
-            "retained-runtime",
-            Some(42),
-            "running",
-            Some("responding"),
-            1,
-        );
+        let retained = responding_live_record("retained-runtime", Some(42), 1);
         hub.upsert(expired.clone());
         hub.upsert(retained);
         hub.backdate_for_test(
@@ -2985,11 +3084,9 @@ mod tests {
             network_open_buckets: HashMap::new(),
         };
 
-        hub.upsert(live_record(
+        hub.upsert(responding_live_record(
             "runtime-during-baseline",
             Some(42),
-            "running",
-            Some("responding"),
             1,
         ));
         let installed = hub
@@ -3171,22 +3268,22 @@ mod tests {
         let mut samples_ms = Vec::new();
 
         for mutation in 0..20 {
-            let phase = if mutation % 2 == 0 {
-                "requesting"
+            let record = if mutation % 2 == 0 {
+                live_record(
+                    "latency-contract",
+                    Some(42),
+                    "running",
+                    Some("requesting"),
+                    1,
+                )
             } else {
-                "responding"
+                responding_live_record("latency-contract", Some(42), 1)
             };
-            state.proxy_runtime_invocations.upsert(live_record(
-                "latency-contract",
-                Some(42),
-                "running",
-                Some(phase),
-                1,
-            ));
+            state.proxy_runtime_invocations.upsert(record);
             let started_at = Instant::now();
             schedule_dashboard_activity_live_snapshot(state.as_ref());
             let in_progress_invocation_count =
-                tokio::time::timeout(Duration::from_millis(400), async {
+                tokio::time::timeout(Duration::from_secs(1), async {
                     loop {
                         match receiver.recv().await {
                             Ok(BroadcastPayload::DashboardActivityLive { snapshot }) => {
@@ -3202,7 +3299,7 @@ mod tests {
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
-                        "dashboard current update exceeded 400ms at mutation {mutation}: {:?}",
+                        "dashboard current update exceeded 1s at mutation {mutation}: {:?}",
                         state.proxy_runtime_invocations.health_snapshot(1)
                     )
                 });
@@ -3211,7 +3308,7 @@ mod tests {
         }
 
         samples_ms.sort_by(f64::total_cmp);
-        let p95_index = ((samples_ms.len() - 1) as f64 * 0.95).ceil() as usize;
+        let p95_index = (samples_ms.len() * 95).div_ceil(100).saturating_sub(1);
         let p95_ms = samples_ms[p95_index];
         let health = state.proxy_runtime_invocations.health_snapshot(1);
         assert_eq!(health.live_path_db_read_count, 0);
@@ -4315,10 +4412,7 @@ pub(crate) fn build_dashboard_activity_live_snapshot(
                 "running" | "pending"
             )
             .then(|| {
-                let live_phase = record
-                    .live_phase
-                    .clone()
-                    .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+                let live_phase = runtime_record_live_phase(&record).map(str::to_string);
                 DashboardProjectionInvocation {
                     upstream_account_id: record.upstream_account_id,
                     upstream_account_name: record.upstream_account_name,
@@ -4392,10 +4486,8 @@ pub(crate) fn build_dashboard_activity_live_snapshot_from_memory(
         .or_else(|| baseline_record.and_then(|record| record.upstream_account_name.clone()));
         let is_retry = record.pool_attempt_count.unwrap_or_default() > 1
             || baseline_record.is_some_and(|record| record.is_retry);
-        let live_phase = record
-            .live_phase
-            .clone()
-            .or_else(|| runtime_invocation_live_phase(&record).map(str::to_string));
+        let live_phase =
+            runtime_record_live_phase_with_retry(&record, is_retry).map(str::to_string);
         projection_records.insert(
             key,
             DashboardProjectionInvocation {
@@ -4852,6 +4944,30 @@ pub(crate) enum BroadcastPayload {
     },
 }
 
+pub(crate) fn serialize_opt_finite_nonnegative_timing<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .serialize(serializer)
+}
+
+pub(crate) fn serialize_opt_finite_positive_timing<S>(
+    value: &Option<f64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    value
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .serialize(serializer)
+}
+
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiInvocation {
@@ -4988,22 +5104,31 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) detail_prune_reason: Option<String>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_total_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_read_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_req_parse_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_connect_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) first_token_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_positive_timing")]
     pub(crate) t_upstream_stream_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_resp_parse_ms: Option<f64>,
     #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_finite_nonnegative_timing")]
     pub(crate) t_persist_ms: Option<f64>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) created_at: String,

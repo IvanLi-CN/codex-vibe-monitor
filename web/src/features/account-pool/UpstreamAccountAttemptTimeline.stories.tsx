@@ -25,6 +25,7 @@ const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
   httpStatus: 200,
   downstreamHttpStatus: 200,
   connectLatencyMs: 45,
+  firstTokenMs: 780,
   firstByteLatencyMs: 120,
   streamLatencyMs: 3_280,
   upstreamRequestId: "req_upstream_account_workflow",
@@ -61,6 +62,7 @@ const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
     tReqParseMs: 13,
     tUpstreamConnectMs: 45,
     tUpstreamTtfbMs: 120,
+    firstTokenMs: 780,
     tUpstreamStreamMs: 3_280,
     tRespParseMs: 18,
     tPersistMs: 22,
@@ -97,6 +99,7 @@ const workflowSuccessAttemptItem: ApiPoolUpstreamRequestAttempt = {
       httpStatus: 200,
       downstreamHttpStatus: 200,
       connectLatencyMs: 45,
+      firstTokenMs: 780,
       firstByteLatencyMs: 120,
       streamLatencyMs: 3_280,
       upstreamRequestId: "req_upstream_account_workflow",
@@ -379,24 +382,7 @@ function StorySurface({ children }: { children: ReactNode }) {
 function AttemptTimelinePageSurface({ children }: { children: ReactNode }) {
   return (
     <FullPageStorySurface>
-      <div className="mx-auto max-w-7xl space-y-5">
-        <header className="rounded-[28px] border border-base-300/70 bg-base-100/85 px-6 py-6 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-base-content/55">
-            Account Pool Review
-          </p>
-          <h1 className="mt-3 text-3xl font-semibold text-base-content">
-            Upstream attempt compression evidence
-          </h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-base-content/70">
-            Page-level fallback surface for reviewing retry attempt compression ratio and
-            approximate upstream transfer bytes.
-          </p>
-        </header>
-
-        <section className="rounded-[32px] border border-base-300/70 bg-base-100/82 px-6 py-6 shadow-sm">
-          {children}
-        </section>
-      </div>
+      <main className="app-shell-boundary px-4 py-6">{children}</main>
     </FullPageStorySurface>
   );
 }
@@ -555,6 +541,9 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("217,958 B");
     expect(canvasElement.textContent ?? "").toContain("79,224 B");
+    expect(canvasElement.textContent ?? "").toContain("TTFT 0.8 s");
+    expect(canvasElement.textContent ?? "").not.toContain("TTFB 0.1 s");
+    expect(canvas.getAllByText("TTFT 0.8 s")[0]).toHaveClass("text-success");
     expect(canvasElement.textContent ?? "").toContain("输入写 2,090");
     expect(canvasElement.textContent ?? "").toContain("upstream_response_failed");
   });
@@ -572,6 +561,14 @@ async function verifyWorkflowParitySurface(canvasElement: HTMLElement) {
   await waitFor(() => {
     expect(canvasElement.textContent ?? "").toContain("large response");
   });
+  const closedResponseBodyButton = (
+    await canvas.findAllByRole("button", { name: /响应体|response body/i })
+  )[0];
+  await userEvent.click(closedResponseBodyButton);
+  await waitFor(() => {
+    expect(canvasElement.textContent ?? "").not.toContain("large response");
+  });
+  closedResponseBodyButton.blur();
 }
 
 function withAttemptTimelineFetchMock(Story: () => ReactNode) {

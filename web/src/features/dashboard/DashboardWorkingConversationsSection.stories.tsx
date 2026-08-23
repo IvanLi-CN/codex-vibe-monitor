@@ -474,6 +474,7 @@ const BASE_UPSTREAM_ACCOUNT_RECENT_INVOCATION_SEEDS = [
     reasoningTokens: 600,
     tUpstreamConnectMs: 164,
     tUpstreamTtfbMs: 920,
+    firstTokenMs: 1_340,
     tUpstreamStreamMs: 11_480,
     tTotalMs: 13_970,
     requestedServiceTier: "priority",
@@ -1091,6 +1092,8 @@ const currentAndPreviousResponse = createResponse([
       upstreamAccountPlanType: "plus",
       reasoningEffort: "medium",
       imageIntent: "yes",
+      cacheInputTokens: 144,
+      cost: 0.2,
       tTotalMs: 20_000,
     }),
     createPreview({
@@ -1103,6 +1106,15 @@ const currentAndPreviousResponse = createResponse([
       upstreamAccountPlanType: "free",
       requestedServiceTier: "auto",
       serviceTier: "auto",
+    }),
+    createPreview({
+      id: 10,
+      invokeId: "invoke-10",
+      occurredAt: "2026-04-04T09:58:44Z",
+      status: "completed",
+      model: "gpt-5.4-long-context-preview",
+      upstreamAccountName: "backup-alpha-long-account-label-for-truncation@example.com",
+      upstreamAccountPlanType: "team",
     }),
   ]),
 ]);
@@ -1185,6 +1197,7 @@ function createRunningOnlyResponse() {
         livePhase: "responding",
         upstreamAccountName: "watch-alpha@example.com",
         reasoningEffort: "medium",
+        firstTokenMs: 860,
         tTotalMs: null,
       }),
       createPreview({
@@ -1318,6 +1331,7 @@ function createPoolRoutingAccountStatesResponse() {
         livePhase: "responding",
         upstreamAccountId: 42,
         upstreamAccountName: "pool-alpha@example.com",
+        firstTokenMs: 860,
         tTotalMs: null,
       }),
     ]),
@@ -2047,20 +2061,23 @@ const createdAtDescendingOrderResponse = createResponse([
   ),
 ]);
 
+const wideDesktopRunningCurrent = createPreview({
+  id: 81,
+  invokeId: "invoke-wide-running-current",
+  occurredAt: "2026-04-04T10:04:50Z",
+  status: "running",
+  reasoningEffort: "medium",
+  upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
+  endpoint: "/v1/responses/compact",
+  tTotalMs: null,
+});
+wideDesktopRunningCurrent.tUpstreamStreamMs = null;
+
 const wideDesktopResponse = createResponse([
   createConversation(
     "pck-wide-running",
     [
-      createPreview({
-        id: 81,
-        invokeId: "invoke-wide-running-current",
-        occurredAt: "2026-04-04T10:04:58Z",
-        status: "running",
-        reasoningEffort: "medium",
-        upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
-        endpoint: "/v1/responses/compact",
-        tTotalMs: null,
-      }),
+      wideDesktopRunningCurrent,
       createPreview({
         id: 80,
         invokeId: "invoke-wide-running-previous",
@@ -2145,7 +2162,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 121,
       invokeId: "invoke-wide-pending-current",
-      occurredAt: "2026-04-04T10:03:58Z",
+      occurredAt: "2026-04-04T10:04:30Z",
       status: "pending",
       upstreamAccountName: "wide-pending@example.com",
       tTotalMs: null,
@@ -2186,7 +2203,7 @@ const wideDesktopResponse = createResponse([
     createPreview({
       id: 141,
       invokeId: "invoke-wide-running-b-current",
-      occurredAt: "2026-04-04T10:02:44Z",
+      occurredAt: "2026-04-04T10:04:05Z",
       status: "running",
       upstreamAccountName: "wide-running-b@example.com",
       tTotalMs: null,
@@ -2224,6 +2241,11 @@ const wideDesktopResponse = createResponse([
       upstreamAccountName: "wide-warning@example.com",
     }),
   ]),
+]);
+
+const fourCardParallelThreeSlotProofResponse = createResponse([
+  currentAndPreviousResponse.conversations[0]!,
+  ...wideDesktopResponse.conversations.slice(0, 3),
 ]);
 
 const summaryThresholdResponse = createResponse([
@@ -2722,14 +2744,18 @@ function resolveInitialSelection(
   cards: ReturnType<typeof buildCards>,
   target?: {
     promptCacheKey: string;
-    slotKind: "current" | "previous";
+    slotKind: "current" | "previous" | "earlier";
   },
 ): DashboardWorkingConversationInvocationSelection | null {
   if (!target) return null;
   const card = cards.find((candidate) => candidate.promptCacheKey === target.promptCacheKey);
   if (!card) return null;
   const invocation =
-    target.slotKind === "previous" ? card.previousInvocation : card.currentInvocation;
+    target.slotKind === "earlier"
+      ? card.earlierInvocation
+      : target.slotKind === "previous"
+        ? card.previousInvocation
+        : card.currentInvocation;
   if (!invocation) return null;
   return {
     slotKind: target.slotKind,
@@ -2868,7 +2894,7 @@ function DrawerPreviewStory({
   response: PromptCacheConversationsResponse;
   initialSelection?: {
     promptCacheKey: string;
-    slotKind: "current" | "previous";
+    slotKind: "current" | "previous" | "earlier";
   };
   initialConversationKey?: string;
   initialConversationTab?: "overview" | "calls" | "settings";
@@ -3479,7 +3505,9 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <StorySurface>
-          <Story />
+          <ForcedWorkspaceViewStory view="conversations">
+            <Story />
+          </ForcedWorkspaceViewStory>
         </StorySurface>
       </I18nProvider>
     ),
@@ -3491,6 +3519,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const CurrentAndPrevious: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(currentAndPreviousResponse),
@@ -3511,7 +3540,20 @@ export const CurrentAndPrevious: Story = {
     const responseLatency = currentSlot.querySelector(
       '[data-testid="dashboard-compact-latency-response-time"]',
     );
-    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+    const reasoningEffort = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+    );
+    const reasoningText = reasoningEffort?.querySelector("span");
+    const modelIdentity = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-model-name"]',
+    );
+    if (
+      !(firstByteLatency instanceof HTMLElement) ||
+      !(responseLatency instanceof HTMLElement) ||
+      !(reasoningEffort instanceof HTMLElement) ||
+      !(reasoningText instanceof HTMLElement) ||
+      !(modelIdentity instanceof HTMLElement)
+    ) {
       throw new Error("missing compact latency readings");
     }
     const slotHeader = currentSlot.querySelector(
@@ -3522,9 +3564,23 @@ export const CurrentAndPrevious: Story = {
     }
     await expect(
       slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-label"]'),
-    ).toHaveTextContent(/当前调用|Current invocation/);
+    ).toBeNull();
+    await expect(
+      slotHeader.querySelector('[data-testid="dashboard-working-conversation-slot-model"]'),
+    ).toBeInTheDocument();
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]'),
+    ).toHaveLength(3);
     await expect(slotHeader).toContainElement(firstByteLatency);
     await expect(slotHeader).toContainElement(responseLatency);
+    await expect(firstByteLatency).toHaveTextContent("0.7 s");
+    await expect(responseLatency).toHaveTextContent("0.3 s");
+    await expect(reasoningEffort).toHaveTextContent("medium");
+    await expect(reasoningText.scrollWidth).toBeLessThanOrEqual(reasoningText.clientWidth);
+    await expect(reasoningEffort.getBoundingClientRect().height).toBeLessThanOrEqual(17);
+    await expect(
+      reasoningEffort.getBoundingClientRect().left - modelIdentity.getBoundingClientRect().right,
+    ).toBeLessThanOrEqual(8);
     await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
     const imageBadge = currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]');
@@ -3597,11 +3653,25 @@ export const GPT56ModelContextCluster: Story = {
 };
 
 export const CurrentOnlyPlaceholder: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(currentOnlyResponse),
     isLoading: false,
     error: null,
+  },
+  play: async ({ canvasElement }) => {
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-placeholder"]'),
+    ).toHaveLength(2);
+    for (const placeholder of canvasElement.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-placeholder"]',
+    )) {
+      await expect(placeholder).toHaveAttribute("role", "group");
+      await expect(
+        placeholder.querySelectorAll(".working-conversation-placeholder-line"),
+      ).toHaveLength(2);
+    }
   },
 };
 
@@ -3779,6 +3849,7 @@ export const ManualBindingBadges: Story = {
 };
 
 export const RunningOnlyConversation: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: [],
@@ -3792,40 +3863,36 @@ export const RunningOnlyConversation: Story = {
     />
   ),
   play: async ({ canvasElement }) => {
-    const currentSlot = canvasElement.querySelector(
-      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    const currentSlot = (
+      await within(canvasElement).findAllByTestId("dashboard-working-conversation-slot")
+    ).find((slot) => slot.getAttribute("data-slot-kind") === "current");
+    if (!currentSlot) {
+      throw new Error("missing current slot");
+    }
+    const currentSlotHeader = await within(currentSlot).findByTestId(
+      "dashboard-working-conversation-slot-header",
     );
-    expect(currentSlot).toBeInstanceOf(HTMLElement);
-    const currentSlotHeader = currentSlot?.querySelector(
-      '[data-testid="dashboard-working-conversation-slot-header"]',
-    );
-    expect(currentSlotHeader).toBeInstanceOf(HTMLElement);
-    expect(currentSlotHeader?.className).toContain("grid");
-    expect(currentSlotHeader?.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
-    expect(
-      currentSlotHeader?.querySelector('[data-testid="invocation-phase-badge"]'),
-    ).toBeInstanceOf(HTMLElement);
+    expect(currentSlotHeader).toHaveClass("grid");
+    expect(currentSlotHeader).toHaveClass("grid-cols-[minmax(0,1fr)_auto]");
+    await within(currentSlotHeader).findByTestId("invocation-phase-badge");
 
     const phaseLabels = Array.from(
-      canvasElement.querySelectorAll('[data-testid="invocation-phase-badge"]'),
+      currentSlot.querySelectorAll('[data-testid="invocation-phase-badge"]'),
     );
-    expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
+    expect(phaseLabels.length).toBeGreaterThanOrEqual(1);
     for (const phaseLabel of phaseLabels) {
-      const slotHeader = phaseLabel.closest(
-        '[data-testid="dashboard-working-conversation-slot-header"]',
-      );
-      expect(slotHeader).toBeInstanceOf(HTMLElement);
       expect(phaseLabel.className).toContain("inline-flex");
       expect(phaseLabel.className).toMatch(/\brounded-full\b/);
       expect(phaseLabel.getAttribute("data-phase-label-visible")).toBe("false");
       expect(phaseLabel.getAttribute("data-phase-motion")).toBe("dynamic");
       expect(phaseLabel.className).not.toMatch(/\bborder/);
     }
-    const respondingBadge = currentSlotHeader?.querySelector(
+    const respondingBadge = currentSlotHeader.querySelector(
       '[data-testid="invocation-phase-badge"][data-phase="responding"]',
     );
-    expect(respondingBadge).toBeInstanceOf(HTMLElement);
+    expect(respondingBadge).not.toBeNull();
     const respondingIcon = respondingBadge?.querySelector('[data-testid="invocation-phase-icon"]');
+    expect(respondingIcon).not.toBeNull();
     expect(respondingIcon?.className).toContain("animate-spin");
   },
 };
@@ -3905,6 +3972,7 @@ export const PoolRoutingAccountStates: Story = {
 };
 
 export const FailedStatusIconDedup: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(failedStatusDedupResponse),
@@ -3936,9 +4004,13 @@ export const FailedStatusIconDedup: Story = {
       expect.stringContaining("upstream gateway closed before first byte"),
     );
     expect(
-      slotHeader.querySelectorAll('[title*="upstream gateway closed before first byte"]'),
+      slotHeader.querySelectorAll('[aria-label*="upstream gateway closed before first byte"]'),
     ).toHaveLength(1);
     await expect(currentSlot).not.toHaveTextContent(/^失败$/);
+    await expect(
+      currentSlot.querySelector('[data-testid="invocation-error-summary"]'),
+    ).toBeInTheDocument();
+    await expect(currentSlot).not.toHaveTextContent(/错误|Error/);
   },
   parameters: {
     docs: {
@@ -4440,7 +4512,7 @@ export const UpstreamAccountTab: Story = {
     expect(
       recentSummaryLine.compareDocumentPosition(recentMetaLine) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0);
-    await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "warning");
+    await expect(recentSummaryHit).toHaveAttribute("data-summary-tone", "error");
     await expect(recentSummaryCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(recentSummaryLine).toHaveAttribute(
       "title",
@@ -4655,6 +4727,7 @@ export const UpstreamAccountWarningSuccess: Story = {
 };
 
 export const UpstreamAccountRecentLayout: Story = {
+  tags: ["test"],
   args: UpstreamAccountTab.args,
   render: () => (
     <ForcedWorkspaceViewStory view="upstreamAccounts">
@@ -4698,6 +4771,9 @@ export const UpstreamAccountRecentLayout: Story = {
     ) {
       throw new Error("missing upstream account recent layout row");
     }
+    await expect(
+      recentRow.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+    ).toHaveTextContent("--");
 
     expect(accountGrid.className).toContain("items-start");
     expect(errorCard.className).not.toContain("h-full");
@@ -5723,11 +5799,14 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     );
 
     const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
-    if (!(firstRow instanceof HTMLButtonElement)) {
-      throw new Error("expected upstream recent row button");
+    const firstRowAction = firstRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    if (!(firstRowAction instanceof HTMLButtonElement)) {
+      throw new Error("expected upstream recent row action button");
     }
 
-    await userEvent.click(firstRow);
+    await userEvent.click(firstRowAction);
     await waitFor(() => {
       expect(
         document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,
@@ -6394,6 +6473,7 @@ export const ErrorState: Story = {
 };
 
 export const Mobile390: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(wideDesktopResponse),
@@ -6406,11 +6486,22 @@ export const Mobile390: Story = {
     docs: {
       description: {
         story:
-          "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and dual-slot summary hierarchy.",
+          "Mobile viewport keeps the working-conversations section in a single column while preserving the compact header and three-slot summary hierarchy.",
       },
     },
   },
   play: async ({ canvasElement }) => {
+    const activeWorkspaceTab = canvasElement.querySelector('[role="tab"][aria-selected="true"]');
+    if (!(activeWorkspaceTab instanceof HTMLElement)) {
+      throw new Error("missing active workspace view tab");
+    }
+    await expect(activeWorkspaceTab).toHaveTextContent(/对话|Conversations/);
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-card"]'),
+    ).not.toHaveLength(0);
+    await expect(
+      canvasElement.querySelectorAll('[data-testid="dashboard-upstream-account-card"]'),
+    ).toHaveLength(0);
     const controls = canvasElement.querySelector(
       '[data-testid="dashboard-working-conversations-controls"]',
     );
@@ -6422,7 +6513,21 @@ export const Mobile390: Story = {
   },
 };
 
+export const Mobile393: Story = {
+  ...Mobile390,
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+    docs: {
+      description: {
+        story:
+          "393x852 responsive acceptance viewport keeps the working-conversations section in a single column without horizontal overflow.",
+      },
+    },
+  },
+};
+
 export const WideDesktop1660: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: buildCards(wideDesktopResponse),
@@ -6435,7 +6540,7 @@ export const WideDesktop1660: Story = {
     docs: {
       description: {
         story:
-          "Wide desktop state gallery proving the 1660px shell now renders the working conversations section in four columns without horizontal overflow.",
+          "Wide desktop state gallery proving the 1660px shell renders the working conversations section in four columns without horizontal overflow.",
       },
     },
   },
@@ -6450,6 +6555,48 @@ export const WideDesktop1660: Story = {
     await expect(controls.children.item(1)?.getAttribute("data-testid")).toBe(
       "dashboard-working-conversations-actions",
     );
+    const responseTimes = Array.from(
+      canvasElement.querySelectorAll('[data-testid="dashboard-compact-latency-response-time"]'),
+    ).map((element) => element.textContent);
+    await expect(responseTimes).toContain("--");
+  },
+};
+
+export const FourCardParallelThreeSlotProof: Story = {
+  tags: ["test"],
+  args: {
+    activeRange: "today",
+    cards: buildCards(fourCardParallelThreeSlotProofResponse),
+    totalMatched: fourCardParallelThreeSlotProofResponse.conversations.length,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Direct proof for the compact invocation layout: the native 1660px four-card row includes a card with current, previous, and earlier real invocations.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const cards = Array.from(
+      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-card"]'),
+    );
+    await expect(cards).toHaveLength(4);
+    const targetCard = cards.find((card) =>
+      card.textContent?.includes("gpt-5.4-long-context-preview"),
+    );
+    if (!(targetCard instanceof HTMLElement)) {
+      throw new Error("missing three-real-invocation proof card");
+    }
+    await expect(
+      targetCard.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]'),
+    ).toHaveLength(3);
+    await expect(
+      targetCard.querySelectorAll('[data-testid="dashboard-working-conversation-placeholder"]'),
+    ).toHaveLength(0);
   },
 };
 

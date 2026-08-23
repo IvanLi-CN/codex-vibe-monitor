@@ -1,6 +1,6 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { apiHandlers } from "./handlers";
+import { apiHandlers, demoAttemptPhase } from "./handlers";
 import { demoModel } from "./model";
 
 const server = setupServer(...apiHandlers);
@@ -13,6 +13,62 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it("treats zero-millisecond TTFT as responding in account attempts", () => {
+    expect(demoAttemptPhase("running", 0)).toBe("responding");
+    expect(demoAttemptPhase("running", null)).toBe("requesting");
+    expect(demoAttemptPhase("running", -1)).toBe("requesting");
+  });
+
+  it("serves account request attempts with an in-flight TTFT and no completed response duration", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/101/call-attempts?page=1&pageSize=50",
+    );
+    const payload = (await response.json()) as {
+      items: Array<{
+        attemptId: string;
+        phase: string | null;
+        firstTokenMs: number | null;
+        streamLatencyMs: number | null;
+      }>;
+      total: number;
+    };
+
+    expect(response.ok).toBe(true);
+    expect(payload.total).toBeGreaterThan(0);
+    expect(payload.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "responding",
+          firstTokenMs: 705,
+          streamLatencyMs: null,
+        }),
+      ]),
+    );
+  });
+
+  it("attributes retry timing only to the final demo attempt", async () => {
+    const response = await fetch(
+      "http://demo.invalid/api/pool/upstream-accounts/102/call-attempts?page=1&pageSize=200",
+    );
+    const payload = (await response.json()) as {
+      items: Array<{
+        invokeId: string;
+        attemptIndex: number;
+        firstTokenMs: number | null;
+        streamLatencyMs: number | null;
+      }>;
+    };
+
+    expect(response.ok).toBe(true);
+    const finalRetry = payload.items.find((item) => item.attemptIndex > 1);
+    const earlierRetry = payload.items.find(
+      (item) => item.invokeId === finalRetry?.invokeId && item.attemptIndex === 1,
+    );
+    expect(earlierRetry).toMatchObject({ firstTokenMs: null, streamLatencyMs: null });
+    expect(finalRetry?.firstTokenMs).toEqual(expect.any(Number));
+    expect(finalRetry?.streamLatencyMs).toEqual(expect.any(Number));
+  });
+
   it.each([
     ["runtime-pressure-healthy", "healthy"],
     ["runtime-pressure-deferred", "deferred"],
@@ -648,6 +704,30 @@ describe("demo MSW handlers", () => {
       "http://demo.invalid/api/invocations/9002/attempts/missing-attempt/response-body",
     );
     expect(missingAttemptResponse.status).toBe(404);
+  });
+
+  it("keeps Demo workflow response duration unavailable while an invocation is responding", async () => {
+    const response = await fetch("http://demo.invalid/api/invocations/9001/workflow-detail");
+    const detail = (await response.json()) as {
+      timeline: Array<{
+        kind: string;
+        attempt?: {
+          phase?: string | null;
+          finishedAt?: string | null;
+          firstTokenMs?: number | null;
+          streamLatencyMs?: number | null;
+        } | null;
+      }>;
+    };
+
+    const attempt = detail.timeline.find((entry) => entry.kind === "attempt")?.attempt;
+    expect(response.ok).toBe(true);
+    expect(attempt).toMatchObject({
+      phase: "responding",
+      finishedAt: null,
+      firstTokenMs: 705,
+      streamLatencyMs: null,
+    });
   });
 
   it("fails closed instead of returning a real network response in network-failure scene", async () => {

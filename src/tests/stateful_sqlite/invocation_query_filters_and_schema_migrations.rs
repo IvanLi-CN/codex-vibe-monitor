@@ -2403,7 +2403,7 @@ async fn fetch_invocation_summary_normalizes_top_level_success_and_failure_count
 }
 
 #[tokio::test]
-async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_response_duration() {
+async fn fetch_invocation_summary_keeps_zero_ms_ttft_and_excludes_negative_samples() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -2438,11 +2438,34 @@ async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_respons
     .await
     .expect("insert zero-ms summary row");
 
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("summary-negative-first-token")
+    .bind("2026-03-10 09:11:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(-1.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert invalid TTFT summary row");
+
     let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
         .await
         .expect("summary query with zero-ms samples should succeed");
 
-    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.total_count, 2);
     assert_eq!(summary.network.avg_ttfb_ms, Some(0.0));
     assert_eq!(summary.network.p95_ttfb_ms, Some(0.0));
     assert_eq!(summary.network.avg_first_token_ms, Some(0.0));
@@ -2451,6 +2474,141 @@ async fn fetch_invocation_summary_keeps_zero_ms_ttft_but_ignores_missing_respons
     assert_eq!(summary.network.p95_response_duration_ms, None);
     assert_eq!(summary.network.avg_total_ms, Some(0.0));
     assert_eq!(summary.network.p95_total_ms, Some(0.0));
+}
+
+#[tokio::test]
+async fn list_invocations_keeps_negative_ttft_in_requesting_phase() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            t_upstream_connect_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("running-negative-first-token")
+    .bind("2026-03-10 09:12:00")
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(-1.0_f64)
+    .bind(120.0_f64)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invalid TTFT row");
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            invoke_id: Some("running-negative-first-token".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with invalid running TTFT should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(
+        response.records[0].live_phase.as_deref(),
+        Some("requesting")
+    );
+}
+
+#[tokio::test]
+async fn persisted_nonfinite_timing_is_unavailable_to_phase_and_summary_queries() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            t_upstream_ttfb_ms,
+            first_token_ms,
+            t_upstream_stream_ms,
+            t_total_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind("summary-infinite-timing")
+    .bind("2026-03-10 09:13:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind(f64::INFINITY)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert nonfinite timing row");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            first_token_ms,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("running-infinite-first-token")
+    .bind("2026-03-10 09:14:00")
+    .bind(SOURCE_PROXY)
+    .bind("running")
+    .bind(f64::INFINITY)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running nonfinite TTFT row");
+
+    let Json(summary) = fetch_invocation_summary(State(state.clone()), Query(ListQuery::default()))
+        .await
+        .expect("summary query with nonfinite timing should succeed");
+
+    assert_eq!(summary.network.avg_ttfb_ms, None);
+    assert_eq!(summary.network.p95_ttfb_ms, None);
+    assert_eq!(summary.network.avg_first_token_ms, None);
+    assert_eq!(summary.network.p95_first_token_ms, None);
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
+    assert_eq!(summary.network.avg_total_ms, None);
+    assert_eq!(summary.network.p95_total_ms, None);
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            invoke_id: Some("running-infinite-first-token".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("list query with nonfinite running TTFT should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.records[0].live_phase.as_deref(), Some("queued"));
 }
 
 #[tokio::test]
@@ -2534,6 +2692,65 @@ async fn fetch_invocation_summary_p95_ignores_zero_response_duration_placeholder
 
     assert_eq!(summary.network.avg_response_duration_ms, Some(100.0));
     assert_eq!(summary.network.p95_response_duration_ms, Some(100.0));
+}
+
+#[tokio::test]
+async fn fetch_invocation_summary_ignores_stale_retry_timing() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, first_token_ms,
+            t_upstream_stream_ms, raw_response
+        ) VALUES (?1, ?2, ?3, 'failed', ?4, ?5, '{}')
+        "#,
+    )
+    .bind("summary-stale-retry-timing")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(900.0_f64)
+    .bind(800.0_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert stale retry invocation");
+    for (public_id, index, status, stream_ms, first_byte_ms) in [
+        ("STALE1", 1_i64, "failed", Some(800.0_f64), Some(100.0_f64)),
+        ("STALE2", 2_i64, "failed", None, None),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_request_attempts (
+                attempt_public_id, invoke_id, occurred_at, endpoint, route_mode,
+                attempt_index, distinct_account_index, same_account_retry_index,
+                requester_ip, started_at, finished_at, status, phase,
+                stream_latency_ms, first_byte_latency_ms, created_at
+            ) VALUES (?1, ?2, ?3, '/v1/responses', 'pool', ?4, 1, 0,
+                      '127.0.0.1', ?3, ?3, ?5, 'completed', ?6, ?7, ?3)
+            "#,
+        )
+        .bind(public_id)
+        .bind("summary-stale-retry-timing")
+        .bind(&occurred_at)
+        .bind(index)
+        .bind(status)
+        .bind(stream_ms)
+        .bind(first_byte_ms)
+        .execute(&state.pool)
+        .await
+        .expect("insert retry attempt timing");
+    }
+
+    let Json(summary) = fetch_invocation_summary(State(state), Query(ListQuery::default()))
+        .await
+        .expect("summary should ignore stale retry timing");
+    assert_eq!(summary.network.avg_first_token_ms, None);
+    assert_eq!(summary.network.p95_first_token_ms, None);
+    assert_eq!(summary.network.avg_response_duration_ms, None);
+    assert_eq!(summary.network.p95_response_duration_ms, None);
 }
 
 #[tokio::test]

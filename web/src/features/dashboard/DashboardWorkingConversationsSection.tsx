@@ -70,6 +70,10 @@ import {
   isImageInvocationEndpointKind,
 } from "../../lib/invocation";
 import {
+  isFiniteNonNegativeMilliseconds,
+  isFinitePositiveMilliseconds,
+} from "../../lib/invocationTiming";
+import {
   compactUpstreamPlanLabel,
   shouldShowUpstreamPlanChip,
   upstreamPlanChipRecipe,
@@ -364,7 +368,7 @@ type StatusMeta = {
 };
 
 const CARD_CLASS_NAME =
-  "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2.5 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
+  "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
 
 const SLOT_CLASS_NAME =
   "flex min-w-0 flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
@@ -459,11 +463,13 @@ function formatStatusLabel(status: string) {
 }
 
 function CompactLatencyPills({
+  firstTokenMeasured,
   firstTokenValue,
   responseTimeValue,
   t,
   className,
 }: {
+  firstTokenMeasured: boolean;
   firstTokenValue: string;
   responseTimeValue: string;
   t: ReturnType<typeof useTranslation>["t"];
@@ -485,14 +491,17 @@ function CompactLatencyPills({
     >
       <span
         data-testid="dashboard-compact-latency-first-byte"
-        className="inline-flex min-w-0 items-center gap-1 text-secondary"
+        className={cn(
+          "inline-flex min-w-0 items-center gap-0.5",
+          firstTokenMeasured ? "text-success" : "text-base-content/58",
+        )}
       >
         <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
       </span>
       <span
         data-testid="dashboard-compact-latency-response-time"
-        className="inline-flex min-w-0 items-center gap-1 text-primary"
+        className="inline-flex min-w-0 items-center gap-0.5 text-primary"
       >
         <AppIcon name="speedometer" className="h-3.5 w-3.5 shrink-0" aria-hidden />
         <span className="truncate whitespace-nowrap">{responseTimeValue}</span>
@@ -869,23 +878,16 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
 }
 
-function countCompactDisplayDigits(value: number) {
-  const absoluteValue = Math.abs(value);
-  if (absoluteValue < 1) return 1;
-  return Math.trunc(absoluteValue).toString().length;
-}
-
-function resolveCompactSecondsFractionDigits(seconds: number) {
-  return Math.max(0, Math.min(2, 4 - countCompactDisplayDigits(seconds)));
-}
-
-function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  if (value == null || !Number.isFinite(value)) return FALLBACK_CELL;
+function formatCompactTimingSecondsValue(
+  value: number | null | undefined,
+  localeTag: string,
+  isMeasured: (value: number | null | undefined) => value is number,
+) {
+  if (!isMeasured(value)) return "--";
 
   const seconds = value / 1000;
-  const firstPassFractionDigits = resolveCompactSecondsFractionDigits(seconds);
-  const firstPassRounded = Number(seconds.toFixed(firstPassFractionDigits));
-  const fractionDigits = resolveCompactSecondsFractionDigits(firstPassRounded);
+  const roundedTenths = Math.round(seconds * 10) / 10;
+  const fractionDigits = roundedTenths >= 100 ? 0 : 1;
   const rounded = Number(seconds.toFixed(fractionDigits));
 
   return `${rounded.toLocaleString(localeTag, {
@@ -895,14 +897,12 @@ function formatCompactLatencySecondsValue(value: number | null | undefined, loca
   })} s`;
 }
 
-function formatCompactElapsedSecondsFromTimestamp(
-  occurredAt: string | null | undefined,
-  localeTag: string,
-  nowMs: number,
-) {
-  const occurredMs = occurredAt ? Date.parse(occurredAt) : Number.NaN;
-  if (!Number.isFinite(occurredMs)) return FALLBACK_CELL;
-  return formatCompactLatencySecondsValue(Math.max(0, nowMs - occurredMs), localeTag);
+function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
+  return formatCompactTimingSecondsValue(value, localeTag, isFiniteNonNegativeMilliseconds);
+}
+
+function formatCompactResponseTimeValue(value: number | null | undefined, localeTag: string) {
+  return formatCompactTimingSecondsValue(value, localeTag, isFinitePositiveMilliseconds);
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -933,11 +933,11 @@ function invocationCacheHitRate({
 
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
-      <span className="truncate text-[7px] font-semibold text-base-content/48 sm:text-[7.5px]">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1 py-0.5 sm:px-2 sm:py-1">
+      <span className="truncate text-[8px] font-semibold text-base-content/48 sm:text-[7.5px]">
         {label}
       </span>
-      <span className="min-w-0 truncate text-right font-mono text-[9.5px] font-semibold text-base-content sm:text-[10px]">
+      <span className="min-w-0 truncate text-right font-mono text-[10.5px] font-semibold text-base-content sm:text-[10px]">
         {value}
       </span>
     </div>
@@ -2025,7 +2025,7 @@ function AccountRecentInvocationRow({
         <button
           type="button"
           className={cn(
-            "inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+            "pointer-events-auto inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
             className,
           )}
           data-motion-surface
@@ -2094,15 +2094,15 @@ function AccountRecentInvocationRow({
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
   const compactLatencyValues = useMemo(() => {
-    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
+      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue:
-        normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
+      responseTimeValue: formatCompactResponseTimeValue(
+        invocation.record.tUpstreamStreamMs,
+        localeTag,
+      ),
     };
-  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  }, [invocation.record, localeTag]);
   const recentSummaryFields = useMemo(
     () =>
       buildInvocationSummaryFields({
@@ -2142,16 +2142,6 @@ function AccountRecentInvocationRow({
     });
   }, [displayPromptCacheKey, onOpenConversation]);
 
-  const handleRowKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (event.target !== event.currentTarget) return;
-      if (event.key !== "Enter" && event.key !== " ") return;
-      event.preventDefault();
-      handleOpenInvocation();
-    },
-    [handleOpenInvocation],
-  );
-
   const handleIdentityChipClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       event.stopPropagation();
@@ -2172,19 +2162,21 @@ function AccountRecentInvocationRow({
 
   return (
     <div
-      role="button"
-      tabIndex={0}
-      aria-label={invocationActionLabel}
       data-testid="dashboard-upstream-account-recent-row"
       data-motion-surface
       className={cn(
-        "min-w-0 w-full max-w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        "relative min-w-0 w-full max-w-full rounded-[0.85rem] border bg-base-100/58 px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-base-100/72",
         ACCOUNT_CARD_INNER_BORDER_CLASS_NAME,
       )}
-      onClick={handleOpenInvocation}
-      onKeyDown={handleRowKeyDown}
     >
-      <div className="flex min-w-0 flex-col gap-1.5">
+      <button
+        type="button"
+        data-testid="dashboard-upstream-account-recent-row-action"
+        aria-label={invocationActionLabel}
+        className="absolute inset-0 z-0 h-full w-full rounded-[0.85rem] appearance-none border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+        onClick={handleOpenInvocation}
+      />
+      <div className="relative z-[1] pointer-events-none flex min-w-0 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           <div
             className="flex min-w-0 items-center gap-1.5"
@@ -2203,7 +2195,7 @@ function AccountRecentInvocationRow({
                 >
                   <button
                     type="button"
-                    className="min-w-0 max-w-full truncate whitespace-nowrap appearance-none"
+                    className="pointer-events-auto min-w-0 max-w-full truncate whitespace-nowrap appearance-none"
                     onClick={handleIdentityChipClick}
                     onKeyDown={handleIdentityChipKeyDown}
                   >
@@ -2235,6 +2227,7 @@ function AccountRecentInvocationRow({
             <InlineInvocationStatus
               meta={statusMeta}
               label={statusLabel}
+              className="pointer-events-auto"
               showLabel={false}
               detail={viewModel.collapsedErrorSummary}
             />
@@ -2252,6 +2245,7 @@ function AccountRecentInvocationRow({
           />
           {!shouldGroupModelContext ? fastIndicator : null}
           <CompactLatencyPills
+            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
@@ -2318,7 +2312,7 @@ function AccountRecentInvocationRow({
       </div>
       {viewModel.collapsedErrorSummary ? (
         <InvocationErrorSummary
-          className="mt-1 max-w-full"
+          className="pointer-events-auto mt-1 max-w-full"
           textClassName="text-[10px] text-error"
           message={viewModel.collapsedErrorSummary}
         />
@@ -2327,81 +2321,24 @@ function AccountRecentInvocationRow({
   );
 }
 
-function InvocationMetaLine({
-  label,
-  value,
-  title,
-  toneClassName,
-}: {
-  label: string;
-  value: ReactNode;
-  title?: string;
-  toneClassName?: string;
-}) {
-  return (
-    <div className="grid min-w-0 grid-cols-[2.2rem_minmax(0,1fr)] items-start gap-1.5">
-      <span className="pt-[1px] text-[8.5px] font-semibold uppercase tracking-[0.1em] text-base-content/48">
-        {label}
-      </span>
-      <div
-        className={cn(
-          "min-w-0 font-mono text-[9.5px] font-semibold leading-[1.35] text-base-content/86",
-          toneClassName,
-        )}
-        title={title}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function resolveInvocationLineLabels(locale: "zh" | "en") {
-  return locale === "zh"
-    ? {
-        account: "账号",
-        usage: "用量",
-        timing: "耗时",
-        error: "错误",
-      }
-    : {
-        account: "Account",
-        usage: "Usage",
-        timing: "Timing",
-        error: "Error",
-      };
-}
-
-function PlaceholderSlot() {
+function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
   const { t } = useTranslation();
+  const accessibleLabel =
+    slotKind === "earlier"
+      ? t("dashboard.workingConversations.earlierPlaceholderAccessible")
+      : t("dashboard.workingConversations.previousPlaceholderAccessible");
 
   return (
     <div
       data-testid="dashboard-working-conversation-placeholder"
+      data-slot-kind={slotKind}
+      role="group"
+      aria-label={accessibleLabel}
       className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME)}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
-          {t("dashboard.workingConversations.previousInvocation")}
-        </div>
-        <div className="font-mono text-[9px] text-base-content/62">
-          {t("dashboard.workingConversations.previousPlaceholder")}
-        </div>
-        <div className="flex-1" />
-        <Chip tone="secondary" className="h-5 px-2 py-0 text-[9px] shadow-none">
-          {t("dashboard.workingConversations.placeholderBadge")}
-        </Chip>
-      </div>
-      <p
-        className="mt-1.5 text-[8.5px] leading-[1.35] text-base-content/56"
-        title={t("dashboard.workingConversations.previousPlaceholderHint")}
-      >
-        {t("dashboard.workingConversations.previousPlaceholderHint")}
-      </p>
-      <div className="mt-2 space-y-1" aria-hidden>
-        {Array.from({ length: 3 }, (_, index) => (
-          <div key={index} className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
-        ))}
+      <div className="space-y-1.5" aria-hidden="true">
+        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
+        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
       </div>
     </div>
   );
@@ -2421,7 +2358,7 @@ function InvocationSlot({
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
   label: string;
-  slotKind: "current" | "previous";
+  slotKind: "current" | "previous" | "earlier";
   conversationSequenceId: string;
   promptCacheKey: string;
   nowMs: number;
@@ -2543,7 +2480,6 @@ function InvocationSlot({
       ? timeOnlyFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
 
-  const lineLabels = resolveInvocationLineLabels(locale);
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
     !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
@@ -2562,15 +2498,15 @@ function InvocationSlot({
     [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
   );
   const compactLatencyValues = useMemo(() => {
-    const normalizedStatus = invocation.displayStatus.trim().toLowerCase();
     return {
+      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
       firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue:
-        normalizedStatus === "running" || normalizedStatus === "pending"
-          ? formatCompactElapsedSecondsFromTimestamp(invocation.record.occurredAt, localeTag, nowMs)
-          : formatCompactLatencySecondsValue(invocation.record.tUpstreamStreamMs, localeTag),
+      responseTimeValue: formatCompactResponseTimeValue(
+        invocation.record.tUpstreamStreamMs,
+        localeTag,
+      ),
     };
-  }, [invocation.displayStatus, invocation.record, localeTag, nowMs]);
+  }, [invocation.record, localeTag]);
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
@@ -2602,8 +2538,6 @@ function InvocationSlot({
 
   return (
     <div
-      role={interactionsDisabled ? undefined : "button"}
-      tabIndex={interactionsDisabled ? undefined : 0}
       aria-label={interactionsDisabled ? undefined : invocationActionLabel}
       data-testid="dashboard-working-conversation-slot"
       data-slot-kind={slotKind}
@@ -2612,34 +2546,82 @@ function InvocationSlot({
         statusMeta.slotSurfaceClassName,
         interactionsDisabled
           ? "transition-colors duration-200"
-          : "cursor-pointer transition-colors duration-200 hover:bg-base-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+          : "cursor-pointer transition-colors duration-200 hover:bg-base-100/10",
       )}
       onClick={interactionsDisabled ? undefined : handleOpenInvocation}
       onKeyDown={interactionsDisabled ? undefined : handleSlotKeyDown}
     >
-      <div
+      <button
+        type="button"
+        disabled={interactionsDisabled}
+        aria-label={interactionsDisabled ? undefined : invocationActionLabel}
+        className="block w-full appearance-none border-0 bg-transparent p-0 text-left font-inherit disabled:cursor-default focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary grid min-h-5 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-0 gap-y-1"
+        onClick={(event) => {
+          event.stopPropagation();
+          handleOpenInvocation();
+        }}
         data-testid="dashboard-working-conversation-slot-header"
-        className="grid min-h-5 min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1"
       >
-        <div className="flex min-w-0 shrink-0 items-center gap-1.5">
-          <div
-            data-testid="dashboard-working-conversation-slot-label"
-            className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/62"
-          >
-            {label}
-          </div>
+        <div className="flex min-w-0 items-center gap-1 overflow-hidden">
           <div
             data-testid="dashboard-working-conversation-slot-time"
             className="shrink-0 font-mono text-[10px] text-base-content/72"
           >
             {occurredAtShortLabel}
           </div>
+          <div
+            data-testid="dashboard-working-conversation-slot-model"
+            className="min-w-0 max-w-full flex-1 truncate text-[9.5px] font-semibold text-base-content/76"
+            title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`}
+          >
+            {shouldGroupModelContext ? (
+              <InvocationModelContextCluster
+                modelValue={viewModel.modelValue}
+                reasoningEffortValue={viewModel.reasoningEffortValue}
+                fastIndicatorState={viewModel.fastIndicatorState}
+                grouped
+                t={t}
+                className="min-w-0 max-w-full"
+                showModelLabel
+                testId="dashboard-working-conversation-model-context"
+                modelTestId="dashboard-working-conversation-model-name"
+              />
+            ) : (
+              <div className="flex min-w-0 flex-1 items-center gap-0.5">
+                <span
+                  data-testid="dashboard-working-conversation-model-name"
+                  className="min-w-0 max-w-full shrink truncate whitespace-nowrap"
+                >
+                  {renderInvocationModelChip(viewModel.modelValue, {
+                    t,
+                    hasMismatch: viewModel.modelHasMismatch,
+                    className: "max-w-full",
+                    textClassName: "font-mono",
+                    iconClassName: "h-3 w-3",
+                    testId: "dashboard-working-conversation-model",
+                  })}
+                </span>
+                <span className="shrink-0 text-base-content/28">·</span>
+                <InvocationReasoningEffortChip
+                  value={viewModel.reasoningEffortValue}
+                  testId="dashboard-working-conversation-reasoning-effort"
+                  className="h-4 min-h-4 max-w-[4rem] shrink-0 px-1 py-0 text-[8.5px]"
+                />
+                {fastIndicator ? (
+                  <>
+                    <span className="shrink-0 text-base-content/28">·</span>
+                    {fastIndicator}
+                  </>
+                ) : null}
+              </div>
+            )}
+          </div>
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-nowrap items-center justify-end gap-1"
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-0"
         >
-          <div className="flex min-w-0 shrink items-center justify-end gap-1">
+          <div className="flex min-w-0 shrink items-center justify-end gap-0">
             {invocation.livePhase ? (
               <InvocationPhaseChip
                 phase={invocation.livePhase}
@@ -2657,7 +2639,7 @@ function InvocationSlot({
             )}
             {renderInvocationTransportChip(invocation.record, "h-5 px-1.5 text-[9.5px]")}
             <div className="flex h-5 shrink items-center">
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-0">
                 {renderEndpointSummary(
                   viewModel.endpointDisplay,
                   t,
@@ -2672,160 +2654,101 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
+            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
-            className="shrink-0 flex-nowrap gap-1 text-[11px]"
+            className="shrink-0 flex-nowrap gap-0.5 text-[10px]"
           />
         </div>
-      </div>
+      </button>
 
       <div className="mt-1.5 space-y-1">
-        <InvocationMetaLine
-          label={lineLabels.account}
-          value={
-            <div
-              data-testid="dashboard-working-conversation-account-line"
-              className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[9.5px] leading-[1.3] text-base-content sm:flex-nowrap"
-            >
-              <div className="flex min-w-[7rem] max-w-full flex-1 items-baseline gap-1.5 font-mono font-semibold">
-                {viewModel.accountClickable && viewModel.accountId != null ? (
-                  interactionsDisabled ? (
-                    <span
-                      data-testid="dashboard-working-conversation-account-chip"
-                      className={cn(
-                        "inline-flex min-w-0 max-w-full items-baseline font-mono text-[9.5px] font-semibold text-base-content",
-                        viewModel.accountRoutingInProgress &&
-                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                      )}
-                      title={viewModel.accountLabel}
-                    >
-                      <span
-                        data-testid="dashboard-working-conversation-account-name"
-                        className="block min-w-0 truncate whitespace-nowrap text-left"
-                      >
-                        {viewModel.accountLabel}
-                      </span>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      data-testid="dashboard-working-conversation-account-chip"
-                      className={cn(
-                        "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
-                        viewModel.accountRoutingInProgress &&
-                          INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                      )}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
-                      }}
-                      onKeyDown={(event) => {
-                        event.stopPropagation();
-                      }}
-                      title={viewModel.accountLabel}
-                      aria-label={viewModel.accountLabel}
-                    >
-                      <span
-                        data-testid="dashboard-working-conversation-account-name"
-                        className="block min-w-0 truncate whitespace-nowrap text-left"
-                      >
-                        {viewModel.accountLabel}
-                      </span>
-                    </button>
-                  )
-                ) : (
+        <div
+          data-testid="dashboard-working-conversation-account-line"
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 text-[9.5px] leading-[1.3] text-base-content"
+        >
+          <div className="flex min-w-0 items-center gap-1.5 font-mono font-semibold">
+            {viewModel.accountClickable && viewModel.accountId != null ? (
+              interactionsDisabled ? (
+                <span
+                  data-testid="dashboard-working-conversation-account-chip"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-full items-baseline font-mono text-[9.5px] font-semibold text-base-content",
+                    viewModel.accountRoutingInProgress &&
+                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                  )}
+                  title={viewModel.accountLabel}
+                >
                   <span
-                    data-testid="dashboard-working-conversation-account-chip"
-                    className={cn(
-                      "inline-flex min-w-0 max-w-full items-baseline",
-                      viewModel.accountRoutingInProgress &&
-                        INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
-                    )}
-                    title={viewModel.accountLabel}
+                    data-testid="dashboard-working-conversation-account-name"
+                    className="block min-w-0 truncate whitespace-nowrap text-left"
                   >
-                    <span
-                      data-testid="dashboard-working-conversation-account-name"
-                      className="block min-w-0 truncate whitespace-nowrap text-left"
-                    >
-                      {viewModel.accountLabel}
-                    </span>
+                    {viewModel.accountLabel}
                   </span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="dashboard-working-conversation-account-chip"
+                  className={cn(
+                    "inline-flex min-w-0 max-w-full cursor-pointer appearance-none items-baseline border-0 bg-transparent p-0 text-left font-mono text-[9.5px] font-semibold text-base-content no-underline transition-colors duration-200 hover:text-primary focus-visible:rounded-[0.2rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                    viewModel.accountRoutingInProgress &&
+                      INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
+                  )}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenUpstreamAccount?.(viewModel.accountId ?? 0, viewModel.accountLabel);
+                  }}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  title={viewModel.accountLabel}
+                  aria-label={viewModel.accountLabel}
+                >
+                  <span
+                    data-testid="dashboard-working-conversation-account-name"
+                    className="block min-w-0 truncate whitespace-nowrap text-left"
+                  >
+                    {viewModel.accountLabel}
+                  </span>
+                </button>
+              )
+            ) : (
+              <span
+                data-testid="dashboard-working-conversation-account-chip"
+                className={cn(
+                  "inline-flex min-w-0 max-w-full items-baseline",
+                  viewModel.accountRoutingInProgress &&
+                    INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME,
                 )}
-                <CompactAccountPlanChip planType={viewModel.accountPlanType} />
-              </div>
-              <div
-                data-testid="dashboard-working-conversation-account-meta"
-                className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-base-content/70 sm:flex-nowrap"
-                title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
+                title={viewModel.accountLabel}
               >
-                {shouldGroupModelContext ? (
-                  <InvocationModelContextCluster
-                    modelValue={viewModel.modelValue}
-                    reasoningEffortValue={viewModel.reasoningEffortValue}
-                    fastIndicatorState={viewModel.fastIndicatorState}
-                    grouped
-                    t={t}
-                    testId="dashboard-working-conversation-model-context"
-                    modelTestId="dashboard-working-conversation-model-name"
-                  />
-                ) : (
-                  <>
-                    <span
-                      data-testid="dashboard-working-conversation-model-name"
-                      className="min-w-0"
-                    >
-                      {renderInvocationModelChip(viewModel.modelValue, {
-                        t,
-                        hasMismatch: viewModel.modelHasMismatch,
-                        className: "max-w-full",
-                        textClassName: "font-mono",
-                        iconClassName: "h-3 w-3",
-                        testId: "dashboard-working-conversation-model",
-                      })}
-                    </span>
-                    <span className="shrink-0 text-base-content/28">·</span>
-                    <InvocationReasoningEffortChip
-                      value={viewModel.reasoningEffortValue}
-                      testId="dashboard-working-conversation-reasoning-effort"
-                    />
-                    {fastIndicator ? (
-                      <>
-                        <span className="shrink-0 text-base-content/28">·</span>
-                        {fastIndicator}
-                      </>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </div>
-          }
-        />
-
-        <InvocationMetaLine
-          label={lineLabels.usage}
-          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
-          value={
-            <div
-              data-testid="dashboard-working-conversation-usage-line"
-              className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5"
-            >
+                <span
+                  data-testid="dashboard-working-conversation-account-name"
+                  className="block min-w-0 truncate whitespace-nowrap text-left"
+                >
+                  {viewModel.accountLabel}
+                </span>
+              </span>
+            )}
+            <CompactAccountPlanChip planType={viewModel.accountPlanType} />
+          </div>
+          <div
+            className="min-w-0 whitespace-nowrap text-right font-mono text-[9.5px] font-semibold text-base-content/74"
+            title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
+          >
+            <div data-testid="dashboard-working-conversation-usage-line">
               {renderInvocationSummaryFields(usageSummaryFields)}
             </div>
-          }
-        />
+          </div>
+        </div>
 
         {viewModel.collapsedErrorSummary ? (
-          <InvocationMetaLine
-            label={lineLabels.error}
-            value={
-              <InvocationErrorSummary
-                className="max-w-full"
-                textClassName="text-[9.5px] text-error"
-                message={viewModel.collapsedErrorSummary}
-              />
-            }
-            toneClassName="text-error"
+          <InvocationErrorSummary
+            className="max-w-full"
+            textClassName="text-[9.5px] text-error"
+            message={viewModel.collapsedErrorSummary}
           />
         ) : null}
       </div>
@@ -4121,7 +4044,10 @@ export function DashboardWorkingConversationsSection({
     setGridElement(node);
   }, []);
   const hasInFlightCards = cards.some(
-    (card) => card.currentInvocation.isInFlight || card.previousInvocation?.isInFlight === true,
+    (card) =>
+      card.currentInvocation.isInFlight ||
+      card.previousInvocation?.isInFlight === true ||
+      card.earlierInvocation?.isInFlight === true,
   );
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const networkUploadLabel = t("dashboard.activityOverview.networkUpload");
@@ -4862,10 +4788,13 @@ export function DashboardWorkingConversationsSection({
       cards.find(
         (card) =>
           card.currentInvocation.preview.blockedBinding != null ||
-          card.previousInvocation?.preview.blockedBinding != null,
+          card.previousInvocation?.preview.blockedBinding != null ||
+          card.earlierInvocation?.preview.blockedBinding != null,
       )?.currentInvocation.preview.blockedBinding ??
       cards.find((card) => card.previousInvocation?.preview.blockedBinding != null)
         ?.previousInvocation?.preview.blockedBinding ??
+      cards.find((card) => card.earlierInvocation?.preview.blockedBinding != null)
+        ?.earlierInvocation?.preview.blockedBinding ??
       null;
     const upstreamAccountId = activeBlockedBindingFilter.upstreamAccountId ?? null;
     const accountLabel =
@@ -5921,7 +5850,7 @@ export function DashboardWorkingConversationsSection({
                                 </div>
                               </div>
 
-                              <div className="mt-2">
+                              <div className="mt-1.5 sm:mt-2">
                                 <div className="grid grid-cols-3 gap-1.5">
                                   <SummaryMetric
                                     label={t("dashboard.workingConversations.requestCountLabel")}
@@ -5938,7 +5867,7 @@ export function DashboardWorkingConversationsSection({
                                 </div>
                               </div>
 
-                              <div className="mt-2.5 space-y-1.5 sm:mt-3 sm:space-y-2">
+                              <div className="mt-2 space-y-1.5 sm:mt-3 sm:space-y-2">
                                 <InvocationSlot
                                   invocation={card.currentInvocation}
                                   label={t("dashboard.workingConversations.currentInvocation")}
@@ -5965,7 +5894,23 @@ export function DashboardWorkingConversationsSection({
                                     onOpenInvocation={onOpenInvocation}
                                   />
                                 ) : (
-                                  <PlaceholderSlot />
+                                  <PlaceholderSlot slotKind="previous" />
+                                )}
+                                {card.earlierInvocation ? (
+                                  <InvocationSlot
+                                    invocation={card.earlierInvocation}
+                                    label={t("dashboard.workingConversations.earlierInvocation")}
+                                    slotKind="earlier"
+                                    conversationSequenceId={card.conversationSequenceId}
+                                    promptCacheKey={card.promptCacheKey}
+                                    nowMs={nowMs}
+                                    locale={locale}
+                                    interactionsDisabled={selectionModeEnabled}
+                                    onOpenUpstreamAccount={onOpenUpstreamAccount}
+                                    onOpenInvocation={onOpenInvocation}
+                                  />
+                                ) : (
+                                  <PlaceholderSlot slotKind="earlier" />
                                 )}
                               </div>
                             </div>

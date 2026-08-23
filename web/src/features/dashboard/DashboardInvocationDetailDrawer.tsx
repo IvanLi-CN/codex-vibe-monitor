@@ -212,9 +212,11 @@ export function DashboardInvocationDetailDrawer({
     ? t(statusMeta.labelKey as Parameters<typeof t>[0])
     : (statusMeta.label ?? t("table.status.unknown"));
   const slotLabel = selection
-    ? selection.slotKind === "previous"
-      ? t("dashboard.workingConversations.previousInvocation")
-      : t("dashboard.workingConversations.currentInvocation")
+    ? selection.slotKind === "earlier"
+      ? t("dashboard.workingConversations.earlierInvocation")
+      : selection.slotKind === "previous"
+        ? t("dashboard.workingConversations.previousInvocation")
+        : t("dashboard.workingConversations.currentInvocation")
     : t("dashboard.workingConversations.invocation");
   const occurredAtLabel =
     recordForHeader != null

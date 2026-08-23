@@ -1,6 +1,7 @@
 import type { TranslationKey } from "../i18n";
 import type { ApiInvocation, InvocationLivePhase, InvocationPhaseCounts } from "./api";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
+import { isFiniteNonNegativeMilliseconds, isFinitePositiveMilliseconds } from "./invocationTiming";
 
 type InvocationPhaseSource = Pick<
   ApiInvocation,
@@ -12,7 +13,7 @@ type InvocationPhaseSource = Pick<
   | "tReqParseMs"
   | "tUpstreamConnectMs"
   | "tUpstreamTtfbMs"
-  | "tUpstreamStreamMs"
+  | "firstTokenMs"
 >;
 
 export type InvocationPhaseChipTone = "warning" | "info" | "secondary";
@@ -36,8 +37,24 @@ function normalizePhase(value: string | null | undefined): InvocationLivePhase |
   return null;
 }
 
-function hasFiniteTiming(value: number | null | undefined): boolean {
-  return typeof value === "number" && Number.isFinite(value) && value > 0;
+function hasPositiveTiming(value: number | null | undefined): boolean {
+  return isFinitePositiveMilliseconds(value);
+}
+
+function hasMeasuredFirstToken(value: number | null | undefined): boolean {
+  return isFiniteNonNegativeMilliseconds(value);
+}
+
+function resolvePreResponsePhase(record: InvocationPhaseSource): InvocationLivePhase {
+  if (
+    record.upstreamAccountId != null ||
+    hasPositiveTiming(record.tUpstreamConnectMs) ||
+    hasPositiveTiming(record.tReqReadMs) ||
+    hasPositiveTiming(record.tReqParseMs)
+  ) {
+    return "requesting";
+  }
+  return "queued";
 }
 
 export function resolveInvocationLivePhase(
@@ -49,21 +66,15 @@ export function resolveInvocationLivePhase(
     return null;
   }
 
-  const explicitPhase = normalizePhase(record.livePhase);
-  if (explicitPhase) return explicitPhase;
+  const hasFirstToken = hasMeasuredFirstToken(record.firstTokenMs);
   if (normalizedStatus === "pending") return "queued";
-  if (hasFiniteTiming(record.tUpstreamTtfbMs) || hasFiniteTiming(record.tUpstreamStreamMs)) {
-    return "responding";
+  if (hasFirstToken) return "responding";
+  const explicitPhase = normalizePhase(record.livePhase);
+  if (explicitPhase === "responding" && !hasFirstToken) {
+    return resolvePreResponsePhase(record);
   }
-  if (
-    record.upstreamAccountId != null ||
-    hasFiniteTiming(record.tUpstreamConnectMs) ||
-    hasFiniteTiming(record.tReqReadMs) ||
-    hasFiniteTiming(record.tReqParseMs)
-  ) {
-    return "requesting";
-  }
-  return "queued";
+  if (explicitPhase) return explicitPhase;
+  return resolvePreResponsePhase(record);
 }
 
 export function getInvocationPhaseDisplay(phase: InvocationLivePhase): InvocationPhaseDisplay {
