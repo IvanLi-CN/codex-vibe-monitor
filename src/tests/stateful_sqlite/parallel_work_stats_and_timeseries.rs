@@ -21190,7 +21190,7 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
 }
 
 #[tokio::test]
-async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_recovery() {
+async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
