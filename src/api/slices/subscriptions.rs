@@ -5106,7 +5106,11 @@ impl SubscriptionHub {
                             .summary_terminal_overlay_all_time
                             .push_back(delta.clone());
                     }
-                } else if let Some(account_id) = delta.upstream_account_id {
+                } else if guard
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_some()
+                    && let Some(account_id) = delta.upstream_account_id
+                {
                     guard
                         .summary_terminal_overlay_all_time_overflowed_through_account
                         .entry(account_id)
