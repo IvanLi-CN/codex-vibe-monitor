@@ -35,6 +35,7 @@
 
 ## 验证记录
 
+- 正常服务把 runtime hourly rollup 和 invocation summary repair 从 readiness 前移到 readiness 后的独立后台任务；任务受 shutdown、数据库压力重试和 `hourly_rollup_sync_lock` 协调，并在 system task history 与结构化日志中记录成功、失败、取消及各 bootstrap 子阶段耗时。CLI 与 `--retention-run-once` 继续走原有阻塞维护路径。
 - 已落地 `src/long_term_stats.rs` 的三维小时/日汇总、可恢复 live/archive 回填、准备状态进度、overview/series API 与墙时区间并集。
 - 已落地 `pool_upstream_accounts.deleted_at` 迁移、API Key 凭据/会话/路由运行状态清理，以及账号池/路由候选隐藏。
 - 已落地独立 `LongTermStatsSection`、60 秒可见刷新 hook、mock demo handler、Storybook ready/preparing/empty/error 状态与关键 play。

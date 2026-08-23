@@ -393,9 +393,9 @@ async fn startup_persistent_prep_keeps_manifest_backlog_pending_after_a_bounded_
 }
 
 #[test]
-fn startup_rollup_bootstrap_stays_blocking_for_normal_server_start() {
+fn startup_rollup_bootstrap_runs_in_background_only_for_normal_server_start() {
     let default_cli = CliArgs::default();
-    assert!(should_run_blocking_startup_hourly_rollup_bootstrap(
+    assert!(should_spawn_background_startup_hourly_rollup_bootstrap(
         &default_cli
     ));
     assert!(!should_run_blocking_startup_persistent_prep(&default_cli));
@@ -404,7 +404,7 @@ fn startup_rollup_bootstrap_stays_blocking_for_normal_server_start() {
         retention_run_once: true,
         ..CliArgs::default()
     };
-    assert!(!should_run_blocking_startup_hourly_rollup_bootstrap(
+    assert!(!should_spawn_background_startup_hourly_rollup_bootstrap(
         &retention_cli
     ));
     assert!(should_run_blocking_startup_persistent_prep(&retention_cli));
@@ -415,7 +415,7 @@ fn startup_rollup_bootstrap_stays_blocking_for_normal_server_start() {
         })),
         ..CliArgs::default()
     };
-    assert!(!should_run_blocking_startup_hourly_rollup_bootstrap(
+    assert!(!should_spawn_background_startup_hourly_rollup_bootstrap(
         &maintenance_cli
     ));
     assert!(!should_run_blocking_startup_persistent_prep(
