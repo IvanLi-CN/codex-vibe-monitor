@@ -9,6 +9,8 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    let spawn_background_hourly_rollup_bootstrap =
+        should_spawn_background_startup_hourly_rollup_bootstrap(&cli);
     let (backend_ver, frontend_ver) = detect_versions(config.static_dir.as_deref());
     info!(?config, backend_version = %backend_ver, frontend_version = %frontend_ver, "starting codex vibe monitor");
 
@@ -46,13 +48,6 @@ pub(crate) async fn run() -> Result<()> {
                 "recovered orphaned pending pool attempt rows at startup"
             );
         }
-    }
-    if should_run_blocking_startup_hourly_rollup_bootstrap(&cli) {
-        let rollup_bootstrap_started_at = Instant::now();
-        bootstrap_hourly_rollups_for_runtime_startup(&pool, Some(config.invocation_max_days))
-            .await?;
-        ensure_invocation_summary_rollups_ready_best_effort(&pool).await?;
-        log_startup_phase("hourly_rollup_bootstrap", rollup_bootstrap_started_at);
     }
     if should_run_blocking_startup_persistent_prep(&cli) {
         let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
@@ -212,9 +207,14 @@ pub(crate) async fn run() -> Result<()> {
 
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
-    run_runtime_until_shutdown(state, startup_started_at, async move {
-        let _ = signal_listener.await;
-    })
+    run_runtime_until_shutdown(
+        state,
+        startup_started_at,
+        spawn_background_hourly_rollup_bootstrap,
+        async move {
+            let _ = signal_listener.await;
+        },
+    )
     .await
 }
 
@@ -374,6 +374,7 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
 pub(crate) async fn run_runtime_until_shutdown<F>(
     state: Arc<AppState>,
     startup_started_at: Instant,
+    spawn_background_hourly_rollup_bootstrap: bool,
     shutdown_signal: F,
 ) -> Result<()>
 where
@@ -723,11 +724,22 @@ where
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
+    let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
+        .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
 
     tokio::select! {
         biased;
         _ = shutdown_signal => begin_runtime_shutdown(&cancel),
         _ = cancel.cancelled() => {}
+    }
+
+    if let Some(startup_hourly_rollup_bootstrap_handle) = startup_hourly_rollup_bootstrap_handle
+        && let Err(err) = startup_hourly_rollup_bootstrap_handle.await
+    {
+        error!(
+            ?err,
+            "background startup hourly rollup bootstrap task terminated unexpectedly"
+        );
     }
 
     drain_runtime_after_pending_shutdown(
@@ -862,6 +874,211 @@ pub(crate) fn log_startup_phase(phase: &'static str, started_at: Instant) {
         elapsed_ms = started_at.elapsed().as_millis() as u64,
         "startup phase finished"
     );
+}
+
+pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let started_at = Instant::now();
+        let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+        let task_run = match begin_system_task_run(
+            &state.pool,
+            SystemTaskKind::HourlyRollupBootstrap,
+            "startup",
+            Some("background hourly rollup bootstrap started".to_string()),
+        )
+        .await
+        {
+            Ok(task_run) => Some(task_run),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "failed to record background startup hourly rollup bootstrap start"
+                );
+                None
+            }
+        };
+        let _permit = loop {
+            match pressure_gate.try_begin_background("startup_hourly_rollup_bootstrap") {
+                Ok(permit) => break permit,
+                Err(deny_reason) => {
+                    let retry_after = match &deny_reason {
+                        crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                            remaining_ms,
+                        } => Duration::from_millis((*remaining_ms).max(1)),
+                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                            Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)
+                        }
+                    };
+                    info!(
+                        deny_reason = %deny_reason,
+                        retry_after_ms = retry_after.as_millis() as u64,
+                        "background startup hourly rollup bootstrap deferred by database pressure"
+                    );
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            info!(
+                                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                                "background startup hourly rollup bootstrap cancelled while waiting for database pressure admission"
+                            );
+                            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                                state.as_ref(),
+                                task_run.as_ref(),
+                                SystemTaskStatus::Skipped,
+                                "background hourly rollup bootstrap cancelled while waiting for database pressure admission",
+                                None,
+                            ).await;
+                            return;
+                        }
+                        _ = tokio::time::sleep(retry_after) => {}
+                    }
+                }
+            }
+        };
+        let rollup_guard = tokio::select! {
+            _ = cancel.cancelled() => {
+                info!(
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "background startup hourly rollup bootstrap cancelled before acquiring its synchronization lock"
+                );
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    task_run.as_ref(),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap cancelled before acquiring its synchronization lock",
+                    None,
+                ).await;
+                return;
+            }
+            guard = state.hourly_rollup_sync_lock.lock() => guard,
+        };
+
+        let hourly_rollups_started_at = Instant::now();
+        let hourly_rollups = tokio::select! {
+            _ = cancel.cancelled() => None,
+            result = bootstrap_hourly_rollups_for_runtime_startup(
+                &state.pool,
+                Some(state.config.invocation_max_days),
+            ) => Some(result),
+        };
+        let Some(hourly_rollups) = hourly_rollups else {
+            drop(rollup_guard);
+            info!(
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "background startup hourly rollup bootstrap cancelled during hourly rollup repair"
+            );
+            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                state.as_ref(),
+                task_run.as_ref(),
+                SystemTaskStatus::Skipped,
+                "background hourly rollup bootstrap cancelled during hourly rollup repair",
+                None,
+            )
+            .await;
+            return;
+        };
+        if let Err(err) = hourly_rollups {
+            drop(rollup_guard);
+            pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                state.as_ref(),
+                task_run.as_ref(),
+                SystemTaskStatus::Failed,
+                "background hourly rollup bootstrap failed; existing rollups remain available",
+                Some(err.to_string()),
+            )
+            .await;
+            warn!(
+                error = %err,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "background startup hourly rollup bootstrap failed; keeping existing rollups"
+            );
+            return;
+        }
+        let hourly_rollups_elapsed_ms = hourly_rollups_started_at.elapsed().as_millis() as u64;
+        info!(
+            elapsed_ms = hourly_rollups_elapsed_ms,
+            "background startup hourly rollup bootstrap completed hourly rollup repair"
+        );
+
+        let summary_rollups_started_at = Instant::now();
+        let summary_rollups = tokio::select! {
+            _ = cancel.cancelled() => None,
+            result = ensure_invocation_summary_rollups_ready_best_effort(&state.pool) => Some(result),
+        };
+        drop(rollup_guard);
+        let Some(summary_rollups) = summary_rollups else {
+            info!(
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "background startup hourly rollup bootstrap cancelled during summary rollup repair"
+            );
+            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                state.as_ref(),
+                task_run.as_ref(),
+                SystemTaskStatus::Skipped,
+                "background hourly rollup bootstrap cancelled during summary rollup repair",
+                None,
+            )
+            .await;
+            return;
+        };
+        if let Err(err) = summary_rollups {
+            pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                state.as_ref(),
+                task_run.as_ref(),
+                SystemTaskStatus::Failed,
+                "background hourly rollup bootstrap failed; existing rollups remain available",
+                Some(err.to_string()),
+            )
+            .await;
+            warn!(
+                error = %err,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "background startup hourly rollup bootstrap failed; keeping existing rollups"
+            );
+            return;
+        }
+        let summary_rollups_elapsed_ms = summary_rollups_started_at.elapsed().as_millis() as u64;
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        finish_runtime_startup_hourly_rollup_bootstrap_task(
+            state.as_ref(),
+            task_run.as_ref(),
+            SystemTaskStatus::Success,
+            &format!(
+                "background hourly rollup bootstrap completed: hourly_rollups_ms={hourly_rollups_elapsed_ms} summary_rollups_ms={summary_rollups_elapsed_ms}"
+            ),
+            None,
+        )
+        .await;
+        info!(
+            elapsed_ms,
+            hourly_rollups_elapsed_ms,
+            summary_rollups_elapsed_ms,
+            "background startup hourly rollup bootstrap completed"
+        );
+    })
+}
+
+async fn finish_runtime_startup_hourly_rollup_bootstrap_task(
+    state: &AppState,
+    task_run: Option<&SystemTaskRunHandle>,
+    status: SystemTaskStatus,
+    summary: &str,
+    detail: Option<String>,
+) {
+    if let Some(task_run) = task_run {
+        finish_system_task_run(
+            &state.pool,
+            task_run,
+            status,
+            Some(summary.to_string()),
+            detail,
+        )
+        .await;
+    }
 }
 
 pub(crate) fn spawn_forward_proxy_maintenance(

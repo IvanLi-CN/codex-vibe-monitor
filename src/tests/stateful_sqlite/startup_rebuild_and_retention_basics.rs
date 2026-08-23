@@ -942,6 +942,153 @@ async fn health_check_reports_starting_until_startup_is_ready() {
     assert_eq!(std::str::from_utf8(&body).expect("utf8 body"), "ok");
 }
 
+async fn wait_for_hourly_rollup_bootstrap_task(
+    state: &AppState,
+    expected_status: &str,
+) -> (String, Option<String>, Option<String>) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let task = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                r#"
+                SELECT status, summary, detail
+                FROM system_task_runs
+                WHERE task_kind = 'hourly_rollup_bootstrap'
+                ORDER BY id DESC
+                LIMIT 1
+                "#,
+            )
+            .fetch_optional(&state.pool)
+            .await
+            .expect("read hourly rollup bootstrap task");
+            if let Some(task) = task
+                && task.0 == expected_status
+            {
+                return task;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("hourly rollup bootstrap task should reach the expected state")
+}
+
+#[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_keeps_health_ready_while_waiting_for_lock() {
+    let state = test_state_from_config(test_config(), false).await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn http server");
+    state.startup_ready.store(true, Ordering::Release);
+
+    let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+    let (status, _, _) = wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
+    assert_eq!(status, "running");
+
+    let health = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond while rollup bootstrap waits for the lock");
+    assert_eq!(health.status(), StatusCode::OK);
+
+    drop(rollup_guard);
+    tokio::time::timeout(Duration::from_secs(5), bootstrap_handle)
+        .await
+        .expect("background bootstrap should finish")
+        .expect("background bootstrap task should join");
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "success").await;
+    assert_eq!(status, "success");
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("hourly_rollups_ms="))
+    );
+    assert!(detail.is_none());
+
+    state.shutdown.cancel();
+    server_handle.await.expect("http server task should join");
+}
+
+#[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_records_failure_without_revoking_readiness() {
+    let state = test_state_from_config(test_config(), false).await;
+    state.startup_ready.store(true, Ordering::Release);
+    sqlx::query("DROP TABLE upstream_account_stats_hourly")
+        .execute(&state.pool)
+        .await
+        .expect("remove account rollup table to force bootstrap failure");
+
+    spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone())
+        .await
+        .expect("background bootstrap task should join");
+
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "failed").await;
+    assert_eq!(status, "failed");
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("existing rollups remain available"))
+    );
+    assert!(
+        detail.is_some(),
+        "failure should retain an observable error"
+    );
+    assert_eq!(
+        health_check(State(state.clone()))
+            .await
+            .into_response()
+            .status(),
+        StatusCode::OK,
+        "background bootstrap failure must not return health to starting"
+    );
+
+    state.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_cancels_while_waiting_for_lock() {
+    let state = test_state_from_config(test_config(), false).await;
+    let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+    wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "running").await;
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("background bootstrap should stop after cancellation")
+        .expect("background bootstrap task should join");
+    drop(rollup_guard);
+
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
+    assert_eq!(status, "skipped");
+    assert!(
+        summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("cancelled before acquiring"))
+    );
+    assert!(detail.is_none());
+}
+
+#[tokio::test]
+async fn retention_run_once_keeps_blocking_hourly_rollup_bootstrap() {
+    let state = test_state_from_config(test_config(), false).await;
+    let cli = CliArgs {
+        retention_run_once: true,
+        ..CliArgs::default()
+    };
+
+    let summary = run_startup_persistent_prep(&state.pool, &state.config, &cli)
+        .await
+        .expect("retention run-once startup prep should finish");
+    assert!(summary.bootstrapped_hourly_rollups);
+
+    state.shutdown.cancel();
+}
+
 #[tokio::test]
 async fn startup_backfill_progress_persists_terminal_missing_raw_cursor() {
     let state = test_state_with_openai_base(

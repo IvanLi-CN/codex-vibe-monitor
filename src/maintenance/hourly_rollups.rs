@@ -2272,11 +2272,40 @@ async fn bootstrap_hourly_rollups_with_scope(
     invocation_full_detail_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
+    let usage_breakdown_started_at = Instant::now();
     repair_live_invocation_usage_breakdown_rollups(pool).await?;
+    info!(
+        rollup_bootstrap_step = "usage_breakdown_repair",
+        elapsed_ms = usage_breakdown_started_at.elapsed().as_millis() as u64,
+        "hourly rollup bootstrap step completed"
+    );
+
+    let live_sync_started_at = Instant::now();
     sync_hourly_rollups_from_live_tables_with_scope(pool, invocation_full_detail_days, scope)
         .await?;
+    info!(
+        rollup_bootstrap_step = "live_rollup_sync",
+        elapsed_ms = live_sync_started_at.elapsed().as_millis() as u64,
+        "hourly rollup bootstrap step completed"
+    );
+
+    let archive_usage_breakdown_started_at = Instant::now();
     repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
+    info!(
+        rollup_bootstrap_step = "archive_usage_breakdown_repair",
+        elapsed_ms = archive_usage_breakdown_started_at.elapsed().as_millis() as u64,
+        "hourly rollup bootstrap step completed"
+    );
+
+    let archive_marker_started_at = Instant::now();
     repair_materialized_upstream_account_archive_markers(pool).await?;
+    info!(
+        rollup_bootstrap_step = "upstream_account_archive_marker_repair",
+        elapsed_ms = archive_marker_started_at.elapsed().as_millis() as u64,
+        "hourly rollup bootstrap step completed"
+    );
+
+    let account_stats_probe_started_at = Instant::now();
     let account_stats_hourly_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_hourly")
             .fetch_one(pool)
@@ -2285,9 +2314,22 @@ async fn bootstrap_hourly_rollups_with_scope(
         sqlx::query_scalar("SELECT COUNT(*) FROM upstream_account_stats_minute")
             .fetch_one(pool)
             .await?;
+    info!(
+        rollup_bootstrap_step = "upstream_account_stats_probe",
+        elapsed_ms = account_stats_probe_started_at.elapsed().as_millis() as u64,
+        account_stats_hourly_count,
+        account_stats_minute_count,
+        "hourly rollup bootstrap step completed"
+    );
     if account_stats_hourly_count == 0 || account_stats_minute_count == 0 {
+        let account_stats_rebuild_started_at = Instant::now();
         rebuild_upstream_account_stats_rollups_from_sources(pool).await?;
         repair_materialized_upstream_account_archive_markers(pool).await?;
+        info!(
+            rollup_bootstrap_step = "upstream_account_stats_rebuild",
+            elapsed_ms = account_stats_rebuild_started_at.elapsed().as_millis() as u64,
+            "hourly rollup bootstrap step completed"
+        );
     }
     Ok(())
 }

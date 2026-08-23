@@ -1681,7 +1681,12 @@ async fn run_runtime_until_shutdown_exits_when_shutdown_token_is_cancelled_direc
 
     tokio::time::timeout(
         Duration::from_secs(1),
-        run_runtime_until_shutdown(state.clone(), Instant::now(), std::future::pending::<()>()),
+        run_runtime_until_shutdown(
+            state.clone(),
+            Instant::now(),
+            false,
+            std::future::pending::<()>(),
+        ),
     )
     .await
     .expect("direct shutdown token cancellation should not hang runtime drain")
@@ -1710,7 +1715,7 @@ async fn run_runtime_until_shutdown_skips_xray_route_sync_when_shutdown_is_alrea
         });
     }
 
-    run_runtime_until_shutdown(state.clone(), Instant::now(), async {})
+    run_runtime_until_shutdown(state.clone(), Instant::now(), false, async {})
         .await
         .expect("runtime should exit cleanly when shutdown is already requested");
 
