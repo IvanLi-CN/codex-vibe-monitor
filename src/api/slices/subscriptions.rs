@@ -750,6 +750,10 @@ struct SubscriptionHubState {
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
     summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
     summary_terminal_overlay_all_time_bytes: usize,
+    // A shared all-time queue can overflow on one account while another account remains
+    // serviceable. Retain the dropped-through proof per account so a global rebuild cannot
+    // silently clear an account's fail-closed marker.
+    summary_terminal_overlay_all_time_overflowed_through_account: HashMap<i64, u64>,
     summary_terminal_overlay_all_time_overflowed_through_sequence: Option<u64>,
     summary_http_interest_at: Option<Instant>,
     summary_http_all_time_interest_at: Option<Instant>,
@@ -3149,6 +3153,16 @@ impl SubscriptionHub {
             .iter()
             .map(|delta| delta.estimated_bytes)
             .sum();
+        state
+            .summary_terminal_overlay_all_time_overflowed_through_account
+            .retain(|account_id, overflowed_through| {
+                !projection.all_time_terminal_scope_covers(
+                    Some(*account_id),
+                    "",
+                    "",
+                    *overflowed_through,
+                )
+            });
         if projection.all_time_terminal_coverage_complete()
             && state
                 .summary_terminal_overlay_all_time_overflowed_through_sequence
@@ -3174,36 +3188,42 @@ impl SubscriptionHub {
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
         let overflowed = if all_time {
-            state
-                .summary_terminal_overlay_all_time_overflowed_through_sequence
-                .is_some()
+            upstream_account_id.is_some_and(|account_id| {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_account
+                    .contains_key(&account_id)
+            }) || (upstream_account_id.is_none()
+                && state
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_some())
         } else {
             state
                 .summary_terminal_overlay_overflowed_through_sequence
                 .is_some()
         };
-        let overflow_is_covered = all_time
-            && upstream_account_id
-                .map(|account_id| {
-                    projection.all_time_terminal_scope_covers(
-                        Some(account_id),
-                        "",
-                        "",
-                        state
-                            .summary_terminal_overlay_all_time_overflowed_through_sequence
-                            .unwrap_or_default(),
-                    )
-                })
-                .unwrap_or_else(|| {
-                    projection.all_time_terminal_scope_covers(
-                        None,
-                        "",
-                        "",
-                        state
-                            .summary_terminal_overlay_all_time_overflowed_through_sequence
-                            .unwrap_or_default(),
-                    )
-                });
+        let overflow_is_covered = if all_time {
+            if let Some(account_id) = upstream_account_id {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_account
+                    .get(&account_id)
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(
+                            Some(account_id),
+                            "",
+                            "",
+                            *overflowed_through,
+                        )
+                    })
+            } else {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(None, "", "", overflowed_through)
+                    })
+            }
+        } else {
+            false
+        };
         if overflowed && !overflow_is_covered {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
@@ -5063,6 +5083,15 @@ impl SubscriptionHub {
                         let overflowed_through = highest_sequence;
                         guard.summary_terminal_overlay_all_time_overflowed_through_sequence =
                             Some(overflowed_through);
+                        if let Some(account_id) = delta.upstream_account_id {
+                            guard
+                                .summary_terminal_overlay_all_time_overflowed_through_account
+                                .entry(account_id)
+                                .and_modify(|existing| {
+                                    *existing = (*existing).max(delta.terminal_sequence)
+                                })
+                                .or_insert(delta.terminal_sequence);
+                        }
                         tracing::warn!(
                             pending_terminal_count = guard.summary_terminal_overlay_all_time.len(),
                             pending_terminal_bytes = guard.summary_terminal_overlay_all_time_bytes,
@@ -5077,6 +5106,12 @@ impl SubscriptionHub {
                             .summary_terminal_overlay_all_time
                             .push_back(delta.clone());
                     }
+                } else if let Some(account_id) = delta.upstream_account_id {
+                    guard
+                        .summary_terminal_overlay_all_time_overflowed_through_account
+                        .entry(account_id)
+                        .and_modify(|existing| *existing = (*existing).max(delta.terminal_sequence))
+                        .or_insert(delta.terminal_sequence);
                 }
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
@@ -16165,6 +16200,52 @@ mod tests {
                 .await,
             Err(ApiError::Unavailable(_))
         ));
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn account_all_time_overlay_overflow_remains_scoped_until_account_proof() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .insert(42, 7);
+        }
+
+        let projection = SummaryProjection::default();
+        assert!(matches!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true, Some(42))
+                .await,
+            Err(ApiError::Unavailable(_))
+        ));
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true, None)
+                .await
+                .is_ok(),
+            "an account-scoped overflow must not make the global all-time topic unavailable"
+        );
+
+        state
+            .subscription_hub
+            .store_summary_projection(projection)
+            .await;
+        assert!(
+            state
+                .subscription_hub
+                .state
+                .lock()
+                .await
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .contains_key(&42)
+        );
         state.pool.close().await;
     }
 
