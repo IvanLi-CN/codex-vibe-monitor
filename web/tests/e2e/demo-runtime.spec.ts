@@ -41,17 +41,9 @@ function routeWithScene(path: string, scene: string) {
 
 async function expectDemoShell(page: Page, expectedPath: string) {
   await expect(page.locator("#root")).toBeVisible();
-  await expect(page.getByTestId("demo-inspector-summary")).toBeVisible();
-  expect(new URL(page.url()).hash).toContain(expectedPath);
-}
-
-async function openInspector(page: Page) {
-  const inspector = page.getByTestId("demo-inspector-controls");
-  if (!(await inspector.isVisible())) {
-    await page.getByTestId("demo-inspector-summary").click();
-  }
-  await expect(inspector).toBeVisible();
-  return inspector;
+  await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
+  await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
+  await expect.poll(() => new URL(page.url()).hash).toContain(expectedPath);
 }
 
 test.describe("Web Demo runtime", () => {
@@ -73,43 +65,38 @@ test.describe("Web Demo runtime", () => {
     });
   }
 
-  test("round-trips Inspector scene and theme state in the shareable hash", async ({ page }) => {
+  test("round-trips query-driven scene and theme state in the shareable hash", async ({ page }) => {
     await page.goto("/#/dashboard?demoScene=attention&demoTheme=dark");
-    const inspector = await openInspector(page);
-
-    await expect(inspector.getByRole("button", { name: "告警" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
     await expect(page.locator("html")).toHaveAttribute("data-color-mode", "dark");
+    await expect(page).toHaveURL(/demoScene=attention/);
 
-    await inspector.getByRole("button", { name: "空态" }).click();
-    await expect(page).toHaveURL(/demoScene=empty/);
-
-    await inspector.getByRole("button", { name: "浅色" }).click();
-    await expect(page).toHaveURL(/demoTheme=light/);
+    const lightPage = await page.context().newPage();
+    try {
+      await lightPage.goto("/#/dashboard?demoScene=empty&demoTheme=light");
+      await expect(lightPage).toHaveURL(/demoScene=empty/);
+      await expect(lightPage.locator("html")).toHaveAttribute("data-color-mode", "light");
+      await expect(lightPage).toHaveURL(/demoTheme=light/);
+    } finally {
+      await lightPage.close();
+    }
   });
 
-  test("injects a mock realtime event and keeps it in the Inspector action log", async ({
-    page,
-  }) => {
-    await page.goto("/#/records?demoScene=operational&demoTheme=light");
-    const inspector = await openInspector(page);
-
-    await inspector.getByRole("button", { name: "注入模拟实时事件" }).click();
-    await expect(inspector.getByText("注入模拟实时事件")).toBeVisible();
+  test("keeps the live route surface free of debug controls", async ({ page }) => {
+    await page.goto("/#/live?demoScene=operational&demoTheme=light");
+    await expect(page.getByRole("heading", { name: "模型路由" })).toBeVisible();
+    await expect(page.getByTestId("demo-inspector-summary")).toHaveCount(0);
+    await expect(page.getByText("Demo Inspector", { exact: true })).toHaveCount(0);
   });
 
-  test("keeps an external key creation flow inside the demo memory model", async ({ page }) => {
+  test("keeps an external key creation flow inside the local memory model", async ({ page }) => {
     await page.goto("/#/system/settings?demoScene=operational&demoTheme=light");
-    const inspector = await openInspector(page);
 
     await page.getByText("创建 Key", { exact: true }).click();
     const dialog = page.getByRole("dialog");
     await dialog.getByPlaceholder("例如：Vendor A upstream sync", { exact: true }).fill("Demo Key");
     await dialog.getByText("创建 Key", { exact: true }).click();
 
-    await expect(inspector.getByText("模拟创建外部 API Key")).toBeVisible();
+    await expect(dialog).toBeHidden();
     await expect(page.getByText("Demo Key", { exact: true })).toHaveCount(0);
   });
 });
