@@ -739,13 +739,18 @@ struct SubscriptionHubState {
     summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
     summary_projection: Option<Arc<SummaryProjection>>,
     // Terminal slices are ephemeral delivery batches. Retain a bounded exact Summary overlay
-    // until the next projection revision demonstrably contains each durable identity.
+    // until the next rolling projection revision demonstrably contains each durable identity.
     summary_terminal_overlay: VecDeque<DashboardActivityTerminalDelta>,
     summary_terminal_overlay_bytes: usize,
     // The highest sequence not retained because the bounded overlay overflowed. It remains
     // fail-closed until a later durable Summary projection proves it has observed every terminal
     // through this sequence.
     summary_terminal_overlay_overflowed_through_sequence: Option<u64>,
+    // All-time coverage can lag independently of rolling coverage. Keep its replay budget
+    // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
+    summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
+    summary_terminal_overlay_all_time_bytes: usize,
+    summary_terminal_overlay_all_time_overflowed_through_sequence: Option<u64>,
     summary_http_interest_at: Option<Instant>,
     summary_http_all_time_interest_at: Option<Instant>,
     summary_projection_revision: u64,
@@ -3111,9 +3116,7 @@ impl SubscriptionHub {
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
         state.summary_terminal_overlay.retain(|delta| {
-            !projection.all_time_terminal_coverage_complete()
-                || !projection
-                    .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+            !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
         });
         state.summary_terminal_overlay_bytes = state
             .summary_terminal_overlay
@@ -3133,6 +3136,31 @@ impl SubscriptionHub {
                 "summary terminal overlay recovered after a durable projection refresh"
             );
         }
+        state.summary_terminal_overlay_all_time.retain(|delta| {
+            !(projection.all_time_terminal_coverage_complete()
+                && (projection.durable_terminal_sequence_watermark() >= delta.terminal_sequence
+                    || projection
+                        .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)))
+        });
+        state.summary_terminal_overlay_all_time_bytes = state
+            .summary_terminal_overlay_all_time
+            .iter()
+            .map(|delta| delta.estimated_bytes)
+            .sum();
+        if projection.all_time_terminal_coverage_complete()
+            && state
+                .summary_terminal_overlay_all_time_overflowed_through_sequence
+                .is_some_and(|overflowed_through| {
+                    projection.durable_terminal_sequence_watermark() >= overflowed_through
+                })
+        {
+            state.summary_terminal_overlay_all_time_overflowed_through_sequence = None;
+            tracing::info!(
+                durable_terminal_sequence_watermark =
+                    projection.durable_terminal_sequence_watermark(),
+                "all-time summary terminal overlay recovered after a durable projection refresh"
+            );
+        }
         state.summary_projection = Some(Arc::new(projection));
     }
 
@@ -3142,20 +3170,34 @@ impl SubscriptionHub {
         all_time: bool,
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
-        if state
-            .summary_terminal_overlay_overflowed_through_sequence
-            .is_some()
-        {
+        let overflowed = if all_time {
+            state
+                .summary_terminal_overlay_all_time_overflowed_through_sequence
+                .is_some()
+        } else {
+            state
+                .summary_terminal_overlay_overflowed_through_sequence
+                .is_some()
+        };
+        if overflowed {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
         }
-        let overlay = state
-            .summary_terminal_overlay
+        let overlay_source = if all_time {
+            &state.summary_terminal_overlay_all_time
+        } else {
+            &state.summary_terminal_overlay
+        };
+        let overlay = overlay_source
             .iter()
             .filter(|delta| {
                 !(projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
-                    && (!all_time || projection.all_time_terminal_coverage_complete()))
+                    && (!all_time || projection.all_time_terminal_coverage_complete())
+                    || (all_time
+                        && projection.all_time_terminal_coverage_complete()
+                        && projection.durable_terminal_sequence_watermark()
+                            >= delta.terminal_sequence))
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -3172,6 +3214,10 @@ impl SubscriptionHub {
                         projection
                             .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
                             && (!all_time || projection.all_time_terminal_coverage_complete())
+                            || (all_time
+                                && projection.all_time_terminal_coverage_complete()
+                                && projection.durable_terminal_sequence_watermark()
+                                    >= delta.terminal_sequence)
                     })
                     .map(|delta| delta.terminal_sequence),
             );
@@ -4921,39 +4967,83 @@ impl SubscriptionHub {
                 .map(|delta| delta.terminal_sequence)
                 .max()
                 .unwrap_or_default();
+            if let Some(overflowed_through) = guard
+                .summary_terminal_overlay_overflowed_through_sequence
+                .as_mut()
+            {
+                *overflowed_through = (*overflowed_through).max(highest_sequence);
+            }
+            if let Some(overflowed_through) = guard
+                .summary_terminal_overlay_all_time_overflowed_through_sequence
+                .as_mut()
+            {
+                *overflowed_through = (*overflowed_through).max(highest_sequence);
+            }
             for delta in &slice.deltas {
                 if guard
-                    .summary_terminal_overlay
-                    .iter()
-                    .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+                    .summary_terminal_overlay_overflowed_through_sequence
+                    .is_none()
+                    && !guard
+                        .summary_terminal_overlay
+                        .iter()
+                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
                 {
-                    continue;
+                    let exceeds_count =
+                        guard.summary_terminal_overlay.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+                    let exceeds_bytes = guard
+                        .summary_terminal_overlay_bytes
+                        .saturating_add(delta.estimated_bytes)
+                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+                    if exceeds_count || exceeds_bytes {
+                        let overflowed_through = highest_sequence;
+                        guard.summary_terminal_overlay_overflowed_through_sequence =
+                            Some(overflowed_through);
+                        tracing::warn!(
+                            pending_terminal_count = guard.summary_terminal_overlay.len(),
+                            pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
+                            overflowed_through,
+                            "rolling summary terminal overlay reached its bounded memory budget"
+                        );
+                    } else {
+                        guard.summary_terminal_overlay_bytes = guard
+                            .summary_terminal_overlay_bytes
+                            .saturating_add(delta.estimated_bytes);
+                        guard.summary_terminal_overlay.push_back(delta.clone());
+                    }
                 }
-                let exceeds_count =
-                    guard.summary_terminal_overlay.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-                let exceeds_bytes = guard
-                    .summary_terminal_overlay_bytes
-                    .saturating_add(delta.estimated_bytes)
-                    > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-                if exceeds_count || exceeds_bytes {
-                    let overflowed_through = guard
-                        .summary_terminal_overlay_overflowed_through_sequence
-                        .unwrap_or_default()
-                        .max(highest_sequence);
-                    guard.summary_terminal_overlay_overflowed_through_sequence =
-                        Some(overflowed_through);
-                    tracing::warn!(
-                        pending_terminal_count = guard.summary_terminal_overlay.len(),
-                        pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
-                        overflowed_through,
-                        "summary terminal overlay reached its bounded memory budget"
-                    );
-                    break;
+                if guard
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_none()
+                    && !guard
+                        .summary_terminal_overlay_all_time
+                        .iter()
+                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+                {
+                    let exceeds_count = guard.summary_terminal_overlay_all_time.len()
+                        >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+                    let exceeds_bytes = guard
+                        .summary_terminal_overlay_all_time_bytes
+                        .saturating_add(delta.estimated_bytes)
+                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+                    if exceeds_count || exceeds_bytes {
+                        let overflowed_through = highest_sequence;
+                        guard.summary_terminal_overlay_all_time_overflowed_through_sequence =
+                            Some(overflowed_through);
+                        tracing::warn!(
+                            pending_terminal_count = guard.summary_terminal_overlay_all_time.len(),
+                            pending_terminal_bytes = guard.summary_terminal_overlay_all_time_bytes,
+                            overflowed_through,
+                            "all-time summary terminal overlay reached its bounded memory budget"
+                        );
+                    } else {
+                        guard.summary_terminal_overlay_all_time_bytes = guard
+                            .summary_terminal_overlay_all_time_bytes
+                            .saturating_add(delta.estimated_bytes);
+                        guard
+                            .summary_terminal_overlay_all_time
+                            .push_back(delta.clone());
+                    }
                 }
-                guard.summary_terminal_overlay_bytes = guard
-                    .summary_terminal_overlay_bytes
-                    .saturating_add(delta.estimated_bytes);
-                guard.summary_terminal_overlay.push_back(delta.clone());
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
@@ -16012,6 +16102,35 @@ mod tests {
         assert_eq!(payload["totalCount"], json!(1));
         assert_eq!(payload["totalTokens"], json!(42));
         assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn all_time_overlay_overflow_does_not_block_rolling_summary() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard.summary_terminal_overlay_all_time_overflowed_through_sequence = Some(42);
+        }
+        let projection = SummaryProjection::default();
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, false)
+                .await
+                .is_ok(),
+            "an all-time replay budget exhaustion must not make rolling Summary unavailable"
+        );
+        assert!(matches!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true)
+                .await,
+            Err(ApiError::Unavailable(_))
+        ));
+        state.pool.close().await;
     }
 
     #[tokio::test]
