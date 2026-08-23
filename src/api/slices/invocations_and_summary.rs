@@ -19753,12 +19753,28 @@ mod dashboard_activity_read_model_tests {
             "CREATE TABLE pool_upstream_request_attempts (\
                 id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL, \
                 attempt_index INTEGER NOT NULL, status TEXT, phase TEXT, \
-                stream_latency_ms REAL, first_byte_latency_ms REAL\
+                stream_latency_ms REAL, first_byte_latency_ms REAL, upstream_account_id INTEGER\
              )",
         )
         .execute(&pool)
         .await
         .expect("create attempts table");
+        sqlx::query(
+            "CREATE TABLE prompt_cache_rollup_hourly (\
+                prompt_cache_key TEXT NOT NULL, source TEXT, first_seen_at TEXT\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create prompt cache rollup table");
+        sqlx::query(
+            "CREATE TABLE prompt_cache_working_set_live (\
+                prompt_cache_key TEXT NOT NULL, created_at TEXT, proxy_created_at TEXT\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create prompt cache working set table");
         sqlx::query(
             "INSERT INTO codex_invocations (\
                 id, invoke_id, occurred_at, status, total_tokens, cost, cache_input_tokens, \
