@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.65.13",
+  "base_stable_version": "2.65.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-23T06:24:45Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.65.13",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c554438e619e2e2112316f8aa78aa554725309df",
+  "pr_number": 838,
+  "pr_title": "fix(proxy): restore live request body forwarding",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.65.13",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.65.13",
+  "target_sha": "87ee5a5c793498b4971c486f7a91ade0b588becf",
+  "type_label": "type:patch"
+}
