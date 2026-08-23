@@ -12,6 +12,7 @@
 
 - 永久保存上海自然日汇总，并以可配置但不低于 366 天的小时汇总承接实时尾部与历史回填。
 - 以可恢复、幂等的后台任务重建旧 live/archive 数据；准备完成前只返回进度，不暴露不完整统计。
+- 正常 HTTP 运行时在数据库与运行时初始化完成后即可进入 readiness；历史 hourly 与 invocation summary rollup bootstrap 必须在 readiness 之后以可取消、会在数据库压力拒绝后重试的后台维护任务执行、复用 rollup 同步锁并记录分阶段耗时和终态。失败或取消不得撤回 `/health`、终止服务或清除已有 materialized statistics。CLI 与 `--retention-run-once` 的阻塞维护语义保持不变。
 - 正常 terminal finalize 通过 projection cursor 增量更新热桶；自然日 raw rebuild 仅用于价格、归属、时间或 archive 等明确修正，并且只覆盖受影响日期。
 - projection cursor 已存在时必须以只读查询返回，且读等待必须可被 shutdown 取消；仅缺失状态行时才可取得非排队的 P2 写入准入并执行短初始化事务。写入准入被 P1 terminal 或交互写入占用时，初始化必须 defer 而非排队或开启 SQLite 写事务；若 P1 或交互写入在 P2 取得准入后、SQLite 事务开始前到达，P2 也必须释放准入并让出。无 actionable work 的压力重试不得创建写事务。
 - 已持久化的完整日/小时统计不得被部分 live 或 archive 重建覆盖；历史异常必须可自动发现、验证并原子修复。

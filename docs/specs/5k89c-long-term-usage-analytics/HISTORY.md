@@ -2,6 +2,7 @@
 
 ## 关键决策
 
+- 正常服务的 historical hourly / summary rollup bootstrap 不属于 HTTP readiness 的 fail-fast 前置条件：schema、配置和运行时初始化仍在 readiness 前完成，而 bootstrap 改在 readiness 后由可取消、数据库压力拒绝后重试的任务执行，并与其他 rollup 操作共享同步锁。维护 CLI 仍保留阻塞语义。
 - 长期统计使用独立汇总表和独立 API，避免在现有 Stats 内容上叠加状态耦合。
 - Normal terminal finalization is projection-cursor work, not a natural-day correction. Only mutations that revise an already persisted fact enqueue a bounded exact rebuild of the affected date.
 - 已有 projection cursor 是可被 shutdown 取消的读取状态而非写入工作；初始化缺行才属于 P2 短写，且不得等待在 P1 terminal 或交互写入之前。P2 准入后但 SQLite 事务开始前抵达的高优先级写入同样使初始化让出。

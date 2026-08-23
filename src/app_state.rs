@@ -2823,6 +2823,7 @@ pub(crate) struct SettingsResponse {
 pub(crate) enum SystemTaskKind {
     RetentionArchive,
     StartupBackfill,
+    HourlyRollupBootstrap,
     ForwardProxySubscriptionRefresh,
 }
 
@@ -2831,6 +2832,7 @@ impl SystemTaskKind {
         match self {
             Self::RetentionArchive => "retention_archive",
             Self::StartupBackfill => "startup_backfill",
+            Self::HourlyRollupBootstrap => "hourly_rollup_bootstrap",
             Self::ForwardProxySubscriptionRefresh => "forward_proxy_subscription_refresh",
         }
     }

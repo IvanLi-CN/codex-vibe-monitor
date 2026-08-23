@@ -47,7 +47,7 @@ pub(crate) fn should_run_blocking_startup_persistent_prep(cli: &CliArgs) -> bool
     cli.command.is_none() && cli.retention_run_once && !cli.retention_dry_run
 }
 
-pub(crate) fn should_run_blocking_startup_hourly_rollup_bootstrap(cli: &CliArgs) -> bool {
+pub(crate) fn should_spawn_background_startup_hourly_rollup_bootstrap(cli: &CliArgs) -> bool {
     cli.command.is_none() && !cli.retention_run_once && !cli.retention_dry_run
 }
 
