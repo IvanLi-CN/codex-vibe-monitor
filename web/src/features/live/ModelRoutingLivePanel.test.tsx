@@ -11,6 +11,9 @@ import {
 } from "./ModelRoutingGantt";
 import { ModelRoutingLivePanel } from "./ModelRoutingLivePanel";
 
+const primaryAccountName = "Aster";
+const secondaryAccountName = "Borealis";
+
 const snapshot: ModelRoutingLiveResponse = {
   generatedAt: "2026-08-16T01:00:00Z",
   groups: [
@@ -19,7 +22,7 @@ const snapshot: ModelRoutingLiveResponse = {
       accounts: [
         {
           accountId: 11,
-          accountDisplayName: "Ciii",
+          accountDisplayName: primaryAccountName,
           model: "gpt-5.5-codex",
           state: "available",
           priority: "normal",
@@ -36,7 +39,7 @@ const snapshot: ModelRoutingLiveResponse = {
       accounts: [
         {
           accountId: 12,
-          accountDisplayName: "Ciii2",
+          accountDisplayName: secondaryAccountName,
           model: "gpt-5.4-mini",
           state: "cooling_down",
           priority: "excluded",
@@ -53,7 +56,7 @@ const snapshot: ModelRoutingLiveResponse = {
       kind: "attempt",
       occurredAt: "2026-08-16T00:30:00Z",
       accountId: 11,
-      accountDisplayName: "Ciii",
+      accountDisplayName: primaryAccountName,
       model: "gpt-5.5-codex",
       attemptId: "attempt-public-31",
       invokeId: "invoke-31",
@@ -73,7 +76,7 @@ const snapshot: ModelRoutingLiveResponse = {
       kind: "event",
       occurredAt: "2026-08-16T00:59:00Z",
       accountId: 12,
-      accountDisplayName: "Ciii2",
+      accountDisplayName: secondaryAccountName,
       model: "gpt-5.4-mini",
       status: "cooling_down",
       action: "model_route_cooldown",
@@ -120,7 +123,7 @@ describe("ModelRoutingLivePanel", () => {
     expect(html.match(/data-testid="model-routing-gantt-legend"/g)).toHaveLength(1);
     expect(html).toContain("恢复尝试");
     expect(html).toContain("未知");
-    expect(html).not.toContain("Ciii");
+    expect(html).not.toContain(primaryAccountName);
     expect(html).not.toContain("recharts-responsive-container");
     expect(html).not.toContain('data-testid="model-routing-account-');
     expect(html).not.toContain('data-testid="model-routing-record-');
@@ -145,9 +148,9 @@ describe("ModelRoutingLivePanel", () => {
     );
     expect(tasks.map((task) => task.name)).toEqual([
       "gpt-5.5-codex",
-      "API Key #11",
+      primaryAccountName,
       "gpt-5.4-mini",
-      "API Key #12",
+      secondaryAccountName,
     ]);
 
     const expandedTasks = buildFrappeSystemRoutingTasks(
@@ -213,7 +216,7 @@ describe("ModelRoutingLivePanel", () => {
     expect(buildFrappeRoutingTasks(timeline)).toEqual([
       expect.objectContaining({
         id: "route-gpt-5x2ex5-codex78x-11",
-        name: "API Key #11",
+        name: primaryAccountName,
         accountId: 11,
         model: "gpt-5.5-codex",
         custom_class: "model-routing-task",
@@ -316,7 +319,7 @@ describe("ModelRoutingLivePanel", () => {
         accounts: [
           {
             accountId: index + 1,
-            accountDisplayName: `API Key #${index + 1}`,
+            accountDisplayName: index === 0 ? primaryAccountName : secondaryAccountName,
             model,
             state: "available" as const,
             priority: "normal" as const,

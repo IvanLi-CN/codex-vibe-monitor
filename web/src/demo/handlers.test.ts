@@ -1,7 +1,7 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { apiHandlers, demoAttemptPhase } from "./handlers";
-import { demoModel } from "./model";
+import { DEMO_API_KEY_DISPLAY_NAMES, demoModel } from "./model";
 
 const server = setupServer(...apiHandlers);
 
@@ -13,6 +13,12 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it("serves the checked-in release version without exposing demo-only labels", async () => {
+    const response = await fetch("http://demo.invalid/api/version");
+    expect(response.ok).toBe(true);
+    await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
+  });
+
   it("treats zero-millisecond TTFT as responding in account attempts", () => {
     expect(demoAttemptPhase("running", 0)).toBe("responding");
     expect(demoAttemptPhase("running", null)).toBe("requesting");
@@ -496,11 +502,18 @@ describe("demo MSW handlers", () => {
       ),
     ]);
     const live = (await liveResponse.json()) as {
-      groups: Array<{ accounts: Array<{ accountId: number; accountGroupName?: unknown }> }>;
+      groups: Array<{
+        accounts: Array<{
+          accountId: number;
+          accountDisplayName?: string;
+          accountGroupName?: unknown;
+        }>;
+      }>;
       records: Array<{
         kind: string;
         attemptIndex?: number;
         invokeId?: string;
+        accountDisplayName?: string;
         accountGroupName?: unknown;
       }>;
     };
@@ -516,11 +529,41 @@ describe("demo MSW handlers", () => {
     expect(liveResponse.ok).toBe(true);
     expect(historyResponse.ok).toBe(true);
     expect(nextHistoryResponse.ok).toBe(true);
+    const account102 = demoModel.snapshot.accounts.find((account) => account.id === 102) as
+      | { displayName: string }
+      | undefined;
+    expect(account102).toBeDefined();
+    expect(account102?.displayName).toBe(DEMO_API_KEY_DISPLAY_NAMES[102]);
     expect(
       live.groups.flatMap((group) => group.accounts.map((account) => account.accountId)),
     ).toEqual(expect.arrayContaining([102, 106]));
+    expect(live.groups.flatMap((group) => group.accounts)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountId: 102,
+          accountDisplayName: account102?.displayName,
+        }),
+      ]),
+    );
+    const routeAccountNames = live.groups
+      .flatMap((group) => group.accounts)
+      .map((account) => account.accountDisplayName)
+      .filter((name): name is string => typeof name === "string");
+    expect(routeAccountNames).toEqual(
+      expect.arrayContaining(Object.values(DEMO_API_KEY_DISPLAY_NAMES)),
+    );
+    expect(routeAccountNames).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/^API Key #/)]),
+    );
     expect(live.records).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "attempt", attemptIndex: 2 })]),
+    );
+    expect(live.records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          accountDisplayName: account102?.displayName,
+        }),
+      ]),
     );
     expect(live.groups.flatMap((group) => group.accounts)).not.toContainEqual(
       expect.objectContaining({ accountGroupName: expect.anything() }),

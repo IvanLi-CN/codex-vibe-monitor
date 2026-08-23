@@ -101,6 +101,13 @@ function demoModelRouteTimestamp(minutesAgo: number) {
   return new Date(Date.parse(demoNow()) - minutesAgo * 60_000).toISOString();
 }
 
+function simulatedAccountDisplayName(accountId: number) {
+  const displayName = demoAccounts()
+    .find((account) => account.id === accountId)
+    ?.displayName.trim();
+  return displayName || `API Key #${accountId}`;
+}
+
 function latestDemoRouteFixture(accountId: number, model: string) {
   return DEMO_MODEL_ROUTE_FIXTURES.filter(
     (fixture) => fixture.accountId === accountId && fixture.model === model,
@@ -141,7 +148,7 @@ function demoModelRouteFixtureTimeline(
   fixture: DemoModelRouteFixture,
 ): ModelRoutingTimelineRecord[] {
   const { accountId, model } = fixture;
-  const accountDisplayName = `API Key #${accountId}`;
+  const accountDisplayName = simulatedAccountDisplayName(accountId);
   const occurredAt = (offsetMinutes = 0) =>
     demoModelRouteTimestamp(fixture.minutesAgo + offsetMinutes);
   const invocation = invocations().find((record) => record.id === fixture.invocationId);
@@ -330,8 +337,7 @@ function demoModelRoutingLiveTimeline(): ModelRoutingTimelineRecord[] {
 }
 
 function publicModelRoutingRecord(record: ModelRoutingTimelineRecord) {
-  const { accountDisplayName: _accountDisplayName, ...publicRecord } = record;
-  return publicRecord;
+  return record;
 }
 
 function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
@@ -355,7 +361,7 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
     const group = groupsByModel.get(route.model) ?? [];
     group.push({
       accountId: account.id,
-      accountDisplayName: `API Key #${account.id}`,
+      accountDisplayName: account.displayName,
       ...routeState,
     });
     groupsByModel.set(route.model, group);
@@ -372,7 +378,7 @@ function demoModelRoutingLive(query: DemoModelRoutingLiveQuery = {}) {
     generatedAt: demoNow(),
     groups: Array.from(groupsByModel, ([groupModel, groupAccounts]) => ({
       model: groupModel,
-      accounts: groupAccounts.map(({ accountDisplayName: _accountDisplayName, ...route }) => route),
+      accounts: groupAccounts,
     })),
     records: demoModelRoutingLiveTimeline()
       .filter(
@@ -2420,10 +2426,10 @@ function poolAttempts(invokeId: string) {
       ...first,
       id: record.id * 10 + 2,
       attemptId: record.id === 9002 ? "DEMO-SUCCESS-1" : formatDemoAttemptId(record.id * 100 + 2),
-      upstreamAccountId: record.id === 9002 ? 2890 : fallback,
+      upstreamAccountId: record.id === 9002 ? 102 : fallback,
       upstreamAccountName:
         record.id === 9002
-          ? "dzw"
+          ? simulatedAccountDisplayName(102)
           : (demoAccounts().find((account) => account.id === fallback)?.displayName ?? null),
       attemptIndex: 2,
       distinctAccountIndex: 2,
@@ -2432,16 +2438,16 @@ function poolAttempts(invokeId: string) {
       routingSelectionAudit:
         record.id === 9002
           ? {
-              selectedAccountId: 2890,
-              selectedAccountName: "dzw",
+              selectedAccountId: 102,
+              selectedAccountName: simulatedAccountDisplayName(102),
               eligibleCandidateCount: 1,
               winnerReasonCode: "onlyEligibleCandidate",
               comparedAccountId: null,
               comparedAccountName: null,
               excludedCandidates: [
                 {
-                  accountId: 2805,
-                  accountName: "CIII",
+                  accountId: 115,
+                  accountName: simulatedAccountDisplayName(115),
                   reasonCode: "modelNotAllowed",
                 },
               ],
@@ -2727,13 +2733,13 @@ function buildDemoInvocationWorkflowDetail(
             excludedReasonCounts: { modelConcurrencyLimit: 2 },
             candidates: [
               {
-                accountId: 101,
-                accountName: "dzw",
+                accountId: 106,
+                accountName: simulatedAccountDisplayName(106),
                 reasonCode: "modelConcurrencyLimit",
               },
               {
                 accountId: 102,
-                accountName: "Ciii2",
+                accountName: simulatedAccountDisplayName(102),
                 reasonCode: "modelConcurrencyLimit",
               },
             ],
@@ -2950,7 +2956,9 @@ export async function handleDemoRequest(request: Request) {
   const pathname = apiPathname(url.pathname);
   if (demoModel.snapshot.scene === "network-failure") return HttpResponse.error();
 
-  if (pathname === "/api/version") return json({ backend: "demo", frontend: "demo" });
+  // Keep the simulated shell on the same stable release value as the checked-in frontend.
+  // A literal "demo" version leaks into the user-facing footer and is not meaningful evidence.
+  if (pathname === "/api/version") return json({ backend: "0.2.0", frontend: "0.2.0" });
   if (pathname === "/api/stats" || pathname === "/api/stats/summary") return json(demoSummary());
   if (pathname === "/api/stats/long-term/overview") {
     return json(demoLongTermOverview(url.searchParams.get("range") ?? "7d"));
@@ -3083,14 +3091,18 @@ export async function handleDemoRequest(request: Request) {
           reasonCode: "staleConcurrentCompletion",
           routingSource: "freshAssignment",
           routingSelectionAudit: {
-            selectedAccountId: 2890,
-            selectedAccountName: "dzw",
+            selectedAccountId: 102,
+            selectedAccountName: simulatedAccountDisplayName(102),
             eligibleCandidateCount: 1,
             winnerReasonCode: "onlyEligibleCandidate",
             comparedAccountId: null,
             comparedAccountName: null,
             excludedCandidates: [
-              { accountId: 2805, accountName: "CIII", reasonCode: "modelNotAllowed" },
+              {
+                accountId: 115,
+                accountName: simulatedAccountDisplayName(115),
+                reasonCode: "modelNotAllowed",
+              },
             ],
           },
           httpStatus: null,
@@ -3117,14 +3129,18 @@ export async function handleDemoRequest(request: Request) {
           reasonCode: "freshAssignmentAfterFailure",
           routingSource: "freshAssignment",
           routingSelectionAudit: {
-            selectedAccountId: 2890,
-            selectedAccountName: "dzw",
+            selectedAccountId: 102,
+            selectedAccountName: simulatedAccountDisplayName(102),
             eligibleCandidateCount: 1,
             winnerReasonCode: "onlyEligibleCandidate",
             comparedAccountId: null,
             comparedAccountName: null,
             excludedCandidates: [
-              { accountId: 2805, accountName: "CIII", reasonCode: "modelNotAllowed" },
+              {
+                accountId: 115,
+                accountName: simulatedAccountDisplayName(115),
+                reasonCode: "modelNotAllowed",
+              },
             ],
           },
           httpStatus: null,

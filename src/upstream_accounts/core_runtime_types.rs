@@ -982,6 +982,8 @@ pub(crate) struct ModelRoutingLiveModelGroup {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ModelRoutingLiveAccount {
     pub(crate) account_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) account_display_name: Option<String>,
     #[serde(flatten)]
     pub(crate) route: ModelRoutingState,
 }
@@ -993,6 +995,8 @@ pub(crate) struct ModelRoutingTimelineRecord {
     pub(crate) kind: String,
     pub(crate) occurred_at: String,
     pub(crate) account_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) account_display_name: Option<String>,
     pub(crate) model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) attempt_id: Option<String>,

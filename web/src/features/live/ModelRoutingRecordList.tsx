@@ -27,7 +27,9 @@ function recordKindLabel(
 ) {
   if (record.kind === "event") return t("live.routing.record.event");
   if ((record.sameAccountRetryIndex ?? 0) > 0) {
-    return t("live.routing.record.retry", { index: record.sameAccountRetryIndex ?? 0 });
+    return t("live.routing.record.retry", {
+      index: record.sameAccountRetryIndex ?? 0,
+    });
   }
   return t("live.routing.record.attempt");
 }
@@ -42,8 +44,8 @@ function recordTone(record: ModelRoutingTimelineRecord): "success" | "warning" |
   return "secondary";
 }
 
-function accountLabel(accountId: number) {
-  return `API Key #${accountId}`;
+function accountLabel(accountId: number, accountDisplayName?: string | null) {
+  return accountDisplayName?.trim() || `API Key #${accountId}`;
 }
 
 function routeProtocolLabel(
@@ -150,7 +152,7 @@ function RecordRow({
           className="w-[5.75rem] shrink-0 truncate text-left text-xs font-semibold text-base-content hover:underline sm:w-28"
           onClick={() => onOpenAccount(record.accountId, record.model)}
         >
-          {accountLabel(record.accountId)}
+          {accountLabel(record.accountId, record.accountDisplayName)}
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-1.5">
@@ -206,11 +208,19 @@ function RecordRow({
             <div className="sm:col-span-2">
               <DetailItem label={t("live.routing.record.comparison")}>
                 {routeProtocolLabel(audit.winnerReasonCode, t)} ·{" "}
-                {t("live.routing.record.eligible", { count: audit.eligibleCandidateCount })}
+                {t("live.routing.record.eligible", {
+                  count: audit.eligibleCandidateCount,
+                })}
                 {audit.comparedAccountId != null
-                  ? ` · ${t("live.routing.record.comparedId", {
-                      accountId: audit.comparedAccountId,
-                    })}`
+                  ? ` · ${
+                      audit.comparedAccountName?.trim()
+                        ? t("live.routing.record.comparedName", {
+                            account: audit.comparedAccountName.trim(),
+                          })
+                        : t("live.routing.record.comparedId", {
+                            accountId: audit.comparedAccountId,
+                          })
+                    }`
                   : ""}
                 {audit.excludedCandidates.length > 0
                   ? ` · ${t("live.routing.record.excluded", {
@@ -218,7 +228,7 @@ function RecordRow({
                     })}: ${audit.excludedCandidates
                       .map(
                         (candidate) =>
-                          `${accountLabel(candidate.accountId)} (${routeProtocolLabel(candidate.reasonCode, t)})`,
+                          `${accountLabel(candidate.accountId, candidate.accountName)} (${routeProtocolLabel(candidate.reasonCode, t)})`,
                       )
                       .join(", ")}`
                   : ""}

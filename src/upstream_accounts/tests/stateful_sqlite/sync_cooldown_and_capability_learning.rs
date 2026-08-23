@@ -583,9 +583,10 @@ async fn model_routing_timeline_schema_upgrade_adds_epoch_columns_and_indexes() 
 #[tokio::test]
 async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let display_name = "Routing live API account";
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
-        "Routing live API account",
+        display_name,
         "routing-live-api-key",
         None,
         None,
@@ -635,6 +636,10 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert_eq!(live.groups[0].accounts.len(), 1);
     assert_eq!(live.groups[0].accounts[0].account_id, account_id);
     assert_eq!(
+        live.groups[0].accounts[0].account_display_name.as_deref(),
+        Some(display_name)
+    );
+    assert_eq!(
         live.groups[0].accounts[0].route.cache_usage_missing_since,
         Some(cache_usage_missing_since)
     );
@@ -648,6 +653,11 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     assert_eq!(live.records.len(), 2);
     assert!(live.records.iter().all(|record| record.kind == "attempt"));
     assert!(live.records.iter().all(|record| record.model == model));
+    assert!(
+        live.records
+            .iter()
+            .all(|record| record.account_display_name.as_deref() == Some(display_name))
+    );
     let live_json = serde_json::to_value(&live).expect("serialize routing live response");
     assert!(
         live_json
@@ -773,6 +783,10 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     .await
     .expect("load first model routing history page");
     assert_eq!(first_page.items.len(), 1);
+    assert_eq!(
+        first_page.items[0].account_display_name.as_deref(),
+        Some(display_name)
+    );
     let history_json =
         serde_json::to_value(&first_page).expect("serialize routing history response");
     assert!(history_json.pointer("/items/0/accountGroupName").is_none());
@@ -792,6 +806,10 @@ async fn model_routing_live_api_lists_api_key_attempts_and_pages_account_history
     .await
     .expect("load second model routing history page");
     assert_eq!(second_page.items.len(), 1);
+    assert_eq!(
+        second_page.items[0].account_display_name.as_deref(),
+        Some(display_name)
+    );
     assert_ne!(first_page.items[0].id, second_page.items[0].id);
     assert!(second_page.next_cursor.is_none());
     let identifiers = [

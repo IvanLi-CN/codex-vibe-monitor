@@ -353,7 +353,6 @@ export type ModelRoutingLiveWindow = "15m" | "1h" | "6h" | "24h";
 
 export interface ModelRoutingLiveAccount extends ModelRoutingState {
   accountId: number;
-  /** Legacy demo fixtures may carry this field; route API responses never expose it. */
   accountDisplayName?: string;
 }
 
@@ -367,7 +366,6 @@ export interface ModelRoutingTimelineRecord {
   kind: "attempt" | "event" | string;
   occurredAt: string;
   accountId: number;
-  /** Legacy demo fixtures may carry this field; route API responses never expose it. */
   accountDisplayName?: string;
   model: string;
   attemptId?: string | null;
@@ -1607,6 +1605,10 @@ function normalizeModelRoutingTimelineRecord(raw: unknown): ModelRoutingTimeline
     kind,
     occurredAt,
     accountId: Math.trunc(accountId),
+    accountDisplayName:
+      typeof payload.accountDisplayName === "string" && payload.accountDisplayName.trim()
+        ? payload.accountDisplayName.trim()
+        : undefined,
     model,
     attemptId: typeof payload.attemptId === "string" ? payload.attemptId : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
@@ -1656,6 +1658,11 @@ function normalizeModelRoutingLiveResponse(raw: unknown): ModelRoutingLiveRespon
         {
           ...route,
           accountId: Math.trunc(accountId),
+          accountDisplayName:
+            typeof accountPayload.accountDisplayName === "string" &&
+            accountPayload.accountDisplayName.trim()
+              ? accountPayload.accountDisplayName.trim()
+              : undefined,
         },
       ];
     });

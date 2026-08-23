@@ -83,7 +83,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - reset 只清除指定 API Key 账号的指定模型动态状态，恢复 `available/normal`，并记录 `manual_reset` 事件。
 - 健康页只展示近七天真实调用出现的模型；OAuth 账号不展示模型路由状态卡。
 - `GET /api/pool/model-routing-live` 只返回 API Key 精确账号模型组合的当前状态和真实路由记录；默认窗口为最近一小时、最多 100 条，可选窗口为 15 分钟、1 小时、6 小时或 24 小时，并支持模型和状态过滤。实时快照和路由历史不返回账号分组字段；账号分组是账号池管理元数据，不是组合路由维度。timeline 必须以兼容 RFC3339 UTC 与既有上海本地 naive 时间的规范化 epoch 执行窗口、游标和顺序；读取不得改变分页、响应形状或 standalone 未关联事件语义。
-- 实况页“路由”页签默认显示最近 1 小时，并可切换 15 分钟、6 小时或 24 小时。页面以模型为唯一分组；模型标题必须始终以文本显示模型名，图标只能补充、不得替代文字。页面只渲染一张标准二维甘特表：全局唯一的图例与连续北京时间轴，左侧固定模型/API Key 泳道列，右侧所有模型分组共用同一时间网格；模型仅是表内分组行，不得渲染独立图表、独立图例或重复时间标尺。每条泳道精确对应一个 `(upstream_account_id, model)` 组合，标识固定为 `API Key #<id>`，不得使用账号池显示名、所属分组或账号列表作为分类或第二层信息。Task 必须按 `modelRoutePriorityBefore/After` 重建随时间变化的 `normal/demoted/excluded` 优先级区段，并只通过区段颜色表达优先级；时间轴最右端的颜色表示当前等级，同一最高等级可包含多个下一请求候选。不得把账号、标签或账号组的静态配置优先级写入账号标签、模型标题或回填整段历史。`available` 区间颜色深浅按该时间窗内全部真实调用次数相对最繁忙可用区间的比例变化，并可在无障碍标签中读取实际调用数和占比；无法重建的状态或优先级间隔必须显示为透明虚线 `unknown` 区间，不得拿当前值反向填充没有证据的历史。菱形仅表示受控恢复状态下由真实业务流量触发的恢复尝试，不显示可用期间的普通请求；成功恢复标记位于恢复前状态与 `available` 的跃迁边界，不得落入可用区段内部。不得以堆叠柱状图、分类柱图或脱离时间比例的色块代替甘特图。色带下钻账号模型详情，菱形下钻关联调用。全部真实选择与重试仍保留在路由决策记录中；手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
+- 实况页“路由”页签默认显示最近 1 小时，并可切换 15 分钟、6 小时或 24 小时。页面以模型为唯一分组；模型标题必须始终以文本显示模型名，图标只能补充、不得替代文字。页面只渲染一张标准二维甘特表：全局唯一的图例与连续北京时间轴，左侧固定模型/API Key 泳道列，右侧所有模型分组共用同一时间网格；模型仅是表内分组行，不得渲染独立图表、独立图例或重复时间标尺。每条泳道精确对应一个 `(upstream_account_id, model)` 组合，显示标签必须使用该 API Key 账号当前的 `display_name`；仅当字段缺失或为空时才回退为 `API Key #<id>`。账号池分组、账号列表和人为角色后缀不得作为分类、名称来源或第二层信息。Task 必须按 `modelRoutePriorityBefore/After` 重建随时间变化的 `normal/demoted/excluded` 优先级区段，并只通过区段颜色表达优先级；时间轴最右端的颜色表示当前等级，同一最高等级可包含多个下一请求候选。不得把账号、标签或账号组的静态配置优先级写入账号标签、模型标题或回填整段历史。`available` 区间颜色深浅按该时间窗内全部真实调用次数相对最繁忙可用区间的比例变化，并可在无障碍标签中读取实际调用数和占比；无法重建的状态或优先级间隔必须显示为透明虚线 `unknown` 区间，不得拿当前值反向填充没有证据的历史。菱形仅表示受控恢复状态下由真实业务流量触发的恢复尝试，不显示可用期间的普通请求；成功恢复标记位于恢复前状态与 `available` 的跃迁边界，不得落入可用区段内部。不得以堆叠柱状图、分类柱图或脱离时间比例的色块代替甘特图。色带下钻账号模型详情，菱形下钻关联调用。全部真实选择与重试仍保留在路由决策记录中；手动 reset 或无关联尝试的状态变更保留为状态事件，以更新相应色带，不展示请求内容、响应内容、凭据或原始错误文本。
 - 每个模型分组行同时显示该模型在当前快照中的记录数和明确的展开/收起动作。展开后列出当前筛选时间窗内该模型返回的全部路由尝试、重试和状态事件；每条记录可继续展开候选比较、选择原因、状态与优先级迁移、HTTP 终态、延迟和调用关联。
 - `GET /api/pool/upstream-accounts/:account_id/model-routing-events` 只读取该 API Key 账号和精确模型最近 48 小时的记录，使用稳定游标分页；账号详情默认不预取展开内容，不返回账号分组字段。
 - `pool.model-routing-live` 实时主题只在实况页“路由”页签处于激活状态时订阅。它由真实选择、重试、终态写入和模型状态变化驱动；不得生成主动探测、恢复流量或更改路由选择。
@@ -132,7 +132,7 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 - Given an operator opens an API Key account's model details, When the model row expands, Then the first page contains only that model's last 48 hours of history and older records load by cursor without duplication.
 - Given the live timeline contains mixed RFC3339 UTC and Shanghai local naive timestamps plus linked and standalone events, When a 15-minute snapshot or a cursor page is read, Then its returned records and ordering retain the existing UTC-normalized behavior while the query plan uses indexed time ranges, the latest linked-event lookup uses its `attempt_id` index, and neither timeline source needs a temporary sort.
 - Given the live page loads without a persisted tab, When it renders on desktop or mobile, Then the shared summary precedes content-width tabs in the order “对话 / 最新记录 / 路由 / 代理”, with “路由” selected; inactive tabs do not retain their real-time subscription, and no standalone model-routing route or main-navigation item exists.
-- Given the live routing tab renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group; Task color changes over time with recorded `normal/demoted/excluded` model-route priority, the right edge exposes the current candidate level, `available` color intensity remains proportional to real call allocation, unknown intervals are transparent and dashed, and controlled-recovery markers remain separate. Static priority text, account display names, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
+- Given the live routing tab renders at desktop or mobile widths, Then one standards-compliant 24-hour Gantt table has a fixed model/API Key lane column and one shared Beijing-time axis across every model group; each lane displays the current API Key `display_name` with a stable ID fallback only when missing. Task color changes over time with recorded `normal/demoted/excluded` model-route priority, the right edge exposes the current candidate level, `available` color intensity remains proportional to real call allocation, unknown intervals are transparent and dashed, and controlled-recovery markers remain separate. Static priority text, account groups, account-list layouts, per-model charts and stacked/category-bar charts are absent.
 - Given the account health tab renders at 1440px with the existing fixture, When its login-health detail is collapsed, Then the login-health summary height is at most 30% of the previous fixture while warning state remains visible.
 - Given cache protection is enabled but an expired model cooldown originated from an ordinary upstream failure, When the first successful HTTP or WebSocket terminal arrives, Then the route atomically returns to `available/normal`, clears the cooldown and concurrency clamp, and wakes waiting routing requests.
 - Given a cache-owned route lacks usable cache usage at a successful terminal, When the observation is first missing or below the minimum sample threshold, Then it remains constrained, persists `cacheUsageMissingSince` and `cacheUsageMissingReason`, and emits one `model_route_cache_observation_missing` event; a valid sample, manual reset, or protection disable clears both fields.
@@ -170,23 +170,16 @@ API Key 上游账号当前以账号维度记录路由失败和冷却。单个模
 Storybook覆盖=通过
 视觉证据目标源=ui_demo
 视觉证据=存在
-视觉比较=一致（无可读历史基线；owner 已确认当前候选）
+视觉比较=需确认
 聊天回图=已展示
 证据落盘=已落盘
-submission_gate=owner-approved
+submission_gate=owner-review
 target_program=mock-only
-capture_scope=element-first live routing tab and model routing panel
-viewport_strategy=devtools-emulate
+capture_scope=live routing tab viewport and model routing panel
+viewport_strategy=ui-demo-source with controlled desktop and mobile captures
 sensitive_exclusion=N/A
 
-页面流使用登录豁免、纯前端、确定性 MSW fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取。页面证据从 `/#/live?demoScene=operational&demoTheme=light&demoEmbed=1` 的“路由”页签，以 `devtools-emulate` 受控 `1440×900` 和 `393×852` CSS 视口、元素优先范围采集，不访问真实后端。候选图已通过 `trim_only` 页面规范化，并经 owner 确认后落盘。
-
-- source_type: `ui_demo`; capture_scope: `element-first`; requested_viewport: `1440x900`; viewport_strategy: `devtools-emulate`; margin_policy: `trim_only`; evidence_surface: `page`; target_program: `mock-only`; sensitive_exclusion: `N/A`; submission_gate: `owner-approved`
-  PR: none
-  ![Live routing tab desktop](./assets/model-routing-live-route-tab-desktop.png)
-- source_type: `ui_demo`; capture_scope: `element-first`; requested_viewport: `393x852`; viewport_strategy: `devtools-emulate`; margin_policy: `trim_only`; evidence_surface: `page`; target_program: `mock-only`; sensitive_exclusion: `N/A`; submission_gate: `owner-approved`
-  PR: none
-  ![Live routing tab mobile](./assets/model-routing-live-route-tab-mobile.png)
+页面流使用登录豁免、纯前端、确定性仿真 fixture 的 `ui_demo`；组件级 Storybook play 覆盖甘特图状态与钻取。已通过 Chrome 对 `/#/live?demoScene=operational&demoTheme=light` 的“路由”页签采集受控桌面证据，并通过仓库移动视口仿真入口采集 `393×852` CSS 视口证据；仅使用本地仿真数据，不访问真实后端。当前 Spec 无可读的历史基线，因此视觉比较保持待确认。
 
 ## Related PRs
 

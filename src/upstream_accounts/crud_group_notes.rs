@@ -348,8 +348,7 @@ fn model_routing_timeline_entry_from_attempt(
     let audit = row
         .routing_selection_audit_json
         .as_deref()
-        .and_then(|value| serde_json::from_str::<PoolRoutingSelectionAudit>(value).ok())
-        .map(sanitize_model_routing_selection_audit);
+        .and_then(|value| serde_json::from_str::<PoolRoutingSelectionAudit>(value).ok());
     let total_latency_ms = model_routing_total_latency_ms(
         row.connect_latency_ms,
         row.first_byte_latency_ms,
@@ -360,6 +359,7 @@ fn model_routing_timeline_entry_from_attempt(
         kind: "attempt".to_string(),
         occurred_at: normalized_model_routing_timestamp(row.occurred_at),
         account_id: row.account_id,
+        account_display_name: None,
         model: row.model,
         attempt_id: Some(row.attempt_id),
         invoke_id: Some(row.invoke_id),
@@ -415,17 +415,87 @@ fn model_routing_total_latency_ms(
         .filter(|value| *value > 0.0)
 }
 
-fn sanitize_model_routing_selection_audit(
-    mut audit: PoolRoutingSelectionAudit,
-) -> PoolRoutingSelectionAudit {
-    audit.selected_account_name = format!("API Key #{}", audit.selected_account_id);
-    audit.compared_account_name = audit
-        .compared_account_id
-        .map(|account_id| format!("API Key #{account_id}"));
-    for candidate in &mut audit.excluded_candidates {
-        candidate.account_name = format!("API Key #{}", candidate.account_id);
+fn model_routing_display_name(
+    account_id: i64,
+    display_names: &std::collections::BTreeMap<i64, String>,
+) -> Option<String> {
+    display_names
+        .get(&account_id)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn model_routing_public_account_name(
+    account_id: i64,
+    display_names: &std::collections::BTreeMap<i64, String>,
+) -> String {
+    model_routing_display_name(account_id, display_names)
+        .unwrap_or_else(|| format!("API Key #{account_id}"))
+}
+
+fn apply_model_routing_display_names(
+    entries: &mut [ModelRoutingTimelineEntry],
+    display_names: &std::collections::BTreeMap<i64, String>,
+) {
+    for entry in entries {
+        let record = &mut entry.record;
+        record.account_display_name = model_routing_display_name(record.account_id, display_names);
+        let Some(audit) = record.routing_selection_audit.as_mut() else {
+            continue;
+        };
+        audit.selected_account_name =
+            model_routing_public_account_name(audit.selected_account_id, display_names);
+        audit.compared_account_name = audit
+            .compared_account_id
+            .map(|account_id| model_routing_public_account_name(account_id, display_names));
+        for candidate in &mut audit.excluded_candidates {
+            candidate.account_name =
+                model_routing_public_account_name(candidate.account_id, display_names);
+        }
     }
-    audit
+}
+
+async fn load_model_routing_display_names(
+    pool: &Pool<Sqlite>,
+    entries: &[ModelRoutingTimelineEntry],
+) -> Result<std::collections::BTreeMap<i64, String>> {
+    let mut account_ids = std::collections::BTreeSet::new();
+    for entry in entries {
+        account_ids.insert(entry.record.account_id);
+        if let Some(audit) = entry.record.routing_selection_audit.as_ref() {
+            account_ids.insert(audit.selected_account_id);
+            if let Some(account_id) = audit.compared_account_id {
+                account_ids.insert(account_id);
+            }
+            account_ids.extend(
+                audit
+                    .excluded_candidates
+                    .iter()
+                    .map(|candidate| candidate.account_id),
+            );
+        }
+    }
+    if account_ids.is_empty() {
+        return Ok(std::collections::BTreeMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, display_name FROM pool_upstream_accounts WHERE kind = ",
+    );
+    query.push_bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX);
+    query.push(" AND COALESCE(deleted_at, '') = '' AND id IN (");
+    let mut separated = query.separated(", ");
+    for account_id in account_ids {
+        separated.push_bind(account_id);
+    }
+    separated.push_unseparated(")");
+    let rows = query
+        .build_query_as::<(i64, String)>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().collect())
 }
 
 fn model_routing_timeline_entry_from_event(row: ModelRoutingEventRow) -> ModelRoutingTimelineEntry {
@@ -434,6 +504,7 @@ fn model_routing_timeline_entry_from_event(row: ModelRoutingEventRow) -> ModelRo
         kind: "event".to_string(),
         occurred_at: normalized_model_routing_timestamp(row.occurred_at),
         account_id: row.account_id,
+        account_display_name: None,
         model: row.model,
         attempt_id: None,
         invoke_id: None,
@@ -508,6 +579,8 @@ async fn load_model_routing_timeline_entries(
                 .map(model_routing_timeline_entry_from_event),
         )
         .collect::<Vec<_>>();
+    let display_names = load_model_routing_display_names(pool, &entries).await?;
+    apply_model_routing_display_names(&mut entries, &display_names);
     entries.sort_by(|left, right| {
         right
             .occurred_epoch_ms
@@ -2356,5 +2429,71 @@ mod model_routing_live_api_tests {
             model_routing_total_latency_ms(Some(f64::INFINITY), Some(2.0), Some(3.0)),
             None
         );
+    }
+
+    #[test]
+    fn model_routing_display_names_use_current_api_key_names_for_records_and_audits() {
+        let mut entries = vec![ModelRoutingTimelineEntry {
+            occurred_epoch_ms: 1,
+            kind_rank: 1,
+            id: 1,
+            record: ModelRoutingTimelineRecord {
+                id: "attempt:1".to_string(),
+                kind: "attempt".to_string(),
+                occurred_at: "2026-08-23T10:00:00Z".to_string(),
+                account_id: 11,
+                account_display_name: None,
+                model: "gpt-5.5".to_string(),
+                attempt_id: None,
+                invoke_id: None,
+                attempt_index: None,
+                same_account_retry_index: None,
+                routing_source: None,
+                routing_selection_audit: Some(PoolRoutingSelectionAudit {
+                    selected_account_id: 11,
+                    selected_account_name: "stale-selected-name".to_string(),
+                    eligible_candidate_count: 2,
+                    winner_reason_code: "lowest_effective_load".to_string(),
+                    compared_account_id: Some(12),
+                    compared_account_name: Some("stale-compared-name".to_string()),
+                    selected_score: None,
+                    compared_score: None,
+                    excluded_candidates: vec![PoolRoutingSelectionAuditExcludedCandidate {
+                        account_id: 13,
+                        account_name: "stale-excluded-name".to_string(),
+                        reason_code: "cooling_down".to_string(),
+                    }],
+                }),
+                status: None,
+                http_status: None,
+                failure_kind: None,
+                total_latency_ms: None,
+                action: None,
+                source: None,
+                reason_code: None,
+                model_route_state_before: None,
+                model_route_state_after: None,
+                model_route_priority_before: None,
+                model_route_priority_after: None,
+                model_route_failure_count: None,
+                model_route_cooldown_until: None,
+            },
+        }];
+        let display_names = std::collections::BTreeMap::from([
+            (11, "API Key #11".to_string()),
+            (12, "API Key #12".to_string()),
+        ]);
+
+        apply_model_routing_display_names(&mut entries, &display_names);
+
+        let record = &entries[0].record;
+        assert_eq!(record.account_display_name.as_deref(), Some("API Key #11"));
+        let audit = record
+            .routing_selection_audit
+            .as_ref()
+            .expect("selection audit is retained");
+        assert_eq!(audit.selected_account_name, "API Key #11");
+        assert_eq!(audit.compared_account_name.as_deref(), Some("API Key #12"));
+        assert_eq!(audit.excluded_candidates[0].account_name, "API Key #13");
     }
 }

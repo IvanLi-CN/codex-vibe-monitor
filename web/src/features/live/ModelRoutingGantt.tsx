@@ -266,8 +266,8 @@ function buildLaneBands(
   return bands;
 }
 
-function routingLaneLabel(accountId: number) {
-  return `API Key #${accountId}`;
+function routingLaneLabel(accountId: number, accountDisplayName?: string) {
+  return accountDisplayName?.trim() || `API Key #${accountId}`;
 }
 
 function routingTaskId(model: string, accountId: number) {
@@ -304,6 +304,7 @@ export function buildModelRoutingGanttData({
     if (!accountMap.has(record.accountId)) {
       accountMap.set(record.accountId, {
         accountId: record.accountId,
+        accountDisplayName: record.accountDisplayName,
         model,
         state: "unknown",
         priority: "unknown",
@@ -321,7 +322,7 @@ export function buildModelRoutingGanttData({
       const laneRecords = modelRecords.filter((record) => record.accountId === account.accountId);
       return {
         accountId: account.accountId,
-        label: routingLaneLabel(account.accountId),
+        label: routingLaneLabel(account.accountId, account.accountDisplayName),
         model,
         state: routingState(account.state) ?? "unknown",
         priority: routingPriority(account.priority) ?? "unknown",
@@ -482,6 +483,12 @@ function appendSvgTitle(element: SVGElement, label: string) {
   element.appendChild(title);
 }
 
+function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWidth: number) {
+  if (measuredWidth <= availableWidth || availableWidth <= 0) return label;
+  const characterBudget = Math.max(6, Math.floor(label.length * (availableWidth / measuredWidth)));
+  return `${label.slice(0, Math.max(1, characterBudget - 1)).trimEnd()}…`;
+}
+
 function bindSvgAction(element: SVGElement, action: () => void) {
   element.setAttribute("role", "button");
   element.setAttribute("tabindex", "0");
@@ -555,6 +562,14 @@ function decorateTimelineSvg({
     baseBar.setAttribute("stroke", "transparent");
     label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
+    const fullLabel = lane.label;
+    const availableLabelWidth = Math.max(0, x - 16);
+    const measuredLabelWidth = label.getComputedTextLength();
+    const visibleLabel = truncateSvgLaneLabel(fullLabel, measuredLabelWidth, availableLabelWidth);
+    if (visibleLabel !== fullLabel) {
+      label.textContent = visibleLabel;
+      appendSvgTitle(label, fullLabel);
+    }
     wrapper.setAttribute("data-testid", `model-routing-lane-${lane.model}-${lane.accountId}`);
 
     const segmentGroup = svgElement("g", { class: "model-routing-segments" });

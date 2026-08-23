@@ -21,6 +21,17 @@ type DemoListener = () => void;
 // Fixed reference time keeps every projection, filter, and visual capture reproducible.
 const DEMO_NOW = "2026-08-16T11:30:00.000Z";
 
+// Curated fictional API Key display names keep the mock readable without using
+// production data, account groups, environments, or role-like suffixes.
+export const DEMO_API_KEY_DISPLAY_NAMES = {
+  102: "Aster",
+  106: "Borealis",
+  108: "Cedar",
+  110: "Lumen",
+  112: "Northstar",
+  115: "Solstice",
+} as const;
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -189,7 +200,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       102,
-      "prod-api-key-a",
+      DEMO_API_KEY_DISPLAY_NAMES[102],
       null,
       "production",
       "api",
@@ -237,7 +248,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       106,
-      "prod-api-key-b",
+      DEMO_API_KEY_DISPLAY_NAMES[106],
       null,
       "production",
       "api",
@@ -261,7 +272,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       108,
-      "batch-api-key",
+      DEMO_API_KEY_DISPLAY_NAMES[108],
       null,
       "batch",
       "api",
@@ -285,7 +296,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       110,
-      "recovery-api-key",
+      DEMO_API_KEY_DISPLAY_NAMES[110],
       null,
       "recovery",
       "api",
@@ -309,7 +320,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       112,
-      "analytics-api-key",
+      DEMO_API_KEY_DISPLAY_NAMES[112],
       null,
       "analytics",
       "api",
@@ -345,7 +356,7 @@ function createAccounts(scene: DemoScene = "operational") {
     ],
     [
       115,
-      "prod-api-key-c",
+      DEMO_API_KEY_DISPLAY_NAMES[115],
       null,
       "production",
       "api",
