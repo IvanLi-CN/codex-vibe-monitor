@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.67.1",
+  "base_stable_version": "2.67.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-23T09:59:21Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.67.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "43a038af0db4b9e819f52dc98f553b3a38e52a2a",
+  "pr_number": 839,
+  "pr_title": "test(runtime): stabilize startup cancellation regression",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.67.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.67.1",
+  "target_sha": "0de0eda63731b8002067f944e2824bfcd8dd941c",
+  "type_label": "type:patch"
+}
