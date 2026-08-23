@@ -21190,7 +21190,7 @@ async fn exact_fallback_warm_write_defers_behind_p1_terminal_work() {
 }
 
 #[tokio::test]
-async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
+async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_recovery() {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -21240,8 +21240,15 @@ async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
     .bind(start.timestamp())
     .fetch_one(&state.pool)
     .await
-    .expect("load invalidated projection coverage");
-    assert_eq!(coverage_state, "warming");
+    .expect("load coverage while terminal recovery is pending");
+    assert_eq!(coverage_state, "ready");
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load terminal recovery marker");
+    assert_eq!(recovery_pending, 1);
 
     let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
         &state.pool,
@@ -21251,6 +21258,33 @@ async fn exact_fallback_warm_rebuilds_after_non_proxy_terminal_invalidation() {
         None,
         state.terminal_projection_hub.as_ref(),
         "stateful_non_proxy_warm_rebuild",
+        &coordinator,
+    )
+    .await
+    .expect("defer rewarm until durable recovery invalidates existing coverage");
+    assert!(matches!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Deferred(_)
+    ));
+
+    let recovery = crate::api::prepare_timeseries_minute_projection_after_restart(
+        state.as_ref(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("invalidate terminal coverage through bounded P2 recovery");
+    assert_eq!(
+        recovery,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed
+    );
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        "stateful_non_proxy_warm_rebuild_after_recovery",
         &coordinator,
     )
     .await
@@ -21325,10 +21359,62 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
     .bind(start.timestamp())
     .fetch_one(&state.pool)
     .await
-    .expect("load durable replacement invalidation state");
+    .expect("load coverage while durable replacement recovery is pending");
     assert_eq!(
-        coverage_state, "warming",
-        "direct terminal replacements must invalidate ready all-source coverage"
+        coverage_state, "ready",
+        "the terminal transaction must only publish the constant-size durable recovery marker"
+    );
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load durable replacement recovery marker");
+    assert_eq!(
+        recovery_pending, 1,
+        "direct terminal replacements must fence all minute coverage before it can be reused"
+    );
+
+    let recovery = crate::api::prepare_timeseries_minute_projection_after_restart(
+        state.as_ref(),
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("recover durable replacement coverage in bounded P2 transactions");
+    assert_eq!(
+        recovery,
+        crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed
+    );
+    let coverage_state = sqlx::query_scalar::<_, String>(
+        "SELECT coverage_state FROM timeseries_minute_projection_v2 WHERE minute_start_epoch = ?1 AND source_scope = 'all' AND upstream_account_key = -1",
+    )
+    .bind(start.timestamp())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered coverage state");
+    assert_eq!(coverage_state, "warming");
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load cleared durable replacement recovery marker");
+    assert_eq!(recovery_pending, 0);
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        start,
+        end,
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        "stateful_non_proxy_recovery_rewarm",
+        &coordinator,
+    )
+    .await
+    .expect("re-warm durable replacement coverage after P2 recovery");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
     );
 }
 
@@ -21391,6 +21477,9 @@ async fn restart_schema_installs_durable_non_proxy_replacement_fence_before_proj
     crate::ensure_schema(&state.pool)
         .await
         .expect("restart schema initialization installs the durable replacement fence");
+    crate::api::mark_timeseries_minute_projection_startup_recovery(&state.pool)
+        .await
+        .expect("runtime startup marks minute projection recovery before HTTP reads");
     sqlx::query(
         "UPDATE codex_invocations SET status = 'failed', failure_kind = 'upstream_response_failed', failure_class = 'service_failure', is_actionable = 1 WHERE invoke_id = ?1",
     )
@@ -21415,9 +21504,16 @@ async fn restart_schema_installs_durable_non_proxy_replacement_fence_before_proj
         .bind(upstream_account_key)
         .fetch_one(&state.pool)
         .await
-        .expect("load invalidated projection coverage");
-        assert_eq!(coverage_state, "warming");
+        .expect("load coverage fenced by durable startup recovery");
+        assert_eq!(coverage_state, "ready");
     }
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load startup durable recovery marker");
+    assert_eq!(recovery_pending, 1);
 
     for upstream_account_id in [None, Some(17)] {
         let query = TimeseriesQuery {

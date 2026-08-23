@@ -333,16 +333,18 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
         &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
     );
     // Proxy terminal writes are registered with the in-process projection hub before
-    // persistence. Other sources can update an existing in-flight row directly, so
-    // invalidate only their `all` projection coverage and let the existing exact warm
-    // path rebuild the affected selections.
+    // persistence. Other sources can update an existing in-flight row directly, so publish a
+    // constant-size durable recovery marker and let P2 invalidate coverage in bounded slices.
     let non_proxy_terminal_projection_invalidation_sql = r#"
-        UPDATE timeseries_minute_projection_v2
-        SET coverage_state = 'warming'
-        WHERE source_scope = 'all'
-          AND COALESCE(OLD.source, '') <> 'proxy'
+        INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending, updated_at)
+        SELECT 'timeseries_minute_v2', 1, 1, datetime('now')
+        WHERE COALESCE(OLD.source, '') <> 'proxy'
           AND LOWER(TRIM(COALESCE(OLD.status, ''))) IN ('running', 'pending')
           AND LOWER(TRIM(COALESCE(NEW.status, ''))) NOT IN ('running', 'pending')
+        ON CONFLICT(consumer) DO UPDATE SET
+            generation = timeseries_minute_projection_v2_recovery.generation + 1,
+            invalidation_pending = 1,
+            updated_at = excluded.updated_at
     "#;
     let update_trigger_sql = format!(
         r#"
@@ -2651,9 +2653,24 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure timeseries_minute_projection_v2 state table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
+            consumer TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL DEFAULT 0,
+            invalidation_pending INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_pending IN (0, 1)),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
+
     // This durable fence must exist before runtime accepts HTTP reads. The projection supervisor
     // is intentionally P2 and can start later, while direct non-proxy terminal corrections must
-    // invalidate ready coverage immediately without relying on an in-process hub delta.
+    // synchronously publish only a constant-size recovery marker instead of mutating every
+    // projection row in a terminal write transaction.
     sqlx::query(
         "DROP TRIGGER IF EXISTS trg_timeseries_minute_projection_non_proxy_terminal_replacement",
     )
@@ -2694,13 +2711,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             OR OLD.first_token_ms IS NOT NEW.first_token_ms
         )
         BEGIN
-            UPDATE timeseries_minute_projection_v2
-            SET coverage_state = 'warming'
-            WHERE source_scope = 'all'
-               OR (
-                    source_scope = 'proxy_only'
-                    AND (COALESCE(OLD.source, '') = 'proxy' OR COALESCE(NEW.source, '') = 'proxy')
-               );
+            INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending, updated_at)
+            VALUES ('timeseries_minute_v2', 1, 1, datetime('now'))
+            ON CONFLICT(consumer) DO UPDATE SET
+                generation = timeseries_minute_projection_v2_recovery.generation + 1,
+                invalidation_pending = 1,
+                updated_at = excluded.updated_at;
         END
         "#,
     )

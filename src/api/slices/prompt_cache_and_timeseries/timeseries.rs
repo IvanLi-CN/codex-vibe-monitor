@@ -41,6 +41,7 @@ struct TimeseriesMinuteProjectionV2Load {
 const TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT: usize = 64;
 const TIMESERIES_MINUTE_PROJECTION_WRITE_DELTA_BATCH_LIMIT: usize = 512;
 const TIMESERIES_MINUTE_PROJECTION_INVALIDATION_ROW_BATCH_LIMIT: i64 = 256;
+const TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER: &str = "timeseries_minute_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimeseriesMinuteProjectionFlushOutcome {
@@ -167,6 +168,38 @@ async fn timeseries_minute_projection_non_proxy_terminal_replacement_fence_is_in
     .fetch_one(pool)
     .await?;
     Ok(installed != 0)
+}
+
+pub(crate) async fn mark_timeseries_minute_projection_startup_recovery(
+    pool: &Pool<Sqlite>,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO timeseries_minute_projection_v2_recovery (consumer, generation, invalidation_pending, updated_at) VALUES (?1, 1, 1, datetime('now')) ON CONFLICT(consumer) DO UPDATE SET generation = timeseries_minute_projection_v2_recovery.generation + 1, invalidation_pending = 1, updated_at = excluded.updated_at",
+    )
+    .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn timeseries_minute_projection_recovery_generation(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>, ApiError> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM timeseries_minute_projection_v2_recovery WHERE consumer = ?1 AND invalidation_pending = 1",
+    )
+    .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+    .fetch_optional(pool)
+    .await
+    .map_err(ApiError::from)
+}
+
+async fn timeseries_minute_projection_recovery_pending(
+    pool: &Pool<Sqlite>,
+) -> Result<bool, ApiError> {
+    Ok(timeseries_minute_projection_recovery_generation(pool)
+        .await?
+        .is_some())
 }
 
 async fn timeseries_minute_projection_v2_has_warming_coverage(
@@ -593,6 +626,20 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
     };
 
     for key_batch in keys.chunks(TIMESERIES_MINUTE_PROJECTION_WRITE_KEY_BATCH_LIMIT) {
+        if timeseries_minute_projection_recovery_pending(pool).await? {
+            debug!(
+                route = "timeseries_projection",
+                builder = "minute_projection_v2",
+                trigger,
+                transaction_phase = "exact_warm",
+                admission_outcome = "deferred",
+                defer_reason = "durable_recovery_pending",
+                "minute projection warm write deferred while durable recovery is pending"
+            );
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after: None },
+            ));
+        }
         if terminal_projection_hub
             .timeseries_coverage_invalidation_pending()
             .is_some()
@@ -647,6 +694,18 @@ pub(crate) async fn store_timeseries_minute_projection_v2_warm_with_coordinator(
         // invalidate this coverage through SQLite triggers without reaching the proxy hub; the
         // immediate writer barrier orders that invalidation before this rebuild or after commit.
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let durable_recovery_pending = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM timeseries_minute_projection_v2_recovery WHERE consumer = ?1 AND invalidation_pending = 1)",
+        )
+        .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+        .fetch_one(tx.as_mut())
+        .await?
+            != 0;
+        if durable_recovery_pending {
+            return Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(
+                TimeseriesMinuteProjectionDeferred { retry_after: None },
+            ));
+        }
         let batch_start = Utc
             .timestamp_opt(key_batch[0].minute_start_epoch, 0)
             .single()
@@ -1046,6 +1105,8 @@ impl TimeseriesTopicMaterializedBase {
                     source_scope,
                 )
                 .await?;
+            let durable_recovery_pending = minute_projection_candidate
+                && timeseries_minute_projection_recovery_pending(&state.pool).await?;
             let uncovered_terminal_delta = minute_projection_candidate
                 && timeseries_minute_projection_has_uncovered_terminal_delta(
                     state.terminal_projection_hub.as_ref(),
@@ -1063,13 +1124,16 @@ impl TimeseriesTopicMaterializedBase {
                     params.upstream_account_id,
                 )
                 .await?;
-            let use_minute_projection = minute_projection_candidate
+            let can_warm_minute_projection = minute_projection_candidate
                 && durable_replacement_fence_installed
+                && !durable_recovery_pending
                 && state
                     .terminal_projection_hub
                     .timeseries_coverage_invalidation_pending()
                     .is_none()
-                && !uncovered_terminal_delta
+                && !uncovered_terminal_delta;
+            let use_minute_projection = minute_projection_candidate
+                && can_warm_minute_projection
                 && !warming_projection_coverage;
             let aggregates = if use_minute_projection {
                 if let Some(TimeseriesMinuteProjectionV2Load {
@@ -1167,7 +1231,7 @@ impl TimeseriesTopicMaterializedBase {
                             params.upstream_account_id,
                             bucket_seconds,
                             reporting_tz,
-                            true,
+                            can_warm_minute_projection,
                         )
                         .await?
                     }
@@ -1203,9 +1267,7 @@ impl TimeseriesTopicMaterializedBase {
                     params.upstream_account_id,
                     bucket_seconds,
                     reporting_tz,
-                    uncovered_terminal_delta
-                        && durable_replacement_fence_installed
-                        && !warming_projection_coverage,
+                    can_warm_minute_projection,
                 )
                 .await?
             };
@@ -1954,6 +2016,17 @@ async fn flush_timeseries_minute_projection_with_coordinator_and_cancellation(
     if timeseries_minute_projection_is_cancelled(cancellation) {
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
+    if timeseries_minute_projection_recovery_pending(&state.pool).await? {
+        let startup_cancellation = cancellation
+            .cloned()
+            .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+        let recovery =
+            prepare_timeseries_minute_projection_after_restart(state, &startup_cancellation)
+                .await?;
+        if recovery != TimeseriesMinuteProjectionFlushOutcome::Flushed {
+            return Ok(recovery);
+        }
+    }
     let pending = state
         .terminal_projection_hub
         .pending_timeseries_deltas(10_000);
@@ -2316,86 +2389,110 @@ pub(crate) async fn prepare_timeseries_minute_projection_after_restart(
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
     }
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let admission = match try_acquire_timeseries_minute_projection_write(
-        &coordinator,
-        crate::db_pressure::global_db_pressure_gate(),
-        "startup_recovery",
-        "startup_state_warming",
-        0,
-    )
-    .await
-    {
-        TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
-        TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
-            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
-        }
-    };
-    if cancellation.is_cancelled() {
-        drop(admission);
-        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
-    }
-    let mut tx = state.pool.begin().await?;
-    sqlx::query(
-        "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES ('timeseries_minute_v2', 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
-    )
-    .execute(tx.as_mut())
-    .await?;
-    tx.commit().await?;
-    drop(admission);
-
-    let coverage = match invalidate_timeseries_minute_projection_coverage(
-        state,
-        &coordinator,
-        "startup_recovery",
-        0,
-        Some(cancellation),
-    )
-    .await?
-    {
-        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
-        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred(deferred) => {
-            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
-        }
-        TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
+    loop {
+        let Some(recovery_generation) =
+            timeseries_minute_projection_recovery_generation(&state.pool).await?
+        else {
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
+        };
+        let admission = match try_acquire_timeseries_minute_projection_write(
+            &coordinator,
+            crate::db_pressure::global_db_pressure_gate(),
+            "startup_recovery",
+            "startup_state_warming",
+            0,
+        )
+        .await
+        {
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+            }
+        };
+        if cancellation.is_cancelled() {
+            drop(admission);
             return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
         }
-    };
-
-    let admission = match try_acquire_timeseries_minute_projection_write(
-        &coordinator,
-        crate::db_pressure::global_db_pressure_gate(),
-        "startup_recovery",
-        "startup_state_ready",
-        0,
-    )
-    .await
-    {
-        TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
-        TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
-            return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
-        }
-    };
-    if cancellation.is_cancelled() {
+        let mut tx = state.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO timeseries_minute_projection_v2_state (consumer, cursor_row_id, last_flush_at, last_error, updated_at) VALUES (?1, 0, NULL, 'warming', datetime('now')) ON CONFLICT(consumer) DO UPDATE SET last_error = 'warming', updated_at = excluded.updated_at",
+        )
+        .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
         drop(admission);
-        return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+
+        let coverage = match invalidate_timeseries_minute_projection_coverage(
+            state,
+            &coordinator,
+            "startup_recovery",
+            0,
+            Some(cancellation),
+        )
+        .await?
+        {
+            TimeseriesMinuteProjectionCoverageInvalidationOutcome::Invalidated(stats) => stats,
+            TimeseriesMinuteProjectionCoverageInvalidationOutcome::Deferred(deferred) => {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+            }
+            TimeseriesMinuteProjectionCoverageInvalidationOutcome::Cancelled => {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+            }
+        };
+
+        let admission = match try_acquire_timeseries_minute_projection_write(
+            &coordinator,
+            crate::db_pressure::global_db_pressure_gate(),
+            "startup_recovery",
+            "startup_state_ready",
+            0,
+        )
+        .await
+        {
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Acquired(admission) => admission,
+            TimeseriesMinuteProjectionWriteAdmissionOutcome::Deferred(deferred) => {
+                return Ok(TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred));
+            }
+        };
+        if cancellation.is_cancelled() {
+            drop(admission);
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Cancelled);
+        }
+        let mut tx = state.pool.begin().await?;
+        let recovery_cleared = sqlx::query(
+            "UPDATE timeseries_minute_projection_v2_recovery SET invalidation_pending = 0, updated_at = datetime('now') WHERE consumer = ?1 AND generation = ?2 AND invalidation_pending = 1",
+        )
+        .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+        .bind(recovery_generation)
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected()
+            != 0;
+        if recovery_cleared {
+            sqlx::query(
+                "UPDATE timeseries_minute_projection_v2_state SET last_error = 'ready', updated_at = datetime('now') WHERE consumer = ?1",
+            )
+            .bind(TIMESERIES_MINUTE_PROJECTION_RECOVERY_CONSUMER)
+            .execute(tx.as_mut())
+            .await?;
+        }
+        tx.commit().await?;
+        drop(admission);
+        if recovery_cleared {
+            debug!(
+                route = "timeseries_projection",
+                builder = "minute_projection_v2",
+                response_source = "startup_invalidation",
+                recovery_generation,
+                coverage_invalidation_row_count = coverage.row_count,
+                coverage_invalidation_transaction_count = coverage.transaction_count,
+                "invalidated stale minute coverage before accepting projection reads"
+            );
+            return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
+        }
+        tokio::task::yield_now().await;
     }
-    let mut tx = state.pool.begin().await?;
-    sqlx::query(
-        "UPDATE timeseries_minute_projection_v2_state SET last_error = 'ready', updated_at = datetime('now') WHERE consumer = 'timeseries_minute_v2'",
-    )
-    .execute(tx.as_mut())
-    .await?;
-    tx.commit().await?;
-    drop(admission);
-    debug!(
-        route = "timeseries_projection",
-        builder = "minute_projection_v2",
-        response_source = "startup_invalidation",
-        coverage_invalidation_row_count = coverage.row_count,
-        coverage_invalidation_transaction_count = coverage.transaction_count,
-        "invalidated stale minute coverage before accepting projection reads"
-    );
-    Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed)
 }
 
 #[cfg(test)]
@@ -3092,6 +3189,8 @@ pub(crate) async fn fetch_timeseries(
             source_scope,
         )
         .await?;
+    let durable_recovery_pending =
+        use_minute_projection && timeseries_minute_projection_recovery_pending(&state.pool).await?;
 
     let uncovered_terminal_delta = use_minute_projection
         && timeseries_minute_projection_has_uncovered_terminal_delta(
@@ -3116,7 +3215,16 @@ pub(crate) async fn fetch_timeseries(
         .is_some()
         || uncovered_terminal_delta
         || warming_projection_coverage
+        || durable_recovery_pending
         || (use_minute_projection && !durable_replacement_fence_installed);
+    let can_warm_minute_projection = use_minute_projection
+        && durable_replacement_fence_installed
+        && !durable_recovery_pending
+        && state
+            .terminal_projection_hub
+            .timeseries_coverage_invalidation_pending()
+            .is_none()
+        && !uncovered_terminal_delta;
     if use_minute_projection
         && durable_replacement_fence_installed
         && !coverage_invalidation_pending
@@ -3282,7 +3390,7 @@ pub(crate) async fn fetch_timeseries(
             Some(snapshot_id),
         )
         .await?;
-        if !coverage_invalidation_pending {
+        if can_warm_minute_projection {
             // Projection persistence is P2 work. Never make a read request wait for a SQLite
             // writer when a first-time exact fallback already produced a valid response.
             let projection_pool = state.pool.clone();
@@ -3522,6 +3630,8 @@ pub(crate) async fn fetch_timeseries_for_account(
             source_scope,
         )
         .await?;
+    let durable_recovery_pending = minute_projection_candidate
+        && timeseries_minute_projection_recovery_pending(&state.pool).await?;
     let uncovered_terminal_delta = minute_projection_candidate
         && timeseries_minute_projection_has_uncovered_terminal_delta(
             state.terminal_projection_hub.as_ref(),
@@ -3545,7 +3655,16 @@ pub(crate) async fn fetch_timeseries_for_account(
         .is_some()
         || uncovered_terminal_delta
         || warming_projection_coverage
+        || durable_recovery_pending
         || (minute_projection_candidate && !durable_replacement_fence_installed);
+    let can_warm_minute_projection = minute_projection_candidate
+        && durable_replacement_fence_installed
+        && !durable_recovery_pending
+        && state
+            .terminal_projection_hub
+            .timeseries_coverage_invalidation_pending()
+            .is_none()
+        && !uncovered_terminal_delta;
     if minute_projection_candidate
         && durable_replacement_fence_installed
         && !coverage_invalidation_pending
@@ -3751,6 +3870,42 @@ pub(crate) async fn fetch_timeseries_for_account(
             reporting_tz,
             &db_runtime_records,
         )?;
+        if can_warm_minute_projection {
+            let projection_pool = state.pool.clone();
+            let terminal_projection_hub = state.terminal_projection_hub.clone();
+            tokio::spawn(async move {
+                match store_timeseries_minute_projection_v2_warm_with_eligibility_retry(
+                    &projection_pool,
+                    start_dt,
+                    end_dt,
+                    source_scope,
+                    Some(upstream_account_id),
+                    terminal_projection_hub.as_ref(),
+                    "account_exact_fallback",
+                )
+                .await
+                {
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Stored) => {}
+                    Ok(TimeseriesMinuteProjectionWarmOutcome::Deferred(_)) => {
+                        debug!(
+                            route = "timeseries_projection",
+                            upstream_account_id,
+                            projection_store_outcome = "deferred",
+                            "account v2 minute projection warm write yielded to higher-priority work"
+                        );
+                    }
+                    Err(error) => {
+                        debug!(
+                            route = "timeseries_projection",
+                            upstream_account_id,
+                            projection_store_outcome = "deferred_failed",
+                            ?error,
+                            "account v2 minute projection warm write failed"
+                        );
+                    }
+                }
+            });
+        }
         debug!(
             route = "timeseries_http_or_topic",
             builder = "minute_projection_v2",
@@ -3772,7 +3927,7 @@ pub(crate) async fn fetch_timeseries_for_account(
             reporting_tz,
         );
     }
-    if minute_projection_candidate && !coverage_invalidation_pending {
+    if minute_projection_candidate && can_warm_minute_projection {
         // Account projections include empty minutes, so a first exact fallback must warm
         // the complete selection instead of relying on future terminal events to fill gaps.
         let projection_pool = state.pool.clone();
