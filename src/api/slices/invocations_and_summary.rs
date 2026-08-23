@@ -7230,6 +7230,9 @@ pub(crate) struct SummaryProjection {
     // Rolling refreshes may reuse the previous all-time aggregate. Until a successful all-time
     // rebuild, that aggregate cannot suppress a newly acknowledged terminal delta.
     all_time_terminal_coverage_complete: bool,
+    // The settled terminal watermark actually represented by the retained all-time aggregate.
+    // Rolling-only revisions must not advance this proof while they reuse the old aggregate.
+    all_time_terminal_sequence_watermark: u64,
     // Captured immediately before the durable hydration queries. A settled sequence means every
     // preceding terminal write has committed, so a successful projection can safely recover a
     // bounded SSE overlay that overflowed before its next rebuild.
@@ -7319,6 +7322,10 @@ impl SummaryProjection {
 
     pub(crate) fn all_time_terminal_coverage_complete(&self) -> bool {
         self.all_time_terminal_coverage_complete
+    }
+
+    pub(crate) fn all_time_terminal_sequence_watermark(&self) -> u64 {
+        self.all_time_terminal_sequence_watermark
     }
 
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
@@ -7645,6 +7652,19 @@ impl SummaryProjection {
         }
         response.maintenance = self.maintenance.clone();
         Ok(response)
+    }
+}
+
+fn summary_projection_all_time_sequence_watermark(
+    all_time_was_fully_rebuilt: bool,
+    all_time_terminal_coverage_complete: bool,
+    durable_terminal_sequence_watermark: u64,
+    previous_all_time_terminal_sequence_watermark: u64,
+) -> u64 {
+    if all_time_was_fully_rebuilt && all_time_terminal_coverage_complete {
+        durable_terminal_sequence_watermark
+    } else {
+        previous_all_time_terminal_sequence_watermark
     }
 }
 
@@ -9086,6 +9106,7 @@ async fn refresh_summary_snapshots_with_deadline(
                 projection.freshness.global_all_time_eligible,
                 projection.freshness.account_all_time_eligible.clone(),
                 projection.all_time_terminal_coverage_complete(),
+                projection.all_time_terminal_sequence_watermark(),
             )
         });
     let had_previous_projection = previous_all_time.is_some();
@@ -9419,6 +9440,7 @@ async fn build_summary_projection(
         bool,
         HashSet<i64>,
         bool,
+        u64,
     )>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -9432,6 +9454,7 @@ async fn build_summary_projection(
         previous_global_all_time_eligible,
         previous_account_all_time_eligible,
         previous_all_time_terminal_coverage_complete,
+        previous_all_time_terminal_sequence_watermark,
     ) = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
@@ -10679,10 +10702,17 @@ async fn build_summary_projection(
     } else {
         previous_all_time_terminal_coverage_complete
     };
+    let all_time_terminal_sequence_watermark = summary_projection_all_time_sequence_watermark(
+        all_time_was_fully_rebuilt,
+        all_time_terminal_coverage_complete,
+        durable_terminal_sequence_watermark,
+        previous_all_time_terminal_sequence_watermark,
+    );
     let projection = SummaryProjection {
         records,
         persisted_live_terminal_invoke_ids,
         all_time_terminal_coverage_complete,
+        all_time_terminal_sequence_watermark,
         durable_terminal_sequence_watermark,
         hourly_buckets,
         recent_indexes,
@@ -26409,6 +26439,25 @@ mod request_compression_query_tests {
         };
         assert!(!projection.needs_cadence_refresh(false));
         assert!(projection.needs_cadence_refresh(true));
+    }
+
+    #[test]
+    fn summary_projection_rolling_refresh_keeps_all_time_terminal_watermark() {
+        assert_eq!(
+            summary_projection_all_time_sequence_watermark(false, true, 12, 7),
+            7,
+            "rolling-only refreshes must not claim new all-time terminal coverage",
+        );
+        assert_eq!(
+            summary_projection_all_time_sequence_watermark(true, false, 12, 7),
+            7,
+            "incomplete all-time rebuilds must retain the prior coverage proof",
+        );
+        assert_eq!(
+            summary_projection_all_time_sequence_watermark(true, true, 12, 7),
+            12,
+            "only complete all-time hydration may advance its terminal watermark",
+        );
     }
 
     #[test]

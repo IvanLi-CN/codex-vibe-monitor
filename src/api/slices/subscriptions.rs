@@ -3138,9 +3138,7 @@ impl SubscriptionHub {
         }
         state.summary_terminal_overlay_all_time.retain(|delta| {
             !(projection.all_time_terminal_coverage_complete()
-                && (projection.durable_terminal_sequence_watermark() >= delta.terminal_sequence
-                    || projection
-                        .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)))
+                && projection.all_time_terminal_sequence_watermark() >= delta.terminal_sequence)
         });
         state.summary_terminal_overlay_all_time_bytes = state
             .summary_terminal_overlay_all_time
@@ -3151,13 +3149,13 @@ impl SubscriptionHub {
             && state
                 .summary_terminal_overlay_all_time_overflowed_through_sequence
                 .is_some_and(|overflowed_through| {
-                    projection.durable_terminal_sequence_watermark() >= overflowed_through
+                    projection.all_time_terminal_sequence_watermark() >= overflowed_through
                 })
         {
             state.summary_terminal_overlay_all_time_overflowed_through_sequence = None;
             tracing::info!(
                 durable_terminal_sequence_watermark =
-                    projection.durable_terminal_sequence_watermark(),
+                    projection.all_time_terminal_sequence_watermark(),
                 "all-time summary terminal overlay recovered after a durable projection refresh"
             );
         }
@@ -3192,11 +3190,12 @@ impl SubscriptionHub {
         let overlay = overlay_source
             .iter()
             .filter(|delta| {
-                !(projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
-                    && (!all_time || projection.all_time_terminal_coverage_complete())
+                !((!all_time
+                    && projection
+                        .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at))
                     || (all_time
                         && projection.all_time_terminal_coverage_complete()
-                        && projection.durable_terminal_sequence_watermark()
+                        && projection.all_time_terminal_sequence_watermark()
                             >= delta.terminal_sequence))
             })
             .cloned()
@@ -3211,12 +3210,14 @@ impl SubscriptionHub {
                     .deltas
                     .iter()
                     .filter(|delta| {
-                        projection
-                            .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
-                            && (!all_time || projection.all_time_terminal_coverage_complete())
+                        (!all_time
+                            && projection.contains_persisted_live_terminal(
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ))
                             || (all_time
                                 && projection.all_time_terminal_coverage_complete()
-                                && projection.durable_terminal_sequence_watermark()
+                                && projection.all_time_terminal_sequence_watermark()
                                     >= delta.terminal_sequence)
                     })
                     .map(|delta| delta.terminal_sequence),
