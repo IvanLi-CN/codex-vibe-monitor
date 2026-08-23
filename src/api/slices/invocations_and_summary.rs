@@ -28207,12 +28207,13 @@ mod request_compression_query_tests {
         )
         .await;
         for index in 0..80_i64 {
+            let occurred_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(index + 2));
             sqlx::query(
                 "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-                 VALUES (?1, datetime('now', ?2), 'proxy', 'success', ?3, 1.0, '{\"upstreamAccountId\":42}', '', 'full')",
+                 VALUES (?1, ?2, 'proxy', 'success', ?3, 1.0, '{\"upstreamAccountId\":42}', '', 'full')",
             )
             .bind(format!("summary-current-{index}"))
-            .bind(format!("-{index} seconds"))
+            .bind(occurred_at)
             .bind(index + 1)
             .execute(&state.pool)
             .await
