@@ -15,9 +15,46 @@ pub(crate) struct PoolRoutingRuntimeCache {
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResolved,
     pub(crate) cache_hit_protection: CacheHitProtectionSettings,
     pub(crate) live_request_streaming: LiveRequestStreamingSettings,
+    /// Immutable summary of the routing inputs that can still occur after a
+    /// request's model field. It is rebuilt with the routing snapshot so the
+    /// live request path never has to query SQLite to decide its gate.
+    pub(crate) live_request_route_dependencies: LiveRequestRouteDependencyProfile,
     pub(crate) model_routing: PoolModelRoutingRuntimeCache,
     pub(crate) prompt_route_cache: Arc<std::sync::Mutex<PoolRoutingPromptRouteCache>>,
     pub(crate) sticky_route_cache: Arc<std::sync::Mutex<PoolRoutingStickyRouteCache>>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LiveRequestRouteDependencyProfile {
+    pub(crate) sticky_routes_present: bool,
+    pub(crate) prompt_cache_routes_present: bool,
+    pub(crate) encrypted_session_owners_present: bool,
+    pub(crate) response_image_capability_gap: bool,
+    pub(crate) codex_imagegen_capability_gap: bool,
+}
+
+impl LiveRequestRouteDependencyProfile {
+    pub(crate) fn requires_full_body_commit(
+        self,
+        encrypted_session_owner_routing_enabled: bool,
+        codex_imagegen_request: bool,
+    ) -> bool {
+        (encrypted_session_owner_routing_enabled && self.encrypted_session_owners_present)
+            || self.response_image_capability_gap
+            || (codex_imagegen_request && self.codex_imagegen_capability_gap)
+    }
+
+    pub(crate) fn mark_prompt_cache_routes_present(&mut self) {
+        self.prompt_cache_routes_present = true;
+        // A conversation mutation may also create or update an encrypted
+        // session owner. Preserve routing correctness until the next snapshot
+        // rebuild establishes the exact table state.
+        self.encrypted_session_owners_present = true;
+    }
+
+    pub(crate) fn mark_sticky_routes_present(&mut self) {
+        self.sticky_routes_present = true;
+    }
 }
 
 pub(crate) const POOL_ROUTING_PROMPT_ROUTE_CACHE_CAPACITY: usize = 16_384;
@@ -2356,6 +2393,29 @@ mod pool_routing_prompt_route_cache_tests {
 
         assert!(cache.get(&key(1)).is_none());
         assert!(cache.get(&key(2)).is_some_and(|value| value.is_none()));
+    }
+
+    #[test]
+    fn live_route_dependency_profile_buffers_only_input_embedded_route_factors() {
+        let profile = LiveRequestRouteDependencyProfile {
+            sticky_routes_present: true,
+            prompt_cache_routes_present: true,
+            ..LiveRequestRouteDependencyProfile::default()
+        };
+        assert!(!profile.requires_full_body_commit(false, false));
+
+        let encrypted = LiveRequestRouteDependencyProfile {
+            encrypted_session_owners_present: true,
+            ..profile
+        };
+        assert!(encrypted.requires_full_body_commit(true, false));
+        assert!(!encrypted.requires_full_body_commit(false, false));
+
+        let image = LiveRequestRouteDependencyProfile {
+            response_image_capability_gap: true,
+            ..profile
+        };
+        assert!(image.requires_full_body_commit(false, false));
     }
 
     #[test]

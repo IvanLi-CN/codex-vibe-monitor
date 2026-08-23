@@ -906,6 +906,7 @@ pub(crate) fn build_pool_routing_runtime_cache(
         timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
         cache_hit_protection: resolve_cache_hit_protection_settings(row),
         live_request_streaming: resolve_live_request_streaming_settings(row),
+        live_request_route_dependencies: LiveRequestRouteDependencyProfile::default(),
         model_routing: PoolModelRoutingRuntimeCache::default(),
         prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
         sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
@@ -925,6 +926,10 @@ async fn refresh_pool_routing_runtime_cache_locked(
     let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
     let mut cache = build_pool_routing_runtime_cache(state, &row)?;
     let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
+    if cache.live_request_streaming.enabled {
+        cache.live_request_route_dependencies =
+            load_live_request_route_dependency_profile(&state.pool, &model_routing).await?;
+    }
     #[cfg(test)]
     {
         cache.sqlite_data_version = pool_routing_sqlite_data_version(state).await?;
@@ -941,6 +946,72 @@ async fn refresh_pool_routing_runtime_cache_locked(
     cache.model_routing = model_routing;
     *runtime_cache = Some(cache.clone());
     Ok(cache)
+}
+
+async fn load_live_request_route_dependency_profile(
+    pool: &Pool<Sqlite>,
+    model_routing: &PoolModelRoutingRuntimeCache,
+) -> Result<LiveRequestRouteDependencyProfile> {
+    // This runs only while rebuilding the immutable routing snapshot. Live
+    // requests consult the resulting profile in memory and never perform this
+    // existence check on their hot path.
+    let (sticky_routes_present, prompt_cache_routes_present, encrypted_session_owners_present): (
+        i64,
+        i64,
+        i64,
+    ) = sqlx::query_as(
+        r#"
+        SELECT
+            EXISTS(SELECT 1 FROM pool_sticky_routes LIMIT 1)
+                OR EXISTS(SELECT 1 FROM pool_sticky_model_routes LIMIT 1),
+            EXISTS(SELECT 1 FROM prompt_cache_conversation_bindings LIMIT 1),
+            EXISTS(SELECT 1 FROM prompt_cache_encrypted_session_owners LIMIT 1)
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .context("load live request route dependency profile")?;
+
+    let response_image_capability_gap = model_routing
+        .routing_candidates
+        .iter()
+        .filter_map(|candidate| model_routing.routing_account_rows_by_id.get(&candidate.id))
+        .any(|account| {
+            matches!(
+                effective_capability_support(
+                    decode_capability_support(account.response_image_tool_capability.as_deref()),
+                    decode_capability_override(
+                        account
+                            .policy_response_image_tool_capability_override
+                            .as_deref(),
+                    ),
+                ),
+                CapabilitySupport::Unsupported
+            )
+        });
+    let codex_imagegen_capability_gap = model_routing
+        .routing_candidates
+        .iter()
+        .filter_map(|candidate| model_routing.routing_account_rows_by_id.get(&candidate.id))
+        .any(|account| {
+            matches!(
+                effective_capability_support(
+                    decode_capability_support(account.codex_imagegen_capability.as_deref()),
+                    decode_capability_override(
+                        account.policy_codex_imagegen_capability_override.as_deref(),
+                    ),
+                ),
+                CapabilitySupport::Unsupported
+            )
+        });
+
+    Ok(LiveRequestRouteDependencyProfile {
+        sticky_routes_present: sticky_routes_present != 0,
+        prompt_cache_routes_present: prompt_cache_routes_present != 0,
+        encrypted_session_owners_present: encrypted_session_owners_present != 0,
+        response_image_capability_gap,
+        codex_imagegen_capability_gap,
+    })
 }
 
 pub(crate) async fn load_pool_routing_runtime_cache(
