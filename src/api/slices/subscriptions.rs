@@ -3016,19 +3016,6 @@ impl SubscriptionHub {
         self.state.lock().await.summary_projection.clone()
     }
 
-    async fn summary_projection_and_terminal_slice(
-        &self,
-    ) -> (
-        Option<Arc<SummaryProjection>>,
-        Option<Arc<DashboardTerminalProjectionSlice>>,
-    ) {
-        let state = self.state.lock().await;
-        (
-            state.summary_projection.clone(),
-            state.dashboard_terminal_slice.clone(),
-        )
-    }
-
     pub(crate) async fn note_summary_http_interest(&self, all_time: bool) {
         let mut guard = self.state.lock().await;
         guard.summary_http_interest_at = Some(Instant::now());
@@ -10544,23 +10531,42 @@ impl SubscriptionTopic {
                     let summary_window =
                         parse_summary_window(&query, state.config.list_limit_max as i64)?;
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
-                    let (projection, terminal_slice) = state
-                        .subscription_hub
-                        .summary_projection_and_terminal_slice()
-                        .await;
+                    let projection = state.subscription_hub.summary_projection().await;
                     if let Some(projection) = projection {
-                        let terminal_sequence = terminal_slice
-                            .as_deref()
-                            .and_then(|slice| {
-                                slice
-                                    .deltas
-                                    .iter()
-                                    .map(|delta| delta.terminal_sequence)
-                                    .max()
-                            })
-                            .unwrap_or_default();
-                        let response = projection
+                        let mut response = projection
                             .response_for_query(&query, state.config.list_limit_max as i64)?;
+                        // The immutable SummaryProjection represents the durable baseline. A
+                        // terminal accepted after that baseline may not yet be persisted or in
+                        // the next projection revision, so fold the established in-memory
+                        // pending overlay into a new topic before recording its watermark.
+                        // This is the same durable/pending split used by the legacy builder,
+                        // but it never re-enters SQLite once a projection is available.
+                        let (pending_terminal_deltas, terminal_sequence) = {
+                            let cache = state.dashboard_activity_snapshot_cache.lock().await;
+                            (
+                                cache
+                                    .read_model
+                                    .pending_terminal_deltas
+                                    .iter()
+                                    .filter(|delta| delta.persisted_row_id.is_none())
+                                    .cloned()
+                                    .collect(),
+                                cache.read_model.next_terminal_sequence,
+                            )
+                        };
+                        let mut replayed_terminal_sequence = 0;
+                        apply_dashboard_terminal_slice_to_summary_response(
+                            &mut response,
+                            &mut replayed_terminal_sequence,
+                            &summary_window,
+                            reporting_tz,
+                            InvocationSourceScope::All,
+                            *upstream_account_id,
+                            &DashboardTerminalProjectionSlice {
+                                revision: 0,
+                                deltas: pending_terminal_deltas,
+                            },
+                        );
                         let range_start =
                             summary_window_range(&summary_window, reporting_tz, Utc::now())?
                                 .map(|(start, _)| start);
@@ -15507,6 +15513,55 @@ mod tests {
                 "{window} must use the memory-backed Summary materializer"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_replays_pending_terminal_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before the terminal delta");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "hydrated-summary-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept pending terminal delta");
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("hydrated Summary topic must replay the pending terminal from memory")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize the memory-backed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
     }
 
     #[tokio::test]
