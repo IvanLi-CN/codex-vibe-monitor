@@ -13144,6 +13144,27 @@ fn replay_dashboard_activity_pending_deltas_without_expiry(
 }
 
 fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivityTerminalDelta {
+    dashboard_activity_terminal_delta_with_first_token(
+        record,
+        runtime_record_first_token_ms(record),
+    )
+}
+
+// Persisted dashboard rows come from build_invocation_select_query(), whose timing expression
+// already establishes final-attempt ownership. Runtime records need the stricter retry guard.
+fn persisted_dashboard_activity_terminal_delta(
+    record: &ApiInvocation,
+) -> DashboardActivityTerminalDelta {
+    dashboard_activity_terminal_delta_with_first_token(
+        record,
+        finite_nonnegative_timing(record.first_token_ms),
+    )
+}
+
+fn dashboard_activity_terminal_delta_with_first_token(
+    record: &ApiInvocation,
+    first_token_ms: Option<f64>,
+) -> DashboardActivityTerminalDelta {
     let classification = resolve_failure_classification(
         record.status.as_deref(),
         record.error_message.as_deref(),
@@ -13245,7 +13266,7 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         + record.service_tier.as_ref().map_or(0, String::len)
         + record.billing_service_tier.as_ref().map_or(0, String::len);
     let mut timeseries = TimeseriesTerminalDelta::from(record);
-    timeseries.first_token_ms = runtime_record_first_token_ms(record);
+    timeseries.first_token_ms = first_token_ms;
     DashboardActivityTerminalDelta {
         terminal_sequence: 0,
         timeseries,
@@ -13290,7 +13311,7 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
         t_req_parse_ms: record.t_req_parse_ms,
         t_upstream_connect_ms: record.t_upstream_connect_ms,
         t_upstream_ttfb_ms: record.t_upstream_ttfb_ms,
-        first_token_ms: runtime_record_first_token_ms(record),
+        first_token_ms,
         t_upstream_stream_ms: record.t_upstream_stream_ms,
         recent_invocation: invocation_preview_from_runtime_record(record),
         persisted_row_id: (record.id > 0).then_some(record.id),
@@ -14967,7 +14988,7 @@ async fn load_dashboard_activity_expiry_deltas(
     let mut deltas = VecDeque::new();
     let mut estimated_bytes = 0usize;
     while let Some(record) = rows.try_next().await? {
-        let delta = dashboard_activity_terminal_delta(&record);
+        let delta = persisted_dashboard_activity_terminal_delta(&record);
         if deltas.len() >= DASHBOARD_ACTIVITY_READ_MODEL_MAX_PENDING_TERMINALS {
             return Ok((VecDeque::new(), None, 0, Some("expiry_count_limit")));
         }
@@ -19847,6 +19868,7 @@ mod dashboard_activity_read_model_tests {
             models: Vec::new(),
         });
         let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
         record.first_token_ms = Some(650.0);
 
         apply_dashboard_activity_terminal_delta(&mut snapshot, &record);
@@ -19897,11 +19919,11 @@ mod dashboard_activity_read_model_tests {
     fn terminal_delta_merges_account_latency_with_the_cached_baseline() {
         let mut snapshot = DashboardActivitySnapshot::test_stub("7d");
         let mut first = invocation_cost_audit_tests::sample_invocation(Some(25));
+        first.id = 0;
         first.first_token_ms = Some(650.0);
         apply_dashboard_activity_terminal_delta(&mut snapshot, &first);
 
         let mut second = first.clone();
-        second.id = 8;
         second.invoke_id = "invocation-cost-audit-second".to_string();
         second.occurred_at = "2026-07-20 10:25:10".to_string();
         second.t_upstream_ttfb_ms = Some(430.0);
@@ -20269,6 +20291,7 @@ mod dashboard_activity_read_model_tests {
     fn terminal_delta_model_performance_matches_sql_qualification() {
         let mut accumulator = ModelPerformanceAccumulator::default();
         let mut record = invocation_cost_audit_tests::sample_invocation(Some(25));
+        record.id = 0;
         record.cost = None;
         record.first_token_ms = Some(91.0);
 
@@ -21211,6 +21234,20 @@ mod invocation_cost_audit_tests {
         assert_eq!(
             dashboard_activity_terminal_delta(&record).first_token_ms,
             None
+        );
+    }
+
+    #[test]
+    fn persisted_dashboard_delta_keeps_prequalified_final_retry_ttft() {
+        let mut record = sample_invocation(None);
+        record.status = Some("success".to_string());
+        record.first_token_ms = Some(720.0);
+        record.t_upstream_stream_ms = Some(240.0);
+        record.pool_attempt_count = Some(2);
+
+        assert_eq!(
+            persisted_dashboard_activity_terminal_delta(&record).first_token_ms,
+            Some(720.0)
         );
     }
 
