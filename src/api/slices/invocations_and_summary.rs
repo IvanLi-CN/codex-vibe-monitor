@@ -7372,6 +7372,14 @@ impl SummaryProjection {
         )
     }
 
+    pub(crate) fn all_time_terminal_account_scopes_cover(&self, terminal_sequence: u64) -> bool {
+        self.all_time_account_ids_with_projection_data
+            .iter()
+            .all(|account_id| {
+                self.all_time_terminal_scope_covers(Some(*account_id), "", "", terminal_sequence)
+            })
+    }
+
     fn needs_cadence_refresh(&self, has_all_time_owner: bool) -> bool {
         let refresh_due = |refreshed_at: Option<Instant>| {
             refreshed_at.is_none_or(|refreshed_at| {

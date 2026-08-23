@@ -49,6 +49,7 @@ const RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
 const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
 const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS: usize = 1_024;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -754,6 +755,9 @@ struct SubscriptionHubState {
     // serviceable. Retain the dropped-through proof per account so a global rebuild cannot
     // silently clear an account's fail-closed marker.
     summary_terminal_overlay_all_time_overflowed_through_account: HashMap<i64, u64>,
+    // Once the account marker cap is reached, retain one bounded proof for all further account
+    // keys. Account reads remain fail-closed unless their own projection proves this watermark.
+    summary_terminal_overlay_all_time_overflowed_through_unknown_account: Option<u64>,
     summary_terminal_overlay_all_time_overflowed_through_sequence: Option<u64>,
     summary_http_interest_at: Option<Instant>,
     summary_http_all_time_interest_at: Option<Instant>,
@@ -766,6 +770,39 @@ struct SubscriptionHubState {
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
     runtime_topic_recovery_running: bool,
+}
+
+fn record_all_time_account_overflow_marker(
+    state: &mut SubscriptionHubState,
+    account_id: i64,
+    terminal_sequence: u64,
+) {
+    if let Some(existing) = state
+        .summary_terminal_overlay_all_time_overflowed_through_account
+        .get_mut(&account_id)
+    {
+        *existing = (*existing).max(terminal_sequence);
+        return;
+    }
+    if state
+        .summary_terminal_overlay_all_time_overflowed_through_account
+        .len()
+        < SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS
+    {
+        state
+            .summary_terminal_overlay_all_time_overflowed_through_account
+            .insert(account_id, terminal_sequence);
+        return;
+    }
+    state
+        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+        .get_or_insert(terminal_sequence);
+    if let Some(existing) = state
+        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+        .as_mut()
+    {
+        *existing = (*existing).max(terminal_sequence);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3163,6 +3200,17 @@ impl SubscriptionHub {
                     *overflowed_through,
                 )
             });
+        if state
+            .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+            .is_some_and(|overflowed_through| {
+                projection.all_time_terminal_account_scopes_cover(overflowed_through)
+            })
+        {
+            state.summary_terminal_overlay_all_time_overflowed_through_unknown_account = None;
+            tracing::info!(
+                "all-time summary account overflow markers recovered after a complete account projection refresh"
+            );
+        }
         if projection.all_time_terminal_coverage_complete()
             && state
                 .summary_terminal_overlay_all_time_overflowed_through_sequence
@@ -3188,14 +3236,18 @@ impl SubscriptionHub {
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
         let overflowed = if all_time {
-            upstream_account_id.is_some_and(|account_id| {
+            if let Some(account_id) = upstream_account_id {
                 state
                     .summary_terminal_overlay_all_time_overflowed_through_account
                     .contains_key(&account_id)
-            }) || (upstream_account_id.is_none()
-                && state
+                    || state
+                        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+                        .is_some()
+            } else {
+                state
                     .summary_terminal_overlay_all_time_overflowed_through_sequence
-                    .is_some())
+                    .is_some()
+            }
         } else {
             state
                 .summary_terminal_overlay_overflowed_through_sequence
@@ -3203,7 +3255,7 @@ impl SubscriptionHub {
         };
         let overflow_is_covered = if all_time {
             if let Some(account_id) = upstream_account_id {
-                state
+                let account_marker_covered = state
                     .summary_terminal_overlay_all_time_overflowed_through_account
                     .get(&account_id)
                     .is_none_or(|overflowed_through| {
@@ -3213,7 +3265,18 @@ impl SubscriptionHub {
                             "",
                             *overflowed_through,
                         )
-                    })
+                    });
+                let unknown_marker_covered = state
+                    .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(
+                            Some(account_id),
+                            "",
+                            "",
+                            overflowed_through,
+                        )
+                    });
+                account_marker_covered && unknown_marker_covered
             } else {
                 state
                     .summary_terminal_overlay_all_time_overflowed_through_sequence
@@ -5084,13 +5147,11 @@ impl SubscriptionHub {
                         guard.summary_terminal_overlay_all_time_overflowed_through_sequence =
                             Some(overflowed_through);
                         if let Some(account_id) = delta.upstream_account_id {
-                            guard
-                                .summary_terminal_overlay_all_time_overflowed_through_account
-                                .entry(account_id)
-                                .and_modify(|existing| {
-                                    *existing = (*existing).max(delta.terminal_sequence)
-                                })
-                                .or_insert(delta.terminal_sequence);
+                            record_all_time_account_overflow_marker(
+                                &mut guard,
+                                account_id,
+                                delta.terminal_sequence,
+                            );
                         }
                         tracing::warn!(
                             pending_terminal_count = guard.summary_terminal_overlay_all_time.len(),
@@ -5111,11 +5172,11 @@ impl SubscriptionHub {
                     .is_some()
                     && let Some(account_id) = delta.upstream_account_id
                 {
-                    guard
-                        .summary_terminal_overlay_all_time_overflowed_through_account
-                        .entry(account_id)
-                        .and_modify(|existing| *existing = (*existing).max(delta.terminal_sequence))
-                        .or_insert(delta.terminal_sequence);
+                    record_all_time_account_overflow_marker(
+                        &mut guard,
+                        account_id,
+                        delta.terminal_sequence,
+                    );
                 }
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
@@ -11833,6 +11894,24 @@ fn prompt_cache_selection_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_time_account_overflow_markers_stay_bounded() {
+        let mut state = SubscriptionHubState::default();
+        for account_id in 0..=(SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS as i64) {
+            record_all_time_account_overflow_marker(&mut state, account_id, account_id as u64 + 1);
+        }
+        assert_eq!(
+            state
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .len(),
+            SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS
+        );
+        assert_eq!(
+            state.summary_terminal_overlay_all_time_overflowed_through_unknown_account,
+            Some((SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS as u64) + 1)
+        );
+    }
 
     #[tokio::test]
     async fn summary_snapshot_registration_preserves_last_good_response() {
