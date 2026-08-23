@@ -19793,7 +19793,7 @@ mod dashboard_activity_read_model_tests {
                 start: "2026-08-03T00:00:00Z".parse().expect("range start"),
                 end: "2026-08-04T00:00:00Z".parse().expect("range end"),
             },
-            false,
+            true,
             DashboardActivityExcludedInvocationIdsFilter::None,
         )
         .await
