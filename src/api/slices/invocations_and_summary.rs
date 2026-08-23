@@ -7282,10 +7282,6 @@ pub(crate) struct SummaryProjection {
     // than publishing an undercount or turning a selection-level unavailability into an HTTP
     // builder failure.
     unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
-    // Closed calendar windows are immutable at a projection revision. Only the small global
-    // bootstrap set is pre-rendered; account-scoped selections remain pure views over canonical
-    // buckets so account count cannot multiply refresh allocations.
-    closed_window_by_key: HashMap<SummarySnapshotKey, StatsResponse>,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
     // Keep that reconciled view alongside the immutable history projection.
@@ -7325,7 +7321,7 @@ impl SummaryProjection {
         response
     }
 
-    fn response_for_query(
+    pub(crate) fn response_for_query(
         &self,
         params: &SummaryQuery,
         default_limit: i64,
@@ -7347,8 +7343,6 @@ impl SummaryProjection {
             Some(_) => return Err(ApiError::bad_request(anyhow!("invalid upstream account"))),
             None => None,
         };
-        let key = SummarySnapshotKey::try_from_query(params, default_limit)
-            .map_err(ApiError::bad_request)?;
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
         if let Some((start, end)) = range
@@ -7369,9 +7363,6 @@ impl SummaryProjection {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection last-good snapshot exceeded the freshness budget"
             )));
-        }
-        if let Some(response) = self.closed_window_by_key.get(&key) {
-            return Ok(response.clone());
         }
         if matches!(window, SummaryWindow::All) {
             let account_has_projection_data = upstream_account_id.is_some_and(|account_id| {
@@ -10205,7 +10196,6 @@ async fn build_summary_projection(
             "summary projection account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
         ));
     }
-    let mut closed_window_requests = Vec::new();
     let mut in_progress_by_account = HashMap::new();
     let mut active_in_progress_accounts = HashSet::new();
     for record in &records {
@@ -10594,22 +10584,6 @@ async fn build_summary_projection(
             all_time_by_account.insert(Some(account_id), response);
             all_time_account_refreshed_at.insert(account_id, all_time_built_at);
         }
-        if upstream_account_id.is_none() {
-            for closed_window in ["yesterday", "previous7d"] {
-                let closed_params = SummaryQuery {
-                    window: Some(closed_window.to_string()),
-                    limit: None,
-                    time_zone: Some("Asia/Shanghai".to_string()),
-                    upstream_account_id,
-                };
-                let closed_key = SummarySnapshotKey::try_from_query(
-                    &closed_params,
-                    state.config.list_limit_max as i64,
-                )
-                .expect("summary projection closed-window key must be valid");
-                closed_window_requests.push((closed_key, closed_params));
-            }
-        }
         if all_time_was_fully_rebuilt
             && let Some(response) = all_time_by_account.get_mut(&upstream_account_id)
         {
@@ -10649,7 +10623,7 @@ async fn build_summary_projection(
     };
     let all_time_oldest_account_refreshed_at =
         all_time_account_refreshed_at.values().copied().min();
-    let mut projection = SummaryProjection {
+    let projection = SummaryProjection {
         records,
         hourly_buckets,
         recent_indexes,
@@ -10676,35 +10650,12 @@ async fn build_summary_projection(
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
         unavailable_unmaterialized_archive_ranges,
-        closed_window_by_key: HashMap::new(),
         in_progress_by_account,
         maintenance: Some(maintenance),
         refreshed_at,
         freshness,
         revision,
     };
-    // Closed windows use the same canonical records and coverage model as rolling windows. This
-    // keeps account-lag boundary rows visible even when the archive's global materialization
-    // marker is ahead of its account rollup, and lets the HTTP path stay memory-only.
-    for (key, params) in closed_window_requests {
-        match projection.response_for_query(&params, state.config.list_limit_max as i64) {
-            Ok(response) => {
-                projection.closed_window_by_key.insert(key, response);
-            }
-            Err(ApiError::Unavailable(error)) => {
-                debug!(
-                    window = ?params.window,
-                    ?error,
-                    "summary projection deferred unavailable closed window"
-                );
-            }
-            Err(error) => {
-                return Err(anyhow!(
-                    "summary projection closed-window hydration failed: {error:?}"
-                ));
-            }
-        }
-    }
     Ok(projection)
 }
 
@@ -26110,7 +26061,7 @@ mod request_compression_query_tests {
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
              VALUES ('summary-previous7d-last-good', ?1, 'proxy', 'success', 29, 3.5, \
-                     '{\"upstreamAccountId\":42,\"model\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
+                     '{\"upstreamAccountId\":42,\"responseModel\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
         )
         .bind(db_occurred_at_lower_bound(occurred_at))
         .execute(&state.pool)
@@ -26134,6 +26085,16 @@ mod request_compression_query_tests {
         assert_eq!(last_good.total_count, 1);
         assert_eq!(last_good.total_tokens, 29);
         assert_eq!(last_good.total_cost, 3.5);
+        let last_good_usage = last_good
+            .usage_breakdown
+            .as_ref()
+            .expect("hydrate the previous7d model and reasoning usage");
+        assert_eq!(last_good_usage.models.len(), 1);
+        assert_eq!(last_good_usage.models[0].model, "gpt-5");
+        assert_eq!(
+            last_good_usage.models[0].reasoning_effort.as_deref(),
+            Some("high")
+        );
 
         let (range_start, _) = previous_full_days_range_bounds(7, Utc::now(), chrono_tz::UTC)
             .expect("previous7d range");

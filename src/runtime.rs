@@ -243,13 +243,11 @@ pub(crate) async fn run() -> Result<()> {
     // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
     // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
-    // every such read before publishing the bounded Summary/System Status snapshots, otherwise
-    // their 15s/60s service clocks could expire before HTTP is ready to serve them.
+    // the early routing and dashboard reads before progressing through the remaining startup
+    // stages. Summary/System Status hydration itself is intentionally deferred to the final
+    // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
     warm_dashboard_runtime_projection(state.as_ref()).await;
-    hydrate_startup_memory_snapshots(state.as_ref()).await?;
-    spawn_summary_snapshot_maintenance(state.clone());
-    spawn_system_status_snapshot_maintenance(state.clone());
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
@@ -674,6 +672,54 @@ where
         )
         .await;
     }
+
+    // All remaining startup work is complete. Hydrate immediately before the HTTP listener is
+    // made ready so a slow route sync cannot consume the Summary/System Status freshness budget.
+    let hot_read_hydration_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        hydrate_startup_memory_snapshots(state.as_ref()),
+    )
+    .await;
+    let hot_read_hydration_shutdown_requested = match hot_read_hydration_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            result?;
+            shutdown_requested
+        }
+    };
+    if hot_read_hydration_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+    spawn_summary_snapshot_maintenance(state.clone());
+    spawn_system_status_snapshot_maintenance(state.clone());
 
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(

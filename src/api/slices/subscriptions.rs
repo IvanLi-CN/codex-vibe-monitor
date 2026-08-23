@@ -3016,6 +3016,19 @@ impl SubscriptionHub {
         self.state.lock().await.summary_projection.clone()
     }
 
+    async fn summary_projection_and_terminal_slice(
+        &self,
+    ) -> (
+        Option<Arc<SummaryProjection>>,
+        Option<Arc<DashboardTerminalProjectionSlice>>,
+    ) {
+        let state = self.state.lock().await;
+        (
+            state.summary_projection.clone(),
+            state.dashboard_terminal_slice.clone(),
+        )
+    }
+
     pub(crate) async fn note_summary_http_interest(&self, all_time: bool) {
         let mut guard = self.state.lock().await;
         guard.summary_http_interest_at = Some(Instant::now());
@@ -10521,7 +10534,7 @@ impl SubscriptionTopic {
                     time_zone,
                     limit,
                     upstream_account_id,
-                } if !matches!(window.as_str(), "yesterday" | "previous7d") => {
+                } => {
                     let query = SummaryQuery {
                         window: Some(window.clone()),
                         limit: *limit,
@@ -10531,6 +10544,46 @@ impl SubscriptionTopic {
                     let summary_window =
                         parse_summary_window(&query, state.config.list_limit_max as i64)?;
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let (projection, terminal_slice) = state
+                        .subscription_hub
+                        .summary_projection_and_terminal_slice()
+                        .await;
+                    if let Some(projection) = projection {
+                        let terminal_sequence = terminal_slice
+                            .as_deref()
+                            .and_then(|slice| {
+                                slice
+                                    .deltas
+                                    .iter()
+                                    .map(|delta| delta.terminal_sequence)
+                                    .max()
+                            })
+                            .unwrap_or_default();
+                        let response = projection
+                            .response_for_query(&query, state.config.list_limit_max as i64)?;
+                        let range_start =
+                            summary_window_range(&summary_window, reporting_tz, Utc::now())?
+                                .map(|(start, _)| start);
+                        return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                            DashboardTopicMaterializer::Summary {
+                                base: Arc::new(StdMutex::new(
+                                    DashboardSummaryMaterializerState::new(
+                                        response,
+                                        terminal_sequence,
+                                        range_start,
+                                    ),
+                                )),
+                                window: summary_window,
+                                reporting_tz,
+                                source_scope: InvocationSourceScope::All,
+                                upstream_account_id: *upstream_account_id,
+                            },
+                        ));
+                    }
+
+                    // This branch is reachable only before startup hydration has published the
+                    // first projection. Once a last-good projection exists, a Summary topic is
+                    // strictly memory-backed and never re-enters the legacy SQL builder.
                     let source_scope = resolve_default_source_scope(&state.pool).await?;
                     let SummaryTopicTerminalConsistentBase {
                         mut response,
@@ -15420,6 +15473,40 @@ mod tests {
         assert!(activity_materializer.requires_terminal_window_rebase());
         assert!(summary_materializer.requires_terminal_window_rebase());
         assert!(timeseries_materializer.requires_terminal_window_rebase());
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topics_materialize_without_sqlite_for_open_and_closed_windows() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before topic materialization");
+        state.pool.close().await;
+
+        for window in ["1d", "previous7d"] {
+            let summary = SubscriptionTopic::SummaryCurrent {
+                window: window.to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                limit: None,
+                upstream_account_id: None,
+            };
+            let payload = summary
+                .build_cached_payload(state.clone())
+                .await
+                .expect("hydrated Summary topic must not rebuild from SQLite");
+            assert!(
+                matches!(
+                    payload,
+                    BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Summary { .. }
+                    )
+                ),
+                "{window} must use the memory-backed Summary materializer"
+            );
+        }
     }
 
     #[tokio::test]
