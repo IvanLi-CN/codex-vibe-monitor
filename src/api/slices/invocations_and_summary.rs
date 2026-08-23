@@ -26538,9 +26538,11 @@ mod request_compression_query_tests {
             true, false, 7, 12, false
         ));
 
-        let mut projection = SummaryProjection::default();
-        projection.all_time_terminal_coverage_complete = true;
-        projection.all_time_terminal_sequence_watermark = 7;
+        let mut projection = SummaryProjection {
+            all_time_terminal_coverage_complete: true,
+            all_time_terminal_sequence_watermark: 7,
+            ..SummaryProjection::default()
+        };
         projection
             .all_time_persisted_live_terminal_invoke_ids
             .insert("race\0timestamp".to_string());
