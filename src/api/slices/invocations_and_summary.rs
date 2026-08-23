@@ -26094,6 +26094,96 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_handler_previous7d_keeps_last_good_without_archive_replay() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let query = SummaryQuery {
+            window: Some("previous7d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        };
+        let occurred_at = Utc::now() - ChronoDuration::days(2);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-previous7d-last-good', ?1, 'proxy', 'success', 29, 3.5, \
+                     '{\"upstreamAccountId\":42,\"model\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(occurred_at))
+        .execute(&state.pool)
+        .await
+        .expect("insert previous7d last-good row");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate previous7d last-good projection");
+
+        let Json(last_good) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("previous7d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve initial previous7d projection");
+        assert_eq!(last_good.total_count, 1);
+        assert_eq!(last_good.total_tokens, 29);
+        assert_eq!(last_good.total_cost, 3.5);
+
+        let (range_start, _) = previous_full_days_range_bounds(7, Utc::now(), chrono_tz::UTC)
+            .expect("previous7d range");
+        let archive_start = range_start + ChronoDuration::hours(2);
+        let archive_end = archive_start + ChronoDuration::hours(1);
+        let archive_path = "/definitely/missing/summary-previous7d-usage-replay.sqlite.gz";
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+              historical_rollups_materialized_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', ?1, 'summary-previous7d-last-good', 1, 'completed', \
+                     ?2, ?3, datetime('now'), datetime('now'))",
+        )
+        .bind(archive_path)
+        .bind(db_occurred_at_lower_bound(archive_start))
+        .bind(db_occurred_at_upper_bound(archive_end))
+        .execute(&state.pool)
+        .await
+        .expect("insert materialized archive with missing usage replay");
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', ?2, 'summary-previous7d-last-good')",
+            )
+            .bind(target)
+            .bind(archive_path)
+            .execute(&state.pool)
+            .await
+            .expect("record non-usage archive replay coverage");
+        }
+
+        assert!(
+            refresh_summary_snapshots(state.as_ref()).await.is_err(),
+            "missing usage replay must retain the published exact last-good revision"
+        );
+        state.pool.close().await;
+
+        let Json(actual) = fetch_summary(State(state), Query(query))
+            .await
+            .expect("previous7d handler must remain memory-only after archive refresh failure");
+        assert_eq!(actual.total_count, last_good.total_count);
+        assert_eq!(actual.total_tokens, last_good.total_tokens);
+        assert_eq!(actual.total_cost, last_good.total_cost);
+        assert_eq!(actual.usage_breakdown, last_good.usage_breakdown);
+    }
+
+    #[tokio::test]
     async fn summary_handler_cold_key_and_invalid_window_do_not_require_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
