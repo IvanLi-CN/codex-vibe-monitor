@@ -1920,6 +1920,103 @@ impl<'a> LongTermProjectionWriteControl<'a> {
         Ok(())
     }
 
+    async fn await_sqlite<T>(
+        &self,
+        operation: impl std::future::Future<Output = std::result::Result<T, sqlx::Error>>,
+        p2_coordinator: Option<&crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>,
+    ) -> Result<T> {
+        self.check()?;
+        match (self.shutdown, p2_coordinator) {
+            (Some(shutdown), Some(coordinator)) => {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                    _ = coordinator.wait_for_p2_preemption() => bail!("long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"),
+                    result = operation => Ok(result?),
+                }
+            }
+            (Some(shutdown), None) => {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                    result = operation => Ok(result?),
+                }
+            }
+            (None, Some(coordinator)) => {
+                tokio::select! {
+                    biased;
+                    _ = coordinator.wait_for_p2_preemption() => bail!("long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"),
+                    result = operation => Ok(result?),
+                }
+            }
+            (None, None) => Ok(operation.await?),
+        }
+    }
+
+    fn try_begin_background(&self) -> Result<Option<crate::db_pressure::DbBackgroundPermit>> {
+        self.check()?;
+        self.gate
+            .map(|gate| {
+                gate.try_begin_background("long_term_projection_write")
+                    .map_err(|reason| {
+                        anyhow!(
+                            "long-term projection write deferred by database pressure: {reason}"
+                        )
+                    })
+            })
+            .transpose()
+    }
+
+    async fn begin_cursor_initialization<'p>(
+        &self,
+        pool: &'p Pool<Sqlite>,
+        coordinator: &crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator,
+    ) -> Result<sqlx::Transaction<'p, Sqlite>> {
+        self.check()?;
+        let begin = async {
+            match tokio::time::timeout(
+                LONG_TERM_PROJECTION_TRANSACTION_WAIT,
+                pool.begin_with("BEGIN IMMEDIATE"),
+            )
+            .await
+            {
+                Ok(transaction) => Ok(transaction?),
+                Err(_) => {
+                    if let Some(gate) = self.gate {
+                        gate.record_pressure(
+                            "long_term_projection_write",
+                            "transaction_admission_timeout",
+                        );
+                    }
+                    bail!(
+                        "long-term projection write deferred by database pressure: transaction admission timed out"
+                    );
+                }
+            }
+        };
+        let transaction = (if let Some(shutdown) = self.shutdown {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => bail!("long-term projection write cancelled"),
+                _ = coordinator.wait_for_p2_preemption() => bail!("long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"),
+                result = begin => result,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = coordinator.wait_for_p2_preemption() => bail!("long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"),
+                result = begin => result,
+            }
+        })?;
+        if coordinator.p2_should_yield() {
+            drop(transaction);
+            bail!(
+                "long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"
+            );
+        }
+        Ok(transaction)
+    }
+
     async fn begin<'p>(
         &self,
         pool: &'p Pool<Sqlite>,
@@ -3951,21 +4048,73 @@ async fn load_long_term_projection_cursor_with_control(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<i64> {
-    let (mut tx, permit) = control.begin(pool).await?;
+    if let Some(cursor) = control
+        .await_sqlite(
+            sqlx::query_as::<_, LongTermProjectionCursorRow>(
+                "SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_optional(pool),
+            None,
+        )
+        .await?
+    {
+        return Ok(cursor.cursor_row_id);
+    }
+
+    let pressure_permit = control.try_begin_background()?;
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let _write_permit = coordinator
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        .ok_or_else(|| {
+            anyhow!(
+                "long-term projection write deferred by database pressure: P2 cursor initialization is not admitted"
+            )
+        })?;
+
+    // Another process can initialize the durable cursor between the initial read and this
+    // short write. Keep that successful race on the read-only path.
+    if let Some(cursor) = control
+        .await_sqlite(
+            sqlx::query_as::<_, LongTermProjectionCursorRow>(
+                "SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_optional(pool),
+            Some(&coordinator),
+        )
+        .await?
+    {
+        return Ok(cursor.cursor_row_id);
+    }
+
+    let mut tx = control
+        .begin_cursor_initialization(pool, &coordinator)
+        .await?;
+    if coordinator.p2_should_yield() {
+        drop(tx);
+        bail!(
+            "long-term projection write deferred by database pressure: P2 cursor initialization yielded to higher-priority work"
+        );
+    }
     sqlx::query(
         "INSERT OR IGNORE INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 0)",
     )
     .bind(LONG_TERM_PROJECTION_CONSUMER)
     .execute(&mut *tx)
     .await?;
-    control.commit(tx, permit).await?;
-    Ok(sqlx::query_as::<_, LongTermProjectionCursorRow>(
-        "SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1",
-    )
-    .bind(LONG_TERM_PROJECTION_CONSUMER)
-    .fetch_one(pool)
-    .await?
-    .cursor_row_id)
+    control.commit(tx, pressure_permit).await?;
+    Ok(control
+        .await_sqlite(
+            sqlx::query_as::<_, LongTermProjectionCursorRow>(
+                "SELECT cursor_row_id FROM long_term_projection_state WHERE consumer = ?1",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_one(pool),
+            None,
+        )
+        .await?
+        .cursor_row_id)
 }
 
 #[derive(Debug)]
@@ -10584,6 +10733,226 @@ mod tests {
                 .await
                 .expect("fresh verification is not due")
         );
+    }
+
+    #[tokio::test]
+    async fn existing_projection_cursor_retries_without_a_write_transaction_under_pressure() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 73)",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .execute(&pool)
+        .await
+        .expect("seed projection cursor");
+        sqlx::query("PRAGMA query_only = ON")
+            .execute(&pool)
+            .await
+            .expect("reject write transactions for the cursor read");
+
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let held = gate
+            .try_begin_background("test-existing-cursor-pressure")
+            .expect("hold P2 admission");
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let attempts = AtomicUsize::new(0);
+
+        assert_eq!(
+            run_long_term_projection_flush_with_retry_delays(
+                &shutdown,
+                || async {
+                    if attempts.fetch_add(1, Ordering::AcqRel) == 0 {
+                        bail!("database is locked");
+                    }
+                    load_long_term_projection_cursor_with_control(&pool, &control).await
+                },
+                &[Duration::ZERO],
+            )
+            .await
+            .expect("the retry reads an existing cursor without a write transaction"),
+            73
+        );
+        assert_eq!(attempts.load(Ordering::Acquire), 2);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn existing_projection_cursor_read_cancels_while_waiting_for_sqlite() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+        sqlx::query(
+            "INSERT INTO long_term_projection_state (consumer, cursor_row_id) VALUES (?1, 73)",
+        )
+        .bind(LONG_TERM_PROJECTION_CONSUMER)
+        .execute(&pool)
+        .await
+        .expect("seed projection cursor");
+
+        let held_connection = pool.acquire().await.expect("hold the only pool connection");
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let mut cursor_read = Box::pin(load_long_term_projection_cursor_with_control(
+            &pool, &control,
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut cursor_read)
+                .await
+                .is_err(),
+            "the cursor read waits for SQLite while the only connection is held"
+        );
+
+        shutdown.cancel();
+        let error = tokio::time::timeout(Duration::from_secs(1), &mut cursor_read)
+            .await
+            .expect("cancelled cursor read returns promptly")
+            .expect_err("shutdown cancels a blocked cursor read");
+        assert!(error.to_string().contains("cancelled"));
+        drop(held_connection);
+    }
+
+    #[tokio::test]
+    async fn missing_projection_cursor_defers_to_a_waiting_p1_before_writing() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        ensure_long_term_stats_schema(&pool)
+            .await
+            .expect("long-term schema");
+
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        let active = coordinator
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+            .await;
+        let p1 = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire(
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if coordinator.snapshot().await.p1_waiter_count > 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("P1 terminal waiter registers before cursor initialization");
+
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let error = load_long_term_projection_cursor_with_control(&pool, &control)
+            .await
+            .expect_err("missing cursor initialization must yield to queued P1 terminal work");
+        assert!(long_term_projection_write_is_pressure_deferred(&error));
+        assert_eq!(coordinator.snapshot().await.p2_waiter_count, 0);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM long_term_projection_state WHERE consumer = ?1",
+            )
+            .bind(LONG_TERM_PROJECTION_CONSUMER)
+            .fetch_one(&pool)
+            .await
+            .expect("cursor state count"),
+            0
+        );
+
+        drop(active);
+        let p1_permit = tokio::time::timeout(Duration::from_secs(1), p1)
+            .await
+            .expect("P1 terminal is not starved by cursor initialization")
+            .expect("P1 terminal task");
+        assert_eq!(p1_permit.write_class(), "p1_terminal");
+        drop(p1_permit);
+
+        assert_eq!(
+            load_long_term_projection_cursor_with_control(&pool, &control)
+                .await
+                .expect("P2 initializes the missing cursor after P1 completes"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_initialization_yields_when_p1_arrives_after_p2_admission() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        let held_connection = pool.acquire().await.expect("hold the only pool connection");
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        let p2_permit = coordinator
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+            .expect("P2 is admitted before P1 arrives");
+        let shutdown = CancellationToken::new();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+        let control = LongTermProjectionWriteControl::background(&shutdown, &gate);
+        let mut begin = Box::pin(control.begin_cursor_initialization(&pool, &coordinator));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut begin)
+                .await
+                .is_err(),
+            "P2 initialization is waiting before it owns a SQLite transaction"
+        );
+
+        let p1 = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .acquire(
+                        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if coordinator.snapshot().await.p1_waiter_count > 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("P1 terminal waiter registers after P2 admission");
+
+        let error = tokio::time::timeout(Duration::from_secs(1), &mut begin)
+            .await
+            .expect("P2 initialization yields when P1 arrives")
+            .expect_err("P2 must defer before it starts SQLite work");
+        assert!(long_term_projection_write_is_pressure_deferred(&error));
+        drop(p2_permit);
+        drop(held_connection);
+
+        let p1_permit = tokio::time::timeout(Duration::from_secs(1), p1)
+            .await
+            .expect("P1 terminal is released after P2 yields")
+            .expect("P1 terminal task");
+        assert_eq!(p1_permit.write_class(), "p1_terminal");
     }
 
     #[tokio::test]

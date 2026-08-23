@@ -148,6 +148,14 @@ impl ProxySqliteWriteCoordinator {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.increment(class);
         }
+        if matches!(
+            class,
+            ProxySqliteWriteClass::P1Terminal | ProxySqliteWriteClass::InteractiveProxy
+        ) {
+            // A P2 operation may have reserved admission while it is still waiting to
+            // start SQLite work. Wake it so it can yield before becoming a writer.
+            self.notify.notify_waiters();
+        }
         let mut waiter = ProxySqliteWriteWaiter {
             coordinator: self.clone(),
             class,
@@ -308,6 +316,21 @@ impl ProxySqliteWriteCoordinator {
             maintenance_waiter_count: state.maintenance_waiters,
             maintenance_fairness_admission_count: state.maintenance_fairness_admissions,
             direct_write_bypass_count: state.direct_write_bypass_count,
+        }
+    }
+
+    pub(crate) fn p2_should_yield(&self) -> bool {
+        let state = self.state.lock().expect("proxy sqlite coordinator state");
+        state.p1_waiters > 0 || state.interactive_waiters > 0
+    }
+
+    pub(crate) async fn wait_for_p2_preemption(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.p2_should_yield() {
+                return;
+            }
+            notified.await;
         }
     }
 }
