@@ -4,6 +4,7 @@
 
 - 后端持久化、回填、soft-delete、overview/series API 与前端长期统计区均以 `5k89c/SPEC.md` 为契约。
 - 运行态 terminal 通过 projection cursor 增量写入热小时/自然日；每 60 秒只合并新 terminal 与明确 dirty bucket。全量 `refresh_long_term_stats` 仅保留给首次无 durable baseline 的准备阶段，不是生产周期性路径。
+- projection cursor 先以 shutdown-cancellable 查询读取现有 durable state；只有缺失行才在非等待的 pressure gate 与 P2 coordinator 准入后执行短初始化写。P1 terminal 或交互写入在准入前等待时立即 defer；若其在 P2 准入后、SQLite 事务开始前到达，P2 也立即让出，既有 cursor 的无工作重试保持为只读路径。
 - 初始 refresher 与直接 refresh 入口都以 pressure/cancel-aware 的 `512` 行微事务替换 rollup 和 replay marker；已有 `ready` 汇总的 refresh 先切换每个日期的 durable last-good snapshot，因此 API 在完整替换前持续返回旧日。持久 `error` 或初始 incomplete marker 保持为可重试初始物化，即使此前留下部分日汇总。daily verification 只在对应日 repair、retention 与状态写入完整成功后写入 durable completion，legacy fallback 会过滤 rebuild suppression。
 - 现有 Stats 查询、筛选、bucket、SSE 与图表路径保持不变；长期区使用独立 endpoint、hooks 和组件状态。
 - 新增 schema 必须兼容旧 SQLite：启动迁移可重复执行，回填状态可恢复，archive purge 只有在长期汇总 target materialized 后才可继续。
