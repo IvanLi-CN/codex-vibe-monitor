@@ -7392,10 +7392,9 @@ impl SummaryProjection {
                     || refresh_due(self.all_time_oldest_account_refreshed_at)))
     }
 
-    pub(crate) fn startup_hydration_is_fresh(&self) -> bool {
+    pub(crate) fn startup_hydration_is_fresh_within(&self, max_age: Duration) -> bool {
         let fresh = |refreshed_at: Option<Instant>| {
-            refreshed_at
-                .is_some_and(|refreshed_at| refreshed_at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+            refreshed_at.is_some_and(|refreshed_at| refreshed_at.elapsed() <= max_age)
         };
         fresh(self.freshness.rolling_at(self.refreshed_at))
             && fresh(self.all_time_refreshed_at)

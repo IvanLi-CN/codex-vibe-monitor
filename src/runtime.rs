@@ -1,5 +1,31 @@
 use super::*;
 
+const STARTUP_MEMORY_HANDOFF_SLACK: Duration = Duration::from_secs(5);
+
+async fn startup_memory_snapshots_within_handoff_slack(state: &AppState) -> bool {
+    let summary_is_fresh = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .is_some_and(|projection| {
+            projection.startup_hydration_is_fresh_within(
+                SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+            )
+        });
+    let status_is_fresh = state
+        .system_status_cache
+        .lock()
+        .await
+        .latest
+        .as_ref()
+        .is_some_and(|entry| {
+            entry.cached_at.elapsed()
+                <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+                    .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK)
+        });
+    summary_is_fresh && status_is_fresh
+}
+
 async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
     let mut summary_ready = false;
     let mut system_status_ready = false;
@@ -34,7 +60,9 @@ async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
                 .subscription_hub
                 .summary_projection()
                 .await
-                .is_some_and(|projection| projection.startup_hydration_is_fresh());
+                .is_some_and(|projection| {
+                    projection.startup_hydration_is_fresh_within(SUMMARY_SNAPSHOT_MAX_STALE)
+                });
             let status_is_fresh = state
                 .system_status_cache
                 .lock()
@@ -831,6 +859,12 @@ where
         .await;
     }
 
+    // The listener and startup task handoff still runs after hydration. Rehydrate once more if
+    // that handoff consumed the reserved slack, so readiness never publishes an almost-expired
+    // in-memory snapshot.
+    if !startup_memory_snapshots_within_handoff_slack(state.as_ref()).await {
+        hydrate_startup_memory_snapshots(state.as_ref()).await?;
+    }
     state.startup_ready.store(true, Ordering::Release);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(
