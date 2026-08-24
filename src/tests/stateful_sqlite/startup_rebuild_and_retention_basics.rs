@@ -1014,6 +1014,45 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
 }
 
 #[tokio::test]
+async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-summary-hydration-single-flight",
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )
+    .await;
+    let refresh_guard = state
+        .subscription_hub
+        .try_lock_summary_projection_refresh()
+        .expect("hold the summary maintenance refresh lock");
+
+    let hydration_handle =
+        publish_http_readiness_and_spawn_hot_read_hydration(state.clone(), Instant::now());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if state.system_status_cache.lock().await.latest.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("system status hydration should complete while summary refresh is in flight");
+    assert!(
+        !hydration_handle.is_finished(),
+        "startup hydration must retry instead of treating a coalesced summary refresh as complete"
+    );
+
+    drop(refresh_guard);
+    tokio::time::timeout(Duration::from_secs(3), hydration_handle)
+        .await
+        .expect("startup hydration should retry after the in-flight refresh releases")
+        .expect("startup hydration task should join after the retry");
+
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-summary-hydration-deadline",

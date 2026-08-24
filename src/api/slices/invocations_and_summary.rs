@@ -9207,7 +9207,13 @@ fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = S
 pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
     // Startup warm-up runs after listener readiness, so it must use the same bounded work budget
     // as every later background refresh instead of holding readiness behind durable I/O.
-    refresh_summary_snapshots_with_mode(state, true).await
+    refresh_summary_snapshots_with_deadline(
+        state,
+        true,
+        Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+        false,
+    )
+    .await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
@@ -9223,6 +9229,7 @@ async fn refresh_summary_snapshots_with_mode(
         state,
         include_all_time,
         Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+        true,
     )
     .await
 }
@@ -9231,10 +9238,16 @@ async fn refresh_summary_snapshots_with_deadline(
     state: &AppState,
     include_all_time: bool,
     deadline: Option<Duration>,
+    coalesce_if_in_flight: bool,
 ) -> Result<()> {
     let Ok(_refresh_guard) = state.subscription_hub.try_lock_summary_projection_refresh() else {
-        debug!("summary projection refresh already in flight; coalescing trigger");
-        return Ok(());
+        if coalesce_if_in_flight {
+            debug!("summary projection refresh already in flight; coalescing trigger");
+            return Ok(());
+        }
+        return Err(anyhow!(
+            "summary projection startup hydration deferred because a refresh is already in flight"
+        ));
     };
     let previous_all_time = state
         .subscription_hub
