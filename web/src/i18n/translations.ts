@@ -2156,15 +2156,12 @@ const baseTranslations = {
     "dashboard.workingConversations.openConversation": "Open conversation details",
     "dashboard.workingConversations.openConversationSettings": "Open conversation settings",
     "dashboard.workingConversations.openInvocation": "Open invocation details",
-    "dashboard.workingConversations.placeholderBadge": "Waiting",
-    "dashboard.workingConversations.previousPlaceholder":
-      "No previous invocation is available for this conversation yet.",
-    "dashboard.workingConversations.previousPlaceholderHint":
-      "The slot stays reserved so card height and scan rhythm remain stable while the conversation is still warming up.",
+    "dashboard.workingConversations.previousPlaceholder": "No previous invocation yet",
+    "dashboard.workingConversations.earlierPlaceholder": "No earlier invocation yet",
     "dashboard.workingConversations.previousPlaceholderAccessible":
-      "No previous invocation is available; two placeholder lines are reserved.",
+      "No previous invocation is available for this conversation.",
     "dashboard.workingConversations.earlierPlaceholderAccessible":
-      "No earlier invocation is available; two placeholder lines are reserved.",
+      "No earlier invocation is available for this conversation.",
     "dashboard.workingConversations.modelLabel": "Model",
     "dashboard.workingConversations.requestCountLabel": "Request",
     "dashboard.workingConversations.totalTokensLabel": "Token",
@@ -5273,14 +5270,10 @@ const baseTranslations = {
     "dashboard.workingConversations.openConversation": "打开对话详情",
     "dashboard.workingConversations.openConversationSettings": "打开对话设置",
     "dashboard.workingConversations.openInvocation": "打开调用详情",
-    "dashboard.workingConversations.placeholderBadge": "占位",
-    "dashboard.workingConversations.previousPlaceholder": "这条对话还没有可展示的上一条调用。",
-    "dashboard.workingConversations.previousPlaceholderHint":
-      "这里会保持等高占位，避免对话刚开始时卡片高度跳变。",
-    "dashboard.workingConversations.previousPlaceholderAccessible":
-      "上一条调用暂无记录，保留两行占位。",
-    "dashboard.workingConversations.earlierPlaceholderAccessible":
-      "更早调用暂无记录，保留两行占位。",
+    "dashboard.workingConversations.previousPlaceholder": "暂无上一条调用",
+    "dashboard.workingConversations.earlierPlaceholder": "暂无更早调用",
+    "dashboard.workingConversations.previousPlaceholderAccessible": "当前对话暂无上一条调用记录。",
+    "dashboard.workingConversations.earlierPlaceholderAccessible": "当前对话暂无更早调用记录。",
     "dashboard.workingConversations.modelLabel": "模型",
     "dashboard.workingConversations.requestCountLabel": "请求",
     "dashboard.workingConversations.totalTokensLabel": "Token",

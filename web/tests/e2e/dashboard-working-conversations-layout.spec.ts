@@ -642,7 +642,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
     await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
-      "0.7 s",
+      "0.7s",
     );
     await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
       "--",
@@ -658,7 +658,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
     await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
-      "0 s",
+      "0s",
     );
     await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
       "--",
@@ -786,7 +786,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
   });
 
-  test("keeps three slots and two-line records inside a narrow viewport", async ({ page }) => {
+  test("keeps three slots and records inside a narrow viewport", async ({ page }) => {
     await installDashboardRoutes(page);
     await page.setViewportSize({ width: 393, height: 852 });
     await page.goto("/#/dashboard");
@@ -872,6 +872,73 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
     expect(layout.reasoningTextOverflow).toBe(false);
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+  });
+
+  test("keeps static missing-history slots at the shared baseline on desktop and mobile", async ({
+    page,
+  }) => {
+    await installDashboardRoutes(page);
+
+    for (const viewport of [
+      { width: 1660, height: 900 },
+      { width: 393, height: 852 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto("/#/dashboard");
+      await expect(page.getByTestId("dashboard-working-conversations")).toBeVisible();
+
+      const layout = await page.evaluate(() => {
+        const currentSlot = document.querySelector<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-3-a"]',
+        );
+        const card = currentSlot?.closest<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        );
+        if (!currentSlot || !card) throw new Error("missing current-only geometry anchors");
+
+        const placeholders = Array.from(
+          card.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-placeholder"]',
+          ),
+        );
+        const latencyPills = currentSlot.querySelector<HTMLElement>(
+          '[data-testid="dashboard-compact-latency-pills"]',
+        );
+        if (!latencyPills) throw new Error("missing compact latency pills");
+
+        return {
+          rootOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          normalHeight: currentSlot.getBoundingClientRect().height,
+          placeholderHeights: placeholders.map(
+            (placeholder) => placeholder.getBoundingClientRect().height,
+          ),
+          labels: placeholders.map((placeholder) => placeholder.textContent?.trim() ?? ""),
+          skeletonLines: card.querySelectorAll(".working-conversation-placeholder-line").length,
+          ariaLiveCount: card.querySelectorAll(
+            '[data-testid="dashboard-working-conversation-placeholder"][aria-live]',
+          ).length,
+          latencyGap: window.getComputedStyle(latencyPills).columnGap,
+          latencyValues: Array.from(
+            latencyPills.querySelectorAll<HTMLElement>(
+              '[data-testid="dashboard-compact-latency-first-byte"], [data-testid="dashboard-compact-latency-response-time"]',
+            ),
+          ).map((element) => element.textContent ?? ""),
+        };
+      });
+
+      expect(layout.rootOverflow).toBeLessThanOrEqual(1);
+      expect(layout.placeholderHeights).toHaveLength(2);
+      expect(
+        Math.max(
+          ...layout.placeholderHeights.map((height) => Math.abs(height - layout.normalHeight)),
+        ),
+      ).toBeLessThanOrEqual(1);
+      expect(layout.labels).toEqual(expect.arrayContaining(["暂无上一条调用", "暂无更早调用"]));
+      expect(layout.skeletonLines).toBe(0);
+      expect(layout.ariaLiveCount).toBe(0);
+      expect(layout.latencyGap).toBe("4px");
+      expect(layout.latencyValues.some((value) => /\d\s+s/.test(value))).toBe(false);
+    }
   });
 
   test("keeps long recent error summaries inside their upstream account cards", async ({

@@ -372,7 +372,7 @@ const CARD_CLASS_NAME =
   "relative min-w-0 overflow-hidden rounded-[1.1rem] p-2 sm:p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_16px_28px_rgba(2,6,23,0.18)] transition-shadow duration-200 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_20px_34px_rgba(2,6,23,0.22)] focus-within:shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_0_1px_rgba(56,189,248,0.2),0_20px_34px_rgba(2,6,23,0.22)]";
 
 const SLOT_CLASS_NAME =
-  "flex min-w-0 flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "flex min-h-[57px] min-w-0 flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 
 const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 
@@ -484,7 +484,7 @@ function CompactLatencyPills({
       data-testid="dashboard-compact-latency-pills"
       role="group"
       className={cn(
-        "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-2 font-mono text-[11px] font-semibold leading-none text-base-content/86",
+        "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1 font-mono text-[11px] font-semibold leading-none text-base-content/86",
         className,
       )}
       aria-label={`${firstResponseTimeLabel} ${firstTokenValue}; ${responseTimeLabel} ${responseTimeValue}`}
@@ -895,7 +895,7 @@ function formatCompactTimingSecondsValue(
     useGrouping: false,
     minimumFractionDigits: 0,
     maximumFractionDigits: fractionDigits,
-  })} s`;
+  })}s`;
 }
 
 function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
@@ -2305,6 +2305,10 @@ function AccountRecentInvocationRow({
 
 function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
   const { t } = useTranslation();
+  const visibleLabel =
+    slotKind === "earlier"
+      ? t("dashboard.workingConversations.earlierPlaceholder")
+      : t("dashboard.workingConversations.previousPlaceholder");
   const accessibleLabel =
     slotKind === "earlier"
       ? t("dashboard.workingConversations.earlierPlaceholderAccessible")
@@ -2316,11 +2320,13 @@ function PlaceholderSlot({ slotKind }: { slotKind: "previous" | "earlier" }) {
       data-slot-kind={slotKind}
       role="group"
       aria-label={accessibleLabel}
-      className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME)}
+      className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME, "justify-center")}
     >
-      <div className="space-y-1.5" aria-hidden="true">
-        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
-        <div className="working-conversation-placeholder-line h-3 rounded-[0.5rem]" />
+      <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-base-content/62">
+        <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span data-testid="dashboard-working-conversation-placeholder-label" className="truncate">
+          {visibleLabel}
+        </span>
       </div>
     </div>
   );
@@ -2640,7 +2646,7 @@ function InvocationSlot({
             firstTokenValue={compactLatencyValues.firstTokenValue}
             responseTimeValue={compactLatencyValues.responseTimeValue}
             t={t}
-            className="shrink-0 flex-nowrap gap-0.5 text-[10px]"
+            className="shrink-0 flex-nowrap text-[10px]"
           />
         </div>
       </button>
