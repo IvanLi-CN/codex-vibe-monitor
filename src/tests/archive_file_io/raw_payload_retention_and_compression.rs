@@ -1636,7 +1636,8 @@ async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_workers(
     let drain_handle = tokio::spawn({
         let state = state.clone();
         async move {
-            drain_runtime_after_shutdown(state, None, None, None, None, None, None, None).await
+            drain_runtime_after_shutdown(state, None, None, None, None, None, None, None, None)
+                .await
         }
     });
 

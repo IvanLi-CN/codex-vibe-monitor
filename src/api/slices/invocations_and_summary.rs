@@ -7006,6 +7006,9 @@ const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30)
 // phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
 // serving ceiling; mutations still use the separate debounce below.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
+// Initial projection construction may need to fold a bounded, valid historical horizon. It runs
+// only after listener readiness, but still needs a finite cancellation-friendly work budget.
+pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // Account and archive metadata are admission-controlled independently from exact invocation
 // rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
@@ -7391,18 +7394,6 @@ impl SummaryProjection {
             || (has_all_time_owner
                 && (refresh_due(self.all_time_refreshed_at)
                     || refresh_due(self.all_time_oldest_account_refreshed_at)))
-    }
-
-    pub(crate) fn startup_hydration_is_fresh_within(&self, max_age: Duration) -> bool {
-        let fresh = |refreshed_at: Option<Instant>| {
-            refreshed_at.is_some_and(|refreshed_at| refreshed_at.elapsed() <= max_age)
-        };
-        fresh(self.freshness.rolling_at(self.refreshed_at))
-            && fresh(self.all_time_refreshed_at)
-            && self
-                .all_time_account_refreshed_at
-                .values()
-                .all(|refreshed_at| fresh(Some(*refreshed_at)))
     }
 
     fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
@@ -9217,19 +9208,19 @@ fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = S
 }
 
 pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
-    // Readiness remains unavailable until this complete durable hydration succeeds. The short
-    // runtime deadline prevents serving stale hot reads during normal operation, but must not
-    // reject a valid startup build solely because it needs more than that runtime budget.
-    refresh_summary_snapshots_startup(state, true).await
+    hydrate_summary_snapshots_with_deadline(state, SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE).await
+}
+
+pub(crate) async fn hydrate_summary_snapshots_with_deadline(
+    state: &AppState,
+    deadline: Duration,
+) -> Result<()> {
+    refresh_summary_snapshots_with_deadline(state, true, Some(deadline), false).await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     let include_all_time = state.subscription_hub.has_summary_all_time_owner().await;
     refresh_summary_snapshots_with_mode(state, include_all_time).await
-}
-
-async fn refresh_summary_snapshots_startup(state: &AppState, include_all_time: bool) -> Result<()> {
-    refresh_summary_snapshots_with_deadline(state, include_all_time, None).await
 }
 
 async fn refresh_summary_snapshots_with_mode(
@@ -9240,6 +9231,7 @@ async fn refresh_summary_snapshots_with_mode(
         state,
         include_all_time,
         Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+        true,
     )
     .await
 }
@@ -9248,10 +9240,16 @@ async fn refresh_summary_snapshots_with_deadline(
     state: &AppState,
     include_all_time: bool,
     deadline: Option<Duration>,
+    coalesce_if_in_flight: bool,
 ) -> Result<()> {
     let Ok(_refresh_guard) = state.subscription_hub.try_lock_summary_projection_refresh() else {
-        debug!("summary projection refresh already in flight; coalescing trigger");
-        return Ok(());
+        if coalesce_if_in_flight {
+            debug!("summary projection refresh already in flight; coalescing trigger");
+            return Ok(());
+        }
+        return Err(anyhow!(
+            "summary projection startup hydration deferred because a refresh is already in flight"
+        ));
     };
     let previous_all_time = state
         .subscription_hub

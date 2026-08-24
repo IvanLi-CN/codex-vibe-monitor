@@ -9,6 +9,8 @@
 
 ## Key Decisions
 
+- Startup listener readiness is independent from Summary and System Status durable hydration. Both hot reads retain their memory-only unavailable/last-good response contracts while a bounded, cancellable, pressure-backed background warm-up recovers their snapshots.
+
 - P2 派生写从 P1 的 20ms ticker 中分离，使用 250ms 固定合并、pressure deadline 与分类 lock retry；Prompt Cache window topic 同步改为 500ms active projection，通用 Records 不再触发整窗 SQLite hydrate。
 
 - `/v1/responses` 的 capture path 从完整 body 后再发送升级为可回放 live-first；以路由元数据完整性、关闭默认值、稳定对照和直接首响应测量约束该优化，避免速度收益以错误选路或失真统计换取。

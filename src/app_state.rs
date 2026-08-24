@@ -2871,6 +2871,9 @@ pub(crate) struct SystemStatusCacheEntry {
 pub(crate) struct SystemStatusCacheState {
     pub(crate) latest: Option<SystemStatusCacheEntry>,
     pub(crate) in_flight: Option<watch::Sender<bool>>,
+    // This admission survives a logically cancelled refresh until its blocking filesystem scan
+    // actually exits. A started `spawn_blocking` filesystem call cannot be cancelled safely.
+    pub(crate) filesystem_scan_in_flight: Arc<AtomicBool>,
     pub(crate) waiter_count: usize,
     pub(crate) raw_metrics_health_override: Option<String>,
 }

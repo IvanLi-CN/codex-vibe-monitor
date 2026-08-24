@@ -1,101 +1,154 @@
 use super::*;
 
-const STARTUP_MEMORY_HANDOFF_SLACK: Duration = Duration::from_secs(5);
+const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
 
-async fn startup_memory_snapshots_within_handoff_slack(state: &AppState) -> bool {
-    let summary_is_fresh = state
-        .subscription_hub
-        .summary_projection()
-        .await
-        .is_some_and(|projection| {
-            projection.startup_hydration_is_fresh_within(
-                SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
-            )
-        });
-    let status_is_fresh = state
-        .system_status_cache
-        .lock()
-        .await
-        .latest
-        .as_ref()
-        .is_some_and(|entry| {
-            entry.cached_at.elapsed()
-                <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-                    .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK)
-        });
-    summary_is_fresh && status_is_fresh
+pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        None,
+    )
 }
 
-async fn hydrate_startup_memory_snapshots_within(
-    state: &AppState,
-    summary_max_age: Duration,
-    status_max_age: Duration,
-) -> Result<()> {
-    let mut summary_ready = false;
-    let mut system_status_ready = false;
-    loop {
-        if !summary_ready {
-            match hydrate_summary_snapshots(state).await {
-                Ok(()) => {
-                    summary_ready = true;
-                    info!("summary projection startup hydration completed");
-                }
-                Err(error) => {
-                    warn!(
-                        ?error,
-                        "summary projection startup hydration failed; retrying"
-                    );
-                }
-            }
+#[cfg(test)]
+pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_deadline: Duration,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        summary_deadline,
+        None,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_start_delay: Duration,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        Some(summary_start_delay),
+    )
+}
+
+fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_deadline: Duration,
+    summary_start_delay: Option<Duration>,
+) -> JoinHandle<()> {
+    state.startup_ready.store(true, Ordering::Release);
+    info!(
+        time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
+        "application readiness reached"
+    );
+
+    tokio::spawn(async move {
+        let summary_handle = tokio::spawn(hydrate_summary_at_startup(
+            state.clone(),
+            summary_deadline,
+            summary_start_delay,
+        ));
+        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state));
+        let (summary_result, system_status_result) =
+            tokio::join!(summary_handle, system_status_handle);
+
+        if let Err(error) = summary_result {
+            warn!(
+                ?error,
+                "summary projection startup hydration worker ended unexpectedly"
+            );
         }
-        if !system_status_ready {
-            match hydrate_system_status_snapshot(state).await {
-                Ok(()) => {
-                    system_status_ready = true;
-                    info!("system status startup hydration completed");
-                }
-                Err(error) => {
-                    warn!(?error, "system status startup hydration failed; retrying");
-                }
-            }
+        if let Err(error) = system_status_result {
+            warn!(
+                ?error,
+                "system status startup hydration worker ended unexpectedly"
+            );
         }
-        if summary_ready && system_status_ready {
-            let summary_is_fresh = state
-                .subscription_hub
-                .summary_projection()
-                .await
-                .is_some_and(|projection| {
-                    projection.startup_hydration_is_fresh_within(summary_max_age)
-                });
-            let status_is_fresh = state
-                .system_status_cache
-                .lock()
-                .await
-                .latest
-                .as_ref()
-                .is_some_and(|entry| entry.cached_at.elapsed() <= status_max_age);
-            if summary_is_fresh && status_is_fresh {
-                return Ok(());
-            }
-            summary_ready = summary_is_fresh;
-            system_status_ready = status_is_fresh;
-        }
+    })
+}
+
+async fn hydrate_summary_at_startup(
+    state: Arc<AppState>,
+    summary_deadline: Duration,
+    summary_start_delay: Option<Duration>,
+) {
+    if let Some(delay) = summary_start_delay {
         tokio::select! {
-            _ = state.shutdown.cancelled() => {
-                return Err(anyhow::anyhow!("startup memory hydration cancelled"));
-            }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(delay) => {}
         }
+    }
+
+    let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            result = hydrate_summary_snapshots_with_deadline(state.as_ref(), summary_deadline) => match result {
+                Ok(()) => {
+                    info!("summary projection startup hydration completed");
+                    return;
+                }
+                Err(error) => {
+                    warn!(?error, "summary projection startup hydration failed; retaining unavailable or last-good response");
+                }
+            }
+        }
+
+        warn!(
+            retry_after_secs = retry_delay.as_secs(),
+            "summary projection startup hydration deferred behind bounded pressure backoff"
+        );
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
     }
 }
 
-async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
-    hydrate_startup_memory_snapshots_within(
-        state,
-        SUMMARY_SNAPSHOT_MAX_STALE,
-        Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
-    )
-    .await
+async fn hydrate_system_status_at_startup(state: Arc<AppState>) {
+    let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            result = hydrate_system_status_snapshot(state.as_ref()) => match result {
+                Ok(()) => {
+                    info!("system status startup hydration completed");
+                    return;
+                }
+                Err(error) => {
+                    warn!(?error, "system status startup hydration failed; retaining unavailable or last-good response");
+                }
+            }
+        }
+
+        warn!(
+            retry_after_secs = retry_delay.as_secs(),
+            "system status startup hydration deferred behind bounded pressure backoff"
+        );
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
+    }
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -453,6 +506,7 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
     pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
+    startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
     let shutdown_cancel = state.shutdown.clone();
     tokio::select! {
@@ -471,6 +525,7 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
         pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
+        startup_hot_read_hydration_handle,
     )
     .await
 }
@@ -500,6 +555,7 @@ where
     let mut retention_handle = None;
     let mut server_handle = None;
     let mut startup_backfill_handle = None;
+    let mut startup_hot_read_hydration_handle = None;
 
     let sync_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -519,6 +575,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -544,6 +601,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -568,6 +626,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -590,6 +649,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -613,6 +673,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -635,6 +696,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -658,6 +720,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -680,6 +743,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -704,6 +768,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -726,57 +791,10 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
-
-    // All remaining startup work is complete. Hydrate immediately before the HTTP listener is
-    // made ready so a slow route sync cannot consume the Summary/System Status freshness budget.
-    let hot_read_hydration_stage = run_startup_stage_until_shutdown(
-        &shutdown_signal,
-        &cancel,
-        hydrate_startup_memory_snapshots(state.as_ref()),
-    )
-    .await;
-    let hot_read_hydration_shutdown_requested = match hot_read_hydration_stage {
-        StartupStageOutcome::SkippedByShutdown => {
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-            )
-            .await;
-        }
-        StartupStageOutcome::Completed {
-            result,
-            shutdown_requested,
-        } => {
-            result?;
-            shutdown_requested
-        }
-    };
-    if hot_read_hydration_shutdown_requested {
-        return drain_runtime_after_pending_shutdown(
-            state,
-            shutdown_watcher,
-            server_handle,
-            poller_handle,
-            upstream_accounts_handle,
-            forward_proxy_handle,
-            pool_orphan_recovery_handle,
-            retention_handle,
-            startup_backfill_handle,
-        )
-        .await;
-    }
-    spawn_summary_snapshot_maintenance(state.clone());
-    spawn_system_status_snapshot_maintenance(state.clone());
 
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
@@ -797,6 +815,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -820,9 +839,18 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
+
+    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_hot_read_hydration(
+        state.clone(),
+        startup_started_at,
+    ));
+    log_startup_phase("http_ready", http_ready_started_at);
+    spawn_summary_snapshot_maintenance(state.clone());
+    spawn_system_status_snapshot_maintenance(state.clone());
 
     let startup_backfill_stage =
         run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
@@ -844,6 +872,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -866,28 +895,11 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
 
-    // The listener and startup task handoff still runs after hydration. Rehydrate once more if
-    // that handoff consumed the reserved slack, so readiness never publishes an almost-expired
-    // in-memory snapshot.
-    if !startup_memory_snapshots_within_handoff_slack(state.as_ref()).await {
-        hydrate_startup_memory_snapshots_within(
-            state.as_ref(),
-            SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
-            Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-                .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
-        )
-        .await?;
-    }
-    state.startup_ready.store(true, Ordering::Release);
-    log_startup_phase("http_ready", http_ready_started_at);
-    info!(
-        time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
-        "application readiness reached"
-    );
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
 
@@ -916,6 +928,7 @@ where
         pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
+        startup_hot_read_hydration_handle,
     )
     .await
 }
@@ -936,6 +949,7 @@ pub(crate) async fn drain_runtime_after_shutdown(
     pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
+    startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
     if let Some(server_handle) = server_handle {
         info!("http server graceful drain started");
@@ -987,6 +1001,14 @@ pub(crate) async fn drain_runtime_after_shutdown(
         error!(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
+        );
+    }
+    if let Some(startup_hot_read_hydration_handle) = startup_hot_read_hydration_handle
+        && let Err(err) = startup_hot_read_hydration_handle.await
+    {
+        error!(
+            ?err,
+            "startup hot-read hydration coordinator terminated unexpectedly"
         );
     }
 
