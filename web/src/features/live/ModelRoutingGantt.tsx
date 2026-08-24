@@ -86,6 +86,15 @@ interface RoutingViewSpec {
   columns: number;
 }
 
+interface RoutingAxisLayout {
+  normalizedTimelineStartMs: number;
+  normalizedStepMs: number;
+  columnWidth: number;
+  compact: boolean;
+  compactLabelStride: number;
+  columns: number;
+}
+
 const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
   "15m": 15 * 60_000,
   "1h": 60 * 60_000,
@@ -109,6 +118,7 @@ const MODEL_RECORD_DETAIL_ROWS = 8;
 // A one-second offset avoids Frappe treating a midnight end as an all-day task.
 const NORMALIZED_START_MS = new Date(2000, 0, 1, 0, 0, 1, 0).getTime();
 const NORMALIZED_TIMELINE_DURATION_MS = 24 * 60 * 60_000;
+const svgActions = new WeakMap<SVGElement, () => void>();
 
 export function availableBandOpacity(callCount: number, maxCallCount: number) {
   if (maxCallCount <= 0) return 0.56;
@@ -502,18 +512,91 @@ function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWid
 }
 
 function bindSvgAction(element: SVGElement, action: () => void) {
+  svgActions.set(element, action);
+  if (element.hasAttribute("data-model-routing-action-bound")) return;
+  element.setAttribute("data-model-routing-action-bound", "true");
   element.setAttribute("role", "button");
   element.setAttribute("tabindex", "0");
   element.addEventListener("click", (event) => {
     event.stopPropagation();
-    action();
+    svgActions.get(element)?.();
   });
   element.addEventListener("keydown", (event) => {
     if (event instanceof KeyboardEvent && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       event.stopPropagation();
-      action();
+      svgActions.get(element)?.();
     }
+  });
+}
+
+function axisObservedMs(
+  normalizedDateMs: number,
+  axis: RoutingAxisLayout,
+  rangeStartMs: number,
+  window: ModelRoutingLiveWindow,
+) {
+  return (
+    rangeStartMs +
+    ((normalizedDateMs - axis.normalizedTimelineStartMs) / NORMALIZED_TIMELINE_DURATION_MS) *
+      WINDOW_DURATION_MS[window]
+  );
+}
+
+function refreshRoutingAxisLabels({
+  host,
+  rangeStartMs,
+  window,
+  localeTag,
+  axis,
+}: {
+  host: HTMLElement;
+  rangeStartMs: number;
+  window: ModelRoutingLiveWindow;
+  localeTag: string;
+  axis: RoutingAxisLayout;
+}) {
+  const normalizedDateFor = (element: HTMLElement) => {
+    const offset = Number.parseFloat(element.style.left);
+    if (!Number.isFinite(offset)) return null;
+    return NORMALIZED_START_MS + Math.round(offset / axis.columnWidth) * axis.normalizedStepMs;
+  };
+  const lowerTextFor = (normalizedDateMs: number) => {
+    if (normalizedDateMs < axis.normalizedTimelineStartMs) return "";
+    const normalizedIndex = Math.round(
+      (normalizedDateMs - axis.normalizedTimelineStartMs) /
+        (NORMALIZED_TIMELINE_DURATION_MS / (axis.columns - 1)),
+    );
+    if (axis.compact && normalizedIndex % axis.compactLabelStride !== 0) return "";
+    return formatBeijing(axisObservedMs(normalizedDateMs, axis, rangeStartMs, window), localeTag, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+  const upperTextFor = (normalizedDateMs: number) => {
+    if (normalizedDateMs < axis.normalizedTimelineStartMs) return "\u00a0";
+    const currentMs = axisObservedMs(normalizedDateMs, axis, rangeStartMs, window);
+    const previousMs = axisObservedMs(
+      normalizedDateMs - axis.normalizedStepMs,
+      axis,
+      rangeStartMs,
+      window,
+    );
+    const currentDate = formatBeijing(currentMs, localeTag, { month: "2-digit", day: "2-digit" });
+    const previousDate = formatBeijing(previousMs, localeTag, {
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return currentDate === previousDate ? "" : currentDate;
+  };
+
+  host.querySelectorAll<HTMLElement>(".lower-text").forEach((element) => {
+    const normalizedDateMs = normalizedDateFor(element);
+    if (normalizedDateMs != null) element.textContent = lowerTextFor(normalizedDateMs);
+  });
+  host.querySelectorAll<HTMLElement>(".upper-text").forEach((element) => {
+    const normalizedDateMs = normalizedDateFor(element);
+    if (normalizedDateMs != null) element.textContent = upperTextFor(normalizedDateMs);
   });
 }
 
@@ -800,11 +883,24 @@ function ModelRoutingSvgChart({
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
   const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel });
+  const axisLayoutRef = useRef<RoutingAxisLayout | null>(null);
   layoutSourceRef.current = { timelines, range, detailTop, expandedModel };
+  const axisDateKey = useMemo(() => {
+    if (!range) return "";
+    const spec = VIEW_SPECS[window];
+    return Array.from({ length: spec.columns }, (_, index) =>
+      formatBeijing(
+        range.rangeStartMs + (index / (spec.columns - 1)) * WINDOW_DURATION_MS[window],
+        localeTag,
+        { month: "2-digit", day: "2-digit" },
+      ),
+    ).join("|");
+  }, [localeTag, range, window]);
   const layoutKey = useMemo(
     () =>
       JSON.stringify({
         expandedModel,
+        axisDateKey,
         lanes: timelines.map((group) => ({
           model: group.model,
           lanes: group.timeline.lanes.map((lane) => ({
@@ -813,7 +909,7 @@ function ModelRoutingSvgChart({
           })),
         })),
       }),
-    [expandedModel, timelines],
+    [axisDateKey, expandedModel, timelines],
   );
   const interactionRef = useRef({ onOpenAccount, onOpenInvocation });
   interactionRef.current = { onOpenAccount, onOpenInvocation };
@@ -830,7 +926,8 @@ function ModelRoutingSvgChart({
   }, []);
 
   // The key is intentionally limited to the DOM identity that Frappe owns.
-  // Live records only update the SVG decorations below, so they never reset the chart or its scroll.
+  // Live records only update the existing axis labels and SVG decorations below, so they never reset
+  // the chart or its scroll. A date-label boundary is structural because Frappe omits empty headers.
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey explicitly represents Frappe's structural DOM identity.
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -921,6 +1018,14 @@ function ModelRoutingSvgChart({
         }
       },
     });
+    axisLayoutRef.current = {
+      normalizedTimelineStartMs,
+      normalizedStepMs: spec.normalizedStepMs,
+      columnWidth,
+      compact,
+      compactLabelStride,
+      columns: spec.columns,
+    };
     let portalTarget: HTMLDivElement | null = null;
     const container = host.querySelector<HTMLElement>(".gantt-container");
     if (container) container.scrollLeft = previousScrollLeft;
@@ -936,6 +1041,7 @@ function ModelRoutingSvgChart({
     if (portalTarget) setDetailPortalTarget(portalTarget);
     setLayoutGeneration((generation) => generation + 1);
     return () => {
+      axisLayoutRef.current = null;
       portalTarget?.remove();
       host.replaceChildren();
     };
@@ -943,9 +1049,17 @@ function ModelRoutingSvgChart({
 
   useLayoutEffect(() => {
     const host = hostRef.current;
-    if (!host || layoutGeneration === 0 || timelines.length === 0 || !range) return;
+    const axis = axisLayoutRef.current;
+    if (!host || !axis || layoutGeneration === 0 || timelines.length === 0 || !range) return;
     const frame = requestAnimationFrame(() => {
       if (hostRef.current !== host) return;
+      refreshRoutingAxisLabels({
+        host,
+        rangeStartMs: range.rangeStartMs,
+        window,
+        localeTag,
+        axis,
+      });
       clearRoutingSvgDecorations(host);
       decorateSystemRoutingSvg({
         host,
@@ -993,6 +1107,7 @@ function ModelRoutingSvgChart({
     timelines,
     totalAvailableCount,
     unknownLabel,
+    window,
   ]);
 
   return (

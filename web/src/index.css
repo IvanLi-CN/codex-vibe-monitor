@@ -28,7 +28,8 @@
     min-height: 5.25rem;
     height: auto;
     max-height: none;
-    overflow: visible;
+    overflow-x: auto;
+    overflow-y: hidden;
     background: oklch(var(--color-base-100));
   }
 
