@@ -1,6 +1,6 @@
 # Codex Vibe Monitor Context
 
-This context freezes the invocation-observability terms that the product uses in diagnostics, badges, and companion docs. It exists to keep transport paths, request semantics, and response outcomes from drifting into overloaded labels.
+This context freezes the project-specific terms used in invocation observability and release automation. It exists to keep transport paths, request semantics, response outcomes, and publication surfaces from drifting into overloaded labels.
 
 ## Invocation Compaction
 
@@ -45,3 +45,21 @@ _Avoid_: Tooltip 明细, 原始数据
 **可用内容宽度**:
 统计卡片扣除内边距、图标及间距后，数值文本实际可占用的单行宽度；它不是固定视口或卡片断点。
 _Avoid_: 窄卡片阈值, 固定像素宽度
+
+## Release Automation
+
+**Release 正文**:
+GitHub Release 页面中面向使用者的发布说明；只包含明确的用户向 release notes，不混入流程元数据。
+_Avoid_: PR 元数据, 发布审计, CI 诊断
+
+**自动生成发布说明**:
+基于相邻发布 tag 之间变更生成的用户向 Release 正文；它是当前 Release 正文的来源。
+_Avoid_: PR 正文转抄, 流程元数据拼接
+
+**发布决策快照**:
+与主线提交绑定的不可变自动发布决策记录，保存版本意图与发布计算所需字段；手工覆盖字段只存在于本次 workflow 的临时快照，不写入该记录。
+_Avoid_: Release 正文, 手工覆盖审计, 公开变更说明
+
+**PR 发布评论**:
+附在源 PR 上的版本交付追溯记录；它独立于 GitHub Release 页面。
+_Avoid_: Release 正文, 发布说明

@@ -128,6 +128,51 @@ done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
 
+release_notes_repo="$tmp_dir/release-notes-repo"
+copy_repo_snapshot "$baseline_repo" "$release_notes_repo"
+python3 - <<'PY' "$release_notes_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "              generate_release_notes: true,\n"
+if needle not in text:
+    raise SystemExit("failed to locate generated release notes option")
+path.write_text(text.replace(needle, "", 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_notes_repo" --profile final >/dev/null 2>"$tmp_dir/release-notes.log"; then
+  echo "expected missing generated release notes option fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "createRelease must set generate_release_notes: true" "$tmp_dir/release-notes.log"
+
+release_body_repo="$tmp_dir/release-body-repo"
+copy_repo_snapshot "$baseline_repo" "$release_body_repo"
+python3 - <<'PY' "$release_body_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "              generate_release_notes: true,\n"
+replacement = needle + "              body: 'legacy metadata',\n"
+if needle not in text:
+    raise SystemExit("failed to locate generated release notes option")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_body_repo" --profile final >/dev/null 2>"$tmp_dir/release-body.log"; then
+  echo "expected custom release body fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "createRelease must not set body" "$tmp_dir/release-body.log"
+
 label_concurrency_repo="$tmp_dir/label-concurrency-repo"
 copy_repo_snapshot "$baseline_repo" "$label_concurrency_repo"
 python3 - <<'PY' "$label_concurrency_repo"

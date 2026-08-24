@@ -31,7 +31,7 @@ on:
           - stable
           - rc
       reason:
-        description: Required for manual release overrides; written to the release audit trail.
+        description: Required for manual release overrides; used for this run's validation.
         required: false
         type: string
 
@@ -82,12 +82,6 @@ jobs:
       release_tag: ${{ steps.snapshot.outputs.release_tag }}
       release_prerelease: ${{ steps.snapshot.outputs.release_prerelease }}
       tags_csv: ${{ steps.snapshot.outputs.tags_csv }}
-      snapshot_source: ${{ steps.snapshot.outputs.snapshot_source }}
-      manual_version: ${{ steps.snapshot.outputs.manual_version }}
-      manual_bump: ${{ steps.snapshot.outputs.manual_bump }}
-      manual_reason: ${{ steps.snapshot.outputs.manual_reason }}
-      manual_actor: ${{ steps.snapshot.outputs.manual_actor }}
-      manual_triggered_at: ${{ steps.snapshot.outputs.manual_triggered_at }}
       candidate_suffix: ${{ steps.candidate.outputs.candidate_suffix }}
     timeout-minutes: 20
     steps:
@@ -565,35 +559,13 @@ jobs:
       - name: Create GitHub Release
         uses: actions/github-script@v9
         env:
-          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
           RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
           RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
-          RELEASE_PR_NUMBER: ${{ needs.release-meta.outputs.pr_number }}
-          RELEASE_PR_TITLE: ${{ needs.release-meta.outputs.pr_title }}
-          RELEASE_BUMP: ${{ needs.release-meta.outputs.release_bump }}
-          RELEASE_CHANNEL: ${{ needs.release-meta.outputs.release_channel }}
-          SNAPSHOT_SOURCE: ${{ needs.release-meta.outputs.snapshot_source }}
-          MANUAL_VERSION: ${{ needs.release-meta.outputs.manual_version }}
-          MANUAL_BUMP: ${{ needs.release-meta.outputs.manual_bump }}
-          MANUAL_REASON: ${{ needs.release-meta.outputs.manual_reason }}
-          MANUAL_ACTOR: ${{ needs.release-meta.outputs.manual_actor }}
-          MANUAL_TRIGGERED_AT: ${{ needs.release-meta.outputs.manual_triggered_at }}
         with:
           script: |
             const { owner, repo } = context.repo
             const tag = process.env.RELEASE_TAG
             const prerelease = process.env.RELEASE_PRERELEASE === 'true'
-            const prNumber = process.env.RELEASE_PR_NUMBER
-            const prTitle = process.env.RELEASE_PR_TITLE
-            const bump = process.env.RELEASE_BUMP
-            const channel = process.env.RELEASE_CHANNEL
-            const targetSha = process.env.TARGET_SHA
-            const snapshotSource = process.env.SNAPSHOT_SOURCE
-            const manualVersion = process.env.MANUAL_VERSION
-            const manualBump = process.env.MANUAL_BUMP
-            const manualReason = process.env.MANUAL_REASON
-            const manualActor = process.env.MANUAL_ACTOR
-            const manualTriggeredAt = process.env.MANUAL_TRIGGERED_AT
 
             if (!tag) {
               core.setFailed('Missing RELEASE_TAG')
@@ -612,32 +584,13 @@ jobs:
               return
             }
 
-            const bodyLines = [
-              prNumber ? `PR: #${prNumber} ${prTitle || ''}`.trim() : 'PR: (unknown)',
-              `Channel: ${channel || '(unknown)'}`,
-              `Bump: ${bump || '(unknown)'}`,
-              `Commit: ${targetSha || '(unknown)'}`,
-            ]
-            if (snapshotSource === 'manual-release-override') {
-              bodyLines.push(
-                '',
-                'Manual release override:',
-                `- Source: ${snapshotSource}`,
-                `- Requested by: ${manualActor || '(unknown)'}`,
-                `- Requested at: ${manualTriggeredAt || '(unknown)'}`,
-                `- Version: ${manualVersion || '(not provided)'}`,
-                `- Bump: ${manualBump || '(not provided)'}`,
-                `- Reason: ${manualReason || '(missing)'}`,
-              )
-            }
-
             await github.rest.repos.createRelease({
               owner,
               repo,
               tag_name: tag,
               name: tag,
               prerelease,
-              body: bodyLines.join('\n'),
+              generate_release_notes: true,
             })
 
             core.notice(`Created GitHub Release for tag ${tag}`)

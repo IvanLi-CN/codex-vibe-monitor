@@ -1010,12 +1010,6 @@ def export_manual_override_snapshot(args: argparse.Namespace) -> int:
         triggered_at=args.triggered_at,
     )
     write_json(Path(args.output), snapshot)
-    print(
-        "manual release override snapshot: "
-        f"target_sha={target_sha} release_tag={snapshot['release_tag']} "
-        f"channel={snapshot['release_channel']} actor={snapshot['manual_actor']}",
-        file=sys.stderr,
-    )
     return 0
 
 

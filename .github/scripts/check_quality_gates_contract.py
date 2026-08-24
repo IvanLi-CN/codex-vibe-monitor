@@ -1009,8 +1009,18 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
-    require("snapshot_source" in outputs, "release.yml.jobs.release-meta.outputs.snapshot_source must be exported")
-    require("manual_reason" in outputs, "release.yml.jobs.release-meta.outputs.manual_reason must be exported")
+    for output_name in (
+        "snapshot_source",
+        "manual_version",
+        "manual_bump",
+        "manual_reason",
+        "manual_actor",
+        "manual_triggered_at",
+    ):
+        require(
+            output_name not in outputs,
+            f"release.yml.jobs.release-meta.outputs.{output_name} must not be exported for Release body rendering",
+        )
 
     target_step = step_config(release_meta, "Resolve requested commit", "release.yml.jobs.release-meta")
     target_run = str(target_step.get("run", ""))
@@ -1160,11 +1170,39 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("git fetch --tags origin" in tag_run, "release.yml.jobs.release-publish tag step must fetch existing tags")
     release_step = step_config(publish, "Create GitHub Release", "release.yml.jobs.release-publish")
     release_env = require_mapping(release_step.get("env"), "release.yml.jobs.release-publish.steps['Create GitHub Release'].env")
-    require(release_env.get("SNAPSHOT_SOURCE") == "${{ needs.release-meta.outputs.snapshot_source }}", "release.yml.jobs.release-publish: release body must consume snapshot_source")
-    require(release_env.get("MANUAL_REASON") == "${{ needs.release-meta.outputs.manual_reason }}", "release.yml.jobs.release-publish: release body must consume manual_reason")
+    require(
+        set(release_env) == {"RELEASE_TAG", "RELEASE_PRERELEASE"},
+        "release.yml.jobs.release-publish: Create GitHub Release env must only carry tag and prerelease state",
+    )
     release_script = str(release_step.get("with", {}).get("script", ""))
-    require("Manual release override:" in release_script, "release.yml.jobs.release-publish: release body must include manual override audit block")
-    require("manualReason" in release_script, "release.yml.jobs.release-publish: release body must render manual reason")
+    create_release_marker = "await github.rest.repos.createRelease({"
+    require(create_release_marker in release_script, "release.yml.jobs.release-publish: createRelease call is required")
+    create_release_body = release_script.split(create_release_marker, 1)[1]
+    create_release_end = create_release_body.find("\n})")
+    require(create_release_end >= 0, "release.yml.jobs.release-publish: createRelease call must close its options object")
+    create_release_body = create_release_body[:create_release_end]
+    require(
+        "generate_release_notes: true" in create_release_body,
+        "release.yml.jobs.release-publish: createRelease must set generate_release_notes: true",
+    )
+    require(
+        not any(line.strip().startswith("body:") for line in create_release_body.splitlines()),
+        "release.yml.jobs.release-publish: createRelease must not set body",
+    )
+    for forbidden_marker in (
+        "PR:",
+        "Channel:",
+        "Bump:",
+        "Commit:",
+        "Manual release override:",
+        "manualReason",
+        "manualActor",
+        "manualTriggeredAt",
+    ):
+        require(
+            forbidden_marker not in create_release_body,
+            f"release.yml.jobs.release-publish: createRelease must not render {forbidden_marker!r}",
+        )
     comment_step = step_config(publish, "Upsert PR release version comment", "release.yml.jobs.release-publish")
     comment_env = require_mapping(comment_step.get("env"), "release.yml.jobs.release-publish.steps['Upsert PR release version comment'].env")
     require(comment_env.get("RELEASE_PR_NUMBER") == "${{ needs.release-meta.outputs.pr_number }}", "release.yml.jobs.release-publish: PR release comment must consume pr_number")
