@@ -520,6 +520,111 @@ function clearRoutingSvgDecorations(host: HTMLElement) {
     });
 }
 
+function originalNumericAttribute(element: Element, attribute: string) {
+  const originalAttribute = `data-model-routing-original-${attribute}`;
+  const remembered = element.getAttribute(originalAttribute);
+  if (remembered != null) return Number.parseFloat(remembered);
+  const current = element.getAttribute(attribute);
+  if (current == null) return null;
+  element.setAttribute(originalAttribute, current);
+  const value = Number.parseFloat(current);
+  return Number.isFinite(value) ? value : null;
+}
+
+function originalStyleHeight(element: HTMLElement) {
+  const remembered = element.getAttribute("data-model-routing-original-style-height");
+  if (remembered != null) return Number.parseFloat(remembered);
+  const current = Number.parseFloat(element.style.height);
+  if (!Number.isFinite(current)) return null;
+  element.setAttribute("data-model-routing-original-style-height", String(current));
+  return current;
+}
+
+function setRoutingLayoutTranslateY(element: SVGElement, offset: number) {
+  const originalAttribute = "data-model-routing-original-transform";
+  const remembered = element.getAttribute(originalAttribute);
+  const original = remembered ?? element.getAttribute("transform") ?? "";
+  if (remembered == null) element.setAttribute(originalAttribute, original);
+  const translate = offset === 0 ? "" : `translate(0 ${offset})`;
+  const transform = [original, translate].filter(Boolean).join(" ");
+  if (transform) element.setAttribute("transform", transform);
+  else element.removeAttribute("transform");
+}
+
+function setRoutingLayoutVisibility(element: SVGElement, hidden: boolean) {
+  if (hidden) element.style.visibility = "hidden";
+  else element.style.removeProperty("visibility");
+}
+
+function syncRoutingDetailSlot({
+  host,
+  detailTop,
+  detailRows,
+  baseDetailRows,
+}: {
+  host: HTMLElement;
+  detailTop: number | null;
+  detailRows: number;
+  baseDetailRows: number;
+}) {
+  if (detailTop == null || baseDetailRows <= 0) return;
+  const container = host.querySelector<HTMLElement>(".gantt-container");
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  const slot = container?.querySelector<HTMLElement>(".model-routing-records-slot");
+  if (!container || !svg || !slot) return;
+
+  const detailEnd = detailTop + baseDetailRows * GANTT_ROW_HEIGHT;
+  const offset = (detailRows - baseDetailRows) * GANTT_ROW_HEIGHT;
+  slot.style.height = `${detailRows * GANTT_ROW_HEIGHT}px`;
+
+  svg.querySelectorAll<SVGGElement>(".bar-wrapper").forEach((wrapper) => {
+    const bar = wrapper.querySelector<SVGRectElement>(".bar");
+    const y = bar ? originalNumericAttribute(bar, "y") : null;
+    if (y == null) return;
+    const isDetailPlaceholder = y >= detailTop && y < detailEnd;
+    setRoutingLayoutVisibility(wrapper, isDetailPlaceholder);
+    setRoutingLayoutTranslateY(wrapper, y >= detailEnd ? offset : 0);
+  });
+
+  svg.querySelectorAll<SVGRectElement>(".grid-row").forEach((row) => {
+    const y = originalNumericAttribute(row, "y");
+    if (y == null) return;
+    const isDetailPlaceholder = y >= detailTop && y < detailEnd;
+    setRoutingLayoutVisibility(row, isDetailPlaceholder);
+    setRoutingLayoutTranslateY(row, y >= detailEnd ? offset : 0);
+  });
+
+  svg.querySelectorAll<SVGLineElement>(".row-line").forEach((line) => {
+    const y = originalNumericAttribute(line, "y1");
+    if (y == null) return;
+    const isDetailBoundary = y > detailTop && y <= detailEnd;
+    setRoutingLayoutVisibility(line, isDetailBoundary);
+    setRoutingLayoutTranslateY(line, y > detailEnd ? offset : 0);
+  });
+
+  const originalGridHeight = originalNumericAttribute(svg, "height");
+  if (originalGridHeight != null) {
+    const height = originalGridHeight + offset;
+    svg.setAttribute("height", String(height));
+    const originalContainerHeight = originalStyleHeight(container) ?? originalGridHeight;
+    container.style.height = `${originalContainerHeight + offset}px`;
+  }
+  svg.querySelectorAll<SVGRectElement>(".grid-background").forEach((background) => {
+    const height = originalNumericAttribute(background, "height");
+    if (height != null) background.setAttribute("height", String(height + offset));
+  });
+  svg.querySelectorAll<SVGPathElement>(".tick").forEach((tick) => {
+    const originalAttribute = "data-model-routing-original-d";
+    const original = tick.getAttribute(originalAttribute) ?? tick.getAttribute("d");
+    if (!original) return;
+    if (!tick.hasAttribute(originalAttribute)) tick.setAttribute(originalAttribute, original);
+    tick.setAttribute(
+      "d",
+      original.replace(/v\s*(-?\d+(?:\.\d+)?)/, (_match, height) => `v ${Number(height) + offset}`),
+    );
+  });
+}
+
 function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWidth: number) {
   if (measuredWidth <= availableWidth || availableWidth <= 0) return label;
   const characterBudget = Math.max(6, Math.floor(label.length * (availableWidth / measuredWidth)));
@@ -904,6 +1009,7 @@ function ModelRoutingSvgChart({
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
   const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel, detailRows });
+  const structuralDetailRowsRef = useRef(0);
   const axisLayoutRef = useRef<RoutingAxisLayout | null>(null);
   layoutSourceRef.current = { timelines, range, detailTop, expandedModel, detailRows };
   const axisDateKey = useMemo(() => {
@@ -921,7 +1027,6 @@ function ModelRoutingSvgChart({
     () =>
       JSON.stringify({
         expandedModel,
-        detailRows,
         axisDateKey,
         lanes: timelines.map((group) => ({
           model: group.model,
@@ -931,7 +1036,7 @@ function ModelRoutingSvgChart({
           })),
         })),
       }),
-    [axisDateKey, detailRows, expandedModel, timelines],
+    [axisDateKey, expandedModel, timelines],
   );
   const interactionRef = useRef({ onOpenAccount, onOpenInvocation });
   interactionRef.current = { onOpenAccount, onOpenInvocation };
@@ -949,7 +1054,8 @@ function ModelRoutingSvgChart({
 
   // The key is intentionally limited to the DOM identity that Frappe owns.
   // Live records only update the existing axis labels and SVG decorations below, so they never reset
-  // the chart or its scroll. A date-label boundary is structural because Frappe omits empty headers.
+  // the chart or its scroll. Expanded record height shifts existing SVG rows in place. A date-label
+  // boundary is structural because Frappe omits empty headers.
   // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey explicitly represents Frappe's structural DOM identity.
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -970,11 +1076,13 @@ function ModelRoutingSvgChart({
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
     const normalizedTimelineStartMs = NORMALIZED_START_MS + spec.normalizedStepMs * labelIntervals;
+    const structuralDetailRows = layoutSource.expandedModel ? layoutSource.detailRows : 0;
+    structuralDetailRowsRef.current = structuralDetailRows;
     const tasks = buildFrappeSystemRoutingTasks(
       layoutTimelines,
       normalizedTimelineStartMs,
       layoutSource.expandedModel,
-      layoutSource.detailRows,
+      structuralDetailRows,
     );
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
@@ -1057,7 +1165,7 @@ function ModelRoutingSvgChart({
         portalTarget = document.createElement("div");
         portalTarget.className = "model-routing-records-slot";
         portalTarget.style.top = `${layoutSource.detailTop}px`;
-        portalTarget.style.height = `${layoutSource.detailRows * GANTT_ROW_HEIGHT}px`;
+        portalTarget.style.height = `${structuralDetailRows * GANTT_ROW_HEIGHT}px`;
         container.appendChild(portalTarget);
       }
     }
@@ -1065,6 +1173,7 @@ function ModelRoutingSvgChart({
     setLayoutGeneration((generation) => generation + 1);
     return () => {
       axisLayoutRef.current = null;
+      structuralDetailRowsRef.current = 0;
       portalTarget?.remove();
       host.replaceChildren();
     };
@@ -1082,6 +1191,12 @@ function ModelRoutingSvgChart({
         window,
         localeTag,
         axis,
+      });
+      syncRoutingDetailSlot({
+        host,
+        detailTop,
+        detailRows,
+        baseDetailRows: structuralDetailRowsRef.current,
       });
       clearRoutingSvgDecorations(host);
       decorateSystemRoutingSvg({
@@ -1113,6 +1228,8 @@ function ModelRoutingSvgChart({
     attemptLabel,
     availableCounts,
     colors,
+    detailRows,
+    detailTop,
     expandedModel,
     laneHeaderLabel,
     layoutGeneration,

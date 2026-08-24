@@ -240,6 +240,95 @@ describe("ModelRoutingGantt", () => {
     ).toBe("true");
   });
 
+  it("does not reconstruct an expanded Gantt when live history grows", () => {
+    render(firstSnapshot);
+    const modelGroup = host?.querySelector<SVGGElement>(
+      '[data-testid="model-routing-model-group-gpt-5.4"]',
+    );
+    if (!modelGroup) throw new Error("Model group is missing");
+
+    act(() => {
+      modelGroup.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(ganttMocks.construct).toHaveBeenCalledTimes(2);
+
+    render(updatedSnapshot);
+
+    expect(ganttMocks.construct).toHaveBeenCalledTimes(2);
+    expect(
+      host?.querySelector('[data-testid="model-routing-model-records-gpt-5.4"]'),
+    ).not.toBeNull();
+  });
+
+  it("resizes an expanded detail slot without reconstructing the Gantt", () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const observers: Array<() => void> = [];
+    let detailHeight = 0;
+    class DetailResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      observe() {
+        observers.push(() => this.callback([], this as unknown as ResizeObserver));
+      }
+
+      disconnect() {}
+
+      unobserve() {}
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      writable: true,
+      value: DetailResizeObserver,
+    });
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      writable: true,
+      value: function getBoundingClientRect(this: HTMLElement) {
+        if (this.matches('[data-testid="model-routing-model-records-gpt-5.4"]')) {
+          return { height: detailHeight } as DOMRect;
+        }
+        return originalGetBoundingClientRect.call(this);
+      },
+    });
+
+    try {
+      render(firstSnapshot);
+      const modelGroup = host?.querySelector<SVGGElement>(
+        '[data-testid="model-routing-model-group-gpt-5.4"]',
+      );
+      if (!modelGroup) throw new Error("Model group is missing");
+      act(() => {
+        modelGroup.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(ganttMocks.construct).toHaveBeenCalledTimes(2);
+
+      render(updatedSnapshot);
+      detailHeight = 640;
+      act(() => {
+        observers.forEach((notify) => {
+          notify();
+        });
+      });
+
+      expect(ganttMocks.construct).toHaveBeenCalledTimes(2);
+      expect(host?.querySelector<HTMLElement>(".model-routing-records-slot")?.style.height).toBe(
+        "640px",
+      );
+    } finally {
+      Object.defineProperty(globalThis, "ResizeObserver", {
+        configurable: true,
+        writable: true,
+        value: originalResizeObserver,
+      });
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+        configurable: true,
+        writable: true,
+        value: originalGetBoundingClientRect,
+      });
+    }
+  });
+
   it("reconstructs the Gantt layout when a lane display name changes", () => {
     render(firstSnapshot);
     render({
