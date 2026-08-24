@@ -8,6 +8,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 60;
@@ -441,6 +445,8 @@ struct SystemStatusFilesystemScan {
     deadline: Instant,
     #[cfg(test)]
     checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    blocking_operation: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl SystemStatusFilesystemScan {
@@ -450,6 +456,8 @@ impl SystemStatusFilesystemScan {
             deadline,
             #[cfg(test)]
             checkpoint: None,
+            #[cfg(test)]
+            blocking_operation: None,
         }
     }
 
@@ -463,7 +471,17 @@ impl SystemStatusFilesystemScan {
             cancellation,
             deadline,
             checkpoint: Some(checkpoint),
+            blocking_operation: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_test_blocking_operation(
+        mut self,
+        blocking_operation: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        self.blocking_operation = Some(blocking_operation);
+        self
     }
 
     fn check(&self) -> Result<()> {
@@ -479,6 +497,13 @@ impl SystemStatusFilesystemScan {
         }
         Ok(())
     }
+
+    fn before_filesystem_operation(&self) {
+        #[cfg(test)]
+        if let Some(blocking_operation) = &self.blocking_operation {
+            blocking_operation();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -490,6 +515,7 @@ struct SystemStatusFilesystemBytes {
 
 fn count_file_size_with_scan(path: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
     scan.check()?;
+    scan.before_filesystem_operation();
     Ok(fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
 }
 
@@ -573,6 +599,7 @@ fn sum_directory_bytes_with_scan(root: &Path, scan: &SystemStatusFilesystemScan)
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
         scan.check()?;
+        scan.before_filesystem_operation();
         let Ok(entries) = fs::read_dir(&path) else {
             continue;
         };
@@ -580,10 +607,12 @@ fn sum_directory_bytes_with_scan(root: &Path, scan: &SystemStatusFilesystemScan)
             scan.check()?;
             let child = entry.path();
             scan.check()?;
+            scan.before_filesystem_operation();
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(child),
                 Ok(kind) if kind.is_file() => {
                     scan.check()?;
+                    scan.before_filesystem_operation();
                     total =
                         total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
                 }
@@ -596,10 +625,50 @@ fn sum_directory_bytes_with_scan(root: &Path, scan: &SystemStatusFilesystemScan)
 
 fn sum_path_bytes_with_scan(path: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
     scan.check()?;
+    scan.before_filesystem_operation();
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
         Ok(metadata) if metadata.is_dir() => sum_directory_bytes_with_scan(path, scan),
         _ => Ok(0),
+    }
+}
+
+#[derive(Debug)]
+struct SystemStatusFilesystemScanPermit {
+    in_flight: Arc<AtomicBool>,
+    abandoned: Arc<AtomicBool>,
+}
+
+impl SystemStatusFilesystemScanPermit {
+    fn try_acquire(cache: &SystemStatusCacheState) -> Result<(Self, Arc<AtomicBool>)> {
+        let in_flight = cache.filesystem_scan_in_flight.clone();
+        if in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            debug!(
+                filesystem_scan_in_flight = true,
+                "system status filesystem scan deferred while an earlier scan is still running"
+            );
+            bail!("system status filesystem scan is already in flight");
+        }
+        let abandoned = Arc::new(AtomicBool::new(false));
+        Ok((
+            Self {
+                in_flight,
+                abandoned: abandoned.clone(),
+            },
+            abandoned,
+        ))
+    }
+}
+
+impl Drop for SystemStatusFilesystemScanPermit {
+    fn drop(&mut self) {
+        self.in_flight.store(false, Ordering::Release);
+        if self.abandoned.load(Ordering::Acquire) {
+            debug!("abandoned system status filesystem scan exited; scan admission released");
+        }
     }
 }
 
@@ -669,11 +738,48 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task(
     config: AppConfig,
     archive_dir: PathBuf,
     raw_dir: PathBuf,
+    cache: &Arc<Mutex<SystemStatusCacheState>>,
     cancellation: &CancellationToken,
     deadline: Instant,
 ) -> Result<SystemStatusFilesystemBytes> {
     let scan = SystemStatusFilesystemScan::new(cancellation.clone(), deadline);
+    collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
+        archive_paths,
+        config,
+        archive_dir,
+        raw_dir,
+        cache,
+        cancellation,
+        deadline,
+        scan,
+    )
+    .await
+}
+
+async fn collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
+    archive_paths: Vec<String>,
+    config: AppConfig,
+    archive_dir: PathBuf,
+    raw_dir: PathBuf,
+    cache: &Arc<Mutex<SystemStatusCacheState>>,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+    scan: SystemStatusFilesystemScan,
+) -> Result<SystemStatusFilesystemBytes> {
+    if cancellation.is_cancelled() {
+        bail!("system status filesystem scan cancelled");
+    }
+    let (permit, abandoned) = {
+        let cache =
+            await_system_status_refresh_operation(cancellation, async { Ok(cache.lock().await) })
+                .await?;
+        if cancellation.is_cancelled() {
+            bail!("system status filesystem scan cancelled");
+        }
+        SystemStatusFilesystemScanPermit::try_acquire(&cache)?
+    };
     let mut task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         collect_system_status_filesystem_bytes(archive_paths, config, archive_dir, raw_dir, scan)
     });
 
@@ -681,8 +787,28 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task(
         result = &mut task => result
             .map_err(|error| anyhow!("system status filesystem scan task failed: {error}"))?,
         _ = cancellation.cancelled() => {
-            let _ = task.await;
+            abandoned.store(true, Ordering::Release);
+            // Abort only prevents queued work. A started blocking filesystem call remains alive,
+            // holding its permit until it returns so retries cannot accumulate blocked workers.
+            task.abort();
+            drop(task);
+            warn!(
+                abandon_reason = "cancelled",
+                "system status filesystem scan abandoned; retaining its scan admission until it exits"
+            );
             bail!("system status filesystem scan cancelled");
+        }
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+            cancellation.cancel();
+            abandoned.store(true, Ordering::Release);
+            // See the cancellation branch: this does not claim to interrupt started OS I/O.
+            task.abort();
+            drop(task);
+            warn!(
+                abandon_reason = "deadline",
+                "system status filesystem scan abandoned; retaining its scan admission until it exits"
+            );
+            bail!("system status filesystem scan exceeded its deadline");
         }
     }
 }
@@ -1162,6 +1288,7 @@ async fn load_system_status_snapshot_uncached(
         state.config.clone(),
         archive_dir,
         raw_dir,
+        &state.system_status_cache,
         cancellation,
         deadline,
     )
@@ -1728,10 +1855,61 @@ mod runtime_pressure_health_tests {
     use std::{
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::{Duration, Instant},
     };
+
+    #[derive(Debug, Default)]
+    struct BlockingFilesystemScanTestGate {
+        started: AtomicBool,
+        released: std::sync::Mutex<bool>,
+        wake: std::sync::Condvar,
+    }
+
+    impl BlockingFilesystemScanTestGate {
+        fn block(&self) {
+            self.started.store(true, Ordering::Release);
+            let mut released = self
+                .released
+                .lock()
+                .expect("lock filesystem scan test gate");
+            while !*released {
+                released = self
+                    .wake
+                    .wait(released)
+                    .expect("wait for filesystem scan test gate release");
+            }
+        }
+
+        fn release(&self) {
+            *self
+                .released
+                .lock()
+                .expect("lock filesystem scan test gate") = true;
+            self.wake.notify_all();
+        }
+    }
+
+    async fn wait_for_blocking_filesystem_scan_start(gate: &BlockingFilesystemScanTestGate) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !gate.started.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("filesystem scan should enter the controlled blocking operation");
+    }
+
+    async fn wait_for_filesystem_scan_admission_release(in_flight: &AtomicBool) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while in_flight.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("released filesystem scan should free its admission slot");
+    }
 
     #[test]
     fn active_event_lag_and_writer_pressure_never_report_healthy() {
@@ -1835,6 +2013,143 @@ mod runtime_pressure_health_tests {
             "the cancellation hook must run after the first file metadata check"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn filesystem_scan_abandonment_returns_promptly_and_releases_admission() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-system-status-blocking-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("create blocking filesystem scan fixture directory");
+        let archive_path = root.join("archive.sqlite");
+        fs::write(&archive_path, b"archive").expect("write blocking filesystem scan fixture");
+        let archive_paths = vec![archive_path.to_string_lossy().to_string()];
+        let in_flight = state
+            .system_status_cache
+            .lock()
+            .await
+            .filesystem_scan_in_flight
+            .clone();
+
+        let deadline_gate = Arc::new(BlockingFilesystemScanTestGate::default());
+        let deadline_gate_for_hook = deadline_gate.clone();
+        let deadline_cancellation = CancellationToken::new();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let deadline_scan =
+            SystemStatusFilesystemScan::new(deadline_cancellation.clone(), deadline)
+                .with_test_blocking_operation(Arc::new(move || deadline_gate_for_hook.block()));
+        let mut deadline_task = {
+            let cache = state.system_status_cache.clone();
+            let config = state.config.clone();
+            let archive_paths = archive_paths.clone();
+            let root = root.clone();
+            let cancellation = deadline_cancellation.clone();
+            tokio::spawn(async move {
+                collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
+                    archive_paths,
+                    config,
+                    root.clone(),
+                    root,
+                    &cache,
+                    &cancellation,
+                    deadline,
+                    deadline_scan,
+                )
+                .await
+            })
+        };
+        wait_for_blocking_filesystem_scan_start(deadline_gate.as_ref()).await;
+        let deadline_result =
+            tokio::time::timeout(Duration::from_secs(1), &mut deadline_task).await;
+        let held_after_deadline = in_flight.load(Ordering::Acquire);
+        let retry_cancellation = CancellationToken::new();
+        let retry_deadline = Instant::now() + Duration::from_secs(1);
+        let retry_error = collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
+            archive_paths.clone(),
+            state.config.clone(),
+            root.clone(),
+            root.clone(),
+            &state.system_status_cache,
+            &retry_cancellation,
+            retry_deadline,
+            SystemStatusFilesystemScan::new(retry_cancellation.clone(), retry_deadline),
+        )
+        .await
+        .expect_err("a detached filesystem scan must retain its only admission slot");
+        deadline_gate.release();
+        wait_for_filesystem_scan_admission_release(in_flight.as_ref()).await;
+
+        let deadline_error = deadline_result
+            .expect("filesystem deadline must return before the blocked syscall is released")
+            .expect("filesystem deadline task should join")
+            .expect_err("blocked filesystem scan must fail at its deadline");
+        assert!(deadline_error.to_string().contains("exceeded its deadline"));
+        assert!(
+            held_after_deadline,
+            "blocked scan must retain the admission slot"
+        );
+        assert!(retry_error.to_string().contains("already in flight"));
+
+        let cancellation_gate = Arc::new(BlockingFilesystemScanTestGate::default());
+        let cancellation_gate_for_hook = cancellation_gate.clone();
+        let cancellation = CancellationToken::new();
+        let cancellation_deadline = Instant::now() + Duration::from_secs(1);
+        let cancellation_scan =
+            SystemStatusFilesystemScan::new(cancellation.clone(), cancellation_deadline)
+                .with_test_blocking_operation(Arc::new(move || cancellation_gate_for_hook.block()));
+        let mut cancellation_task = {
+            let cache = state.system_status_cache.clone();
+            let config = state.config.clone();
+            let archive_paths = archive_paths.clone();
+            let root = root.clone();
+            let cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
+                    archive_paths,
+                    config,
+                    root.clone(),
+                    root,
+                    &cache,
+                    &cancellation,
+                    cancellation_deadline,
+                    cancellation_scan,
+                )
+                .await
+            })
+        };
+        wait_for_blocking_filesystem_scan_start(cancellation_gate.as_ref()).await;
+        cancellation.cancel();
+        let cancellation_result =
+            tokio::time::timeout(Duration::from_secs(1), &mut cancellation_task).await;
+        let held_after_cancellation = in_flight.load(Ordering::Acquire);
+        cancellation_gate.release();
+        wait_for_filesystem_scan_admission_release(in_flight.as_ref()).await;
+
+        let cancellation_error = cancellation_result
+            .expect("filesystem cancellation must return before the blocked syscall is released")
+            .expect("filesystem cancellation task should join")
+            .expect_err("blocked filesystem scan must fail when cancelled");
+        assert!(cancellation_error.to_string().contains("cancelled"));
+        assert!(
+            held_after_cancellation,
+            "cancelled blocked scan must retain the admission slot"
+        );
+        assert!(
+            state.system_status_cache.lock().await.latest.is_none(),
+            "an abandoned filesystem scan must not publish a status snapshot"
+        );
+
+        let _ = fs::remove_dir_all(root);
+        state.pool.close().await;
     }
 
     #[tokio::test]
