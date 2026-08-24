@@ -98,6 +98,7 @@ import { AdaptiveDisplayValue } from "../shared/AdaptiveMetricValue";
 import { AppIcon, type AppIconName } from "../shared/AppIcon";
 import {
   type AdaptiveDisplayValueSpec,
+  type AdaptiveMetricPresentation,
   buildAdaptiveCurrencyAmountTextSpec,
   buildAdaptiveCurrencyTextSpec,
   buildAdaptiveDurationTextSpec,
@@ -970,6 +971,8 @@ type AccountDisplayValue = {
   ariaText: string;
 };
 
+const ACCOUNT_STAT_CARD_PRESENTATION: AdaptiveMetricPresentation = "account-stat-card";
+
 function toAccountDisplayValue(spec: AdaptiveDisplayValueSpec): AccountDisplayValue {
   return {
     spec,
@@ -990,16 +993,17 @@ function buildAccountNumberDisplayValue(
   value: number | null | undefined,
   localeTag: string,
   maximumFractionDigits = 0,
+  presentation: AdaptiveMetricPresentation = "default",
 ) {
   return toAccountDisplayValue(
-    buildAdaptiveNumberTextSpec(value ?? null, localeTag, maximumFractionDigits),
+    buildAdaptiveNumberTextSpec(value ?? null, localeTag, maximumFractionDigits, { presentation }),
   );
 }
 
 function buildAccountCurrencyDisplayValue(
   value: number | null | undefined,
   localeTag: string,
-  maximumFractionDigits = 2,
+  presentation: AdaptiveMetricPresentation = "default",
 ) {
   if (value == null || !Number.isFinite(value)) {
     return toAccountDisplayValue(
@@ -1009,42 +1013,12 @@ function buildAccountCurrencyDisplayValue(
     );
   }
 
-  const precisionCandidates = Array.from(
-    { length: maximumFractionDigits + 1 },
-    (_, index) => maximumFractionDigits - index,
-  );
-  const fullValue = new Intl.NumberFormat(localeTag, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: maximumFractionDigits,
-    maximumFractionDigits,
-  }).format(value);
-
   return toAccountDisplayValue(
-    buildAdaptiveTextSpec(fullValue, [
-      {
-        key: "full",
-        value: fullValue,
-        priority: 0,
-      },
-      ...precisionCandidates
-        .filter((precision) => precision !== maximumFractionDigits)
-        .map((precision, index) => ({
-          key: `standard-${precision}`,
-          value: new Intl.NumberFormat(localeTag, {
-            style: "currency",
-            currency: "USD",
-            minimumFractionDigits: precision,
-            maximumFractionDigits: precision,
-          }).format(value),
-          priority: index + 1,
-        })),
-      ...buildAdaptiveCurrencyTextSpec(value, localeTag).candidates.map((candidate, index) => ({
-        key: candidate.key,
-        value: candidate.value,
-        priority: 20 + index,
-      })),
-    ]),
+    buildAdaptiveCurrencyTextSpec(value, localeTag, {
+      maximumFractionDigits: 2,
+      minimumFractionDigits: 2,
+      presentation,
+    }),
   );
 }
 
@@ -1052,17 +1026,25 @@ function buildAccountCurrencyAmountDisplayValue(
   value: number | null | undefined,
   localeTag: string,
   maximumFractionDigits = 2,
+  presentation: AdaptiveMetricPresentation = "default",
 ) {
   return toAccountDisplayValue(
     buildAdaptiveCurrencyAmountTextSpec(value ?? null, localeTag, {
       maximumFractionDigits,
       minimumFractionDigits: maximumFractionDigits,
+      presentation,
     }),
   );
 }
 
-function buildAccountDurationDisplayValue(value: number | null | undefined, localeTag: string) {
-  return toAccountDisplayValue(buildAdaptiveDurationTextSpec(value ?? null, localeTag));
+function buildAccountDurationDisplayValue(
+  value: number | null | undefined,
+  localeTag: string,
+  presentation: AdaptiveMetricPresentation = "default",
+) {
+  return toAccountDisplayValue(
+    buildAdaptiveDurationTextSpec(value ?? null, localeTag, { presentation }),
+  );
 }
 
 const ACCOUNT_METRIC_VALUE_TONE_CLASSNAMES: Record<AccountMetricTone, string> = {
@@ -3051,12 +3033,22 @@ function DashboardUpstreamAccountActivityCard({
     () => [
       {
         label: locale === "zh" ? "成功" : "Success",
-        value: buildAccountNumberDisplayValue(account.successCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(
+          account.successCount,
+          localeTag,
+          0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "success" as const,
       },
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: buildAccountNumberDisplayValue(account.failureCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(
+          account.failureCount,
+          localeTag,
+          0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "error" as const,
       },
       {
@@ -3065,6 +3057,7 @@ function DashboardUpstreamAccountActivityCard({
           Math.max(0, account.nonSuccessCount - account.failureCount),
           localeTag,
           0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
         ),
         tone: "warning" as const,
       },
@@ -3076,7 +3069,11 @@ function DashboardUpstreamAccountActivityCard({
     return [
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: buildAccountCurrencyDisplayValue(account.failureCost, localeTag, 2),
+        value: buildAccountCurrencyDisplayValue(
+          account.failureCost,
+          localeTag,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "error" as const,
       },
       {
@@ -3095,7 +3092,12 @@ function DashboardUpstreamAccountActivityCard({
       },
       {
         label: locale === "zh" ? "失败" : "Failure",
-        value: buildAccountNumberDisplayValue(account.failureTokens, localeTag, 0),
+        value: buildAccountNumberDisplayValue(
+          account.failureTokens,
+          localeTag,
+          0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "error" as const,
       },
     ],
@@ -3106,7 +3108,12 @@ function DashboardUpstreamAccountActivityCard({
     if (account.failureCount > 0) {
       segments.push({
         label: locale === "zh" ? "失败" : "Failure",
-        value: buildAccountNumberDisplayValue(account.failureCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(
+          account.failureCount,
+          localeTag,
+          0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "error" as const,
         iconName: "alert-circle-outline" as const,
       });
@@ -3118,6 +3125,7 @@ function DashboardUpstreamAccountActivityCard({
           account.nonSuccessCount - account.failureCount,
           localeTag,
           0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
         ),
         tone: "warning" as const,
         iconName: "alert-outline" as const,
@@ -3126,7 +3134,12 @@ function DashboardUpstreamAccountActivityCard({
     if (account.successCount > 0) {
       segments.push({
         label: locale === "zh" ? "成功" : "Success",
-        value: buildAccountNumberDisplayValue(account.successCount, localeTag, 0),
+        value: buildAccountNumberDisplayValue(
+          account.successCount,
+          localeTag,
+          0,
+          ACCOUNT_STAT_CARD_PRESENTATION,
+        ),
         tone: "success" as const,
         iconName: "check-circle-outline" as const,
       });
@@ -3136,10 +3149,12 @@ function DashboardUpstreamAccountActivityCard({
   const currentFirstByteDisplayValue = buildAccountDurationDisplayValue(
     account.currentFirstTokenAvgMs,
     localeTag,
+    ACCOUNT_STAT_CARD_PRESENTATION,
   );
   const currentResponseDurationDisplayValue = buildAccountDurationDisplayValue(
     account.currentAvgResponseMs,
     localeTag,
+    ACCOUNT_STAT_CARD_PRESENTATION,
   );
   const rangeFirstByteValue = formatAccountDurationValue(account.firstTokenAvgMs, localeTag);
   const rangeResponseDurationValue = formatAccountDurationValue(
@@ -3150,13 +3165,20 @@ function DashboardUpstreamAccountActivityCard({
     account.requestCount,
     localeTag,
     0,
+    ACCOUNT_STAT_CARD_PRESENTATION,
   );
   const totalCostDisplayValue = buildAccountCurrencyAmountDisplayValue(
     account.totalCost,
     localeTag,
     2,
+    ACCOUNT_STAT_CARD_PRESENTATION,
   );
-  const totalTokenDisplayValue = buildAccountNumberDisplayValue(account.totalTokens, localeTag, 0);
+  const totalTokenDisplayValue = buildAccountNumberDisplayValue(
+    account.totalTokens,
+    localeTag,
+    0,
+    ACCOUNT_STAT_CARD_PRESENTATION,
+  );
   const currentFirstByteValue = currentFirstByteDisplayValue.fullText;
   const currentResponseDurationValue = currentResponseDurationDisplayValue.fullText;
   const totalRequestValue = totalRequestDisplayValue.fullText;

@@ -55,6 +55,7 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, available
       index,
       requiredWidth: measures[index]?.scrollWidth ?? 0,
     }));
+    if (!candidateWidths.some(({ requiredWidth }) => requiredWidth > 0)) return;
     const currentIndex = Math.max(
       0,
       spec.candidates.findIndex((candidate) => candidate.key === selectedCandidateKey),
@@ -66,13 +67,24 @@ function useAdaptiveCandidateSelection(spec: AdaptiveDisplayValueSpec, available
 
     let nextCandidate = spec.candidates[currentIndex] ?? spec.candidates.at(-1);
 
-    if (!fitsWithinWidth(currentCandidateWidth, 0)) {
-      nextCandidate = spec.candidates.at(-1) ?? nextCandidate;
+    if (currentCandidateWidth <= 0) {
+      nextCandidate =
+        candidateWidths.find(({ requiredWidth }) => fitsWithinWidth(requiredWidth, 0))?.candidate ??
+        nextCandidate;
+    } else if (!fitsWithinWidth(currentCandidateWidth, 0)) {
+      let foundFittingCandidate = false;
       for (let index = currentIndex + 1; index < candidateWidths.length; index += 1) {
         if (fitsWithinWidth(candidateWidths[index]?.requiredWidth ?? 0, 0)) {
           nextCandidate = candidateWidths[index]?.candidate ?? nextCandidate;
+          foundFittingCandidate = true;
           break;
         }
+      }
+      if (!foundFittingCandidate) {
+        const measuredCandidates = candidateWidths.filter(({ requiredWidth }) => requiredWidth > 0);
+        nextCandidate = measuredCandidates.reduce((shortest, candidate) =>
+          candidate.requiredWidth < shortest.requiredWidth ? candidate : shortest,
+        ).candidate;
       }
     } else {
       for (let index = 0; index < currentIndex; index += 1) {

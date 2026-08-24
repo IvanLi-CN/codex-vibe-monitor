@@ -66,6 +66,8 @@
 - 已实现：Dashboard 工作区 `对话` 当前/最近调用错误摘要与 `上游账号` recent 行错误摘要统一接入共享 `InvocationErrorSummary`；inline 文案固定单行省略并保持 `min-w-0` 布局约束，完整错误只通过现有 UI tooltip 在 hover / focus / long-press 时披露，不再依赖原生 `title`。
 - 已实现：Dashboard `warning_success` 的 icon-only 紧凑状态位改为复用共享 `Tooltip` 组件，状态文案与 downstream 诊断不再通过浏览器原生 `title` 披露。
 - 已实现：上游账号卡宽屏 `split` header 里的 `TPM` 值新增约 `6ch` 的固定显示预算；超预算时继续复用既有 adaptive compact 缩写链路，仅 `TPM` 会提前压缩，`进行中调用 / 消费速率` 与窄卡 `stacked` 路径保持原合同不变。
+- 已实现：账号卡四组统计的主值与常驻分解值接入 `account-stat-card` 自适应策略。完整值达到两个千分位分隔符时，计数/Token 优先显示三位有效数字的 `K/M/B/T`，成本使用 `$K/$M/$B/$T`；可用内容宽度不足时降至两位、一位，并保留 title、ARIA 与整卡精确值。
+- 已实现：账号卡耗时补齐 `ms / s / min / h` 语义单位与舍入跨量级升级；共享默认自适应候选、Today Stats 与标题区 `TPM / 消费速率 / 进行中调用` 行为保持不变。单元、Dashboard 集成与 Storybook play 覆盖宽桌面硬触发和 `mobile393` 窄卡场景。
 - 已实现：上游账号宽屏双列 grid 使用 `minmax(0, 1fr)` track，账号卡、recent 行和共享错误 trigger 均显式允许收缩；错误摘要无法再通过 intrinsic width 撑开调用行或父账号卡。现役 feature 的 unit、Storybook play 契约与 Playwright 几何回归共同覆盖该链路。
 - 已实现：Dashboard 相关的 working-set / account-activity 派生维护继续复用 write-side read model 与 runtime overlay；proxy capture 请求尾的 rollup/live progress、upstream account touch 与 attempt 中间进度已迁入 SQLite batch writer，避免主订阅 topic refresh 与请求收尾派生写在 SQLite 单写者上持续争用。
 - 已实现：Dashboard current records、summary/timeseries、上游账号活动与工作区 `对话` tab 的 running 视图统一 overlay 进程内 runtime invocation store。主应用连接现在只消费 topic `snapshot/replay/live`，不再依赖 HTTP open-resync/current reconcile 补 running 行；terminal DB 事实优先并会移除对应内存记录。
