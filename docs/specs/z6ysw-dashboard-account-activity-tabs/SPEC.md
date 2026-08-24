@@ -599,7 +599,6 @@
   sensitive_exclusion: `fixture-only Dashboard data`
   evidence_binding_sha: `79e08977`
   image:
-  PR: none
   ![Dashboard 上游账号 recent 行按内容高度展示桌面证据](./assets/dashboard-upstream-account-recent-content-height-desktop.png)
 
 - source_type: ui_demo
@@ -613,7 +612,6 @@
   sensitive_exclusion: `fixture-only Dashboard data`
   evidence_binding_sha: `79e08977`
   image:
-  PR: none
   ![Dashboard 上游账号 recent 行按内容高度展示移动证据](./assets/dashboard-upstream-account-recent-content-height-mobile.png)
 
 - source_type: storybook_canvas
