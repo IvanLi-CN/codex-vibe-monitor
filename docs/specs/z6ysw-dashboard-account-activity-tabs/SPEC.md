@@ -616,6 +616,34 @@
   PR: none
   ![Dashboard 上游账号 recent 行按内容高度展示移动证据](./assets/dashboard-upstream-account-recent-content-height-mobile.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-adaptive-metric-hard-threshold`
+  scenario: `account-stat-card hard compaction on desktop`
+  evidence_note: 已获主人确认的 Storybook 组件证据。宽桌面单账号卡使用真实四格布局；含两个或以上千分位分隔符的成本与 Token 主值直接紧凑为 `$30.0M` / `30.0M`，请求数 `10,376` 保持完整，耗时显示 `1.08 min`，精确值由 title/ARIA 与整卡详情保留。
+  requested_viewport: `1660x900`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `component`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号统计卡自适应量级桌面证据](./assets/dashboard-upstream-account-adaptive-metrics-desktop1660.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-adaptive-metric-responsive`
+  scenario: `account-stat-card responsive layout without overflow`
+  evidence_note: 已获主人确认的 Storybook 移动组件证据。`mobile393` 使用真实单账号列与两列统计格，四组主值保持单行，成本与 Token 使用紧凑量级，页面 `scrollWidth` 与 `clientWidth` 相等且没有横向溢出。
+  requested_viewport: `393x852`
+  viewport_strategy: `browser-viewport`
+  target_program: `mock-only`
+  capture_scope: `component`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  PR: include
+  ![Dashboard 上游账号统计卡自适应量级移动证据](./assets/dashboard-upstream-account-adaptive-metrics-mobile393.png)
+
 ## Related PRs
 
 - None

@@ -5407,22 +5407,33 @@ export const UpstreamAccountAdaptiveMetricHardThreshold: Story = {
   ),
   decorators: [
     (Story) => (
-      <div className="dashboard-upstream-account-adaptive-hard-story">
+      <div
+        data-testid="dashboard-upstream-account-adaptive-hard-frame"
+        className="dashboard-upstream-account-adaptive-hard-story"
+      >
         <style>{`
           .dashboard-upstream-account-adaptive-hard-story {
             display: inline-block;
-            padding: 19px;
-            background: #a8cbe4;
-            border: 2px solid #4f7d9e;
+            padding: 16px;
+            background: oklch(var(--color-base-300));
+            border: 1px solid rgba(100, 116, 139, 0.7);
           }
           .dashboard-upstream-account-adaptive-hard-story [data-testid="dashboard-working-conversations"] {
             display: inline-block;
             width: fit-content;
+            background: transparent;
           }
           .dashboard-upstream-account-adaptive-hard-story
             [data-testid="dashboard-working-conversations"]
             > .surface-panel-body {
             width: fit-content;
+            padding: 0 !important;
+            background: transparent;
+          }
+          .dashboard-upstream-account-adaptive-hard-story
+            [data-testid="dashboard-upstream-account-grid"] {
+            width: 52rem;
+            grid-template-columns: minmax(0, 1fr) !important;
           }
           .dashboard-upstream-account-adaptive-hard-story
             [data-testid="dashboard-working-conversations-controls"],
@@ -5503,22 +5514,28 @@ export const UpstreamAccountAdaptiveMetricResponsive: Story = {
   ),
   decorators: [
     (Story) => (
-      <div className="dashboard-upstream-account-adaptive-responsive-story">
+      <div
+        data-testid="dashboard-upstream-account-adaptive-responsive-frame"
+        className="dashboard-upstream-account-adaptive-responsive-story"
+      >
         <style>{`
           .dashboard-upstream-account-adaptive-responsive-story {
             display: inline-block;
-            padding: 19px;
-            background: #a8cbe4;
-            border: 2px solid #4f7d9e;
+            padding: 16px;
+            background: oklch(var(--color-base-300));
+            border: 1px solid rgba(100, 116, 139, 0.7);
           }
           .dashboard-upstream-account-adaptive-responsive-story [data-testid="dashboard-working-conversations"] {
             display: inline-block;
             width: fit-content;
+            background: transparent;
           }
           .dashboard-upstream-account-adaptive-responsive-story
             [data-testid="dashboard-working-conversations"]
             > .surface-panel-body {
             width: fit-content;
+            padding: 0 !important;
+            background: transparent;
           }
           .dashboard-upstream-account-adaptive-responsive-story
             [data-testid="dashboard-working-conversations-controls"],
@@ -5529,11 +5546,6 @@ export const UpstreamAccountAdaptiveMetricResponsive: Story = {
           .dashboard-upstream-account-adaptive-responsive-story
             div:has(> [data-testid="story-drawer-state"]) {
             display: none;
-          }
-          .dashboard-upstream-account-adaptive-responsive-story
-            [data-testid="dashboard-upstream-account-grid"] {
-            max-width: 22rem;
-            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
           }
         `}</style>
         <Story />
@@ -5566,7 +5578,7 @@ export const UpstreamAccountAdaptiveMetricResponsive: Story = {
     docs: {
       description: {
         story:
-          "Mobile 393 x 852 account-card metric surface showing the same hard compact values in a two-column card layout with no horizontal overflow.",
+          "Mobile 393 x 852 account-card metric surface showing the real single-account-column layout with two metric columns and no horizontal overflow.",
       },
     },
   },
