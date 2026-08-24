@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.67.6",
+  "base_stable_version": "2.67.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-24T15:30:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.67.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0a215fd84c043af71449dc56d3ebd1843a76341b",
+  "pr_number": 842,
+  "pr_title": "fix(live): stabilize model routing Gantt updates",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.67.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.67.6",
+  "target_sha": "e64d89f4b4807b3f443478eeb903983baec69566",
+  "type_label": "type:patch"
+}
