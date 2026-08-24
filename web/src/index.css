@@ -338,7 +338,6 @@ body,
   --working-conversation-card-border: rgba(148, 163, 184, 0.28);
   --working-conversation-slot-bg: rgba(255, 255, 255, 0.74);
   --working-conversation-slot-border: rgba(148, 163, 184, 0.16);
-  --working-conversation-placeholder-line: rgba(148, 163, 184, 0.22);
 }
 
 [data-theme="vibe-dark"] {
@@ -550,7 +549,6 @@ body,
   --working-conversation-card-border: rgba(148, 163, 184, 0.12);
   --working-conversation-slot-bg: rgba(248, 250, 252, 0.06);
   --working-conversation-slot-border: rgba(255, 255, 255, 0.06);
-  --working-conversation-placeholder-line: rgba(255, 255, 255, 0.1);
 }
 
 :root,
@@ -1184,10 +1182,6 @@ body {
   .working-conversation-slot-surface {
     border: 1px solid var(--working-conversation-slot-border);
     background: var(--working-conversation-slot-bg);
-  }
-
-  .working-conversation-placeholder-line {
-    background-color: var(--working-conversation-placeholder-line);
   }
 
   .destructive-callout-surface {
