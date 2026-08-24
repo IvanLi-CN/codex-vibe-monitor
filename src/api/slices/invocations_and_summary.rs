@@ -7021,6 +7021,7 @@ const SUMMARY_PROJECTION_MAX_CANONICAL_BYTES: usize = 64 * 1024 * 1024;
 // grows. Count and size-limit their background hydration before materializing rows in memory.
 const SUMMARY_PROJECTION_MAX_ROLLUP_ROWS: usize = 200_000;
 const SUMMARY_PROJECTION_MAX_ROLLUP_BYTES: usize = 32 * 1024 * 1024;
+const SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS: usize = SUMMARY_PROJECTION_MAX_ROLLUP_ROWS;
 const SUMMARY_PROJECTION_MIN_EXACT_HORIZON: ChronoDuration = ChronoDuration::hours(48);
 // Summary duration/calendar ranges are backed by the configured live retention plus the
 // archive grace used by the existing range readers. A legal `thisMonth` can span nearly 31
@@ -8126,6 +8127,29 @@ async fn load_summary_projection_live_account_totals(
         .into_iter()
         .map(|row| (row.upstream_account_id, row.into_totals()))
         .collect())
+}
+
+async fn summary_projection_live_history_within_aggregate_budget(
+    pool: &Pool<Sqlite>,
+) -> Result<bool> {
+    match crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
+        pool,
+        InvocationSourceScope::All,
+        0,
+        SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS,
+    )
+    .await
+    {
+        Ok(_) => Ok(true),
+        Err(error)
+            if error
+                .to_string()
+                .starts_with("summary live-tail id budget exceeded") =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.context("summary projection live aggregate admission failed")),
+    }
 }
 
 async fn count_summary_projection_rollup_rows(
@@ -10498,21 +10522,37 @@ async fn build_summary_projection(
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
+        let live_history_within_aggregate_budget = if !has_any_completed_archive {
+            summary_projection_live_history_within_aggregate_budget(&state.pool).await?
+        } else {
+            true
+        };
+        if !live_history_within_aggregate_budget {
+            // A durable live table beyond the aggregate admission bound cannot be scanned during
+            // hydration. Keep rolling/current projections available and fail closed for all-time
+            // until archive/rollup maintenance supplies a compact baseline.
+            global_all_time_source_unavailable = true;
+            account_all_time_unavailable = true;
+        }
         let mut global_totals = if !has_any_completed_archive {
             // Without archives the live table is the complete durable history. Keep that
             // history compact by hydrating one aggregate row instead of retaining/sorting every
             // old live record in the projection.
-            StatsTotals::from(
-                crate::stats::query_stats_row(
-                    &state.pool,
-                    crate::stats::StatsFilter::All,
-                    InvocationSourceScope::All,
+            if live_history_within_aggregate_budget {
+                StatsTotals::from(
+                    crate::stats::query_stats_row(
+                        &state.pool,
+                        crate::stats::StatsFilter::All,
+                        InvocationSourceScope::All,
+                    )
+                    .await
+                    .map_err(|error| {
+                        anyhow!("summary projection live all-time hydration failed: {error:?}")
+                    })?,
                 )
-                .await
-                .map_err(|error| {
-                    anyhow!("summary projection live all-time hydration failed: {error:?}")
-                })?,
-            )
+            } else {
+                StatsTotals::default()
+            }
         } else {
             all_time_rollup_totals
                 .iter()
@@ -10622,7 +10662,11 @@ async fn build_summary_projection(
         }
 
         let account_totals = if !has_any_completed_archive {
-            load_summary_projection_live_account_totals(&state.pool).await?
+            if live_history_within_aggregate_budget {
+                load_summary_projection_live_account_totals(&state.pool).await?
+            } else {
+                HashMap::new()
+            }
         } else {
             load_summary_projection_account_rollup_totals(
                 &state.pool,
@@ -28148,6 +28192,45 @@ mod request_compression_query_tests {
         .expect("a quiet historical account must have an exact memory-only current response");
         assert_eq!(current.total_count, 1);
         assert_eq!(current.total_tokens, 1);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_fails_closed_when_live_history_exceeds_aggregate_budget() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1) \
+             INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             SELECT 'aggregate-budget-summary-' || value, datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full' FROM rows",
+        )
+        .bind(SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS as i64 + 1)
+        .execute(&state.pool)
+        .await
+        .expect("insert live aggregate budget fixture");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("oversized historical live table should fail closed for all-time");
+        assert!(state.subscription_hub.summary_projection().await.is_some());
+        state.pool.close().await;
+
+        let error = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect_err("all-time must remain unavailable without an unbounded live aggregate scan");
+        assert!(
+            matches!(error, ApiError::Unavailable(_)),
+            "aggregate admission overflow must preserve the unavailable contract: {error:?}"
+        );
     }
 
     #[tokio::test]
