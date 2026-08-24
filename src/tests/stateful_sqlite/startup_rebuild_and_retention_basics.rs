@@ -965,7 +965,11 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     }
 
     let hydration_handle =
-        publish_http_readiness_and_spawn_hot_read_hydration(state.clone(), Instant::now());
+        publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
+            state.clone(),
+            Instant::now(),
+            Duration::from_secs(4),
+        );
     let health = tokio::time::timeout(
         Duration::from_millis(250),
         reqwest::get(format!("http://{addr}/health")),
@@ -1072,7 +1076,7 @@ async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        hydrate_summary_snapshots(state.as_ref()),
+        hydrate_summary_snapshots_with_deadline(state.as_ref(), Duration::from_secs(4)),
     )
     .await
     .expect("summary hydration must finish its bounded attempt under SQLite pressure")

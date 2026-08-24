@@ -7006,6 +7006,9 @@ const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30)
 // phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
 // serving ceiling; mutations still use the separate debounce below.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
+// Initial projection construction may need to fold a bounded, valid historical horizon. It runs
+// only after listener readiness, but still needs a finite cancellation-friendly work budget.
+pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // Account and archive metadata are admission-controlled independently from exact invocation
 // rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
@@ -9205,15 +9208,14 @@ fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = S
 }
 
 pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
-    // Startup warm-up runs after listener readiness, so it must use the same bounded work budget
-    // as every later background refresh instead of holding readiness behind durable I/O.
-    refresh_summary_snapshots_with_deadline(
-        state,
-        true,
-        Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
-        false,
-    )
-    .await
+    hydrate_summary_snapshots_with_deadline(state, SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE).await
+}
+
+pub(crate) async fn hydrate_summary_snapshots_with_deadline(
+    state: &AppState,
+    deadline: Duration,
+) -> Result<()> {
+    refresh_summary_snapshots_with_deadline(state, true, Some(deadline), false).await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {

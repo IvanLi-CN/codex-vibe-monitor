@@ -7,6 +7,31 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
     state: Arc<AppState>,
     startup_started_at: Instant,
 ) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_deadline: Duration,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+        state,
+        startup_started_at,
+        summary_deadline,
+    )
+}
+
+fn publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_deadline: Duration,
+) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
@@ -22,7 +47,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
             if !summary_hydrated {
                 tokio::select! {
                     _ = state.shutdown.cancelled() => return,
-                    result = hydrate_summary_snapshots(state.as_ref()) => match result {
+                    result = hydrate_summary_snapshots_with_deadline(state.as_ref(), summary_deadline) => match result {
                         Ok(()) => {
                             summary_hydrated = true;
                             info!("summary projection startup hydration completed");
