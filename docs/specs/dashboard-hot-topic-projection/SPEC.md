@@ -173,17 +173,18 @@ evidence_note: The mobile System Status layout keeps every topic and the activit
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: browser-viewport
-requested_viewport: 1440x900
+capture_scope: element
+requested_viewport: 1660x900
 viewport_strategy: storybook-viewport
-margin_policy: trim_only
-evidence_surface: page
+margin_policy: require_margin
+evidence_surface: component
 sensitive_exclusion: N/A
 story_id_or_title: dashboard-workingconversationssection--current-and-previous
-state: complete conversation state matrix: missing slots, responding with unavailable response duration, failure summary, success, pending, running, and warning
-evidence_note: The 1440px Dashboard workspace uses its native two-column grid: workspace width is 1392px, every visible card is 667px wide, and horizontal overflow is 0px. The full grid provides size reference while covering the supported invocation states.
+state: current invocation with static previous and earlier missing-history slots
+evidence_note: Storybook canvas element capture at the desktop1660 viewport shows the three-slot card with shared 57px slot baselines, static history labels, no skeleton treatment, and compact `0.7s`/`0.3s` values separated by 4px.
 
-![Dashboard working conversations three slots desktop](./assets/dashboard-working-conversations-three-slots-desktop.png)
+PR: include
+![Dashboard working conversations missing history desktop](./assets/dashboard-working-conversations-missing-history-desktop.png)
 
 source_type: storybook_canvas
 target_program: mock-only
@@ -202,37 +203,35 @@ PR: include
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: browser-viewport
+capture_scope: element
 requested_viewport: 393x852
 viewport_strategy: storybook-viewport
-margin_policy: trim_only
-evidence_surface: page
+margin_policy: require_margin
+evidence_surface: component
 sensitive_exclusion: N/A
-story_id_or_title: dashboard-workingconversationssection--mobile-390
-state: one invocation with previous and earlier missing placeholders
-evidence_note: The source-managed 393px Dashboard viewport keeps the real invocation to two rows and renders both missing slots as two neutral skeleton lines without interaction.
-
-The mobile viewport capture keeps the Storybook `bg-base-200` surface; no synthetic gray frame is added.
+story_id_or_title: dashboard-workingconversationssection--current-only-placeholder-mobile-393
+state: one invocation with static previous and earlier missing-history labels
+evidence_note: Storybook canvas element capture at 393x852 keeps the real invocation and both static history labels readable, with no skeleton, spinner, pulse, aria-live, or horizontal overflow.
 
 PR: include
-![Dashboard working conversations three slots mobile](./assets/dashboard-working-conversations-three-slots-mobile.png)
+![Dashboard working conversations missing history mobile](./assets/dashboard-working-conversations-missing-history-mobile.png)
 
 ### Dashboard upstream account recents
 
 source_type: storybook_canvas
 target_program: mock-only
-capture_scope: browser-viewport
+capture_scope: element
 requested_viewport: 1660x900
 viewport_strategy: storybook-viewport
-margin_policy: trim_only
-evidence_surface: page
+margin_policy: require_margin
+evidence_surface: component
 sensitive_exclusion: N/A
 story_id_or_title: dashboard-workingconversationssection--upstream-account-recent-layout
-state: paired account cards with completed, failed, and in-flight recent invocations
-evidence_note: The 1660px Dashboard workspace uses its native two-column upstream-account grid: workspace width is 1612px, each account card is 777px wide, horizontal overflow is 0px, TTFT remains green, and an in-flight response duration remains `--`.
+state: upstream account card with completed, failed, and in-flight recent invocations
+evidence_note: Storybook canvas element capture keeps the upstream account recent rows readable while applying the same compact no-space seconds and 4px TTFT/response group spacing; TTFT remains green and an in-flight response duration remains `--`.
 
 PR: include
-![Dashboard upstream account recent invocation layout](./assets/dashboard-upstream-account-recent-layout-desktop.png)
+![Dashboard upstream account recent compact invocation layout](./assets/dashboard-upstream-account-recent-compact-desktop.png)
 
 ### Account detail invocations
 
