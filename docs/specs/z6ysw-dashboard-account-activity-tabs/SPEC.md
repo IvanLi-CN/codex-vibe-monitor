@@ -644,7 +644,7 @@
 
 ## Related PRs
 
-- None
+- [#844](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/844)
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
