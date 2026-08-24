@@ -513,6 +513,13 @@ struct SystemStatusFilesystemBytes {
     other_files_bytes: u64,
 }
 
+struct SystemStatusFilesystemScanInputs {
+    archive_paths: Vec<String>,
+    config: AppConfig,
+    archive_dir: PathBuf,
+    raw_dir: PathBuf,
+}
+
 fn count_file_size_with_scan(path: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
     scan.check()?;
     scan.before_filesystem_operation();
@@ -705,12 +712,15 @@ fn compute_other_files_bytes_with_scan(
 }
 
 fn collect_system_status_filesystem_bytes(
-    archive_paths: Vec<String>,
-    config: AppConfig,
-    archive_dir: PathBuf,
-    raw_dir: PathBuf,
+    inputs: SystemStatusFilesystemScanInputs,
     scan: SystemStatusFilesystemScan,
 ) -> Result<SystemStatusFilesystemBytes> {
+    let SystemStatusFilesystemScanInputs {
+        archive_paths,
+        config,
+        archive_dir,
+        raw_dir,
+    } = inputs;
     let mut seen_paths = HashSet::new();
     let mut archive_bytes = 0_u64;
     for path in archive_paths {
@@ -744,10 +754,12 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task(
 ) -> Result<SystemStatusFilesystemBytes> {
     let scan = SystemStatusFilesystemScan::new(cancellation.clone(), deadline);
     collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
-        archive_paths,
-        config,
-        archive_dir,
-        raw_dir,
+        SystemStatusFilesystemScanInputs {
+            archive_paths,
+            config,
+            archive_dir,
+            raw_dir,
+        },
         cache,
         cancellation,
         deadline,
@@ -757,10 +769,7 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task(
 }
 
 async fn collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
-    archive_paths: Vec<String>,
-    config: AppConfig,
-    archive_dir: PathBuf,
-    raw_dir: PathBuf,
+    inputs: SystemStatusFilesystemScanInputs,
     cache: &Arc<Mutex<SystemStatusCacheState>>,
     cancellation: &CancellationToken,
     deadline: Instant,
@@ -780,7 +789,7 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
     };
     let mut task = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        collect_system_status_filesystem_bytes(archive_paths, config, archive_dir, raw_dir, scan)
+        collect_system_status_filesystem_bytes(inputs, scan)
     });
 
     tokio::select! {
@@ -2055,10 +2064,12 @@ mod runtime_pressure_health_tests {
             let cancellation = deadline_cancellation.clone();
             tokio::spawn(async move {
                 collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
-                    archive_paths,
-                    config,
-                    root.clone(),
-                    root,
+                    SystemStatusFilesystemScanInputs {
+                        archive_paths,
+                        config,
+                        archive_dir: root.clone(),
+                        raw_dir: root,
+                    },
                     &cache,
                     &cancellation,
                     deadline,
@@ -2074,10 +2085,12 @@ mod runtime_pressure_health_tests {
         let retry_cancellation = CancellationToken::new();
         let retry_deadline = Instant::now() + Duration::from_secs(1);
         let retry_error = collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
-            archive_paths.clone(),
-            state.config.clone(),
-            root.clone(),
-            root.clone(),
+            SystemStatusFilesystemScanInputs {
+                archive_paths: archive_paths.clone(),
+                config: state.config.clone(),
+                archive_dir: root.clone(),
+                raw_dir: root.clone(),
+            },
             &state.system_status_cache,
             &retry_cancellation,
             retry_deadline,
@@ -2114,10 +2127,12 @@ mod runtime_pressure_health_tests {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
-                    archive_paths,
-                    config,
-                    root.clone(),
-                    root,
+                    SystemStatusFilesystemScanInputs {
+                        archive_paths,
+                        config,
+                        archive_dir: root.clone(),
+                        raw_dir: root,
+                    },
                     &cache,
                     &cancellation,
                     cancellation_deadline,
