@@ -1,5 +1,5 @@
 import Gantt, { type GanttTask, type GanttViewMode } from "frappe-gantt";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../../i18n";
 import type {
@@ -86,6 +86,15 @@ interface RoutingViewSpec {
   columns: number;
 }
 
+interface RoutingAxisLayout {
+  normalizedTimelineStartMs: number;
+  normalizedStepMs: number;
+  columnWidth: number;
+  compact: boolean;
+  compactLabelStride: number;
+  columns: number;
+}
+
 const WINDOW_DURATION_MS: Record<ModelRoutingLiveWindow, number> = {
   "15m": 15 * 60_000,
   "1h": 60 * 60_000,
@@ -105,10 +114,12 @@ const ROUTING_PRIORITIES = new Set<RoutingTimelinePriority>(["normal", "demoted"
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GANTT_HEADER_HEIGHT = 54;
 const GANTT_ROW_HEIGHT = 32;
-const MODEL_RECORD_DETAIL_ROWS = 8;
+const MODEL_RECORD_DETAIL_MIN_ROWS = 2;
+const MODEL_RECORD_DETAIL_ROWS_PER_RECORD = 1;
 // A one-second offset avoids Frappe treating a midnight end as an all-day task.
 const NORMALIZED_START_MS = new Date(2000, 0, 1, 0, 0, 1, 0).getTime();
 const NORMALIZED_TIMELINE_DURATION_MS = 24 * 60 * 60_000;
+const svgActions = new WeakMap<SVGElement, () => void>();
 
 export function availableBandOpacity(callCount: number, maxCallCount: number) {
   if (maxCallCount <= 0) return 0.56;
@@ -422,6 +433,7 @@ export function buildFrappeSystemRoutingTasks(
   timelines: RoutingTimelineGroup[],
   normalizedStartMs = NORMALIZED_START_MS,
   expandedModel: string | null = null,
+  detailRows = MODEL_RECORD_DETAIL_MIN_ROWS,
 ): RoutingFrappeTask[] {
   return timelines.flatMap((group) => {
     const normalizedEndMs = normalizedStartMs + NORMALIZED_TIMELINE_DURATION_MS;
@@ -439,7 +451,7 @@ export function buildFrappeSystemRoutingTasks(
     const detailTasks =
       group.model === expandedModel
         ? Array.from(
-            { length: MODEL_RECORD_DETAIL_ROWS },
+            { length: detailRows },
             (_, index): RoutingFrappeTask => ({
               id: routingDetailTaskId(group.model, index),
               name: "\u00a0",
@@ -454,6 +466,19 @@ export function buildFrappeSystemRoutingTasks(
         : [];
     return [modelTask, ...laneTasks, ...detailTasks];
   });
+}
+
+function modelRecordDetailRows(
+  records: ModelRoutingTimelineRecord[],
+  expandedModel: string | null,
+  measuredContentHeight: number,
+) {
+  if (!expandedModel) return 0;
+  const recordCount = records.filter((record) => record.model === expandedModel).length;
+  const estimatedRows =
+    MODEL_RECORD_DETAIL_MIN_ROWS + recordCount * MODEL_RECORD_DETAIL_ROWS_PER_RECORD;
+  const measuredRows = Math.ceil(measuredContentHeight / GANTT_ROW_HEIGHT);
+  return Math.max(estimatedRows, measuredRows);
 }
 
 function modelRecordDetailTop(timelines: RoutingTimelineGroup[], expandedModel: string | null) {
@@ -478,9 +503,126 @@ function svgElement<K extends keyof SVGElementTagNameMap>(
 }
 
 function appendSvgTitle(element: SVGElement, label: string) {
-  const title = svgElement("title", {});
+  const title = svgElement("title", { "data-model-routing-decoration": "title" });
   title.textContent = label;
   element.appendChild(title);
+}
+
+function clearRoutingSvgDecorations(host: HTMLElement) {
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  if (!svg) return;
+  svg
+    .querySelectorAll(
+      ".model-routing-segments, .model-routing-model-count, .model-routing-lane-header, [data-model-routing-decoration]",
+    )
+    .forEach((element) => {
+      element.remove();
+    });
+}
+
+function originalNumericAttribute(element: Element, attribute: string) {
+  const originalAttribute = `data-model-routing-original-${attribute}`;
+  const remembered = element.getAttribute(originalAttribute);
+  if (remembered != null) return Number.parseFloat(remembered);
+  const current = element.getAttribute(attribute);
+  if (current == null) return null;
+  element.setAttribute(originalAttribute, current);
+  const value = Number.parseFloat(current);
+  return Number.isFinite(value) ? value : null;
+}
+
+function originalStyleHeight(element: HTMLElement) {
+  const remembered = element.getAttribute("data-model-routing-original-style-height");
+  if (remembered != null) return Number.parseFloat(remembered);
+  const current = Number.parseFloat(element.style.height);
+  if (!Number.isFinite(current)) return null;
+  element.setAttribute("data-model-routing-original-style-height", String(current));
+  return current;
+}
+
+function setRoutingLayoutTranslateY(element: SVGElement, offset: number) {
+  const originalAttribute = "data-model-routing-original-transform";
+  const remembered = element.getAttribute(originalAttribute);
+  const original = remembered ?? element.getAttribute("transform") ?? "";
+  if (remembered == null) element.setAttribute(originalAttribute, original);
+  const translate = offset === 0 ? "" : `translate(0 ${offset})`;
+  const transform = [original, translate].filter(Boolean).join(" ");
+  if (transform) element.setAttribute("transform", transform);
+  else element.removeAttribute("transform");
+}
+
+function setRoutingLayoutVisibility(element: SVGElement, hidden: boolean) {
+  if (hidden) element.style.visibility = "hidden";
+  else element.style.removeProperty("visibility");
+}
+
+function syncRoutingDetailSlot({
+  host,
+  detailTop,
+  detailRows,
+  baseDetailRows,
+}: {
+  host: HTMLElement;
+  detailTop: number | null;
+  detailRows: number;
+  baseDetailRows: number;
+}) {
+  if (detailTop == null || baseDetailRows <= 0) return;
+  const container = host.querySelector<HTMLElement>(".gantt-container");
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  const slot = container?.querySelector<HTMLElement>(".model-routing-records-slot");
+  if (!container || !svg || !slot) return;
+
+  const detailEnd = detailTop + baseDetailRows * GANTT_ROW_HEIGHT;
+  const offset = (detailRows - baseDetailRows) * GANTT_ROW_HEIGHT;
+  slot.style.height = `${detailRows * GANTT_ROW_HEIGHT}px`;
+
+  svg.querySelectorAll<SVGGElement>(".bar-wrapper").forEach((wrapper) => {
+    const bar = wrapper.querySelector<SVGRectElement>(".bar");
+    const y = bar ? originalNumericAttribute(bar, "y") : null;
+    if (y == null) return;
+    const isDetailPlaceholder = y >= detailTop && y < detailEnd;
+    setRoutingLayoutVisibility(wrapper, isDetailPlaceholder);
+    setRoutingLayoutTranslateY(wrapper, y >= detailEnd ? offset : 0);
+  });
+
+  svg.querySelectorAll<SVGRectElement>(".grid-row").forEach((row) => {
+    const y = originalNumericAttribute(row, "y");
+    if (y == null) return;
+    const isDetailPlaceholder = y >= detailTop && y < detailEnd;
+    setRoutingLayoutVisibility(row, isDetailPlaceholder);
+    setRoutingLayoutTranslateY(row, y >= detailEnd ? offset : 0);
+  });
+
+  svg.querySelectorAll<SVGLineElement>(".row-line").forEach((line) => {
+    const y = originalNumericAttribute(line, "y1");
+    if (y == null) return;
+    const isDetailBoundary = y > detailTop && y <= detailEnd;
+    setRoutingLayoutVisibility(line, isDetailBoundary);
+    setRoutingLayoutTranslateY(line, y > detailEnd ? offset : 0);
+  });
+
+  const originalGridHeight = originalNumericAttribute(svg, "height");
+  if (originalGridHeight != null) {
+    const height = originalGridHeight + offset;
+    svg.setAttribute("height", String(height));
+    const originalContainerHeight = originalStyleHeight(container) ?? originalGridHeight;
+    container.style.height = `${originalContainerHeight + offset}px`;
+  }
+  svg.querySelectorAll<SVGRectElement>(".grid-background").forEach((background) => {
+    const height = originalNumericAttribute(background, "height");
+    if (height != null) background.setAttribute("height", String(height + offset));
+  });
+  svg.querySelectorAll<SVGPathElement>(".tick").forEach((tick) => {
+    const originalAttribute = "data-model-routing-original-d";
+    const original = tick.getAttribute(originalAttribute) ?? tick.getAttribute("d");
+    if (!original) return;
+    if (!tick.hasAttribute(originalAttribute)) tick.setAttribute(originalAttribute, original);
+    tick.setAttribute(
+      "d",
+      original.replace(/v\s*(-?\d+(?:\.\d+)?)/, (_match, height) => `v ${Number(height) + offset}`),
+    );
+  });
 }
 
 function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWidth: number) {
@@ -490,18 +632,91 @@ function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWid
 }
 
 function bindSvgAction(element: SVGElement, action: () => void) {
+  svgActions.set(element, action);
+  if (element.hasAttribute("data-model-routing-action-bound")) return;
+  element.setAttribute("data-model-routing-action-bound", "true");
   element.setAttribute("role", "button");
   element.setAttribute("tabindex", "0");
   element.addEventListener("click", (event) => {
     event.stopPropagation();
-    action();
+    svgActions.get(element)?.();
   });
   element.addEventListener("keydown", (event) => {
     if (event instanceof KeyboardEvent && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       event.stopPropagation();
-      action();
+      svgActions.get(element)?.();
     }
+  });
+}
+
+function axisObservedMs(
+  normalizedDateMs: number,
+  axis: RoutingAxisLayout,
+  rangeStartMs: number,
+  window: ModelRoutingLiveWindow,
+) {
+  return (
+    rangeStartMs +
+    ((normalizedDateMs - axis.normalizedTimelineStartMs) / NORMALIZED_TIMELINE_DURATION_MS) *
+      WINDOW_DURATION_MS[window]
+  );
+}
+
+function refreshRoutingAxisLabels({
+  host,
+  rangeStartMs,
+  window,
+  localeTag,
+  axis,
+}: {
+  host: HTMLElement;
+  rangeStartMs: number;
+  window: ModelRoutingLiveWindow;
+  localeTag: string;
+  axis: RoutingAxisLayout;
+}) {
+  const normalizedDateFor = (element: HTMLElement) => {
+    const offset = Number.parseFloat(element.style.left);
+    if (!Number.isFinite(offset)) return null;
+    return NORMALIZED_START_MS + Math.round(offset / axis.columnWidth) * axis.normalizedStepMs;
+  };
+  const lowerTextFor = (normalizedDateMs: number) => {
+    if (normalizedDateMs < axis.normalizedTimelineStartMs) return "";
+    const normalizedIndex = Math.round(
+      (normalizedDateMs - axis.normalizedTimelineStartMs) /
+        (NORMALIZED_TIMELINE_DURATION_MS / (axis.columns - 1)),
+    );
+    if (axis.compact && normalizedIndex % axis.compactLabelStride !== 0) return "";
+    return formatBeijing(axisObservedMs(normalizedDateMs, axis, rangeStartMs, window), localeTag, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+  const upperTextFor = (normalizedDateMs: number) => {
+    if (normalizedDateMs < axis.normalizedTimelineStartMs) return "\u00a0";
+    const currentMs = axisObservedMs(normalizedDateMs, axis, rangeStartMs, window);
+    const previousMs = axisObservedMs(
+      normalizedDateMs - axis.normalizedStepMs,
+      axis,
+      rangeStartMs,
+      window,
+    );
+    const currentDate = formatBeijing(currentMs, localeTag, { month: "2-digit", day: "2-digit" });
+    const previousDate = formatBeijing(previousMs, localeTag, {
+      month: "2-digit",
+      day: "2-digit",
+    });
+    return currentDate === previousDate ? "" : currentDate;
+  };
+
+  host.querySelectorAll<HTMLElement>(".lower-text").forEach((element) => {
+    const normalizedDateMs = normalizedDateFor(element);
+    if (normalizedDateMs != null) element.textContent = lowerTextFor(normalizedDateMs);
+  });
+  host.querySelectorAll<HTMLElement>(".upper-text").forEach((element) => {
+    const normalizedDateMs = normalizedDateFor(element);
+    if (normalizedDateMs != null) element.textContent = upperTextFor(normalizedDateMs);
   });
 }
 
@@ -552,7 +767,9 @@ function decorateTimelineSvg({
     const baseBar = wrapper?.querySelector<SVGRectElement>(".bar");
     const barGroup = wrapper?.querySelector<SVGGElement>(".bar-group");
     const label = wrapper?.querySelector<SVGTextElement>(".bar-label");
-    if (!wrapper || !baseBar || !barGroup || !label || rangeDuration <= 0) continue;
+    if (!wrapper || !baseBar || !barGroup || !label || rangeDuration <= 0) {
+      continue;
+    }
 
     const x = Number(baseBar.getAttribute("x"));
     const y = Number(baseBar.getAttribute("y"));
@@ -563,11 +780,13 @@ function decorateTimelineSvg({
     label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
     const fullLabel = lane.label;
+    // Decorations are cleared before every live frame, so measure the source label rather than a prior truncation.
+    label.textContent = fullLabel;
     const availableLabelWidth = Math.max(0, x - 16);
     const measuredLabelWidth = label.getComputedTextLength();
     const visibleLabel = truncateSvgLaneLabel(fullLabel, measuredLabelWidth, availableLabelWidth);
+    label.textContent = visibleLabel;
     if (visibleLabel !== fullLabel) {
-      label.textContent = visibleLabel;
       appendSvgTitle(label, fullLabel);
     }
     wrapper.setAttribute("data-testid", `model-routing-lane-${lane.model}-${lane.accountId}`);
@@ -756,6 +975,8 @@ function ModelRoutingSvgChart({
   onOpenAccount,
   onOpenInvocation,
   onToggleModelRecords,
+  detailRows,
+  onDetailContentHeightChange,
 }: {
   timelines: RoutingTimelineGroup[];
   records: ModelRoutingTimelineRecord[];
@@ -778,12 +999,47 @@ function ModelRoutingSvgChart({
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
   onToggleModelRecords: (model: string) => void;
+  detailRows: number;
+  onDetailContentHeightChange: (height: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [detailPortalTarget, setDetailPortalTarget] = useState<HTMLDivElement | null>(null);
   const [hostWidth, setHostWidth] = useState(0);
+  const [layoutGeneration, setLayoutGeneration] = useState(0);
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
+  const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel, detailRows });
+  const structuralDetailRowsRef = useRef(0);
+  const axisLayoutRef = useRef<RoutingAxisLayout | null>(null);
+  layoutSourceRef.current = { timelines, range, detailTop, expandedModel, detailRows };
+  const axisDateKey = useMemo(() => {
+    if (!range) return "";
+    const spec = VIEW_SPECS[window];
+    return Array.from({ length: spec.columns }, (_, index) =>
+      formatBeijing(
+        range.rangeStartMs + (index / (spec.columns - 1)) * WINDOW_DURATION_MS[window],
+        localeTag,
+        { month: "2-digit", day: "2-digit" },
+      ),
+    ).join("|");
+  }, [localeTag, range, window]);
+  const layoutKey = useMemo(
+    () =>
+      JSON.stringify({
+        expandedModel,
+        axisDateKey,
+        lanes: timelines.map((group) => ({
+          model: group.model,
+          lanes: group.timeline.lanes.map((lane) => ({
+            accountId: lane.accountId,
+            label: lane.label,
+          })),
+        })),
+      }),
+    [axisDateKey, expandedModel, timelines],
+  );
+  const interactionRef = useRef({ onOpenAccount, onOpenInvocation });
+  interactionRef.current = { onOpenAccount, onOpenInvocation };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -796,10 +1052,20 @@ function ModelRoutingSvgChart({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
+  // The key is intentionally limited to the DOM identity that Frappe owns.
+  // Live records only update the existing axis labels and SVG decorations below, so they never reset
+  // the chart or its scroll. Expanded record height shifts existing SVG rows in place. A date-label
+  // boundary is structural because Frappe omits empty headers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey explicitly represents Frappe's structural DOM identity.
+  useLayoutEffect(() => {
     const host = hostRef.current;
-    if (!host || hostWidth <= 0 || timelines.length === 0 || !range) return;
-    setDetailPortalTarget(null);
+    const layoutSource = layoutSourceRef.current;
+    if (!host || hostWidth <= 0 || layoutSource.timelines.length === 0 || !layoutSource.range) {
+      return;
+    }
+    const layoutTimelines = layoutSource.timelines;
+    const layoutRange = layoutSource.range;
+    const previousScrollLeft = host.querySelector<HTMLElement>(".gantt-container")?.scrollLeft ?? 0;
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
@@ -810,14 +1076,17 @@ function ModelRoutingSvgChart({
       ? Math.max(44, fittedColumnWidth)
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
     const normalizedTimelineStartMs = NORMALIZED_START_MS + spec.normalizedStepMs * labelIntervals;
+    const structuralDetailRows = layoutSource.expandedModel ? layoutSource.detailRows : 0;
+    structuralDetailRowsRef.current = structuralDetailRows;
     const tasks = buildFrappeSystemRoutingTasks(
-      timelines,
+      layoutTimelines,
       normalizedTimelineStartMs,
-      expandedModel,
+      layoutSource.expandedModel,
+      structuralDetailRows,
     );
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
-      range.rangeStartMs +
+      layoutRange.rangeStartMs +
       ((normalizedDate.getTime() - normalizedTimelineStartMs) / NORMALIZED_TIMELINE_DURATION_MS) *
         WINDOW_DURATION_MS[window];
     const viewMode: GanttViewMode = {
@@ -876,23 +1145,60 @@ function ModelRoutingSvgChart({
       on_click: (task) => {
         const routingTask = task as RoutingFrappeTask;
         if (routingTask.kind === "lane" && routingTask.accountId != null) {
-          onOpenAccount(routingTask.accountId, routingTask.model);
+          interactionRef.current.onOpenAccount(routingTask.accountId, routingTask.model);
         }
       },
     });
+    axisLayoutRef.current = {
+      normalizedTimelineStartMs,
+      normalizedStepMs: spec.normalizedStepMs,
+      columnWidth,
+      compact,
+      compactLabelStride,
+      columns: spec.columns,
+    };
     let portalTarget: HTMLDivElement | null = null;
-    if (expandedModel && detailTop != null) {
-      const container = host.querySelector<HTMLElement>(".gantt-container");
+    const container = host.querySelector<HTMLElement>(".gantt-container");
+    if (container) container.scrollLeft = previousScrollLeft;
+    if (layoutSource.expandedModel && layoutSource.detailTop != null) {
       if (container) {
         portalTarget = document.createElement("div");
         portalTarget.className = "model-routing-records-slot";
-        portalTarget.style.top = `${detailTop}px`;
-        portalTarget.style.height = `${MODEL_RECORD_DETAIL_ROWS * GANTT_ROW_HEIGHT}px`;
+        portalTarget.style.top = `${layoutSource.detailTop}px`;
+        portalTarget.style.height = `${structuralDetailRows * GANTT_ROW_HEIGHT}px`;
         container.appendChild(portalTarget);
-        setDetailPortalTarget(portalTarget);
       }
     }
-    const frame = requestAnimationFrame(() =>
+    if (portalTarget) setDetailPortalTarget(portalTarget);
+    setLayoutGeneration((generation) => generation + 1);
+    return () => {
+      axisLayoutRef.current = null;
+      structuralDetailRowsRef.current = 0;
+      portalTarget?.remove();
+      host.replaceChildren();
+    };
+  }, [localeTag, layoutKey, window, hostWidth]);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const axis = axisLayoutRef.current;
+    if (!host || !axis || layoutGeneration === 0 || timelines.length === 0 || !range) return;
+    const frame = requestAnimationFrame(() => {
+      if (hostRef.current !== host) return;
+      refreshRoutingAxisLabels({
+        host,
+        rangeStartMs: range.rangeStartMs,
+        window,
+        localeTag,
+        axis,
+      });
+      syncRoutingDetailSlot({
+        host,
+        detailTop,
+        detailRows,
+        baseDetailRows: structuralDetailRowsRef.current,
+      });
+      clearRoutingSvgDecorations(host);
       decorateSystemRoutingSvg({
         host,
         timelines,
@@ -914,21 +1220,19 @@ function ModelRoutingSvgChart({
         onOpenAccount,
         onOpenInvocation,
         onToggleModelRecords,
-      }),
-    );
-    return () => {
-      cancelAnimationFrame(frame);
-      portalTarget?.remove();
-      host.replaceChildren();
-    };
+      });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [
     allocationLabel,
     attemptLabel,
     availableCounts,
     colors,
+    detailRows,
     detailTop,
     expandedModel,
     laneHeaderLabel,
+    layoutGeneration,
     localeTag,
     maxAvailableCount,
     modelToggleLabel,
@@ -944,7 +1248,6 @@ function ModelRoutingSvgChart({
     totalAvailableCount,
     unknownLabel,
     window,
-    hostWidth,
   ]);
 
   return (
@@ -961,6 +1264,7 @@ function ModelRoutingSvgChart({
               records={records}
               onOpenAccount={onOpenAccount}
               onOpenInvocation={onOpenInvocation}
+              onContentHeightChange={onDetailContentHeightChange}
             />,
             detailPortalTarget,
           )
@@ -987,6 +1291,7 @@ export function ModelRoutingGantt({
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [detailContentHeight, setDetailContentHeight] = useState(0);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const timelines = useMemo(
     () =>
@@ -1049,11 +1354,20 @@ export function ModelRoutingGantt({
     return { counts, max, total };
   }, [timelines]);
   const toggleModelRecords = useCallback((model: string) => {
+    setDetailContentHeight(0);
     setExpandedModel((current) => (current === model ? null : model));
+  }, []);
+  const detailRows = useMemo(
+    () => modelRecordDetailRows(records, expandedModel, detailContentHeight),
+    [detailContentHeight, expandedModel, records],
+  );
+  const updateDetailContentHeight = useCallback((height: number) => {
+    setDetailContentHeight((current) => (Math.abs(current - height) > 1 ? height : current));
   }, []);
 
   useEffect(() => {
     if (expandedModel && !timelines.some((timeline) => timeline.model === expandedModel)) {
+      setDetailContentHeight(0);
       setExpandedModel(null);
     }
   }, [expandedModel, timelines]);
@@ -1142,6 +1456,8 @@ export function ModelRoutingGantt({
         onOpenAccount={onOpenAccount}
         onOpenInvocation={onOpenInvocation}
         onToggleModelRecords={toggleModelRecords}
+        detailRows={detailRows}
+        onDetailContentHeightChange={updateDetailContentHeight}
       />
     </div>
   );

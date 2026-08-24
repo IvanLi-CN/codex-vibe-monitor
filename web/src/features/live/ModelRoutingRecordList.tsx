@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
@@ -263,14 +263,17 @@ export function ModelRoutingRecordList({
   records,
   onOpenAccount,
   onOpenInvocation,
+  onContentHeightChange,
 }: {
   model: string;
   records: ModelRoutingTimelineRecord[];
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
+  onContentHeightChange?: (height: number) => void;
 }) {
   const { t } = useTranslation();
   const [expandedRecords, setExpandedRecords] = useState<Set<string>>(new Set());
+  const sectionRef = useRef<HTMLElement>(null);
   const modelRecords = useMemo(
     () =>
       records
@@ -290,10 +293,25 @@ export function ModelRoutingRecordList({
     });
   }, [modelRecords]);
 
+  useLayoutEffect(() => {
+    const section = sectionRef.current;
+    if (!section || !onContentHeightChange) return;
+    const reportHeight = () => {
+      const height = Math.ceil(section.getBoundingClientRect().height);
+      if (height > 0) onContentHeightChange(height);
+    };
+    reportHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(section);
+    return () => observer.disconnect();
+  }, [onContentHeightChange]);
+
   return (
     <section
+      ref={sectionRef}
       id={modelRoutingRecordsId(model)}
-      className="flex h-full min-h-0 flex-col border-y border-base-300/70 bg-base-100"
+      className="border-y border-base-300/70 bg-base-100"
       data-testid={`model-routing-model-records-${model}`}
     >
       <div className="flex shrink-0 items-center justify-between gap-3 px-3 py-2">
@@ -304,7 +322,7 @@ export function ModelRoutingRecordList({
           {t("live.routing.modelRecordsCount", { count: modelRecords.length })}
         </span>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <div>
         {modelRecords.length === 0 ? (
           <p className="border-t border-base-300/60 px-3 py-3 text-sm text-base-content/70">
             {t("live.routing.modelRecordsEmpty")}
