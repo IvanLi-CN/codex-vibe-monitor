@@ -1024,6 +1024,31 @@ pub(crate) async fn query_stats_row(
     }
 }
 
+/// Aggregate the live invocation table through a previously admitted durable id fence.
+///
+/// Summary projection hydration uses this instead of an unbounded `StatsFilter::All` read so
+/// concurrent inserts after the bounded admission cannot expand the scan or change the snapshot
+/// being published.
+pub(crate) async fn query_stats_row_through_id(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    upper_bound_id: i64,
+) -> Result<StatsRow> {
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query
+        .push(stats_success_failure_select_sql())
+        .push(" FROM codex_invocations WHERE id <= ")
+        .push_bind(upper_bound_id);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query
+        .build_query_as::<StatsRow>()
+        .fetch_one(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn query_upstream_account_stats_row(
     pool: &Pool<Sqlite>,
     filter: StatsFilter,

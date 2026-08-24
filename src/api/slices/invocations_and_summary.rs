@@ -8103,17 +8103,19 @@ async fn admit_summary_projection_live_tail_account_ids(
 
 async fn load_summary_projection_live_account_totals(
     pool: &Pool<Sqlite>,
+    upper_bound_id: i64,
 ) -> Result<HashMap<i64, StatsTotals>> {
     let account_expression = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
     let query = format!(
         "SELECT {account_expression} AS upstream_account_id, {} \
          FROM codex_invocations \
-         WHERE {account_expression} > 0 \
+         WHERE id <= ?1 AND {account_expression} > 0 \
          GROUP BY upstream_account_id \
-         LIMIT ?1",
+         LIMIT ?2",
         crate::stats::stats_success_failure_select_sql(),
     );
     let rows = sqlx::query_as::<_, SummaryProjectionAccountTotalsRow>(&query)
+        .bind(upper_bound_id)
         .bind((SUMMARY_PROJECTION_MAX_ACCOUNTS + 1) as i64)
         .fetch_all(pool)
         .await
@@ -8131,7 +8133,7 @@ async fn load_summary_projection_live_account_totals(
 
 async fn summary_projection_live_history_within_aggregate_budget(
     pool: &Pool<Sqlite>,
-) -> Result<bool> {
+) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
     match crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
         pool,
         InvocationSourceScope::All,
@@ -8140,13 +8142,13 @@ async fn summary_projection_live_history_within_aggregate_budget(
     )
     .await
     {
-        Ok(_) => Ok(true),
+        Ok(admission) => Ok(Some(admission)),
         Err(error)
             if error
                 .to_string()
                 .starts_with("summary live-tail id budget exceeded") =>
         {
-            Ok(false)
+            Ok(None)
         }
         Err(error) => Err(error.context("summary projection live aggregate admission failed")),
     }
@@ -10522,12 +10524,12 @@ async fn build_summary_projection(
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
-        let live_history_within_aggregate_budget = if !has_any_completed_archive {
+        let live_history_admission = if !has_any_completed_archive {
             summary_projection_live_history_within_aggregate_budget(&state.pool).await?
         } else {
-            true
+            None
         };
-        if !live_history_within_aggregate_budget {
+        if !has_any_completed_archive && live_history_admission.is_none() {
             // A durable live table beyond the aggregate admission bound cannot be scanned during
             // hydration. Keep rolling/current projections available and fail closed for all-time
             // until archive/rollup maintenance supplies a compact baseline.
@@ -10538,12 +10540,12 @@ async fn build_summary_projection(
             // Without archives the live table is the complete durable history. Keep that
             // history compact by hydrating one aggregate row instead of retaining/sorting every
             // old live record in the projection.
-            if live_history_within_aggregate_budget {
+            if let Some(admission) = live_history_admission.as_ref() {
                 StatsTotals::from(
-                    crate::stats::query_stats_row(
+                    crate::stats::query_stats_row_through_id(
                         &state.pool,
-                        crate::stats::StatsFilter::All,
                         InvocationSourceScope::All,
+                        admission.upper_bound_id,
                     )
                     .await
                     .map_err(|error| {
@@ -10662,8 +10664,9 @@ async fn build_summary_projection(
         }
 
         let account_totals = if !has_any_completed_archive {
-            if live_history_within_aggregate_budget {
-                load_summary_projection_live_account_totals(&state.pool).await?
+            if let Some(admission) = live_history_admission.as_ref() {
+                load_summary_projection_live_account_totals(&state.pool, admission.upper_bound_id)
+                    .await?
             } else {
                 HashMap::new()
             }
@@ -28231,6 +28234,53 @@ mod request_compression_query_tests {
             matches!(error, ApiError::Unavailable(_)),
             "aggregate admission overflow must preserve the unavailable contract: {error:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_live_aggregate_fence_excludes_post_admission_rows() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('aggregate-fence-before', datetime('now', '-3 days'), 'proxy', 'success', 3, 0.3, '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert pre-admission live row");
+        let admission = summary_projection_live_history_within_aggregate_budget(&state.pool)
+            .await
+            .expect("admission must succeed")
+            .expect("small live history must be admitted");
+
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('aggregate-fence-after', datetime('now', '-3 days'), 'proxy', 'success', 7, 0.7, '{\"upstreamAccountId\":43}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert post-admission live row");
+
+        let global = StatsTotals::from(
+            crate::stats::query_stats_row_through_id(
+                &state.pool,
+                InvocationSourceScope::All,
+                admission.upper_bound_id,
+            )
+            .await
+            .expect("bounded global aggregate"),
+        );
+        assert_eq!(global.total_count, 1);
+        assert_eq!(global.total_tokens, 3);
+        let accounts =
+            load_summary_projection_live_account_totals(&state.pool, admission.upper_bound_id)
+                .await
+                .expect("bounded account aggregate");
+        assert_eq!(accounts.get(&42).map(|totals| totals.total_count), Some(1));
+        assert_eq!(accounts.get(&43).map(|totals| totals.total_count), None);
     }
 
     #[tokio::test]
