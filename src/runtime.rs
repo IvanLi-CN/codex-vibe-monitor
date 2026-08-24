@@ -506,6 +506,7 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
     pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
+    startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
     let shutdown_cancel = state.shutdown.clone();
     tokio::select! {
@@ -524,6 +525,7 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
         pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
+        startup_hot_read_hydration_handle,
     )
     .await
 }
@@ -553,6 +555,7 @@ where
     let mut retention_handle = None;
     let mut server_handle = None;
     let mut startup_backfill_handle = None;
+    let mut startup_hot_read_hydration_handle = None;
 
     let sync_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -572,6 +575,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -597,6 +601,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -621,6 +626,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -643,6 +649,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -666,6 +673,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -688,6 +696,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -711,6 +720,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -733,6 +743,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -757,6 +768,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -779,6 +791,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -802,6 +815,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -825,12 +839,15 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
 
-    let _startup_hot_read_hydration =
-        publish_http_readiness_and_spawn_hot_read_hydration(state.clone(), startup_started_at);
+    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_hot_read_hydration(
+        state.clone(),
+        startup_started_at,
+    ));
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_summary_snapshot_maintenance(state.clone());
     spawn_system_status_snapshot_maintenance(state.clone());
@@ -855,6 +872,7 @@ where
                 pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
+                startup_hot_read_hydration_handle,
             )
             .await;
         }
@@ -877,6 +895,7 @@ where
             pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
+            startup_hot_read_hydration_handle,
         )
         .await;
     }
@@ -909,6 +928,7 @@ where
         pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
+        startup_hot_read_hydration_handle,
     )
     .await
 }
@@ -929,6 +949,7 @@ pub(crate) async fn drain_runtime_after_shutdown(
     pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
+    startup_hot_read_hydration_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
     if let Some(server_handle) = server_handle {
         info!("http server graceful drain started");
@@ -980,6 +1001,14 @@ pub(crate) async fn drain_runtime_after_shutdown(
         error!(
             ?err,
             "startup backfill maintenance task terminated unexpectedly"
+        );
+    }
+    if let Some(startup_hot_read_hydration_handle) = startup_hot_read_hydration_handle
+        && let Err(err) = startup_hot_read_hydration_handle.await
+    {
+        error!(
+            ?err,
+            "startup hot-read hydration coordinator terminated unexpectedly"
         );
     }
 

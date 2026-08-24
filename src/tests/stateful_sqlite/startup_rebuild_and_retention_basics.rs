@@ -1093,6 +1093,53 @@ async fn startup_system_status_hydrates_while_summary_hydration_is_delayed() {
 }
 
 #[tokio::test]
+async fn runtime_drain_joins_pending_startup_hydration_after_http_readiness() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),
+    )
+    .await;
+    let (addr, server_handle) = spawn_http_server(state.clone())
+        .await
+        .expect("spawn HTTP server before startup hydration");
+    let hydration_handle =
+        publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
+            state.clone(),
+            Instant::now(),
+            Duration::from_secs(30),
+        );
+
+    let health = reqwest::get(format!("http://{addr}/health"))
+        .await
+        .expect("health endpoint should respond after readiness is published");
+    assert_eq!(health.status(), StatusCode::OK);
+    assert!(
+        !hydration_handle.is_finished(),
+        "the delayed startup hydration coordinator should still be pending at shutdown"
+    );
+
+    begin_runtime_shutdown(&state.shutdown);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        drain_runtime_after_shutdown(
+            state.clone(),
+            Some(server_handle),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(hydration_handle),
+        ),
+    )
+    .await
+    .expect("runtime drain should not wait for abandoned startup hydration subwork")
+    .expect("runtime drain should join the pending startup hydration coordinator");
+
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-summary-hydration-deadline",
