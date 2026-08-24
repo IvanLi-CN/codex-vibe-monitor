@@ -10789,6 +10789,12 @@ async fn build_summary_projection(
         .subscription_hub
         .next_summary_projection_revision()
         .await;
+    let all_time_completed_at = all_time_was_fully_rebuilt.then(Instant::now);
+    if let Some(completed_at) = all_time_completed_at {
+        for account_id in &rebuilt_all_time_account_ids {
+            all_time_account_refreshed_at.insert(*account_id, completed_at);
+        }
+    }
     let refreshed_at = Some(Instant::now());
     let freshness = SummaryProjectionFreshness {
         global_all_time_eligible: if all_time_was_fully_rebuilt {
@@ -10901,7 +10907,7 @@ async fn build_summary_projection(
         all_time_by_account,
         all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
         {
-            Some(all_time_built_at)
+            all_time_completed_at
         } else {
             previous_all_time_refreshed_at
         },
