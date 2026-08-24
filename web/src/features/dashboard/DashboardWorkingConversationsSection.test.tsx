@@ -1303,11 +1303,12 @@ describe("DashboardWorkingConversationsSection", () => {
       firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
         ?.className,
     ).not.toMatch(/rounded|border|bg-/);
-    expect(
-      firstRecentRow
-        ?.querySelector('[data-testid="dashboard-compact-latency-pills"]')
-        ?.getAttribute("aria-label"),
-    ).toMatch(/TTFT|TTFT/i);
+    const firstRecentLatencyPills = firstRecentRow?.querySelector(
+      '[data-testid="dashboard-compact-latency-pills"]',
+    );
+    expect(firstRecentLatencyPills?.getAttribute("aria-label")).toMatch(/TTFT|TTFT/i);
+    expect(firstRecentLatencyPills?.className).toContain("gap-1");
+    expect(firstRecentLatencyPills?.getAttribute("aria-label")).not.toMatch(/\d\s+s/);
 
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-live-call-breakdown"]'),
@@ -4097,12 +4098,28 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     expect(placeholders).toHaveLength(2);
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversation-placeholder"][data-slot-kind="previous"]',
+      )?.textContent,
+    ).toContain("暂无上一条调用");
+    expect(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversation-placeholder"][data-slot-kind="earlier"]',
+      )?.textContent,
+    ).toContain("暂无更早调用");
     for (const placeholder of placeholders ?? []) {
-      expect(placeholder.textContent).toBe("");
+      expect(placeholder.textContent).toMatch(/暂无(上一条|更早)调用/);
       expect(placeholder.querySelectorAll(".working-conversation-placeholder-line")).toHaveLength(
-        2,
+        0,
       );
+      expect(
+        placeholder.querySelector(
+          '[data-testid="dashboard-working-conversation-placeholder-label"]',
+        ),
+      ).not.toBeNull();
       expect(placeholder.getAttribute("role")).toBe("group");
+      expect(placeholder.getAttribute("aria-live")).toBeNull();
     }
   });
 
@@ -5110,12 +5127,14 @@ describe("DashboardWorkingConversationsSection", () => {
     const placeholder = host?.querySelector(
       '[data-testid="dashboard-working-conversation-placeholder"]',
     );
-    const placeholderLine = host?.querySelector(".working-conversation-placeholder-line");
+    const placeholderLabel = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-placeholder-label"]',
+    );
 
     expect(card?.className).toContain("working-conversation-card-surface");
     expect(card?.className).not.toContain("bg-[linear-gradient");
     expect(placeholder?.className).toContain("working-conversation-slot-surface");
-    expect(placeholderLine).not.toBeNull();
+    expect(placeholderLabel).not.toBeNull();
   });
 
   it("keeps the wide-screen grid contract on the conversations section", () => {
@@ -6155,6 +6174,8 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(slotReadings.className).toContain("flex-nowrap");
     expect(latencyPills.className).toContain("flex-nowrap");
+    expect(latencyPills.className).toContain("gap-1");
+    expect(latencyPills.getAttribute("aria-label")).not.toMatch(/\d\s+s/);
   });
 
   it("renders the recent-row error summary as a truncated trigger and exposes the full message on focus", async () => {
@@ -6332,7 +6353,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
         ?.textContent,
-    ).toContain("1.2 s");
+    ).toContain("1.2s");
     expect(
       latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
         ?.textContent,
@@ -6344,25 +6365,25 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
         ?.textContent,
-    ).toContain("0 s");
+    ).toContain("0s");
     expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
         ?.textContent,
-    ).toContain("8028 s");
+    ).toContain("8028s");
     expect(
       latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
         ?.textContent,
-    ).toContain("100 s");
+    ).toContain("100s");
 
-    expect(readings).toContain("1.2 s");
+    expect(readings).toContain("1.2s");
     expect(readings).toContain("--");
-    expect(readings).toContain("0 s");
-    expect(readings).toContain("8028 s");
-    expect(readings).toContain("100 s");
-    expect(readings).not.toContain("1.234 s");
-    expect(readings).not.toContain("2.3 s");
-    expect(readings).not.toContain("7.89 s");
-    expect(readings).not.toContain("100.0 s");
+    expect(readings).toContain("0s");
+    expect(readings).toContain("8028s");
+    expect(readings).toContain("100s");
+    expect(readings).not.toContain("1.234s");
+    expect(readings).not.toContain("2.3s");
+    expect(readings).not.toContain("7.89s");
+    expect(readings).not.toContain("100.0s");
     expect(readings).not.toContain("8,028");
 
     vi.useRealTimers();

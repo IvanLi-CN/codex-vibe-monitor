@@ -3573,8 +3573,10 @@ export const CurrentAndPrevious: Story = {
     ).toHaveLength(3);
     await expect(slotHeader).toContainElement(firstByteLatency);
     await expect(slotHeader).toContainElement(responseLatency);
-    await expect(firstByteLatency).toHaveTextContent("0.7 s");
-    await expect(responseLatency).toHaveTextContent("0.3 s");
+    await expect(firstByteLatency).toHaveTextContent("0.7s");
+    await expect(responseLatency).toHaveTextContent("0.3s");
+    await expect(firstByteLatency.parentElement).toHaveClass("gap-1");
+    await expect(firstByteLatency.parentElement).not.toHaveTextContent(/\d\s+s/);
     await expect(reasoningEffort).toHaveTextContent("medium");
     await expect(reasoningText.scrollWidth).toBeLessThanOrEqual(reasoningText.clientWidth);
     await expect(reasoningEffort.getBoundingClientRect().height).toBeLessThanOrEqual(17);
@@ -3654,6 +3656,15 @@ export const GPT56ModelContextCluster: Story = {
 
 export const CurrentOnlyPlaceholder: Story = {
   tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Desktop state with one real invocation and two static missing-history slots sharing the 57px baseline.",
+      },
+    },
+  },
   args: {
     activeRange: "today",
     cards: buildCards(currentOnlyResponse),
@@ -3661,17 +3672,45 @@ export const CurrentOnlyPlaceholder: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
-    await expect(
-      canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-placeholder"]'),
-    ).toHaveLength(2);
-    for (const placeholder of canvasElement.querySelectorAll(
+    const placeholders = canvasElement.querySelectorAll(
       '[data-testid="dashboard-working-conversation-placeholder"]',
-    )) {
+    );
+    await expect(placeholders).toHaveLength(2);
+    await expect(
+      canvasElement.querySelector(
+        '[data-testid="dashboard-working-conversation-placeholder"][data-slot-kind="previous"]',
+      ),
+    ).toHaveTextContent(/暂无上一条调用|No previous invocation yet/);
+    await expect(
+      canvasElement.querySelector(
+        '[data-testid="dashboard-working-conversation-placeholder"][data-slot-kind="earlier"]',
+      ),
+    ).toHaveTextContent(/暂无更早调用|No earlier invocation yet/);
+    for (const placeholder of placeholders) {
       await expect(placeholder).toHaveAttribute("role", "group");
+      await expect(placeholder).not.toHaveAttribute("aria-live");
       await expect(
         placeholder.querySelectorAll(".working-conversation-placeholder-line"),
-      ).toHaveLength(2);
+      ).toHaveLength(0);
+      await expect(
+        placeholder.querySelector(
+          '[data-testid="dashboard-working-conversation-placeholder-label"]',
+        ),
+      ).not.toBeNull();
     }
+  },
+};
+
+export const CurrentOnlyPlaceholderMobile393: Story = {
+  ...CurrentOnlyPlaceholder,
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+    docs: {
+      description: {
+        story:
+          "393x852 responsive state keeps the static missing-history labels and the 57px slot baseline readable without skeleton or loading treatment.",
+      },
+    },
   },
 };
 
@@ -4774,6 +4813,11 @@ export const UpstreamAccountRecentLayout: Story = {
     await expect(
       recentRow.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
     ).toHaveTextContent("--");
+    const recentLatencyPills = recentRow.querySelector(
+      '[data-testid="dashboard-compact-latency-pills"]',
+    );
+    await expect(recentLatencyPills).toHaveClass("gap-1");
+    await expect(recentLatencyPills).not.toHaveTextContent(/\d\s+s/);
 
     expect(accountGrid.className).toContain("items-start");
     expect(errorCard.className).not.toContain("h-full");
