@@ -775,26 +775,44 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
     deadline: Instant,
     scan: SystemStatusFilesystemScan,
 ) -> Result<SystemStatusFilesystemBytes> {
-    if cancellation.is_cancelled() {
-        bail!("system status filesystem scan cancelled");
-    }
+    ensure_system_status_filesystem_scan_active(cancellation, deadline)?;
     let (permit, abandoned) = {
         let cache =
             await_system_status_refresh_operation(cancellation, async { Ok(cache.lock().await) })
                 .await?;
-        if cancellation.is_cancelled() {
-            bail!("system status filesystem scan cancelled");
-        }
+        ensure_system_status_filesystem_scan_active(cancellation, deadline)?;
         SystemStatusFilesystemScanPermit::try_acquire(&cache)?
     };
-    let mut task = tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         collect_system_status_filesystem_bytes(inputs, scan)
     });
 
+    await_system_status_filesystem_scan_task(task, cancellation, deadline, &abandoned).await
+}
+
+fn ensure_system_status_filesystem_scan_active(
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<()> {
+    if cancellation.is_cancelled() {
+        bail!("system status filesystem scan cancelled");
+    }
+    if Instant::now() >= deadline {
+        cancellation.cancel();
+        bail!("system status filesystem scan exceeded its deadline");
+    }
+    Ok(())
+}
+
+async fn await_system_status_filesystem_scan_task(
+    mut task: tokio::task::JoinHandle<Result<SystemStatusFilesystemBytes>>,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+    abandoned: &Arc<AtomicBool>,
+) -> Result<SystemStatusFilesystemBytes> {
     tokio::select! {
-        result = &mut task => result
-            .map_err(|error| anyhow!("system status filesystem scan task failed: {error}"))?,
+        biased;
         _ = cancellation.cancelled() => {
             abandoned.store(true, Ordering::Release);
             // Abort only prevents queued work. A started blocking filesystem call remains alive,
@@ -818,6 +836,14 @@ async fn collect_system_status_filesystem_bytes_in_blocking_task_with_scan(
                 "system status filesystem scan abandoned; retaining its scan admission until it exits"
             );
             bail!("system status filesystem scan exceeded its deadline");
+        }
+        result = &mut task => {
+            let filesystem_bytes = result
+                .map_err(|error| anyhow!("system status filesystem scan task failed: {error}"))??;
+            // A blocking syscall may return after the timer wakes. Do not let its successful
+            // result escape toward snapshot publication once this refresh is no longer valid.
+            ensure_system_status_filesystem_scan_active(cancellation, deadline)?;
+            Ok(filesystem_bytes)
         }
     }
 }
@@ -1213,6 +1239,7 @@ async fn await_system_status_refresh_operation<T>(
     operation: impl Future<Output = Result<T>>,
 ) -> Result<T> {
     tokio::select! {
+        biased;
         _ = cancellation.cancelled() => bail!("system status snapshot refresh cancelled"),
         result = operation => result,
     }
@@ -1441,7 +1468,7 @@ async fn refresh_system_status_snapshot_with_deadline(state: &AppState) -> Resul
     tokio::pin!(refresh);
 
     tokio::select! {
-        result = &mut refresh => result,
+        biased;
         _ = cancellation.cancelled() => {
             cancellation.cancel();
             let _ = refresh.await;
@@ -1452,6 +1479,7 @@ async fn refresh_system_status_snapshot_with_deadline(state: &AppState) -> Resul
             let _ = refresh.await;
             bail!("system status snapshot refresh exceeded its deadline");
         }
+        result = &mut refresh => result,
     }
 }
 
@@ -1501,30 +1529,64 @@ async fn refresh_system_status_snapshot_with_cancellation(
 ) -> Result<()> {
     let flight = SystemStatusSnapshotRefreshFlight::begin(state, cancellation).await?;
     let result = async {
-        let (mut response, raw_metrics_inventory_state) =
+        let (response, raw_metrics_inventory_state) =
             load_system_status_snapshot_uncached(state, cancellation, deadline).await?;
-        await_system_status_refresh_operation(cancellation, async {
-            let mut cache = state.system_status_cache.lock().await;
-            if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
-                response.raw_metrics_health.state = override_state.to_string();
-            }
-            cache.latest = Some(SystemStatusCacheEntry {
-                cached_at: Instant::now(),
-                response,
-                raw_metrics_inventory_state,
-            });
-            debug!(
-                metrics_source = "system_status_memory_snapshot",
-                cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
-                "system status background snapshot refresh completed"
-            );
-            Ok(())
-        })
+        publish_system_status_snapshot(
+            state,
+            cancellation,
+            deadline,
+            response,
+            raw_metrics_inventory_state,
+        )
         .await
     }
     .await;
     flight.finish().await;
     result
+}
+
+fn ensure_system_status_snapshot_refresh_active(
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<()> {
+    if cancellation.is_cancelled() {
+        bail!("system status snapshot refresh cancelled");
+    }
+    if Instant::now() >= deadline {
+        cancellation.cancel();
+        bail!("system status snapshot refresh exceeded its deadline");
+    }
+    Ok(())
+}
+
+async fn publish_system_status_snapshot(
+    state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+    mut response: SystemStatusResponse,
+    raw_metrics_inventory_state: String,
+) -> Result<()> {
+    await_system_status_refresh_operation(cancellation, async {
+        let mut cache = state.system_status_cache.lock().await;
+        // The cache lock can be delayed past the refresh deadline. Recheck while holding it so a
+        // completed filesystem scan cannot publish a stale snapshot.
+        ensure_system_status_snapshot_refresh_active(cancellation, deadline)?;
+        if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
+            response.raw_metrics_health.state = override_state.to_string();
+        }
+        cache.latest = Some(SystemStatusCacheEntry {
+            cached_at: Instant::now(),
+            response,
+            raw_metrics_inventory_state,
+        });
+        debug!(
+            metrics_source = "system_status_memory_snapshot",
+            cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
+            "system status background snapshot refresh completed"
+        );
+        Ok(())
+    })
+    .await
 }
 
 fn system_status_snapshot_refresh_delay() -> Duration {
@@ -1938,6 +2000,80 @@ mod runtime_pressure_health_tests {
                 + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
                 < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
         );
+    }
+
+    #[tokio::test]
+    async fn filesystem_scan_deadline_wins_over_ready_result_without_snapshot_write() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("a fresh monotonic instant can move back one millisecond");
+        let scan_cancellation = CancellationToken::new();
+        let scan_task = tokio::task::spawn_blocking(|| {
+            Ok(SystemStatusFilesystemBytes {
+                archive_bytes: 1,
+                database_bytes: 2,
+                other_files_bytes: 3,
+            })
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !scan_task.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("controlled filesystem scan should complete");
+
+        let error = await_system_status_filesystem_scan_task(
+            scan_task,
+            &scan_cancellation,
+            deadline,
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .expect_err("a scan completing after its deadline must not escape the select");
+        assert!(error.to_string().contains("exceeded its deadline"));
+
+        let publication_cancellation = CancellationToken::new();
+        let publication_error = publish_system_status_snapshot(
+            state.as_ref(),
+            &publication_cancellation,
+            deadline,
+            SystemStatusResponse {
+                live_invocations_count: 0,
+                success_count: 0,
+                non_success_count: 0,
+                completed_archive_batches_count: 0,
+                archived_bodies: SystemStatusMetric::default(),
+                raw_bodies: SystemStatusMetric::default(),
+                request_raw_bodies: SystemStatusMetric::default(),
+                response_raw_bodies: SystemStatusMetric::default(),
+                database_bytes: 0,
+                other_files_bytes: 0,
+                projection_health: SystemProjectionHealth::default(),
+                raw_metrics_health: SystemRawMetricsHealth::default(),
+                runtime_pressure_health: None,
+                refreshed_at: String::new(),
+            },
+            "ready".to_string(),
+        )
+        .await
+        .expect_err("a deadline-expired result must not publish a snapshot");
+        assert!(
+            publication_error
+                .to_string()
+                .contains("exceeded its deadline"),
+            "the cache lock must recheck the refresh deadline before publication"
+        );
+        assert!(
+            state.system_status_cache.lock().await.latest.is_none(),
+            "a rejected filesystem scan result must not write a status snapshot"
+        );
+
+        state.pool.close().await;
     }
 
     #[test]
