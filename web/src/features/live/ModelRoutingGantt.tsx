@@ -114,7 +114,8 @@ const ROUTING_PRIORITIES = new Set<RoutingTimelinePriority>(["normal", "demoted"
 const SVG_NS = "http://www.w3.org/2000/svg";
 const GANTT_HEADER_HEIGHT = 54;
 const GANTT_ROW_HEIGHT = 32;
-const MODEL_RECORD_DETAIL_ROWS = 8;
+const MODEL_RECORD_DETAIL_MIN_ROWS = 2;
+const MODEL_RECORD_DETAIL_ROWS_PER_RECORD = 1;
 // A one-second offset avoids Frappe treating a midnight end as an all-day task.
 const NORMALIZED_START_MS = new Date(2000, 0, 1, 0, 0, 1, 0).getTime();
 const NORMALIZED_TIMELINE_DURATION_MS = 24 * 60 * 60_000;
@@ -432,6 +433,7 @@ export function buildFrappeSystemRoutingTasks(
   timelines: RoutingTimelineGroup[],
   normalizedStartMs = NORMALIZED_START_MS,
   expandedModel: string | null = null,
+  detailRows = MODEL_RECORD_DETAIL_MIN_ROWS,
 ): RoutingFrappeTask[] {
   return timelines.flatMap((group) => {
     const normalizedEndMs = normalizedStartMs + NORMALIZED_TIMELINE_DURATION_MS;
@@ -449,7 +451,7 @@ export function buildFrappeSystemRoutingTasks(
     const detailTasks =
       group.model === expandedModel
         ? Array.from(
-            { length: MODEL_RECORD_DETAIL_ROWS },
+            { length: detailRows },
             (_, index): RoutingFrappeTask => ({
               id: routingDetailTaskId(group.model, index),
               name: "\u00a0",
@@ -464,6 +466,19 @@ export function buildFrappeSystemRoutingTasks(
         : [];
     return [modelTask, ...laneTasks, ...detailTasks];
   });
+}
+
+function modelRecordDetailRows(
+  records: ModelRoutingTimelineRecord[],
+  expandedModel: string | null,
+  measuredContentHeight: number,
+) {
+  if (!expandedModel) return 0;
+  const recordCount = records.filter((record) => record.model === expandedModel).length;
+  const estimatedRows =
+    MODEL_RECORD_DETAIL_MIN_ROWS + recordCount * MODEL_RECORD_DETAIL_ROWS_PER_RECORD;
+  const measuredRows = Math.ceil(measuredContentHeight / GANTT_ROW_HEIGHT);
+  return Math.max(estimatedRows, measuredRows);
 }
 
 function modelRecordDetailTop(timelines: RoutingTimelineGroup[], expandedModel: string | null) {
@@ -660,11 +675,13 @@ function decorateTimelineSvg({
     label.setAttribute("x", "8");
     label.setAttribute("text-anchor", "start");
     const fullLabel = lane.label;
+    // Decorations are cleared before every live frame, so measure the source label rather than a prior truncation.
+    label.textContent = fullLabel;
     const availableLabelWidth = Math.max(0, x - 16);
     const measuredLabelWidth = label.getComputedTextLength();
     const visibleLabel = truncateSvgLaneLabel(fullLabel, measuredLabelWidth, availableLabelWidth);
+    label.textContent = visibleLabel;
     if (visibleLabel !== fullLabel) {
-      label.textContent = visibleLabel;
       appendSvgTitle(label, fullLabel);
     }
     wrapper.setAttribute("data-testid", `model-routing-lane-${lane.model}-${lane.accountId}`);
@@ -853,6 +870,8 @@ function ModelRoutingSvgChart({
   onOpenAccount,
   onOpenInvocation,
   onToggleModelRecords,
+  detailRows,
+  onDetailContentHeightChange,
 }: {
   timelines: RoutingTimelineGroup[];
   records: ModelRoutingTimelineRecord[];
@@ -875,6 +894,8 @@ function ModelRoutingSvgChart({
   onOpenAccount: (accountId: number, model: string) => void;
   onOpenInvocation: (invokeId: string) => void;
   onToggleModelRecords: (model: string) => void;
+  detailRows: number;
+  onDetailContentHeightChange: (height: number) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [detailPortalTarget, setDetailPortalTarget] = useState<HTMLDivElement | null>(null);
@@ -882,9 +903,9 @@ function ModelRoutingSvgChart({
   const [layoutGeneration, setLayoutGeneration] = useState(0);
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
-  const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel });
+  const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel, detailRows });
   const axisLayoutRef = useRef<RoutingAxisLayout | null>(null);
-  layoutSourceRef.current = { timelines, range, detailTop, expandedModel };
+  layoutSourceRef.current = { timelines, range, detailTop, expandedModel, detailRows };
   const axisDateKey = useMemo(() => {
     if (!range) return "";
     const spec = VIEW_SPECS[window];
@@ -900,6 +921,7 @@ function ModelRoutingSvgChart({
     () =>
       JSON.stringify({
         expandedModel,
+        detailRows,
         axisDateKey,
         lanes: timelines.map((group) => ({
           model: group.model,
@@ -909,7 +931,7 @@ function ModelRoutingSvgChart({
           })),
         })),
       }),
-    [axisDateKey, expandedModel, timelines],
+    [axisDateKey, detailRows, expandedModel, timelines],
   );
   const interactionRef = useRef({ onOpenAccount, onOpenInvocation });
   interactionRef.current = { onOpenAccount, onOpenInvocation };
@@ -952,6 +974,7 @@ function ModelRoutingSvgChart({
       layoutTimelines,
       normalizedTimelineStartMs,
       layoutSource.expandedModel,
+      layoutSource.detailRows,
     );
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
@@ -1034,7 +1057,7 @@ function ModelRoutingSvgChart({
         portalTarget = document.createElement("div");
         portalTarget.className = "model-routing-records-slot";
         portalTarget.style.top = `${layoutSource.detailTop}px`;
-        portalTarget.style.height = `${MODEL_RECORD_DETAIL_ROWS * GANTT_ROW_HEIGHT}px`;
+        portalTarget.style.height = `${layoutSource.detailRows * GANTT_ROW_HEIGHT}px`;
         container.appendChild(portalTarget);
       }
     }
@@ -1124,6 +1147,7 @@ function ModelRoutingSvgChart({
               records={records}
               onOpenAccount={onOpenAccount}
               onOpenInvocation={onOpenInvocation}
+              onContentHeightChange={onDetailContentHeightChange}
             />,
             detailPortalTarget,
           )
@@ -1150,6 +1174,7 @@ export function ModelRoutingGantt({
   const { t, locale } = useTranslation();
   const { themeMode } = useTheme();
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [detailContentHeight, setDetailContentHeight] = useState(0);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
   const timelines = useMemo(
     () =>
@@ -1212,11 +1237,20 @@ export function ModelRoutingGantt({
     return { counts, max, total };
   }, [timelines]);
   const toggleModelRecords = useCallback((model: string) => {
+    setDetailContentHeight(0);
     setExpandedModel((current) => (current === model ? null : model));
+  }, []);
+  const detailRows = useMemo(
+    () => modelRecordDetailRows(records, expandedModel, detailContentHeight),
+    [detailContentHeight, expandedModel, records],
+  );
+  const updateDetailContentHeight = useCallback((height: number) => {
+    setDetailContentHeight((current) => (Math.abs(current - height) > 1 ? height : current));
   }, []);
 
   useEffect(() => {
     if (expandedModel && !timelines.some((timeline) => timeline.model === expandedModel)) {
+      setDetailContentHeight(0);
       setExpandedModel(null);
     }
   }, [expandedModel, timelines]);
@@ -1305,6 +1339,8 @@ export function ModelRoutingGantt({
         onOpenAccount={onOpenAccount}
         onOpenInvocation={onOpenInvocation}
         onToggleModelRecords={toggleModelRecords}
+        detailRows={detailRows}
+        onDetailContentHeightChange={updateDetailContentHeight}
       />
     </div>
   );

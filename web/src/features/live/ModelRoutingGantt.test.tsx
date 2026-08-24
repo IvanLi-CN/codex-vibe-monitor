@@ -131,7 +131,9 @@ beforeAll(() => {
   Object.defineProperty(SVGElement.prototype, "getComputedTextLength", {
     configurable: true,
     writable: true,
-    value: () => 48,
+    value: function getComputedTextLength(this: SVGElement) {
+      return (this.textContent?.length ?? 0) * 8;
+    },
   });
 });
 
@@ -256,6 +258,34 @@ describe("ModelRoutingGantt", () => {
     });
 
     expect(ganttMocks.construct).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores a truncated lane name and title after a live update", () => {
+    const displayName = "Northstar Production Gateway for Long Context Requests";
+    const snapshot = {
+      ...firstSnapshot,
+      groups: [
+        {
+          ...firstSnapshot.groups[0],
+          accounts: [
+            {
+              ...firstSnapshot.groups[0].accounts[0],
+              accountDisplayName: displayName,
+            },
+          ],
+        },
+      ],
+    };
+    render(snapshot);
+    const lane = host?.querySelector<SVGGElement>('[data-testid="model-routing-lane-gpt-5.4-21"]');
+    const label = lane?.querySelector<SVGTextElement>(".bar-label");
+    expect(label?.textContent).toContain("…");
+    expect(label?.querySelector("title")?.textContent).toBe(displayName);
+
+    render({ ...snapshot, generatedAt: "2026-08-24T02:00:01Z" });
+
+    expect(label?.textContent).toContain("…");
+    expect(label?.querySelector("title")?.textContent).toBe(displayName);
   });
 
   it("reconstructs the Gantt layout when a newly observed model creates a group", () => {

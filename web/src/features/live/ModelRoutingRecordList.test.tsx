@@ -119,6 +119,13 @@ describe("ModelRoutingRecordList", () => {
     expect(host?.textContent).toContain("状态事件");
     expect(host?.textContent).toContain("模型路由已重置");
     expect(host?.querySelector("h3")?.textContent).toBe("路由记录");
+    expect(
+      host?.querySelector('[data-testid="model-routing-model-records-gpt-5.5"]')?.className,
+    ).not.toContain("h-full");
+    expect(
+      host?.querySelector('[data-testid="model-routing-model-records-gpt-5.5"] > div:last-child')
+        ?.className,
+    ).not.toContain("overflow-y-auto");
     expect(host?.textContent).not.toContain("gpt-5.5 路由决策");
     expect(host?.textContent).not.toContain("gpt-5.4-mini");
     expect(host?.textContent).toContain("Aster");
