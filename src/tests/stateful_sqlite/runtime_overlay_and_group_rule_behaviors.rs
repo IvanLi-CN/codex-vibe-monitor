@@ -330,7 +330,8 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
         ..RequestCaptureInfo::default()
     };
     let invoke_id = "invoke-running";
-    let occurred_at = "2026-03-17 18:13:34";
+    let occurred_at_owned = format_naive(Utc::now().naive_utc());
+    let occurred_at = occurred_at_owned.as_str();
     let record = build_running_proxy_capture_record(
         invoke_id,
         occurred_at,
@@ -679,7 +680,7 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
         assert_eq!(summary.success_count, 0);
         assert_eq!(summary.failure_count, 0);
 
-        let Json(old_account_stats_summary) = fetch_summary(
+        let Json(old_account_stats_summary) = fetch_summary_from_memory_snapshot(
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some("today".to_string()),
@@ -699,7 +700,7 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_uses_memory_overla
             Some(0)
         );
 
-        let Json(new_account_stats_summary) = fetch_summary(
+        let Json(new_account_stats_summary) = fetch_summary_from_memory_snapshot(
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some("today".to_string()),

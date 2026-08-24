@@ -1,5 +1,103 @@
 use super::*;
 
+const STARTUP_MEMORY_HANDOFF_SLACK: Duration = Duration::from_secs(5);
+
+async fn startup_memory_snapshots_within_handoff_slack(state: &AppState) -> bool {
+    let summary_is_fresh = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .is_some_and(|projection| {
+            projection.startup_hydration_is_fresh_within(
+                SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+            )
+        });
+    let status_is_fresh = state
+        .system_status_cache
+        .lock()
+        .await
+        .latest
+        .as_ref()
+        .is_some_and(|entry| {
+            entry.cached_at.elapsed()
+                <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+                    .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK)
+        });
+    summary_is_fresh && status_is_fresh
+}
+
+async fn hydrate_startup_memory_snapshots_within(
+    state: &AppState,
+    summary_max_age: Duration,
+    status_max_age: Duration,
+) -> Result<()> {
+    let mut summary_ready = false;
+    let mut system_status_ready = false;
+    loop {
+        if !summary_ready {
+            match hydrate_summary_snapshots(state).await {
+                Ok(()) => {
+                    summary_ready = true;
+                    info!("summary projection startup hydration completed");
+                }
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "summary projection startup hydration failed; retrying"
+                    );
+                }
+            }
+        }
+        if !system_status_ready {
+            match hydrate_system_status_snapshot(state).await {
+                Ok(()) => {
+                    system_status_ready = true;
+                    info!("system status startup hydration completed");
+                }
+                Err(error) => {
+                    warn!(?error, "system status startup hydration failed; retrying");
+                }
+            }
+        }
+        if summary_ready && system_status_ready {
+            let summary_is_fresh = state
+                .subscription_hub
+                .summary_projection()
+                .await
+                .is_some_and(|projection| {
+                    projection.startup_hydration_is_fresh_within(summary_max_age)
+                });
+            let status_is_fresh = state
+                .system_status_cache
+                .lock()
+                .await
+                .latest
+                .as_ref()
+                .is_some_and(|entry| entry.cached_at.elapsed() <= status_max_age);
+            if summary_is_fresh && status_is_fresh {
+                return Ok(());
+            }
+            summary_ready = summary_is_fresh;
+            system_status_ready = status_is_fresh;
+        }
+        tokio::select! {
+            _ = state.shutdown.cancelled() => {
+                return Err(anyhow::anyhow!("startup memory hydration cancelled"));
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+}
+
+async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
+    hydrate_startup_memory_snapshots_within(
+        state,
+        SUMMARY_SNAPSHOT_MAX_STALE,
+        Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+    )
+    .await
+}
+
 pub(crate) async fn run() -> Result<()> {
     dotenv().ok();
     dotenvy::from_filename(".env.local").ok();
@@ -198,14 +296,20 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    // Listen for shutdown before the readiness-gated hydration loop so an unavailable
+    // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
+    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
+    // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
+    // the early routing and dashboard reads before progressing through the remaining startup
+    // stages. Summary/System Status hydration itself is intentionally deferred to the final
+    // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
+    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
     warm_dashboard_runtime_projection(state.as_ref()).await;
     spawn_dashboard_runtime_projection_reconcile(state.clone());
     spawn_subscription_broadcast_listener(state.clone());
     spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
     spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
     warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
-
-    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
 
     run_runtime_until_shutdown(
         state,
@@ -626,6 +730,54 @@ where
         .await;
     }
 
+    // All remaining startup work is complete. Hydrate immediately before the HTTP listener is
+    // made ready so a slow route sync cannot consume the Summary/System Status freshness budget.
+    let hot_read_hydration_stage = run_startup_stage_until_shutdown(
+        &shutdown_signal,
+        &cancel,
+        hydrate_startup_memory_snapshots(state.as_ref()),
+    )
+    .await;
+    let hot_read_hydration_shutdown_requested = match hot_read_hydration_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            result?;
+            shutdown_requested
+        }
+    };
+    if hot_read_hydration_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+    spawn_summary_snapshot_maintenance(state.clone());
+    spawn_system_status_snapshot_maintenance(state.clone());
+
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -718,6 +870,18 @@ where
         .await;
     }
 
+    // The listener and startup task handoff still runs after hydration. Rehydrate once more if
+    // that handoff consumed the reserved slack, so readiness never publishes an almost-expired
+    // in-memory snapshot.
+    if !startup_memory_snapshots_within_handoff_slack(state.as_ref()).await {
+        hydrate_startup_memory_snapshots_within(
+            state.as_ref(),
+            SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+            Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+                .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+        )
+        .await?;
+    }
     state.startup_ready.store(true, Ordering::Release);
     log_startup_phase("http_ready", http_ready_started_at);
     info!(

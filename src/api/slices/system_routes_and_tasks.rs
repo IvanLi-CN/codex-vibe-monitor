@@ -11,6 +11,10 @@ use std::{
 };
 
 pub(crate) const SYSTEM_STATUS_CACHE_TTL_SECS: u64 = 60;
+// Refresh before the public 60-second cache ceiling and bound the durable scan so a successful
+// maintenance pass cannot make the request-only memory snapshot temporarily unavailable.
+const SYSTEM_STATUS_SNAPSHOT_REFRESH_LEAD: Duration = Duration::from_secs(5);
+const SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE: Duration = Duration::from_secs(4);
 const SYSTEM_RAW_METRICS_INVENTORY_BATCH_SIZE: i64 = 128;
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -836,8 +840,11 @@ pub(crate) async fn set_system_raw_metrics_health_override(
     if cache.raw_metrics_health_override == override_state {
         return;
     }
-    cache.raw_metrics_health_override = override_state;
-    cache.latest = None;
+    cache.raw_metrics_health_override = override_state.clone();
+    if let Some(latest) = cache.latest.as_mut() {
+        latest.response.raw_metrics_health.state =
+            override_state.unwrap_or_else(|| latest.raw_metrics_inventory_state.clone());
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -945,7 +952,9 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
     })
 }
 
-pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+async fn load_system_status_snapshot_uncached(
+    state: &AppState,
+) -> Result<(SystemStatusResponse, String)> {
     let runtime_pressure_health = load_runtime_pressure_health(state).await;
     let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
@@ -1015,130 +1024,182 @@ pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<Syst
         "system status invocation counts keep database rows separate from runtime memory records"
     );
 
-    Ok(SystemStatusResponse {
-        live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0) as u64,
-        success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
-        non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
-        completed_archive_batches_count: archived
-            .completed_archive_batches_count
-            .unwrap_or(0)
-            .max(0) as u64,
-        archived_bodies: SystemStatusMetric {
-            count: archived.archived_count.unwrap_or(0).max(0) as u64,
-            bytes: archive_bytes,
-        },
-        raw_bodies: SystemStatusMetric {
-            count: raw_metrics.raw_count.max(0) as u64,
-            bytes: raw_metrics.raw_bytes.max(0) as u64,
-        },
-        request_raw_bodies: SystemStatusMetric {
-            count: raw_metrics.request_raw_count.max(0) as u64,
-            bytes: raw_metrics.request_raw_bytes.max(0) as u64,
-        },
-        response_raw_bodies: SystemStatusMetric {
-            count: raw_metrics.response_raw_count.max(0) as u64,
-            bytes: raw_metrics.response_raw_bytes.max(0) as u64,
-        },
-        database_bytes,
-        other_files_bytes,
-        projection_health: SystemProjectionHealth {
-            terminal: SystemProjectionConsumerHealth {
-                state: if terminal_health.dirty_last_good {
-                    "dirty_last_good".to_string()
-                } else {
-                    "healthy".to_string()
+    Ok((
+        SystemStatusResponse {
+            live_invocations_count: invocation_status.live_invocations_count.unwrap_or(0).max(0)
+                as u64,
+            success_count: invocation_status.success_count.unwrap_or(0).max(0) as u64,
+            non_success_count: invocation_status.non_success_count.unwrap_or(0).max(0) as u64,
+            completed_archive_batches_count: archived
+                .completed_archive_batches_count
+                .unwrap_or(0)
+                .max(0) as u64,
+            archived_bodies: SystemStatusMetric {
+                count: archived.archived_count.unwrap_or(0).max(0) as u64,
+                bytes: archive_bytes,
+            },
+            raw_bodies: SystemStatusMetric {
+                count: raw_metrics.raw_count.max(0) as u64,
+                bytes: raw_metrics.raw_bytes.max(0) as u64,
+            },
+            request_raw_bodies: SystemStatusMetric {
+                count: raw_metrics.request_raw_count.max(0) as u64,
+                bytes: raw_metrics.request_raw_bytes.max(0) as u64,
+            },
+            response_raw_bodies: SystemStatusMetric {
+                count: raw_metrics.response_raw_count.max(0) as u64,
+                bytes: raw_metrics.response_raw_bytes.max(0) as u64,
+            },
+            database_bytes,
+            other_files_bytes,
+            projection_health: SystemProjectionHealth {
+                terminal: SystemProjectionConsumerHealth {
+                    state: if terminal_health.dirty_last_good {
+                        "dirty_last_good".to_string()
+                    } else {
+                        "healthy".to_string()
+                    },
+                    cursor_lag: terminal_health
+                        .last_persisted_row_id
+                        .saturating_sub(terminal_health.long_term_cursor_row_id),
+                    dirty_bucket_count: 0,
+                    pending_event_count: terminal_health.pending_event_count as u64,
+                    last_flush_elapsed_ms: None,
+                    last_flush_age_ms: terminal_health.last_ack_age_ms,
+                    last_repair_scope: None,
+                    last_defer_reason: terminal_health.hard_limit_reason.map(str::to_string),
+                    last_error_kind: None,
                 },
-                cursor_lag: terminal_health
-                    .last_persisted_row_id
-                    .saturating_sub(terminal_health.long_term_cursor_row_id),
-                dirty_bucket_count: 0,
-                pending_event_count: terminal_health.pending_event_count as u64,
-                last_flush_elapsed_ms: None,
-                last_flush_age_ms: terminal_health.last_ack_age_ms,
-                last_repair_scope: None,
-                last_defer_reason: terminal_health.hard_limit_reason.map(str::to_string),
-                last_error_kind: None,
+                long_term: SystemProjectionConsumerHealth {
+                    state: long_term_health.state,
+                    cursor_lag: terminal_health
+                        .last_persisted_row_id
+                        .saturating_sub(long_term_health.cursor_row_id),
+                    dirty_bucket_count: long_term_health.dirty_bucket_count as u64,
+                    pending_event_count: long_term_health.pending_event_count as u64,
+                    last_flush_elapsed_ms: long_term_health.last_flush_elapsed_ms,
+                    last_flush_age_ms: long_term_health.last_flush_age_ms,
+                    last_repair_scope: long_term_health.last_repair_scope,
+                    last_defer_reason: long_term_health.last_defer_reason,
+                    last_error_kind: long_term_health.last_error_kind,
+                },
             },
-            long_term: SystemProjectionConsumerHealth {
-                state: long_term_health.state,
-                cursor_lag: terminal_health
-                    .last_persisted_row_id
-                    .saturating_sub(long_term_health.cursor_row_id),
-                dirty_bucket_count: long_term_health.dirty_bucket_count as u64,
-                pending_event_count: long_term_health.pending_event_count as u64,
-                last_flush_elapsed_ms: long_term_health.last_flush_elapsed_ms,
-                last_flush_age_ms: long_term_health.last_flush_age_ms,
-                last_repair_scope: long_term_health.last_repair_scope,
-                last_defer_reason: long_term_health.last_defer_reason,
-                last_error_kind: long_term_health.last_error_kind,
+            raw_metrics_health: SystemRawMetricsHealth {
+                state: raw_metrics_state,
+                inventory_cursor: raw_metrics.inventory_cursor,
+                updated_age_ms: None,
             },
+            runtime_pressure_health: Some(runtime_pressure_health),
+            refreshed_at: format_utc_iso(Utc::now()),
         },
-        raw_metrics_health: SystemRawMetricsHealth {
-            state: raw_metrics_state,
-            inventory_cursor: raw_metrics.inventory_cursor,
-            updated_age_ms: None,
-        },
-        runtime_pressure_health: Some(runtime_pressure_health),
-        refreshed_at: format_utc_iso(Utc::now()),
-    })
+        raw_metrics.inventory_state,
+    ))
+}
+
+pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
+    Ok(load_system_status_snapshot_uncached(state).await?.0)
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
-    loop {
-        let mut cached_response = None;
-        let wait_for = {
-            let mut cache = state.system_status_cache.lock().await;
-            if let Some(entry) = cache.latest.as_ref()
-                && entry.cached_at.elapsed() < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-            {
-                cached_response = Some(entry.response.clone());
-                None
-            } else if let Some(signal) = cache.in_flight.clone() {
-                cache.waiter_count = cache.waiter_count.saturating_add(1);
-                Some(signal.subscribe())
-            } else {
-                let (signal, _) = watch::channel(false);
-                cache.in_flight = Some(signal);
-                None
-            }
-        };
-
-        if let Some(mut response) = cached_response {
-            response.runtime_pressure_health = Some(load_runtime_pressure_health(state).await);
-            return Ok(response);
-        }
-
-        if let Some(mut signal) = wait_for {
-            let _ = signal.changed().await;
-            continue;
-        }
-
-        let response = load_system_status_uncached(state).await;
-        let mut cache = state.system_status_cache.lock().await;
-        if let Ok(response) = &response {
-            cache.latest = Some(SystemStatusCacheEntry {
-                cached_at: Instant::now(),
-                response: response.clone(),
-            });
-        }
-        let waiter_count = cache.waiter_count;
-        cache.waiter_count = 0;
-        if let Some(signal) = cache.in_flight.take() {
-            let _ = signal.send(true);
-        }
+    if let Some((response, snapshot_age)) = state
+        .system_status_cache
+        .lock()
+        .await
+        .latest
+        .as_ref()
+        .map(|entry| (entry.response.clone(), entry.cached_at.elapsed()))
+        .filter(|(_, snapshot_age)| {
+            *snapshot_age <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+        })
+    {
+        let snapshot_age_ms = snapshot_age.as_millis() as u64;
         debug!(
-            metrics_source = "system_status_cache",
-            cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
-            singleflight_waiter_count = waiter_count,
-            "system status cache refresh completed"
+            metrics_source = "system_status_memory_snapshot",
+            snapshot_age_ms, "serving system status from last-good memory snapshot"
         );
-        return response;
+        return Ok(response);
     }
+
+    Err(anyhow!("system status snapshot is unavailable or stale"))
 }
 
 pub(crate) async fn invalidate_system_status_cache(state: &AppState) {
+    // A failed background refresh must never turn a previously good response into an empty
+    // request-side cache miss. The maintainer will refresh this last-good entry on its cadence.
+    let cache = state.system_status_cache.lock().await;
+    debug!(
+        has_last_good = cache.latest.is_some(),
+        "system status snapshot marked for background refresh"
+    );
+}
+
+pub(crate) async fn hydrate_system_status_snapshot(state: &AppState) -> Result<()> {
+    refresh_system_status_snapshot(state).await
+}
+
+async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
+    let (mut response, raw_metrics_inventory_state) =
+        load_system_status_snapshot_uncached(state).await?;
     let mut cache = state.system_status_cache.lock().await;
-    cache.latest = None;
+    if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
+        response.raw_metrics_health.state = override_state.to_string();
+    }
+    cache.latest = Some(SystemStatusCacheEntry {
+        cached_at: Instant::now(),
+        response,
+        raw_metrics_inventory_state,
+    });
+    debug!(
+        metrics_source = "system_status_memory_snapshot",
+        cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
+        "system status background snapshot refresh completed"
+    );
+    Ok(())
+}
+
+fn system_status_snapshot_refresh_delay() -> Duration {
+    Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+        .checked_sub(SYSTEM_STATUS_SNAPSHOT_REFRESH_LEAD)
+        .expect("system status refresh lead must be shorter than the cache TTL")
+}
+
+fn system_status_snapshot_refresh_cadence_period() -> Duration {
+    // Reapply the lead after every publication. A TTL-sized period only protects the first
+    // scan and eventually schedules later refreshes at a last-good entry's expiry boundary.
+    system_status_snapshot_refresh_delay()
+}
+
+pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        // Startup has already completed the first durable hydration before this producer is
+        // spawned. Keep every bounded scan ahead of the public TTL rather than only advancing the
+        // first tick; a 60-second period would eventually start a scan at the prior snapshot's
+        // expiry boundary when a preceding scan completed after its scheduled tick.
+        let mut cadence = tokio::time::interval_at(
+            tokio::time::Instant::now() + system_status_snapshot_refresh_delay(),
+            system_status_snapshot_refresh_cadence_period(),
+        );
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {}
+            }
+            if let Err(error) = tokio::time::timeout(
+                SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
+                refresh_system_status_snapshot(state.as_ref()),
+            )
+            .await
+            .map_err(|_| anyhow!("system status snapshot refresh exceeded its deadline"))
+            .and_then(|result| result)
+            {
+                warn!(
+                    ?error,
+                    "system status background refresh failed; retaining last-good snapshot"
+                );
+            }
+        }
+    });
 }
 
 pub(crate) async fn begin_system_task_run(
@@ -1269,7 +1330,11 @@ pub(crate) fn try_enqueue_system_task_run_finish(
 pub(crate) async fn fetch_system_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SystemStatusResponse>, ApiError> {
-    Ok(Json(load_system_status_cached(state.as_ref()).await?))
+    Ok(Json(
+        load_system_status_cached(state.as_ref())
+            .await
+            .map_err(ApiError::unavailable)?,
+    ))
 }
 
 pub(crate) async fn list_system_task_runs(
@@ -1432,12 +1497,72 @@ pub(crate) fn summarize_retention_run_for_system_task(
 
 #[cfg(test)]
 mod runtime_pressure_health_tests {
-    use super::runtime_pressure_state;
+    use super::*;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn active_event_lag_and_writer_pressure_never_report_healthy() {
         assert_eq!(runtime_pressure_state(false, true, false), "degraded");
         assert_eq!(runtime_pressure_state(false, false, true), "deferred");
         assert_eq!(runtime_pressure_state(false, false, false), "healthy");
+    }
+
+    #[test]
+    fn system_status_refresh_cadence_preserves_lead_before_cache_ceiling() {
+        assert_eq!(
+            system_status_snapshot_refresh_cadence_period(),
+            system_status_snapshot_refresh_delay()
+        );
+        assert!(
+            system_status_snapshot_refresh_cadence_period()
+                + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
+                < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_status_snapshot_never_falls_back_to_request_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_system_status_snapshot(state.as_ref())
+            .await
+            .expect("hydrate status snapshot");
+        {
+            let mut cache = state.system_status_cache.lock().await;
+            cache.latest.as_mut().expect("hydrated entry").cached_at =
+                Instant::now() - Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS + 1);
+        }
+        state.pool.close().await;
+
+        assert!(load_system_status_cached(state.as_ref()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_status_refresh_keeps_fresh_last_good_snapshot() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_system_status_snapshot(state.as_ref())
+            .await
+            .expect("hydrate status snapshot");
+        let expected = load_system_status_cached(state.as_ref())
+            .await
+            .expect("load hydrated status snapshot");
+        state.pool.close().await;
+
+        assert!(
+            refresh_system_status_snapshot(state.as_ref())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            load_system_status_cached(state.as_ref())
+                .await
+                .expect("serve last-good status snapshot"),
+            expected
+        );
     }
 }

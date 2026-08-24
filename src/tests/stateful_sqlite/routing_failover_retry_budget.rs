@@ -2959,7 +2959,10 @@ async fn resolve_pool_account_for_request_with_wait_accepts_recovery_after_wait_
     );
 }
 
-#[tokio::test]
+// The account-creation helper drives work through `Handle::block_on` on a
+// separate thread after the waiter subscribes. A current-thread runtime cannot
+// make progress while this test synchronously joins that helper.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resolve_pool_account_for_request_with_wait_wakes_when_a_routable_account_is_created() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

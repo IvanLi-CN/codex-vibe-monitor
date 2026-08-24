@@ -3,6 +3,18 @@ use super::*;
 
 pub(crate) use super::*;
 
+/// Hydrates the production Summary projection before exercising the memory-only handler.
+pub(crate) async fn fetch_summary_from_memory_snapshot(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<StatsResponse>, ApiError> {
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .map_err(ApiError::from)?;
+
+    fetch_summary(State(state), Query(params)).await
+}
+
 mod invocation_query_filters_and_schema_migrations;
 #[expect(
     clippy::await_holding_lock,

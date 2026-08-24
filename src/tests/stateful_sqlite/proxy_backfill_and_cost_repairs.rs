@@ -1854,6 +1854,16 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
     )
     .await;
 
+    let summary_query = SummaryQuery {
+        window: Some("today".to_string()),
+        limit: None,
+        time_zone: Some("Asia/Shanghai".to_string()),
+        upstream_account_id: None,
+    };
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate summary projection before acquiring the write lock");
+
     let mut lock_conn = SqliteConnection::connect(&db_url)
         .await
         .expect("connect lock holder");
@@ -1862,17 +1872,9 @@ async fn dashboard_read_endpoints_stay_queryable_under_sqlite_write_lock() {
         .await
         .expect("acquire sqlite write lock");
 
-    let Json(summary) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("today".to_string()),
-            limit: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("today summary should stay readable under a concurrent write lock");
+    let Json(summary) = fetch_summary(State(state.clone()), Query(summary_query))
+        .await
+        .expect("today summary should stay readable under a concurrent write lock");
     assert!(
         summary.total_count >= 1,
         "today summary should still return persisted totals"

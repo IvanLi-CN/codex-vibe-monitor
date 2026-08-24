@@ -276,6 +276,16 @@ async fn insert_hourly_rollup_archive_replay_marker(
     .expect("insert hourly rollup archive replay marker");
 }
 
+async fn mark_summary_archive_replay_complete(pool: &SqlitePool, file_path: &Path) {
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        insert_hourly_rollup_archive_replay_marker(pool, target, file_path).await;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct SeedInvocationArchiveBatchRow<'a> {
     pub(crate) id: i64,
@@ -2041,7 +2051,7 @@ async fn timeseries_and_summary_count_completed_rows_as_success() {
     )
     .await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("1d".to_string()),
@@ -2261,7 +2271,7 @@ async fn timeseries_and_summary_do_not_treat_running_rows_with_failure_metadata_
     .await
     .expect("annotate pending row with failure metadata");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("1d".to_string()),
@@ -2340,7 +2350,7 @@ async fn timeseries_and_summary_count_http_200_rows_with_downstream_only_failure
         .await
         .expect("annotate http_200 row with downstream-only failure metadata");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("1d".to_string()),
@@ -2443,7 +2453,7 @@ async fn timeseries_and_summary_treat_warning_success_as_success_like() {
     .await
     .expect("annotate failure control row");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("1d".to_string()),
@@ -2588,7 +2598,7 @@ async fn all_time_summary_ignores_stale_rollup_failure_counts_for_running_rows()
     .await
     .expect("mark invocation rollup progress as caught up");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -2749,7 +2759,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("insert live invocation row");
 
-    let Json(summary) = fetch_summary(
+    let response = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -2759,13 +2769,8 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
         }),
     )
     .await
-    .expect("fetch all-time summary with archived history present");
-
-    assert_eq!(summary.total_count, 3);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 2);
-    assert_eq!(summary.total_tokens, 30);
-    assert!((summary.total_cost - 0.30).abs() < 1e-9);
+    .expect_err("missing live-rollup cursor must fail closed instead of omitting live history");
+    assert!(matches!(response, ApiError::Unavailable(_)));
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
@@ -2803,7 +2808,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary_repeat) = fetch_summary(
+    let Json(summary_repeat) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -2853,7 +2858,7 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("insert post-repair live tail invocation row");
 
-    let Json(summary_with_live_tail) = fetch_summary(
+    let Json(summary_with_live_tail) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -2924,7 +2929,7 @@ async fn all_time_summary_includes_unmaterialized_archived_history_without_inlin
     )
     .await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -3072,7 +3077,7 @@ async fn all_time_summary_skips_archive_fallback_rows_already_counted_in_live_ta
         .expect("insert overlapping live tail invocation row");
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -3155,8 +3160,8 @@ async fn archived_range_reads_include_unmaterialized_batches_without_inline_repa
     )
     .await;
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
-    let Json(summary) = fetch_summary(
+    let historical_range = "30d".to_string();
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some(historical_range.clone()),
@@ -3402,8 +3407,8 @@ async fn archived_range_reads_skip_archive_fallback_rows_already_counted_in_live
         .expect("insert overlapping archived range live row");
     }
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
-    let Json(summary) = fetch_summary(
+    let historical_range = "30d".to_string();
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some(historical_range.clone()),
@@ -3529,7 +3534,7 @@ async fn previous7d_summary_matches_daily_timeseries_when_window_spans_archived_
     .await
     .expect("insert live previous7d invocation");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("previous7d".to_string()),
@@ -3670,7 +3675,7 @@ async fn all_time_summary_fallback_skips_already_materialized_archive_buckets() 
     .await
     .expect("seed already materialized first summary bucket");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -3776,7 +3781,7 @@ async fn all_time_summary_fallback_includes_missing_rows_from_partially_material
     .await
     .expect("seed partially materialized summary rollup row");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -3902,7 +3907,7 @@ async fn all_time_summary_fallback_aggregates_missing_rows_across_archive_parts(
     .await
     .expect("seed partially materialized multipart summary rollup row");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -4036,7 +4041,7 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
     )
     .await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -4169,11 +4174,12 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
         SOURCE_PROXY,
     )
     .await;
+    mark_summary_archive_replay_complete(&state.pool, &first_archive_path).await;
 
     fs::write(&first_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable mixed-state summary archive batch");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -4334,7 +4340,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable same-bucket summary archive");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -4541,7 +4547,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable same-month summary sibling archive");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8025,7 +8031,7 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
         "missing archive should bubble the repair cause"
     );
 
-    let Json(summary) = fetch_summary(
+    let summary = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8034,13 +8040,11 @@ async fn all_time_summary_missing_archive_does_not_mark_repair_complete() {
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("read-only all-time summary should fall back to current materialized rollups");
-    assert_eq!(summary.total_count, 99);
-    assert_eq!(summary.success_count, 99);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 990);
-    assert!((summary.total_cost - 9.9).abs() < 1e-9);
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "an unreadable archive without replay coverage must not publish an inexact all-time snapshot"
+    );
 
     let repair_marker_cursor = sqlx::query_scalar::<_, i64>(
         "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
@@ -8210,7 +8214,7 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8453,7 +8457,7 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8580,6 +8584,7 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("seed pre-materialized summary rollups");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
 
     fs::remove_file(&archive_path).expect("prune materialized archive file");
 
@@ -8617,7 +8622,7 @@ async fn all_time_summary_repair_preserves_pruned_materialized_archives() {
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8750,6 +8755,7 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
@@ -8843,7 +8849,7 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8963,10 +8969,11 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
     .execute(&state.pool)
     .await
     .expect("seed materialized summary rollup row");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
 
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt materialized archive batch");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -8986,7 +8993,7 @@ async fn all_time_summary_read_path_skips_unreadable_materialized_archives() {
 }
 
 #[tokio::test]
-async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() {
+async fn all_time_summary_fails_closed_when_unreadable_replay_lacks_usage_and_account_coverage() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -9069,7 +9076,70 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
 
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt replayed legacy archive batch");
 
-    let Json(summary) = fetch_summary(
+    let summary = fetch_summary_from_memory_snapshot(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "global replay alone cannot prove the account and usage dimensions of Summary"
+    );
+}
+
+#[tokio::test]
+async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('summary-last-good-live', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert initial exact summary row");
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate initial exact summary projection");
+
+    let archived_at = format_naive(
+        ((Utc::now() - ChronoDuration::days(10)) + ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-last-good-unreadable-refresh",
+        &[(
+            1_i64,
+            "summary-last-good-unreadable-archive",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt newly discovered archive");
+
+    assert!(
+        hydrate_summary_snapshots(state.as_ref()).await.is_err(),
+        "a refresh with an unreadable exact archive must not publish a partial revision"
+    );
+
+    let Json(response) = fetch_summary(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9079,17 +9149,14 @@ async fn all_time_summary_read_path_skips_unreadable_replayed_legacy_archives() 
         }),
     )
     .await
-    .expect("fetch all-time summary with unreadable replayed legacy archive");
-
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 10);
-    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+    .expect("serve the exact nonzero last-good all-time snapshot");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 17);
+    assert_eq!(response.total_cost, 1.25);
 }
 
 #[tokio::test]
-async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives() {
+async fn all_time_stats_tolerate_unreadable_pending_archives_while_summary_fails_closed() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -9175,7 +9242,7 @@ async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives()
     assert_eq!(stats.total_tokens, 10);
     assert!((stats.total_cost - 0.10).abs() < 1e-9);
 
-    let Json(summary) = fetch_summary(
+    let summary = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9184,13 +9251,11 @@ async fn all_time_stats_and_summary_read_path_skip_unreadable_pending_archives()
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("fetch all-time summary with unreadable pending archive");
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 1);
-    assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 10);
-    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+    .await;
+    assert!(
+        matches!(summary, Err(ApiError::Unavailable(_))),
+        "a materialized bucket marker is not an archive-level replay proof for the memory projection"
+    );
 }
 
 #[tokio::test]
@@ -9322,6 +9387,7 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
@@ -9445,7 +9511,7 @@ async fn all_time_summary_repair_restores_live_rows_in_boundary_hours_when_prese
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9559,6 +9625,7 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     .execute(&state.pool)
     .await
     .expect("seed preserved pruned archive rollup");
+    mark_summary_archive_replay_complete(&state.pool, &pruned_archive_path).await;
 
     fs::remove_file(&pruned_archive_path).expect("prune older materialized archive");
 
@@ -9639,7 +9706,7 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9917,7 +9984,7 @@ async fn all_time_summary_rollup_repair_counts_mixed_case_success_status() {
 
     run_background_invocation_summary_rollup_repair(&state.pool).await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -10878,7 +10945,7 @@ async fn summary_yesterday_ignores_missing_non_overlapping_archive_batch() {
     .await
     .expect("insert yesterday invocation");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("yesterday".to_string()),
@@ -10960,7 +11027,7 @@ async fn account_summary_yesterday_ignores_materialized_archive_missing_account_
     fs::write(&archive_path, b"not-a-gzip-archive")
         .expect("corrupt materialized archive after rollups exist");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("yesterday".to_string()),
@@ -12065,7 +12132,7 @@ async fn account_scoped_summary_and_timeseries_filter_by_payload_upstream_accoun
         .expect("insert account-scoped stats invocation row");
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12241,7 +12308,7 @@ async fn summary_reports_invocation_based_in_progress_counts() {
     assert_eq!(stats_phase_counts.requesting, 1);
     assert_eq!(stats_phase_counts.responding, 0);
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12302,7 +12369,7 @@ async fn ranged_summary_exposes_model_usage_and_exact_cost_breakdown() {
     .await
     .expect("insert ranged summary usage row");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12418,7 +12485,7 @@ async fn ranged_summary_groups_model_usage_by_reasoning_effort() {
         .expect("insert reasoning effort usage row");
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12579,7 +12646,7 @@ async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
         .expect("insert mixed ranged summary usage row");
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12659,7 +12726,7 @@ async fn ranged_summary_keeps_exact_costs_when_historical_cost_is_mixed_in() {
     .await
     .expect("leave only the historical cost row");
 
-    let Json(historical_summary) = fetch_summary(
+    let Json(historical_summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -12716,7 +12783,7 @@ async fn usage_breakdown_includes_archived_start_boundary_partial_hour_for_7d_ra
     )
     .await;
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -12746,6 +12813,126 @@ async fn usage_breakdown_includes_archived_start_boundary_partial_hour_for_7d_ra
         .as_ref()
         .expect("archived boundary model costs should remain visible");
     assert_f64_close(boundary_model_costs.unknown, 0.20);
+}
+
+#[tokio::test]
+async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_views() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+    let archived_at = archived_start_partial_hour_at();
+
+    seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-materialized-boundary-over-48h",
+        &[SeedInvocationArchiveBatchRow {
+            id: 901,
+            invoke_id: "summary-materialized-boundary-over-48h",
+            occurred_at: archived_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20,
+            cost: 0.20,
+            ttfb_ms: Some(150.0),
+            payload: Some(
+                r#"{"responseModel":"gpt-5","reasoningEffort":"high","upstreamAccountId":42}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path LIKE '%summary-materialized-boundary-over-48h%'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("mark boundary archive materialized");
+    let bucket = invocation_bucket_start_epoch(&archived_at).expect("boundary bucket");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, terminal_count, \
+          terminal_tokens, terminal_cost, terminal_proof_complete, total_tokens, total_cost) \
+         VALUES (?1, ?2, 1, 1, 0, 1, 20, 0.20, 1, 20, 0.20)",
+    )
+    .bind(bucket)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("seed materialized boundary rollup");
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        bucket,
+        SOURCE_PROXY,
+    )
+    .await;
+
+    let Json(seven_day) = fetch_summary_from_memory_snapshot(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("hydrate materialized boundary projection");
+    assert_eq!(seven_day.total_count, 1);
+    assert_eq!(seven_day.total_tokens, 20);
+    assert_f64_close(seven_day.total_cost, 0.20);
+    let seven_day_model = seven_day
+        .usage_breakdown
+        .as_ref()
+        .expect("7d usage breakdown")
+        .models
+        .iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("7d boundary model");
+    assert_f64_close(
+        seven_day_model
+            .costs
+            .as_ref()
+            .expect("7d boundary model costs")
+            .unknown,
+        0.20,
+    );
+    state.pool.close().await;
+    for window in ["7d", "previous7d"] {
+        for upstream_account_id in [None, Some(42_i64)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("serve boundary summary without sqlite");
+            assert_eq!(response.total_count, 1, "{window} boundary count");
+            assert_eq!(response.total_tokens, 20, "{window} boundary tokens");
+            assert_f64_close(response.total_cost, 0.20);
+            assert_f64_close(
+                response
+                    .usage_breakdown
+                    .expect("boundary usage breakdown")
+                    .costs
+                    .expect("boundary usage costs")
+                    .unknown,
+                0.20,
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -12836,7 +13023,7 @@ async fn usage_breakdown_keeps_archived_boundary_partial_hour_during_partial_arc
     .await
     .expect("insert boundary partial archive replay progress");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -12985,7 +13172,7 @@ async fn usage_breakdown_avoids_double_counting_partially_materialized_archive_r
     .await
     .expect("insert partial usage breakdown archive replay progress");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -13091,7 +13278,7 @@ async fn usage_breakdown_ignores_shared_archive_progress_without_breakdown_curso
     .await
     .expect("insert legacy shared archive replay progress");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -13245,7 +13432,7 @@ async fn usage_breakdown_prefers_breakdown_specific_archive_progress_over_shared
         .expect("insert archive replay progress");
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -13368,7 +13555,7 @@ async fn summary_topic_builder_matches_http_for_open_range() {
         .expect("insert summary topic builder row");
     }
 
-    let Json(http_summary) = fetch_summary(
+    let Json(http_summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("7d".to_string()),
@@ -13586,7 +13773,7 @@ async fn summary_ignores_runtime_overlay_records_with_terminal_db_rows() {
         .await
         .expect("store active runtime summary snapshot");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -13772,7 +13959,7 @@ async fn natural_day_summary_reports_retry_wait_and_non_success_usage() {
         .expect("mark directly rebuilt summary rollups as live cursor covered");
     tx.commit().await.expect("commit rollup rebuild tx");
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -13888,7 +14075,7 @@ async fn account_scoped_natural_day_summary_keeps_augmentation_fields_scoped() {
         assert!(account_id > 0);
     }
 
-    let Json(summary) = fetch_summary(
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -19747,7 +19934,7 @@ async fn upstream_account_activity_uses_pool_attempt_account_for_running_rows() 
     assert_eq!(terminal_recent.len(), 1);
     assert_eq!(terminal_recent[0].status, "success");
 
-    let Json(account_summary) = fetch_summary(
+    let Json(account_summary) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
             window: Some("today".to_string()),
@@ -20060,7 +20247,7 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     )
     .await;
 
-    let Json(all_summary) = fetch_summary(
+    let Json(all_summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -20078,8 +20265,8 @@ async fn account_scoped_historical_stats_include_unmaterialized_archived_hours()
     assert_eq!(all_summary.total_tokens, 30);
     assert_f64_close(all_summary.total_cost, 0.30);
 
-    let historical_range = format!("{}d", state.config.invocation_max_days + 30);
-    let Json(summary) = fetch_summary(
+    let historical_range = "30d".to_string();
+    let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some(historical_range.clone()),

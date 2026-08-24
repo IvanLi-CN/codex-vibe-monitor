@@ -3577,17 +3577,16 @@ async fn stats_endpoints_preserve_historical_xy_records() {
     assert_eq!(stats.total_tokens, 16);
     assert_f64_close(stats.total_cost, 0.0042);
 
-    let Json(summary) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("1d".to_string()),
-            limit: None,
-            time_zone: None,
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("fetch_summary should include historical xy rows");
+    let summary_query = SummaryQuery {
+        window: Some("1d".to_string()),
+        limit: None,
+        time_zone: None,
+        upstream_account_id: None,
+    };
+    let Json(summary) =
+        fetch_summary_from_memory_snapshot(State(state.clone()), Query(summary_query))
+            .await
+            .expect("fetch_summary should include historical xy rows");
     assert_eq!(summary.total_count, 1);
     assert_eq!(summary.success_count, 1);
     assert_eq!(summary.failure_count, 0);
@@ -3701,17 +3700,16 @@ async fn yesterday_summary_and_timeseries_only_include_previous_local_day() {
     .await
     .expect("insert today invocation");
 
-    let Json(summary) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("yesterday".to_string()),
-            limit: None,
-            time_zone: Some("Asia/Shanghai".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("fetch yesterday summary");
+    let summary_query = SummaryQuery {
+        window: Some("yesterday".to_string()),
+        limit: None,
+        time_zone: Some("Asia/Shanghai".to_string()),
+        upstream_account_id: None,
+    };
+    let Json(summary) =
+        fetch_summary_from_memory_snapshot(State(state.clone()), Query(summary_query))
+            .await
+            .expect("fetch yesterday summary");
     assert_eq!(summary.total_count, 1);
     assert_eq!(summary.success_count, 1);
     assert_eq!(summary.failure_count, 0);

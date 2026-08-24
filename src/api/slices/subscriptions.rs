@@ -47,6 +47,9 @@ const RUNTIME_TOPIC_RECOVERY_QUEUE_CAPACITY: usize = 64;
 const RUNTIME_TOPIC_RECOVERY_BATCH_SIZE: usize = 8;
 const RUNTIME_TOPIC_RECOVERY_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
+const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
+const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS: usize = 1_024;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -708,6 +711,9 @@ type DashboardTopologySseFrameObservations = HashMap<u64, DashboardTopologyFrame
 #[derive(Debug)]
 pub(crate) struct SubscriptionHub {
     state: Mutex<SubscriptionHubState>,
+    // Summary projection hydration is single-flight per service instance. Keeping this with the
+    // hub avoids suppressing bootstrap for an independent AppState (including test fixtures).
+    summary_projection_refresh: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -731,6 +737,31 @@ struct SubscriptionHubState {
     dashboard_current_slice: Option<Arc<DashboardCurrentProjectionSlice>>,
     dashboard_network_slice: Option<Arc<DashboardNetworkProjectionSlice>>,
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
+    summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
+    summary_projection: Option<Arc<SummaryProjection>>,
+    // Terminal slices are ephemeral delivery batches. Retain a bounded exact Summary overlay
+    // until the next rolling projection revision demonstrably contains each durable identity.
+    summary_terminal_overlay: VecDeque<DashboardActivityTerminalDelta>,
+    summary_terminal_overlay_bytes: usize,
+    // The highest sequence not retained because the bounded overlay overflowed. It remains
+    // fail-closed until a later durable Summary projection proves it has observed every terminal
+    // through this sequence.
+    summary_terminal_overlay_overflowed_through_sequence: Option<u64>,
+    // All-time coverage can lag independently of rolling coverage. Keep its replay budget
+    // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
+    summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
+    summary_terminal_overlay_all_time_bytes: usize,
+    // A shared all-time queue can overflow on one account while another account remains
+    // serviceable. Retain the dropped-through proof per account so a global rebuild cannot
+    // silently clear an account's fail-closed marker.
+    summary_terminal_overlay_all_time_overflowed_through_account: HashMap<i64, u64>,
+    // Once the account marker cap is reached, retain one bounded proof for all further account
+    // keys. Account reads remain fail-closed unless their own projection proves this watermark.
+    summary_terminal_overlay_all_time_overflowed_through_unknown_account: Option<u64>,
+    summary_terminal_overlay_all_time_overflowed_through_sequence: Option<u64>,
+    summary_http_interest_at: Option<Instant>,
+    summary_http_all_time_interest_at: Option<Instant>,
+    summary_projection_revision: u64,
     prompt_cache_prebaseline_records: HashMap<String, BTreeMap<String, PromptCacheTopicDelta>>,
     prompt_cache_prebaseline_key_hydrations: HashMap<String, BTreeSet<String>>,
     parallel_work_prebaseline_mutations:
@@ -739,6 +770,39 @@ struct SubscriptionHubState {
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
     runtime_topic_recovery_running: bool,
+}
+
+fn record_all_time_account_overflow_marker(
+    state: &mut SubscriptionHubState,
+    account_id: i64,
+    terminal_sequence: u64,
+) {
+    if let Some(existing) = state
+        .summary_terminal_overlay_all_time_overflowed_through_account
+        .get_mut(&account_id)
+    {
+        *existing = (*existing).max(terminal_sequence);
+        return;
+    }
+    if state
+        .summary_terminal_overlay_all_time_overflowed_through_account
+        .len()
+        < SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS
+    {
+        state
+            .summary_terminal_overlay_all_time_overflowed_through_account
+            .insert(account_id, terminal_sequence);
+        return;
+    }
+    state
+        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+        .get_or_insert(terminal_sequence);
+    if let Some(existing) = state
+        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+        .as_mut()
+    {
+        *existing = (*existing).max(terminal_sequence);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -988,6 +1052,10 @@ struct DashboardSummaryMaterializerState {
     current_revision: Option<u64>,
     terminal_revision: Option<u64>,
     terminal_sequence: u64,
+    // The initial memory-only Summary base may already have replayed a terminal overlay, while
+    // the hub's latest terminal slice still contains the same delta. Keep this bounded set only
+    // for the first materialization so reconnects neither double-count nor skip ACKed deltas.
+    initial_terminal_slice_suppressions: Option<HashSet<u64>>,
     range_start: Option<DateTime<Utc>>,
 }
 
@@ -1542,6 +1610,22 @@ impl DashboardSummaryMaterializerState {
             current_revision: None,
             terminal_revision: None,
             terminal_sequence,
+            initial_terminal_slice_suppressions: None,
+            range_start,
+        }
+    }
+
+    fn from_summary_projection(
+        response: StatsResponse,
+        initial_terminal_slice_suppressions: HashSet<u64>,
+        range_start: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            response,
+            current_revision: None,
+            terminal_revision: None,
+            terminal_sequence: 0,
+            initial_terminal_slice_suppressions: Some(initial_terminal_slice_suppressions),
             range_start,
         }
     }
@@ -2410,21 +2494,35 @@ impl DashboardTopicMaterializer {
                     );
                     base.current_revision = current.map(|slice| slice.revision);
                 }
+                let initial_terminal_slice_suppressions =
+                    base.initial_terminal_slice_suppressions.take();
                 if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
                     let DashboardSummaryMaterializerState {
                         response,
                         terminal_sequence,
                         ..
                     } = &mut *base;
-                    apply_dashboard_terminal_slice_to_summary_response(
-                        response,
-                        terminal_sequence,
-                        window,
-                        *reporting_tz,
-                        *source_scope,
-                        *upstream_account_id,
-                        terminal.expect("terminal slice checked above"),
-                    );
+                    if let Some(mut suppressions) = initial_terminal_slice_suppressions {
+                        apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
+                            response,
+                            &mut suppressions,
+                            window,
+                            *reporting_tz,
+                            *source_scope,
+                            *upstream_account_id,
+                            terminal.expect("terminal slice checked above"),
+                        );
+                    } else {
+                        apply_dashboard_terminal_slice_to_summary_response(
+                            response,
+                            terminal_sequence,
+                            window,
+                            *reporting_tz,
+                            *source_scope,
+                            *upstream_account_id,
+                            terminal.expect("terminal slice checked above"),
+                        );
+                    }
                     base.terminal_revision = terminal.map(|slice| slice.revision);
                 }
                 serde_json::to_vec(&base.response).map_err(ApiError::from)
@@ -2983,6 +3081,7 @@ impl SubscriptionHub {
         let (broadcaster, _) = broadcast::channel(1_024);
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
+            summary_projection_refresh: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -2992,6 +3091,318 @@ impl SubscriptionHub {
             #[cfg(test)]
             dashboard_topology_sse_frame_observations: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub(crate) async fn summary_snapshot(&self, key: &SummarySnapshotKey) -> Option<StatsResponse> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .get(key)
+            .and_then(SummarySnapshotEntry::fresh_response)
+    }
+
+    pub(crate) async fn summary_projection(&self) -> Option<Arc<SummaryProjection>> {
+        self.state.lock().await.summary_projection.clone()
+    }
+
+    pub(crate) async fn note_summary_http_interest(&self, all_time: bool) {
+        let mut guard = self.state.lock().await;
+        guard.summary_http_interest_at = Some(Instant::now());
+        if all_time {
+            guard.summary_http_all_time_interest_at = Some(Instant::now());
+        }
+    }
+
+    pub(crate) async fn has_summary_owner(&self) -> bool {
+        let guard = self.state.lock().await;
+        guard
+            .active_topic_names
+            .get("stats.summary.current")
+            .copied()
+            .unwrap_or_default()
+            > 0
+            || guard
+                .summary_http_interest_at
+                .is_some_and(|at| at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+    }
+
+    pub(crate) async fn has_summary_all_time_owner(&self) -> bool {
+        let guard = self.state.lock().await;
+        guard.active_topics.iter().any(|(topic_key, topic)| {
+            matches!(topic, SubscriptionTopic::SummaryCurrent { window, .. } if window == "all")
+                && guard
+                    .active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    > 0
+        }) || guard
+            .summary_http_all_time_interest_at
+            .is_some_and(|at| at.elapsed() <= SUMMARY_SNAPSHOT_MAX_STALE)
+    }
+
+    pub(crate) fn try_lock_summary_projection_refresh(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, tokio::sync::TryLockError> {
+        self.summary_projection_refresh.try_lock()
+    }
+
+    pub(crate) async fn next_summary_projection_revision(&self) -> u64 {
+        let mut state = self.state.lock().await;
+        state.summary_projection_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision
+    }
+
+    pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
+        let mut state = self.state.lock().await;
+        state.summary_terminal_overlay.retain(|delta| {
+            !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+        });
+        state.summary_terminal_overlay_bytes = state
+            .summary_terminal_overlay
+            .iter()
+            .map(|delta| delta.estimated_bytes)
+            .sum();
+        if state
+            .summary_terminal_overlay_overflowed_through_sequence
+            .is_some_and(|overflowed_through| {
+                projection.durable_terminal_sequence_watermark() >= overflowed_through
+            })
+        {
+            state.summary_terminal_overlay_overflowed_through_sequence = None;
+            tracing::info!(
+                durable_terminal_sequence_watermark =
+                    projection.durable_terminal_sequence_watermark(),
+                "summary terminal overlay recovered after a durable projection refresh"
+            );
+        }
+        state.summary_terminal_overlay_all_time.retain(|delta| {
+            !projection.all_time_terminal_scope_covers(
+                delta.upstream_account_id,
+                &delta.invoke_id,
+                &delta.occurred_at,
+                delta.terminal_sequence,
+            )
+        });
+        state.summary_terminal_overlay_all_time_bytes = state
+            .summary_terminal_overlay_all_time
+            .iter()
+            .map(|delta| delta.estimated_bytes)
+            .sum();
+        state
+            .summary_terminal_overlay_all_time_overflowed_through_account
+            .retain(|account_id, overflowed_through| {
+                !projection.all_time_terminal_scope_covers(
+                    Some(*account_id),
+                    "",
+                    "",
+                    *overflowed_through,
+                )
+            });
+        if state
+            .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+            .is_some_and(|overflowed_through| {
+                projection.all_time_terminal_account_scopes_cover(overflowed_through)
+            })
+        {
+            state.summary_terminal_overlay_all_time_overflowed_through_unknown_account = None;
+            tracing::info!(
+                "all-time summary account overflow markers recovered after a complete account projection refresh"
+            );
+        }
+        if projection.all_time_terminal_coverage_complete()
+            && state
+                .summary_terminal_overlay_all_time_overflowed_through_sequence
+                .is_some_and(|overflowed_through| {
+                    projection.all_time_terminal_sequence_watermark() >= overflowed_through
+                })
+        {
+            state.summary_terminal_overlay_all_time_overflowed_through_sequence = None;
+            tracing::info!(
+                durable_terminal_sequence_watermark =
+                    projection.all_time_terminal_sequence_watermark(),
+                "all-time summary terminal overlay recovered after a durable projection refresh"
+            );
+        }
+        state.summary_projection = Some(Arc::new(projection));
+    }
+
+    async fn summary_projection_terminal_overlay(
+        &self,
+        projection: &SummaryProjection,
+        all_time: bool,
+        upstream_account_id: Option<i64>,
+    ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
+        let state = self.state.lock().await;
+        let overflowed = if all_time {
+            if let Some(account_id) = upstream_account_id {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_account
+                    .contains_key(&account_id)
+                    || state
+                        .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+                        .is_some()
+            } else {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_some()
+            }
+        } else {
+            state
+                .summary_terminal_overlay_overflowed_through_sequence
+                .is_some()
+        };
+        let overflow_is_covered = if all_time {
+            if let Some(account_id) = upstream_account_id {
+                let account_marker_covered = state
+                    .summary_terminal_overlay_all_time_overflowed_through_account
+                    .get(&account_id)
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(
+                            Some(account_id),
+                            "",
+                            "",
+                            *overflowed_through,
+                        )
+                    });
+                let unknown_marker_covered = state
+                    .summary_terminal_overlay_all_time_overflowed_through_unknown_account
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(
+                            Some(account_id),
+                            "",
+                            "",
+                            overflowed_through,
+                        )
+                    });
+                account_marker_covered && unknown_marker_covered
+            } else {
+                state
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_none_or(|overflowed_through| {
+                        projection.all_time_terminal_scope_covers(None, "", "", overflowed_through)
+                    })
+            }
+        } else {
+            false
+        };
+        if overflowed && !overflow_is_covered {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary terminal overlay exceeded its bounded memory budget"
+            )));
+        }
+        let overlay_source = if all_time {
+            &state.summary_terminal_overlay_all_time
+        } else {
+            &state.summary_terminal_overlay
+        };
+        let overlay = overlay_source
+            .iter()
+            .filter(|delta| {
+                !((!all_time
+                    && projection
+                        .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at))
+                    || (all_time
+                        && projection.all_time_terminal_scope_covers(
+                            upstream_account_id,
+                            &delta.invoke_id,
+                            &delta.occurred_at,
+                            delta.terminal_sequence,
+                        )))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut initial_slice_suppressions = overlay
+            .iter()
+            .map(|delta| delta.terminal_sequence)
+            .collect::<HashSet<_>>();
+        if let Some(slice) = state.dashboard_terminal_slice.as_deref() {
+            initial_slice_suppressions.extend(
+                slice
+                    .deltas
+                    .iter()
+                    .filter(|delta| {
+                        (!all_time
+                            && projection.contains_persisted_live_terminal(
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ))
+                            || (all_time
+                                && projection.all_time_terminal_scope_covers(
+                                    upstream_account_id,
+                                    &delta.invoke_id,
+                                    &delta.occurred_at,
+                                    delta.terminal_sequence,
+                                ))
+                    })
+                    .map(|delta| delta.terminal_sequence),
+            );
+        }
+        Ok((overlay, initial_slice_suppressions))
+    }
+
+    pub(crate) async fn ensure_summary_snapshot_key(&self, key: SummarySnapshotKey) -> bool {
+        let mut state = self.state.lock().await;
+        if state.summary_snapshots.contains_key(&key) {
+            return true;
+        }
+        if state.summary_snapshots.len() >= SUMMARY_SNAPSHOT_MAX_KEYS {
+            return false;
+        }
+        state
+            .summary_snapshots
+            .insert(key, SummarySnapshotEntry::default());
+        true
+    }
+
+    pub(crate) async fn summary_snapshot_keys(&self) -> Vec<SummarySnapshotKey> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn summary_snapshot_keys_needing_refresh(&self) -> Vec<SummarySnapshotKey> {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .iter()
+            .filter(|(_, entry)| entry.needs_refresh())
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    pub(crate) async fn store_summary_snapshot(
+        &self,
+        key: SummarySnapshotKey,
+        response: StatsResponse,
+    ) {
+        self.state
+            .lock()
+            .await
+            .summary_snapshots
+            .insert(key, SummarySnapshotEntry::ready(response));
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn store_summary_snapshot_at(
+        &self,
+        key: SummarySnapshotKey,
+        response: StatsResponse,
+        refreshed_at: Instant,
+    ) {
+        self.state.lock().await.summary_snapshots.insert(
+            key,
+            SummarySnapshotEntry {
+                response: Some(response),
+                refreshed_at: Some(refreshed_at),
+            },
+        );
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<SubscriptionDispatchEvent> {
@@ -4666,6 +5077,107 @@ impl SubscriptionHub {
                 .is_some_and(|terminal| terminal.revision >= slice.revision)
             {
                 return;
+            }
+            let highest_sequence = slice
+                .deltas
+                .iter()
+                .map(|delta| delta.terminal_sequence)
+                .max()
+                .unwrap_or_default();
+            if let Some(overflowed_through) = guard
+                .summary_terminal_overlay_overflowed_through_sequence
+                .as_mut()
+            {
+                *overflowed_through = (*overflowed_through).max(highest_sequence);
+            }
+            if let Some(overflowed_through) = guard
+                .summary_terminal_overlay_all_time_overflowed_through_sequence
+                .as_mut()
+            {
+                *overflowed_through = (*overflowed_through).max(highest_sequence);
+            }
+            for delta in &slice.deltas {
+                if guard
+                    .summary_terminal_overlay_overflowed_through_sequence
+                    .is_none()
+                    && !guard
+                        .summary_terminal_overlay
+                        .iter()
+                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+                {
+                    let exceeds_count =
+                        guard.summary_terminal_overlay.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+                    let exceeds_bytes = guard
+                        .summary_terminal_overlay_bytes
+                        .saturating_add(delta.estimated_bytes)
+                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+                    if exceeds_count || exceeds_bytes {
+                        let overflowed_through = highest_sequence;
+                        guard.summary_terminal_overlay_overflowed_through_sequence =
+                            Some(overflowed_through);
+                        tracing::warn!(
+                            pending_terminal_count = guard.summary_terminal_overlay.len(),
+                            pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
+                            overflowed_through,
+                            "rolling summary terminal overlay reached its bounded memory budget"
+                        );
+                    } else {
+                        guard.summary_terminal_overlay_bytes = guard
+                            .summary_terminal_overlay_bytes
+                            .saturating_add(delta.estimated_bytes);
+                        guard.summary_terminal_overlay.push_back(delta.clone());
+                    }
+                }
+                if guard
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_none()
+                    && !guard
+                        .summary_terminal_overlay_all_time
+                        .iter()
+                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+                {
+                    let exceeds_count = guard.summary_terminal_overlay_all_time.len()
+                        >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+                    let exceeds_bytes = guard
+                        .summary_terminal_overlay_all_time_bytes
+                        .saturating_add(delta.estimated_bytes)
+                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+                    if exceeds_count || exceeds_bytes {
+                        let overflowed_through = highest_sequence;
+                        guard.summary_terminal_overlay_all_time_overflowed_through_sequence =
+                            Some(overflowed_through);
+                        if let Some(account_id) = delta.upstream_account_id {
+                            record_all_time_account_overflow_marker(
+                                &mut guard,
+                                account_id,
+                                delta.terminal_sequence,
+                            );
+                        }
+                        tracing::warn!(
+                            pending_terminal_count = guard.summary_terminal_overlay_all_time.len(),
+                            pending_terminal_bytes = guard.summary_terminal_overlay_all_time_bytes,
+                            overflowed_through,
+                            "all-time summary terminal overlay reached its bounded memory budget"
+                        );
+                    } else {
+                        guard.summary_terminal_overlay_all_time_bytes = guard
+                            .summary_terminal_overlay_all_time_bytes
+                            .saturating_add(delta.estimated_bytes);
+                        guard
+                            .summary_terminal_overlay_all_time
+                            .push_back(delta.clone());
+                    }
+                } else if guard
+                    .summary_terminal_overlay_all_time_overflowed_through_sequence
+                    .is_some()
+                    && let Some(account_id) = delta.upstream_account_id
+                {
+                    record_all_time_account_overflow_marker(
+                        &mut guard,
+                        account_id,
+                        delta.terminal_sequence,
+                    );
+                }
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
             let current = guard.dashboard_current_slice.clone();
@@ -9183,6 +9695,32 @@ fn apply_dashboard_terminal_slice_to_summary_response(
     }
 }
 
+fn apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
+    response: &mut StatsResponse,
+    suppressions: &mut HashSet<u64>,
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    slice: &DashboardTerminalProjectionSlice,
+) {
+    let range = summary_window_range(window, reporting_tz, Utc::now())
+        .ok()
+        .flatten()
+        .map(|(start, end)| ExactUtcRange { start, end });
+    for delta in &slice.deltas {
+        if suppressions.remove(&delta.terminal_sequence)
+            || !terminal_delta_matches_source_scope(delta, source_scope)
+            || upstream_account_id
+                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
+        {
+            continue;
+        }
+        apply_dashboard_activity_terminal_delta_to_stats(response, delta);
+    }
+}
+
 fn dashboard_network_timeseries_live_point<'a>(
     base: &'a DashboardNetworkTimeseriesResponse,
     upstream_account_id: Option<i64>,
@@ -10384,7 +10922,7 @@ impl SubscriptionTopic {
                     time_zone,
                     limit,
                     upstream_account_id,
-                } if !matches!(window.as_str(), "yesterday" | "previous7d") => {
+                } => {
                     let query = SummaryQuery {
                         window: Some(window.clone()),
                         limit: *limit,
@@ -10394,6 +10932,58 @@ impl SubscriptionTopic {
                     let summary_window =
                         parse_summary_window(&query, state.config.list_limit_max as i64)?;
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
+                    let projection = state.subscription_hub.summary_projection().await;
+                    if let Some(projection) = projection {
+                        let mut response = projection
+                            .response_for_query(&query, state.config.list_limit_max as i64)?;
+                        // The immutable SummaryProjection represents one durable baseline. A
+                        // terminal remains in the hub-owned overlay until that exact projection
+                        // contains its durable identity, including after SQLite ACK but before a
+                        // background projection swap. This stays entirely in memory.
+                        let (pending_terminal_deltas, initial_terminal_slice_suppressions) = state
+                            .subscription_hub
+                            .summary_projection_terminal_overlay(
+                                projection.as_ref(),
+                                matches!(&summary_window, SummaryWindow::All),
+                                *upstream_account_id,
+                            )
+                            .await?;
+                        let mut replayed_terminal_sequence = 0;
+                        apply_dashboard_terminal_slice_to_summary_response(
+                            &mut response,
+                            &mut replayed_terminal_sequence,
+                            &summary_window,
+                            reporting_tz,
+                            InvocationSourceScope::All,
+                            *upstream_account_id,
+                            &DashboardTerminalProjectionSlice {
+                                revision: 0,
+                                deltas: pending_terminal_deltas,
+                            },
+                        );
+                        let range_start =
+                            summary_window_range(&summary_window, reporting_tz, Utc::now())?
+                                .map(|(start, _)| start);
+                        return Ok(BuiltSubscriptionTopicPayload::Dashboard(
+                            DashboardTopicMaterializer::Summary {
+                                base: Arc::new(StdMutex::new(
+                                    DashboardSummaryMaterializerState::from_summary_projection(
+                                        response,
+                                        initial_terminal_slice_suppressions,
+                                        range_start,
+                                    ),
+                                )),
+                                window: summary_window,
+                                reporting_tz,
+                                source_scope: InvocationSourceScope::All,
+                                upstream_account_id: *upstream_account_id,
+                            },
+                        ));
+                    }
+
+                    // This branch is reachable only before startup hydration has published the
+                    // first projection. Once a last-good projection exists, a Summary topic is
+                    // strictly memory-backed and never re-enters the legacy SQL builder.
                     let source_scope = resolve_default_source_scope(&state.pool).await?;
                     let SummaryTopicTerminalConsistentBase {
                         mut response,
@@ -11304,6 +11894,104 @@ fn prompt_cache_selection_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_time_account_overflow_markers_stay_bounded() {
+        let mut state = SubscriptionHubState::default();
+        for account_id in 0..=(SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS as i64) {
+            record_all_time_account_overflow_marker(&mut state, account_id, account_id as u64 + 1);
+        }
+        assert_eq!(
+            state
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .len(),
+            SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS
+        );
+        assert_eq!(
+            state.summary_terminal_overlay_all_time_overflowed_through_unknown_account,
+            Some((SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS as u64) + 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_snapshot_registration_preserves_last_good_response() {
+        let hub = SubscriptionHub::new();
+        let key = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+        let mut response = StatsTotals::default().into_response();
+        response.total_count = 7;
+
+        hub.store_summary_snapshot(key.clone(), response).await;
+        hub.ensure_summary_snapshot_key(key.clone()).await;
+
+        assert_eq!(
+            hub.summary_snapshot(&key)
+                .await
+                .expect("registered key should retain its last-good response")
+                .total_count,
+            7
+        );
+    }
+
+    #[test]
+    fn stale_summary_snapshot_does_not_serve_last_good_indefinitely() {
+        let entry = SummarySnapshotEntry {
+            response: Some(StatsTotals::default().into_response()),
+            refreshed_at: Some(
+                Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1),
+            ),
+        };
+
+        assert!(entry.fresh_response().is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_snapshot_admission_rejects_keys_after_the_bounded_capacity() {
+        let hub = SubscriptionHub::new();
+        for index in 0..SUMMARY_SNAPSHOT_MAX_KEYS {
+            assert!(
+                hub.ensure_summary_snapshot_key(SummarySnapshotKey::from_query(&SummaryQuery {
+                    window: Some("1d".to_string()),
+                    limit: Some(index as i64 + 1),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: Some(index as i64 + 1),
+                }))
+                .await
+            );
+        }
+
+        assert!(
+            !hub.ensure_summary_snapshot_key(SummarySnapshotKey::from_query(&SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: Some(99),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: Some(99),
+            }))
+            .await
+        );
+    }
+
+    #[test]
+    fn summary_snapshot_key_canonicalizes_equivalent_query_forms() {
+        let one_day = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: Some(99),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+        let twenty_four_hours = SummarySnapshotKey::from_query(&SummaryQuery {
+            window: Some("24h".to_string()),
+            limit: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        });
+
+        assert_eq!(one_day, twenty_four_hours);
+    }
 
     #[test]
     fn runtime_mutation_sequence_gap_discards_partial_batch() {
@@ -15203,6 +15891,445 @@ mod tests {
         assert!(activity_materializer.requires_terminal_window_rebase());
         assert!(summary_materializer.requires_terminal_window_rebase());
         assert!(timeseries_materializer.requires_terminal_window_rebase());
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topics_materialize_without_sqlite_for_open_and_closed_windows() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before topic materialization");
+        state.pool.close().await;
+
+        for window in ["1d", "previous7d"] {
+            let summary = SubscriptionTopic::SummaryCurrent {
+                window: window.to_string(),
+                time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+                limit: None,
+                upstream_account_id: None,
+            };
+            let payload = summary
+                .build_cached_payload(state.clone())
+                .await
+                .expect("hydrated Summary topic must not rebuild from SQLite");
+            assert!(
+                matches!(
+                    payload,
+                    BuiltSubscriptionTopicPayload::Dashboard(
+                        DashboardTopicMaterializer::Summary { .. }
+                    )
+                ),
+                "{window} must use the memory-backed Summary materializer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_replays_pending_terminal_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before the terminal delta");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 0;
+        terminal.invoke_id = "hydrated-summary-pending-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept pending terminal delta");
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("hydrated Summary topic must replay the pending terminal from memory")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: 1,
+                    deltas: vec![delta],
+                }),
+            )
+            .expect("serialize the memory-backed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_replays_acked_terminal_until_projection_catches_up() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before the terminal write");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_001;
+        terminal.invoke_id = "hydrated-summary-acked-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal after the previous projection revision");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        assert_eq!(delta.persisted_row_id, Some(terminal.id));
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("acked terminal remains in the memory-only Summary overlay")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the memory-backed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_does_not_replay_terminal_included_by_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate initial summary projection");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_002;
+        terminal.invoke_id = "hydrated-summary-projection-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before the refreshed projection");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh summary projection with the durable terminal");
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("refreshed Summary topic remains memory-only")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the refreshed Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate initial summary projection");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_003;
+        terminal.invoke_id = "hydrated-summary-overflow-recovery-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind("success")
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before the recovery projection");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        assert_eq!(delta.persisted_row_id, Some(terminal.id));
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta.clone());
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        {
+            let mut hub = state.subscription_hub.state.lock().await;
+            hub.summary_terminal_overlay_overflowed_through_sequence =
+                Some(delta.terminal_sequence);
+        }
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        assert!(matches!(
+            summary.build_cached_payload(state.clone()).await,
+            Err(ApiError::Unavailable(_))
+        ));
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("durable projection must recover the bounded overlay");
+        assert!(
+            state
+                .subscription_hub
+                .state
+                .lock()
+                .await
+                .summary_terminal_overlay_overflowed_through_sequence
+                .is_none(),
+            "the durable watermark must clear an overflow it fully covers",
+        );
+        state.pool.close().await;
+
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("recovered Summary topic remains memory-only")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas,
+                }),
+            )
+            .expect("serialize the recovered Summary topic");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn all_time_overlay_overflow_does_not_block_rolling_summary() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard.summary_terminal_overlay_all_time_overflowed_through_sequence = Some(42);
+        }
+        let projection = SummaryProjection::default();
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, false, None)
+                .await
+                .is_ok(),
+            "an all-time replay budget exhaustion must not make rolling Summary unavailable"
+        );
+        assert!(matches!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true, None)
+                .await,
+            Err(ApiError::Unavailable(_))
+        ));
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn account_all_time_overlay_overflow_remains_scoped_until_account_proof() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .insert(42, 7);
+        }
+
+        let projection = SummaryProjection::default();
+        assert!(matches!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true, Some(42))
+                .await,
+            Err(ApiError::Unavailable(_))
+        ));
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, true, None)
+                .await
+                .is_ok(),
+            "an account-scoped overflow must not make the global all-time topic unavailable"
+        );
+
+        state
+            .subscription_hub
+            .store_summary_projection(projection)
+            .await;
+        assert!(
+            state
+                .subscription_hub
+                .state
+                .lock()
+                .await
+                .summary_terminal_overlay_all_time_overflowed_through_account
+                .contains_key(&42)
+        );
+        state.pool.close().await;
     }
 
     #[tokio::test]

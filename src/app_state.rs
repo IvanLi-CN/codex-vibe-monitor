@@ -2862,6 +2862,9 @@ impl SystemTaskStatus {
 pub(crate) struct SystemStatusCacheEntry {
     pub(crate) cached_at: Instant,
     pub(crate) response: SystemStatusResponse,
+    // The durable inventory value captured by the background refresh. An in-memory override
+    // may temporarily replace the response state, then restore this value without request I/O.
+    pub(crate) raw_metrics_inventory_state: String,
 }
 
 #[derive(Debug, Default)]
