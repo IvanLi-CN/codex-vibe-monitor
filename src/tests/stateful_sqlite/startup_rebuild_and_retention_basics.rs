@@ -1057,6 +1057,42 @@ async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
 }
 
 #[tokio::test]
+async fn startup_system_status_hydrates_while_summary_hydration_is_delayed() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),
+    )
+    .await;
+    let hydration_handle =
+        publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
+            state.clone(),
+            Instant::now(),
+            Duration::from_secs(2),
+        );
+
+    tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if state.system_status_cache.lock().await.latest.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("system status hydration must not wait for the delayed summary worker");
+    assert!(
+        !hydration_handle.is_finished(),
+        "the returned coordinator must continue joining the delayed summary worker"
+    );
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), hydration_handle)
+        .await
+        .expect("startup hydration coordinator should cancel both independent workers")
+        .expect("startup hydration coordinator should join after shutdown");
+    state.pool.close().await;
+}
+
+#[tokio::test]
 async fn summary_startup_hydration_has_a_finite_sqlite_pressure_deadline() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-summary-hydration-deadline",

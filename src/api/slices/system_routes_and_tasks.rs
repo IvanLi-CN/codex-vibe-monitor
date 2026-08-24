@@ -436,6 +436,63 @@ pub(crate) fn count_file_size(path: &Path) -> u64 {
     fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
+struct SystemStatusFilesystemScan {
+    cancellation: CancellationToken,
+    deadline: Instant,
+    #[cfg(test)]
+    checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl SystemStatusFilesystemScan {
+    fn new(cancellation: CancellationToken, deadline: Instant) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            #[cfg(test)]
+            checkpoint: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_test_checkpoint(
+        cancellation: CancellationToken,
+        deadline: Instant,
+        checkpoint: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            checkpoint: Some(checkpoint),
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        #[cfg(test)]
+        if let Some(checkpoint) = &self.checkpoint {
+            checkpoint();
+        }
+        if self.cancellation.is_cancelled() {
+            bail!("system status filesystem scan cancelled");
+        }
+        if Instant::now() >= self.deadline {
+            bail!("system status filesystem scan exceeded its deadline");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SystemStatusFilesystemBytes {
+    archive_bytes: u64,
+    database_bytes: u64,
+    other_files_bytes: u64,
+}
+
+fn count_file_size_with_scan(path: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
+    scan.check()?;
+    Ok(fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+}
+
 pub(crate) fn add_existing_raw_payload_bytes(
     raw_path: &str,
     fallback_root: Option<&Path>,
@@ -500,26 +557,33 @@ pub(crate) fn collect_existing_raw_payload_metrics(
     (total, request, response)
 }
 
-pub(crate) fn count_database_bytes(db_path: &Path) -> u64 {
+fn count_database_bytes_with_scan(
+    db_path: &Path,
+    scan: &SystemStatusFilesystemScan,
+) -> Result<u64> {
     let wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
     let shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
-    count_file_size(db_path)
-        .saturating_add(count_file_size(&wal_path))
-        .saturating_add(count_file_size(&shm_path))
+    Ok(count_file_size_with_scan(db_path, scan)?
+        .saturating_add(count_file_size_with_scan(&wal_path, scan)?)
+        .saturating_add(count_file_size_with_scan(&shm_path, scan)?))
 }
 
-pub(crate) fn sum_directory_bytes(root: &Path) -> u64 {
+fn sum_directory_bytes_with_scan(root: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
     let mut total = 0_u64;
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
+        scan.check()?;
         let Ok(entries) = fs::read_dir(&path) else {
             continue;
         };
         for entry in entries.flatten() {
+            scan.check()?;
             let child = entry.path();
+            scan.check()?;
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => stack.push(child),
                 Ok(kind) if kind.is_file() => {
+                    scan.check()?;
                     total =
                         total.saturating_add(entry.metadata().map(|meta| meta.len()).unwrap_or(0));
                 }
@@ -527,22 +591,24 @@ pub(crate) fn sum_directory_bytes(root: &Path) -> u64 {
             }
         }
     }
-    total
+    Ok(total)
 }
 
-pub(crate) fn sum_path_bytes(path: &Path) -> u64 {
+fn sum_path_bytes_with_scan(path: &Path, scan: &SystemStatusFilesystemScan) -> Result<u64> {
+    scan.check()?;
     match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => metadata.len(),
-        Ok(metadata) if metadata.is_dir() => sum_directory_bytes(path),
-        _ => 0,
+        Ok(metadata) if metadata.is_file() => Ok(metadata.len()),
+        Ok(metadata) if metadata.is_dir() => sum_directory_bytes_with_scan(path, scan),
+        _ => Ok(0),
     }
 }
 
-pub(crate) fn compute_other_files_bytes(
+fn compute_other_files_bytes_with_scan(
     config: &AppConfig,
     archive_dir: &Path,
     raw_dir: &Path,
-) -> u64 {
+    scan: &SystemStatusFilesystemScan,
+) -> Result<u64> {
     let db_path = &config.database_path;
     let db_wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
     let db_shm_path = PathBuf::from(format!("{}-shm", db_path.display()));
@@ -550,20 +616,75 @@ pub(crate) fn compute_other_files_bytes(
 
     // Keep "other files" scoped to runtime-owned storage that does not already
     // have a dedicated metric on the system status page.
-    [config.xray_runtime_dir.clone()]
-        .into_iter()
-        .filter(|path| !path.as_os_str().is_empty())
-        .filter(|path| seen.insert(path.clone()))
-        .filter(|path| {
-            let candidate = path.as_path();
-            candidate != db_path
-                && candidate != db_wal_path.as_path()
-                && candidate != db_shm_path.as_path()
-                && candidate != archive_dir
-                && candidate != raw_dir
-        })
-        .map(|path| sum_path_bytes(&path))
-        .sum()
+    let mut total = 0_u64;
+    for path in [config.xray_runtime_dir.clone()] {
+        scan.check()?;
+        if path.as_os_str().is_empty() || !seen.insert(path.clone()) {
+            continue;
+        }
+        let candidate = path.as_path();
+        if candidate != db_path
+            && candidate != db_wal_path.as_path()
+            && candidate != db_shm_path.as_path()
+            && candidate != archive_dir
+            && candidate != raw_dir
+        {
+            total = total.saturating_add(sum_path_bytes_with_scan(&path, scan)?);
+        }
+    }
+    Ok(total)
+}
+
+fn collect_system_status_filesystem_bytes(
+    archive_paths: Vec<String>,
+    config: AppConfig,
+    archive_dir: PathBuf,
+    raw_dir: PathBuf,
+    scan: SystemStatusFilesystemScan,
+) -> Result<SystemStatusFilesystemBytes> {
+    let mut seen_paths = HashSet::new();
+    let mut archive_bytes = 0_u64;
+    for path in archive_paths {
+        scan.check()?;
+        if seen_paths.insert(path.clone()) {
+            archive_bytes =
+                archive_bytes.saturating_add(count_file_size_with_scan(Path::new(&path), &scan)?);
+        }
+    }
+
+    Ok(SystemStatusFilesystemBytes {
+        archive_bytes,
+        database_bytes: count_database_bytes_with_scan(&config.database_path, &scan)?,
+        other_files_bytes: compute_other_files_bytes_with_scan(
+            &config,
+            &archive_dir,
+            &raw_dir,
+            &scan,
+        )?,
+    })
+}
+
+async fn collect_system_status_filesystem_bytes_in_blocking_task(
+    archive_paths: Vec<String>,
+    config: AppConfig,
+    archive_dir: PathBuf,
+    raw_dir: PathBuf,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<SystemStatusFilesystemBytes> {
+    let scan = SystemStatusFilesystemScan::new(cancellation.clone(), deadline);
+    let mut task = tokio::task::spawn_blocking(move || {
+        collect_system_status_filesystem_bytes(archive_paths, config, archive_dir, raw_dir, scan)
+    });
+
+    tokio::select! {
+        result = &mut task => result
+            .map_err(|error| anyhow!("system status filesystem scan task failed: {error}"))?,
+        _ = cancellation.cancelled() => {
+            let _ = task.await;
+            bail!("system status filesystem scan cancelled");
+        }
+    }
 }
 
 async fn record_system_raw_payload_inventory_path(
@@ -952,11 +1073,27 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
     })
 }
 
+async fn await_system_status_refresh_operation<T>(
+    cancellation: &CancellationToken,
+    operation: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    tokio::select! {
+        _ = cancellation.cancelled() => bail!("system status snapshot refresh cancelled"),
+        result = operation => result,
+    }
+}
+
 async fn load_system_status_snapshot_uncached(
     state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
 ) -> Result<(SystemStatusResponse, String)> {
-    let runtime_pressure_health = load_runtime_pressure_health(state).await;
-    let invocation_status = sqlx::query_as::<_, SystemInvocationStatusAggRow>(
+    let runtime_pressure_health = await_system_status_refresh_operation(cancellation, async {
+        Ok(load_runtime_pressure_health(state).await)
+    })
+    .await?;
+    let invocation_status = await_system_status_refresh_operation(cancellation, async {
+        Ok(sqlx::query_as::<_, SystemInvocationStatusAggRow>(
         r#"
         SELECT
             COUNT(*) AS live_invocations_count,
@@ -966,10 +1103,13 @@ async fn load_system_status_snapshot_uncached(
         "#,
     )
     .fetch_one(&state.pool)
+    .await?)
+    })
     .await?;
 
-    let archived = sqlx::query_as::<_, SystemArchiveAggRow>(
-        r#"
+    let archived = await_system_status_refresh_operation(cancellation, async {
+        Ok(sqlx::query_as::<_, SystemArchiveAggRow>(
+            r#"
         SELECT
             COUNT(*) AS completed_archive_batches_count,
             COALESCE(SUM(row_count), 0) AS archived_count
@@ -977,46 +1117,60 @@ async fn load_system_status_snapshot_uncached(
         WHERE dataset = 'codex_invocations'
           AND status = 'completed'
         "#,
-    )
-    .fetch_one(&state.pool)
+        )
+        .fetch_one(&state.pool)
+        .await?)
+    })
     .await?;
 
-    let raw_metrics = sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
+    let raw_metrics = await_system_status_refresh_operation(cancellation, async {
+        Ok(sqlx::query_as::<_, SystemRawPayloadMetricsRow>(
         "SELECT inventory_state, inventory_cursor, link_inventory_cursor, raw_count, raw_bytes, request_raw_count, request_raw_bytes, response_raw_count, response_raw_bytes, updated_at FROM system_raw_payload_metrics WHERE singleton = 1",
     )
     .fetch_one(&state.pool)
+    .await?)
+    })
     .await?;
-    let raw_metrics_state = state
-        .system_status_cache
-        .lock()
-        .await
-        .raw_metrics_health_override
-        .clone()
-        .unwrap_or_else(|| raw_metrics.inventory_state.clone());
+    let raw_metrics_state = await_system_status_refresh_operation(cancellation, async {
+        Ok(state
+            .system_status_cache
+            .lock()
+            .await
+            .raw_metrics_health_override
+            .clone()
+            .unwrap_or_else(|| raw_metrics.inventory_state.clone()))
+    })
+    .await?;
 
     let archive_dir = resolved_archive_dir(&state.config);
     let raw_dir = state.config.resolved_proxy_raw_dir();
-    let archived_paths = sqlx::query_scalar::<_, String>(
-        r#"
+    let archived_paths = await_system_status_refresh_operation(cancellation, async {
+        Ok(sqlx::query_scalar::<_, String>(
+            r#"
         SELECT file_path
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = 'completed'
         "#,
-    )
-    .fetch_all(&state.pool)
+        )
+        .fetch_all(&state.pool)
+        .await?)
+    })
     .await?;
-    let mut seen_paths = std::collections::HashSet::new();
-    let archive_bytes = archived_paths
-        .into_iter()
-        .filter(|path| seen_paths.insert(path.clone()))
-        .map(PathBuf::from)
-        .map(|path| count_file_size(&path))
-        .sum();
-    let database_bytes = count_database_bytes(&state.config.database_path);
-    let other_files_bytes = compute_other_files_bytes(&state.config, &archive_dir, &raw_dir);
+    let filesystem_bytes = collect_system_status_filesystem_bytes_in_blocking_task(
+        archived_paths,
+        state.config.clone(),
+        archive_dir,
+        raw_dir,
+        cancellation,
+        deadline,
+    )
+    .await?;
     let terminal_health = state.terminal_projection_hub.health();
-    let long_term_health = state.long_term_projection_runtime.lock().await.health();
+    let long_term_health = await_system_status_refresh_operation(cancellation, async {
+        Ok(state.long_term_projection_runtime.lock().await.health())
+    })
+    .await?;
     let runtime_record_count = state.proxy_runtime_invocations.runtime_record_count() as u64;
     debug!(
         db_invocation_row_count = invocation_status.live_invocations_count.unwrap_or(0).max(0),
@@ -1036,7 +1190,7 @@ async fn load_system_status_snapshot_uncached(
                 .max(0) as u64,
             archived_bodies: SystemStatusMetric {
                 count: archived.archived_count.unwrap_or(0).max(0) as u64,
-                bytes: archive_bytes,
+                bytes: filesystem_bytes.archive_bytes,
             },
             raw_bodies: SystemStatusMetric {
                 count: raw_metrics.raw_count.max(0) as u64,
@@ -1050,8 +1204,8 @@ async fn load_system_status_snapshot_uncached(
                 count: raw_metrics.response_raw_count.max(0) as u64,
                 bytes: raw_metrics.response_raw_bytes.max(0) as u64,
             },
-            database_bytes,
-            other_files_bytes,
+            database_bytes: filesystem_bytes.database_bytes,
+            other_files_bytes: filesystem_bytes.other_files_bytes,
             projection_health: SystemProjectionHealth {
                 terminal: SystemProjectionConsumerHealth {
                     state: if terminal_health.dirty_last_good {
@@ -1097,7 +1251,14 @@ async fn load_system_status_snapshot_uncached(
 }
 
 pub(crate) async fn load_system_status_uncached(state: &AppState) -> Result<SystemStatusResponse> {
-    Ok(load_system_status_snapshot_uncached(state).await?.0)
+    let cancellation = state.shutdown.child_token();
+    Ok(load_system_status_snapshot_uncached(
+        state,
+        &cancellation,
+        Instant::now() + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
+    )
+    .await?
+    .0)
 }
 
 pub(crate) async fn load_system_status_cached(state: &AppState) -> Result<SystemStatusResponse> {
@@ -1138,32 +1299,96 @@ pub(crate) async fn hydrate_system_status_snapshot(state: &AppState) -> Result<(
 }
 
 async fn refresh_system_status_snapshot_with_deadline(state: &AppState) -> Result<()> {
-    tokio::time::timeout(
-        SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
-        refresh_system_status_snapshot(state),
-    )
-    .await
-    .map_err(|_| anyhow!("system status snapshot refresh exceeded its deadline"))?
+    let cancellation = state.shutdown.child_token();
+    let deadline = Instant::now() + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE;
+    let refresh = refresh_system_status_snapshot_with_cancellation(state, &cancellation, deadline);
+    tokio::pin!(refresh);
+
+    tokio::select! {
+        result = &mut refresh => result,
+        _ = cancellation.cancelled() => {
+            cancellation.cancel();
+            let _ = refresh.await;
+            bail!("system status snapshot refresh cancelled");
+        }
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {
+            cancellation.cancel();
+            let _ = refresh.await;
+            bail!("system status snapshot refresh exceeded its deadline");
+        }
+    }
 }
 
 async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
-    let (mut response, raw_metrics_inventory_state) =
-        load_system_status_snapshot_uncached(state).await?;
-    let mut cache = state.system_status_cache.lock().await;
-    if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
-        response.raw_metrics_health.state = override_state.to_string();
+    let cancellation = state.shutdown.child_token();
+    refresh_system_status_snapshot_with_cancellation(
+        state,
+        &cancellation,
+        Instant::now() + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
+    )
+    .await
+}
+
+#[derive(Debug)]
+struct SystemStatusSnapshotRefreshFlight {
+    cache: Arc<Mutex<SystemStatusCacheState>>,
+}
+
+impl SystemStatusSnapshotRefreshFlight {
+    async fn begin(state: &AppState, cancellation: &CancellationToken) -> Result<Self> {
+        let mut cache = await_system_status_refresh_operation(cancellation, async {
+            Ok(state.system_status_cache.lock().await)
+        })
+        .await?;
+        if cache.in_flight.is_some() {
+            bail!("system status snapshot refresh is already in flight");
+        }
+        let (signal, _receiver) = watch::channel(false);
+        cache.in_flight = Some(signal);
+        Ok(Self {
+            cache: state.system_status_cache.clone(),
+        })
     }
-    cache.latest = Some(SystemStatusCacheEntry {
-        cached_at: Instant::now(),
-        response,
-        raw_metrics_inventory_state,
-    });
-    debug!(
-        metrics_source = "system_status_memory_snapshot",
-        cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
-        "system status background snapshot refresh completed"
-    );
-    Ok(())
+
+    async fn finish(self) {
+        let mut cache = self.cache.lock().await;
+        if let Some(signal) = cache.in_flight.take() {
+            let _ = signal.send(true);
+        }
+    }
+}
+
+async fn refresh_system_status_snapshot_with_cancellation(
+    state: &AppState,
+    cancellation: &CancellationToken,
+    deadline: Instant,
+) -> Result<()> {
+    let flight = SystemStatusSnapshotRefreshFlight::begin(state, cancellation).await?;
+    let result = async {
+        let (mut response, raw_metrics_inventory_state) =
+            load_system_status_snapshot_uncached(state, cancellation, deadline).await?;
+        await_system_status_refresh_operation(cancellation, async {
+            let mut cache = state.system_status_cache.lock().await;
+            if let Some(override_state) = cache.raw_metrics_health_override.as_deref() {
+                response.raw_metrics_health.state = override_state.to_string();
+            }
+            cache.latest = Some(SystemStatusCacheEntry {
+                cached_at: Instant::now(),
+                response,
+                raw_metrics_inventory_state,
+            });
+            debug!(
+                metrics_source = "system_status_memory_snapshot",
+                cache_ttl_ms = SYSTEM_STATUS_CACHE_TTL_SECS * 1_000,
+                "system status background snapshot refresh completed"
+            );
+            Ok(())
+        })
+        .await
+    }
+    .await;
+    flight.finish().await;
+    result
 }
 
 fn system_status_snapshot_refresh_delay() -> Duration {
@@ -1500,7 +1725,13 @@ pub(crate) fn summarize_retention_run_for_system_task(
 #[cfg(test)]
 mod runtime_pressure_health_tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn active_event_lag_and_writer_pressure_never_report_healthy() {
@@ -1520,6 +1751,110 @@ mod runtime_pressure_health_tests {
                 + SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE
                 < Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
         );
+    }
+
+    #[test]
+    fn filesystem_scan_stops_at_deadline_during_directory_traversal() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-system-status-deadline-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("nested")).expect("create deadline scan fixture directory");
+        for index in 0..8 {
+            fs::write(
+                root.join("nested").join(format!("payload-{index}")),
+                b"payload",
+            )
+            .expect("write deadline scan fixture file");
+        }
+
+        let checkpoint_count = Arc::new(AtomicUsize::new(0));
+        let checkpoint_count_for_hook = checkpoint_count.clone();
+        let scan = SystemStatusFilesystemScan::with_test_checkpoint(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_millis(250),
+            Arc::new(move || {
+                if checkpoint_count_for_hook.fetch_add(1, Ordering::SeqCst) >= 8 {
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }),
+        );
+
+        let error = sum_directory_bytes_with_scan(&root, &scan)
+            .expect_err("expired filesystem scan must stop the active traversal");
+        assert!(error.to_string().contains("exceeded its deadline"));
+        assert!(
+            checkpoint_count.load(Ordering::SeqCst) > 8,
+            "the deadline hook must run after the first file metadata check"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn filesystem_scan_observes_cancellation_during_directory_traversal() {
+        let root = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-system-status-scan-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after the Unix epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("nested")).expect("create scan fixture directory");
+        for index in 0..8 {
+            fs::write(
+                root.join("nested").join(format!("payload-{index}")),
+                b"payload",
+            )
+            .expect("write scan fixture file");
+        }
+
+        let cancellation = CancellationToken::new();
+        let checkpoint_count = Arc::new(AtomicUsize::new(0));
+        let checkpoint_cancellation = cancellation.clone();
+        let checkpoint_count_for_hook = checkpoint_count.clone();
+        let scan = SystemStatusFilesystemScan::with_test_checkpoint(
+            cancellation,
+            Instant::now() + Duration::from_secs(1),
+            Arc::new(move || {
+                if checkpoint_count_for_hook.fetch_add(1, Ordering::SeqCst) >= 8 {
+                    checkpoint_cancellation.cancel();
+                }
+            }),
+        );
+
+        let error = sum_directory_bytes_with_scan(&root, &scan)
+            .expect_err("cancellation during traversal must stop the scan");
+        assert!(error.to_string().contains("cancelled"));
+        assert!(
+            checkpoint_count.load(Ordering::SeqCst) > 8,
+            "the cancellation hook must run after the first file metadata check"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn system_status_refresh_single_flight_rejects_overlapping_attempts() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let cancellation = CancellationToken::new();
+        let flight = SystemStatusSnapshotRefreshFlight::begin(state.as_ref(), &cancellation)
+            .await
+            .expect("begin first system status refresh");
+
+        let error = SystemStatusSnapshotRefreshFlight::begin(state.as_ref(), &cancellation)
+            .await
+            .expect_err("overlapping system status refresh must be rejected");
+        assert!(error.to_string().contains("already in flight"));
+
+        flight.finish().await;
+        state.pool.close().await;
     }
 
     #[tokio::test]

@@ -7,10 +7,11 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
     state: Arc<AppState>,
     startup_started_at: Instant,
 ) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        None,
     )
 }
 
@@ -20,17 +21,33 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
     startup_started_at: Instant,
     summary_deadline: Duration,
 ) -> JoinHandle<()> {
-    publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
         startup_started_at,
         summary_deadline,
+        None,
     )
 }
 
-fn publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
+#[cfg(test)]
+pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    summary_start_delay: Duration,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        Some(summary_start_delay),
+    )
+}
+
+fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     state: Arc<AppState>,
     startup_started_at: Instant,
     summary_deadline: Duration,
+    summary_start_delay: Option<Duration>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     info!(
@@ -39,58 +56,99 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_summary_deadline(
     );
 
     tokio::spawn(async move {
-        let mut summary_hydrated = false;
-        let mut system_status_hydrated = false;
-        let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
+        let summary_handle = tokio::spawn(hydrate_summary_at_startup(
+            state.clone(),
+            summary_deadline,
+            summary_start_delay,
+        ));
+        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state));
+        let (summary_result, system_status_result) =
+            tokio::join!(summary_handle, system_status_handle);
 
-        loop {
-            if !summary_hydrated {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return,
-                    result = hydrate_summary_snapshots_with_deadline(state.as_ref(), summary_deadline) => match result {
-                        Ok(()) => {
-                            summary_hydrated = true;
-                            info!("summary projection startup hydration completed");
-                        }
-                        Err(error) => {
-                            warn!(?error, "summary projection startup hydration failed; retaining unavailable or last-good response");
-                        }
-                    }
-                }
-            }
-            if !system_status_hydrated {
-                tokio::select! {
-                    _ = state.shutdown.cancelled() => return,
-                    result = hydrate_system_status_snapshot(state.as_ref()) => match result {
-                        Ok(()) => {
-                            system_status_hydrated = true;
-                            info!("system status startup hydration completed");
-                        }
-                        Err(error) => {
-                            warn!(?error, "system status startup hydration failed; retaining unavailable or last-good response");
-                        }
-                    }
-                }
-            }
-            if summary_hydrated && system_status_hydrated {
-                return;
-            }
-
+        if let Err(error) = summary_result {
             warn!(
-                summary_hydrated,
-                system_status_hydrated,
-                retry_after_secs = retry_delay.as_secs(),
-                "startup hot-read hydration deferred behind bounded pressure backoff"
+                ?error,
+                "summary projection startup hydration worker ended unexpectedly"
             );
-            tokio::select! {
-                _ = state.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(retry_delay) => {}
-            }
-            retry_delay = retry_delay
-                .saturating_mul(2)
-                .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
+        }
+        if let Err(error) = system_status_result {
+            warn!(
+                ?error,
+                "system status startup hydration worker ended unexpectedly"
+            );
         }
     })
+}
+
+async fn hydrate_summary_at_startup(
+    state: Arc<AppState>,
+    summary_deadline: Duration,
+    summary_start_delay: Option<Duration>,
+) {
+    if let Some(delay) = summary_start_delay {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(delay) => {}
+        }
+    }
+
+    let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            result = hydrate_summary_snapshots_with_deadline(state.as_ref(), summary_deadline) => match result {
+                Ok(()) => {
+                    info!("summary projection startup hydration completed");
+                    return;
+                }
+                Err(error) => {
+                    warn!(?error, "summary projection startup hydration failed; retaining unavailable or last-good response");
+                }
+            }
+        }
+
+        warn!(
+            retry_after_secs = retry_delay.as_secs(),
+            "summary projection startup hydration deferred behind bounded pressure backoff"
+        );
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
+    }
+}
+
+async fn hydrate_system_status_at_startup(state: Arc<AppState>) {
+    let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            result = hydrate_system_status_snapshot(state.as_ref()) => match result {
+                Ok(()) => {
+                    info!("system status startup hydration completed");
+                    return;
+                }
+                Err(error) => {
+                    warn!(?error, "system status startup hydration failed; retaining unavailable or last-good response");
+                }
+            }
+        }
+
+        warn!(
+            retry_after_secs = retry_delay.as_secs(),
+            "system status startup hydration deferred behind bounded pressure backoff"
+        );
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+        retry_delay = retry_delay
+            .saturating_mul(2)
+            .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
+    }
 }
 
 pub(crate) async fn run() -> Result<()> {
