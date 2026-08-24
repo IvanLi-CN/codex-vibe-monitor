@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.67.4",
+  "base_stable_version": "2.67.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-24T07:12:04Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.67.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8ddacbbb19f88f736277a7bd3395c85873b787ca",
+  "pr_number": 843,
+  "pr_title": "fix(web): compact dashboard history states",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.67.4",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.67.4",
+  "target_sha": "f4c28d2015ff107bc631978de570f1e3cc563191",
+  "type_label": "type:patch"
+}
