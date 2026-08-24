@@ -218,6 +218,8 @@ export const Operational24Hours: Story = {
     if (!ganttContainer || !laneBar || !laneLabel) {
       throw new Error("routing Gantt layout is incomplete");
     }
+    await expect(getComputedStyle(ganttContainer).overflowY).toBe("visible");
+    await expect(ganttContainer.scrollHeight).toBeLessThanOrEqual(ganttContainer.clientHeight);
     await waitFor(
       () => {
         const containerRect = ganttContainer.getBoundingClientRect();
@@ -228,9 +230,11 @@ export const Operational24Hours: Story = {
     );
     const containerRect = ganttContainer.getBoundingClientRect();
     const laneRect = laneBar.getBoundingClientRect();
-    const labelRect = laneLabel.getBoundingClientRect();
     await expect(laneRect.left - containerRect.left).toBeGreaterThanOrEqual(80);
-    await expect(labelRect.right).toBeLessThan(laneRect.left);
+    await waitFor(
+      () => expect(laneLabel.getBoundingClientRect().right).toBeLessThan(laneRect.left),
+      { timeout: 2_000, interval: 50 },
+    );
     await expect(
       ganttHost.querySelectorAll('[data-routing-priority="normal"]').length,
     ).toBeGreaterThan(0);

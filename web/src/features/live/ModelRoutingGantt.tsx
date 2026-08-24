@@ -1,5 +1,5 @@
 import Gantt, { type GanttTask, type GanttViewMode } from "frappe-gantt";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "../../i18n";
 import type {
@@ -478,9 +478,21 @@ function svgElement<K extends keyof SVGElementTagNameMap>(
 }
 
 function appendSvgTitle(element: SVGElement, label: string) {
-  const title = svgElement("title", {});
+  const title = svgElement("title", { "data-model-routing-decoration": "title" });
   title.textContent = label;
   element.appendChild(title);
+}
+
+function clearRoutingSvgDecorations(host: HTMLElement) {
+  const svg = host.querySelector<SVGSVGElement>("svg.gantt");
+  if (!svg) return;
+  svg
+    .querySelectorAll(
+      ".model-routing-segments, .model-routing-model-count, .model-routing-lane-header, [data-model-routing-decoration]",
+    )
+    .forEach((element) => {
+      element.remove();
+    });
 }
 
 function truncateSvgLaneLabel(label: string, measuredWidth: number, availableWidth: number) {
@@ -552,7 +564,9 @@ function decorateTimelineSvg({
     const baseBar = wrapper?.querySelector<SVGRectElement>(".bar");
     const barGroup = wrapper?.querySelector<SVGGElement>(".bar-group");
     const label = wrapper?.querySelector<SVGTextElement>(".bar-label");
-    if (!wrapper || !baseBar || !barGroup || !label || rangeDuration <= 0) continue;
+    if (!wrapper || !baseBar || !barGroup || !label || rangeDuration <= 0) {
+      continue;
+    }
 
     const x = Number(baseBar.getAttribute("x"));
     const y = Number(baseBar.getAttribute("y"));
@@ -782,8 +796,27 @@ function ModelRoutingSvgChart({
   const hostRef = useRef<HTMLDivElement>(null);
   const [detailPortalTarget, setDetailPortalTarget] = useState<HTMLDivElement | null>(null);
   const [hostWidth, setHostWidth] = useState(0);
+  const [layoutGeneration, setLayoutGeneration] = useState(0);
   const range = timelines[0]?.timeline;
   const detailTop = modelRecordDetailTop(timelines, expandedModel);
+  const layoutSourceRef = useRef({ timelines, range, detailTop, expandedModel });
+  layoutSourceRef.current = { timelines, range, detailTop, expandedModel };
+  const layoutKey = useMemo(
+    () =>
+      JSON.stringify({
+        expandedModel,
+        lanes: timelines.map((group) => ({
+          model: group.model,
+          lanes: group.timeline.lanes.map((lane) => ({
+            accountId: lane.accountId,
+            label: lane.label,
+          })),
+        })),
+      }),
+    [expandedModel, timelines],
+  );
+  const interactionRef = useRef({ onOpenAccount, onOpenInvocation });
+  interactionRef.current = { onOpenAccount, onOpenInvocation };
 
   useEffect(() => {
     const host = hostRef.current;
@@ -796,10 +829,18 @@ function ModelRoutingSvgChart({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
+  // The key is intentionally limited to the DOM identity that Frappe owns.
+  // Live records only update the SVG decorations below, so they never reset the chart or its scroll.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: layoutKey explicitly represents Frappe's structural DOM identity.
+  useLayoutEffect(() => {
     const host = hostRef.current;
-    if (!host || hostWidth <= 0 || timelines.length === 0 || !range) return;
-    setDetailPortalTarget(null);
+    const layoutSource = layoutSourceRef.current;
+    if (!host || hostWidth <= 0 || layoutSource.timelines.length === 0 || !layoutSource.range) {
+      return;
+    }
+    const layoutTimelines = layoutSource.timelines;
+    const layoutRange = layoutSource.range;
+    const previousScrollLeft = host.querySelector<HTMLElement>(".gantt-container")?.scrollLeft ?? 0;
     host.replaceChildren();
     const spec = VIEW_SPECS[window];
     const compact = host.clientWidth < 640;
@@ -811,13 +852,13 @@ function ModelRoutingSvgChart({
       : Math.max(spec.minimumColumnWidth, fittedColumnWidth);
     const normalizedTimelineStartMs = NORMALIZED_START_MS + spec.normalizedStepMs * labelIntervals;
     const tasks = buildFrappeSystemRoutingTasks(
-      timelines,
+      layoutTimelines,
       normalizedTimelineStartMs,
-      expandedModel,
+      layoutSource.expandedModel,
     );
     const compactLabelStride = window === "24h" ? 3 : window === "6h" || window === "1h" ? 2 : 1;
     const toObservedMs = (normalizedDate: Date) =>
-      range.rangeStartMs +
+      layoutRange.rangeStartMs +
       ((normalizedDate.getTime() - normalizedTimelineStartMs) / NORMALIZED_TIMELINE_DURATION_MS) *
         WINDOW_DURATION_MS[window];
     const viewMode: GanttViewMode = {
@@ -876,23 +917,36 @@ function ModelRoutingSvgChart({
       on_click: (task) => {
         const routingTask = task as RoutingFrappeTask;
         if (routingTask.kind === "lane" && routingTask.accountId != null) {
-          onOpenAccount(routingTask.accountId, routingTask.model);
+          interactionRef.current.onOpenAccount(routingTask.accountId, routingTask.model);
         }
       },
     });
     let portalTarget: HTMLDivElement | null = null;
-    if (expandedModel && detailTop != null) {
-      const container = host.querySelector<HTMLElement>(".gantt-container");
+    const container = host.querySelector<HTMLElement>(".gantt-container");
+    if (container) container.scrollLeft = previousScrollLeft;
+    if (layoutSource.expandedModel && layoutSource.detailTop != null) {
       if (container) {
         portalTarget = document.createElement("div");
         portalTarget.className = "model-routing-records-slot";
-        portalTarget.style.top = `${detailTop}px`;
+        portalTarget.style.top = `${layoutSource.detailTop}px`;
         portalTarget.style.height = `${MODEL_RECORD_DETAIL_ROWS * GANTT_ROW_HEIGHT}px`;
         container.appendChild(portalTarget);
-        setDetailPortalTarget(portalTarget);
       }
     }
-    const frame = requestAnimationFrame(() =>
+    if (portalTarget) setDetailPortalTarget(portalTarget);
+    setLayoutGeneration((generation) => generation + 1);
+    return () => {
+      portalTarget?.remove();
+      host.replaceChildren();
+    };
+  }, [localeTag, layoutKey, window, hostWidth]);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host || layoutGeneration === 0 || timelines.length === 0 || !range) return;
+    const frame = requestAnimationFrame(() => {
+      if (hostRef.current !== host) return;
+      clearRoutingSvgDecorations(host);
       decorateSystemRoutingSvg({
         host,
         timelines,
@@ -914,21 +968,17 @@ function ModelRoutingSvgChart({
         onOpenAccount,
         onOpenInvocation,
         onToggleModelRecords,
-      }),
-    );
-    return () => {
-      cancelAnimationFrame(frame);
-      portalTarget?.remove();
-      host.replaceChildren();
-    };
+      });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [
     allocationLabel,
     attemptLabel,
     availableCounts,
     colors,
-    detailTop,
     expandedModel,
     laneHeaderLabel,
+    layoutGeneration,
     localeTag,
     maxAvailableCount,
     modelToggleLabel,
@@ -943,8 +993,6 @@ function ModelRoutingSvgChart({
     timelines,
     totalAvailableCount,
     unknownLabel,
-    window,
-    hostWidth,
   ]);
 
   return (

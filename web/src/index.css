@@ -25,10 +25,10 @@
 
   .model-routing-frappe-gantt .gantt-container {
     border-radius: 0;
-    max-height: 36rem;
     min-height: 5.25rem;
-    overflow-x: hidden;
-    overflow-y: auto;
+    height: auto;
+    max-height: none;
+    overflow: visible;
     background: oklch(var(--color-base-100));
   }
 
