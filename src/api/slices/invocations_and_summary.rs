@@ -28579,7 +28579,8 @@ mod request_compression_query_tests {
         .await;
         let fixture_now = Utc::now();
         for index in 0..80_i64 {
-            let occurred_at = format_utc_iso(fixture_now - ChronoDuration::seconds(index + 2));
+            let occurred_at =
+                db_occurred_at_lower_bound(fixture_now - ChronoDuration::seconds(index + 2));
             sqlx::query(
                 "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
                  VALUES (?1, ?2, 'proxy', 'success', ?3, 1.0, '{\"upstreamAccountId\":42}', '', 'full')",

@@ -26,7 +26,11 @@ async fn startup_memory_snapshots_within_handoff_slack(state: &AppState) -> bool
     summary_is_fresh && status_is_fresh
 }
 
-async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
+async fn hydrate_startup_memory_snapshots_within(
+    state: &AppState,
+    summary_max_age: Duration,
+    status_max_age: Duration,
+) -> Result<()> {
     let mut summary_ready = false;
     let mut system_status_ready = false;
     loop {
@@ -61,7 +65,7 @@ async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
                 .summary_projection()
                 .await
                 .is_some_and(|projection| {
-                    projection.startup_hydration_is_fresh_within(SUMMARY_SNAPSHOT_MAX_STALE)
+                    projection.startup_hydration_is_fresh_within(summary_max_age)
                 });
             let status_is_fresh = state
                 .system_status_cache
@@ -69,9 +73,7 @@ async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
                 .await
                 .latest
                 .as_ref()
-                .is_some_and(|entry| {
-                    entry.cached_at.elapsed() <= Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
-                });
+                .is_some_and(|entry| entry.cached_at.elapsed() <= status_max_age);
             if summary_is_fresh && status_is_fresh {
                 return Ok(());
             }
@@ -85,6 +87,15 @@ async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
     }
+}
+
+async fn hydrate_startup_memory_snapshots(state: &AppState) -> Result<()> {
+    hydrate_startup_memory_snapshots_within(
+        state,
+        SUMMARY_SNAPSHOT_MAX_STALE,
+        Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS),
+    )
+    .await
 }
 
 pub(crate) async fn run() -> Result<()> {
@@ -863,7 +874,13 @@ where
     // that handoff consumed the reserved slack, so readiness never publishes an almost-expired
     // in-memory snapshot.
     if !startup_memory_snapshots_within_handoff_slack(state.as_ref()).await {
-        hydrate_startup_memory_snapshots(state.as_ref()).await?;
+        hydrate_startup_memory_snapshots_within(
+            state.as_ref(),
+            SUMMARY_SNAPSHOT_MAX_STALE.saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+            Duration::from_secs(SYSTEM_STATUS_CACHE_TTL_SECS)
+                .saturating_sub(STARTUP_MEMORY_HANDOFF_SLACK),
+        )
+        .await?;
     }
     state.startup_ready.store(true, Ordering::Release);
     log_startup_phase("http_ready", http_ready_started_at);
