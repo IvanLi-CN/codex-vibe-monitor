@@ -10,8 +10,9 @@
 
 - 允许维护者对 `origin/main` 上的 40 位 commit SHA 发起受控手动发版。
 - 手动发版必须显式选择 `version` 或 `bump`，并提供 reason。
+- 手动覆盖的 reason、actor 与触发时间继续用于本次 workflow 的输入校验和版本计算，但不产生额外的持久化审计记录。
 - 手动发版必须复用现有多架构 build、smoke、manifest、Git tag、GitHub Release 与 PR comment 发布链路。
-- 手动覆盖信息必须可审计，至少出现在 GitHub Release body 与 workflow log 中。
+- GitHub Release 正文必须使用 GitHub 原生自动生成的用户向变更说明，不包含 PR、channel、bump、commit 或手工覆盖元数据。
 - 自动 PR label 发版路径继续只消费 immutable release snapshot，不受手动覆盖影响。
 
 ### Non-goals
@@ -23,7 +24,7 @@
 
 ## 范围（Scope）
 
-- `.github/workflows/release.yml`：增加手动覆盖输入、dispatch 分流与 Release body 审计输出。
+- `.github/workflows/release.yml`：增加手动覆盖输入、dispatch 分流与 GitHub 自动 Release notes。
 - `.github/scripts/release_snapshot.py`：增加 job-local `manual-release-override` snapshot 构造与校验。
 - `.github/scripts/test-release-snapshot.sh` 与 quality-gates contract fixtures：覆盖手动发版输入和 workflow 拓扑。
 
@@ -44,7 +45,7 @@
 
 - 只在 `workflow_dispatch` 提供手动覆盖输入时启用 manual override snapshot。
 - 不带 `version`、`bump`、`reason` 的内部 release queue dispatch 继续按 immutable snapshot backfill 行为运行。
-- Release body 中直接展示 source、actor、triggered_at、version/bump 与 reason。
+- Release body 使用默认扁平的 GitHub “What’s Changed” 说明，不转抄 PR 正文或流程元数据。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -63,6 +64,12 @@
 - Given 目标 tag 已存在并指向其它 commit
   When 触发手动覆盖
   Then workflow 失败且不进入 publish jobs。
+- Given 任意自动或手动发布路径创建 GitHub Release
+  When 发布成功
+  Then Release body 由 GitHub 自动生成，且不包含 PR、Channel、Bump、Commit 或手工覆盖审计字段。
+- Given 手工覆盖输入通过 release meta 校验
+  When workflow 继续执行
+  Then reason、actor 与触发时间仅用于本次 job-local 计算，不被写入额外 Git note、artifact、Release body、PR comment 或专用审计日志。
 
 ## 参考（References）
 

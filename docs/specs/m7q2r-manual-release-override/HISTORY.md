@@ -8,3 +8,4 @@
 - 不带 `version`、`bump`、`reason` 的 `workflow_dispatch` 保留为内部 release queue/backfill 兼容路径；提供任一手动覆盖输入时才启用严格 manual override 校验。
 - `channel=rc` 沿用自动发版的 `vX.Y.Z-rc.<sha7>` tag 形态，且永不更新 `latest`。
 - 修改受控 workflow contract 时，Label Gate 必须具备同仓 current-branch self-validation 路径；否则 `main` 上的旧 checker 会把新拓扑误判为 drift。
+- Release 正文改为 GitHub 原生自动说明；手工覆盖字段继续留在 job-local 计算中，但不复制到 Release、PR 评论、Git note、artifact 或专用审计日志。
