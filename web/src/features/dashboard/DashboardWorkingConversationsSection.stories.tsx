@@ -1047,25 +1047,25 @@ function createUpstreamAccountAdaptiveMetricsStoryResponse() {
   const account = response.accounts[0];
   if (!account) return response;
 
-  account.requestCount = 739;
-  account.successCount = 644;
-  account.failureCount = 71;
-  account.nonSuccessCount = 95;
+  account.requestCount = 10_376;
+  account.successCount = 10_233;
+  account.failureCount = 143;
+  account.nonSuccessCount = 143;
   account.uploadBytesPerSecond = 42 * 1024;
   account.downloadBytesPerSecond = 168 * 1024;
-  account.totalTokens = 6_623_715;
-  account.successTokens = 6_141_241;
-  account.nonSuccessTokens = 482_474;
-  account.failureTokens = 132_474;
-  account.failureCost = 39.45;
-  account.totalCost = 274.56;
+  account.totalTokens = 30_030_779;
+  account.successTokens = 10_962_028;
+  account.nonSuccessTokens = 19_068_751;
+  account.failureTokens = 19_068_751;
+  account.failureCost = 19_068.75;
+  account.totalCost = 30_030_779.25;
   account.usageBreakdown = ADAPTIVE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN;
-  account.tokensPerMinute = perMinuteRate(account.totalTokens);
-  account.spendRate = perMinuteRate(account.totalCost);
-  account.firstTokenAvgMs = 11_090;
-  account.avgTotalMs = 26_800;
-  account.currentFirstTokenAvgMs = 11_090;
-  account.currentAvgTotalMs = 26_800;
+  account.tokensPerMinute = 1_324_743;
+  account.spendRate = 54;
+  account.firstTokenAvgMs = 65_000;
+  account.avgTotalMs = 3_600_000;
+  account.currentFirstTokenAvgMs = 65_000;
+  account.currentAvgTotalMs = 3_600_000;
   account.inProgressInvocationCount = 9;
   account.inProgressPhaseCounts = {
     queued: 2,
@@ -5384,6 +5384,194 @@ export const UpstreamAccountMetricTooltips: Story = {
   },
 };
 
+export const UpstreamAccountAdaptiveMetricHardThreshold: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-hard-threshold", [
+            createPreview({
+              id: 9831,
+              invokeId: "story-working-hard-threshold",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountAdaptiveMetricsStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  decorators: [
+    (Story) => (
+      <div className="dashboard-upstream-account-adaptive-hard-story">
+        <style>{`
+          .dashboard-upstream-account-adaptive-hard-story {
+            display: inline-block;
+            padding: 19px;
+            background: #a8cbe4;
+            border: 2px solid #4f7d9e;
+          }
+          .dashboard-upstream-account-adaptive-hard-story [data-testid="dashboard-working-conversations"] {
+            display: inline-block;
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-hard-story
+            [data-testid="dashboard-working-conversations"]
+            > .surface-panel-body {
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-hard-story
+            [data-testid="dashboard-working-conversations-controls"],
+          .dashboard-upstream-account-adaptive-hard-story
+            [data-testid="dashboard-upstream-account-header-row"],
+          .dashboard-upstream-account-adaptive-hard-story
+            [data-testid="dashboard-upstream-account-recent-section"],
+          .dashboard-upstream-account-adaptive-hard-story
+            div:has(> [data-testid="story-drawer-state"]) {
+            display: none;
+          }
+        `}</style>
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-upstream-account-requests-value")).toHaveTextContent(
+        "10,376",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-requests-value")).toHaveAttribute(
+        "data-compact",
+        "false",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-cost-value")).toHaveTextContent(
+        "$30.0M",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-cost-value")).toHaveAttribute(
+        "title",
+        "30,030,779.25",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-token-value")).toHaveTextContent(
+        "30.0M",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-token-value")).toHaveAttribute(
+        "title",
+        "30,030,779",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-latency-value")).toHaveTextContent(
+        "1.08 min",
+      );
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Wide desktop account-card state proving that values with two grouping separators compact immediately while a one-group request count remains complete. Exact values remain available through card titles and structured details.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountAdaptiveMetricResponsive: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <ForcedWorkspaceViewStory view="upstreamAccounts">
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-responsive-metrics", [
+            createPreview({
+              id: 9833,
+              invokeId: "story-working-responsive-metrics",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountAdaptiveMetricsStoryResponse()}
+      />
+    </ForcedWorkspaceViewStory>
+  ),
+  decorators: [
+    (Story) => (
+      <div className="dashboard-upstream-account-adaptive-responsive-story">
+        <style>{`
+          .dashboard-upstream-account-adaptive-responsive-story {
+            display: inline-block;
+            padding: 19px;
+            background: #a8cbe4;
+            border: 2px solid #4f7d9e;
+          }
+          .dashboard-upstream-account-adaptive-responsive-story [data-testid="dashboard-working-conversations"] {
+            display: inline-block;
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-responsive-story
+            [data-testid="dashboard-working-conversations"]
+            > .surface-panel-body {
+            width: fit-content;
+          }
+          .dashboard-upstream-account-adaptive-responsive-story
+            [data-testid="dashboard-working-conversations-controls"],
+          .dashboard-upstream-account-adaptive-responsive-story
+            [data-testid="dashboard-upstream-account-header-row"],
+          .dashboard-upstream-account-adaptive-responsive-story
+            [data-testid="dashboard-upstream-account-recent-section"],
+          .dashboard-upstream-account-adaptive-responsive-story
+            div:has(> [data-testid="story-drawer-state"]) {
+            display: none;
+          }
+          .dashboard-upstream-account-adaptive-responsive-story
+            [data-testid="dashboard-upstream-account-grid"] {
+            max-width: 22rem;
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+          }
+        `}</style>
+        <Story />
+      </div>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await waitFor(() => {
+      expect(canvas.getByTestId("dashboard-upstream-account-requests-value")).toHaveTextContent(
+        "10,376",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-cost-value")).toHaveTextContent(
+        "$30.0M",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-token-value")).toHaveTextContent(
+        "30.0M",
+      );
+      expect(canvas.getByTestId("dashboard-upstream-account-latency-value")).toHaveTextContent(
+        "1.08 min",
+      );
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+        document.documentElement.clientWidth,
+      );
+    });
+  },
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+    docs: {
+      description: {
+        story:
+          "Mobile 393 x 852 account-card metric surface showing the same hard compact values in a two-column card layout with no horizontal overflow.",
+      },
+    },
+  },
+};
+
 export const UpstreamAccountAdaptiveMetricOverflow: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
@@ -5474,13 +5662,13 @@ export const UpstreamAccountAdaptiveMetricOverflow: Story = {
       expect(spendRateValue).toHaveTextContent("54");
       expect(spendRateValue).not.toHaveAttribute("title");
 
-      expect(costValue).toHaveAttribute("data-compact", "false");
-      expect(costValue).not.toHaveTextContent("274.56");
-      expect(costValue).toHaveAttribute("title", "274.56");
+      expect(costValue).toHaveAttribute("data-compact", "true");
+      expect(costValue).toHaveTextContent("$30.0M");
+      expect(costValue).toHaveAttribute("title", "30,030,779.25");
 
       expect(tokenValue).toHaveAttribute("data-compact", "true");
       expect(tokenValue.textContent ?? "").toMatch(/M|B|T/);
-      expect(tokenValue).toHaveAttribute("title", "6,623,715");
+      expect(tokenValue).toHaveAttribute("title", "30,030,779");
 
       expect(recentBreakdown.textContent ?? "").not.toContain("排队中");
       expect(recentBreakdown.textContent ?? "").not.toContain("请求中");
@@ -5491,7 +5679,7 @@ export const UpstreamAccountAdaptiveMetricOverflow: Story = {
     });
   },
   parameters: {
-    viewport: { defaultViewport: "desktop1660" },
+    viewport: { defaultViewport: "mobile393" },
     docs: {
       description: {
         story:

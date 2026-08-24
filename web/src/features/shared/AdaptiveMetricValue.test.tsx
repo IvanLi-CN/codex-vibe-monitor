@@ -3,6 +3,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AdaptiveDisplayValue, AdaptiveMetricValue } from "./AdaptiveMetricValue";
+import {
+  buildAdaptiveCurrencyAmountTextSpec,
+  buildAdaptiveDurationTextSpec,
+  buildAdaptiveNumberTextSpec,
+} from "./adaptiveMetricValueSpec";
 
 vi.mock("./AnimatedDigits", () => ({
   AnimatedDigits: ({ value }: { value: number | string }) => (
@@ -142,6 +147,99 @@ function getMeasure() {
 }
 
 describe("AdaptiveMetricValue", () => {
+  it("prioritizes account-card compact values only after the hard grouping threshold", () => {
+    const compactSpec = buildAdaptiveNumberTextSpec(30_030_779, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+    const ordinarySpec = buildAdaptiveNumberTextSpec(10_376, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+    const defaultSpec = buildAdaptiveNumberTextSpec(30_030_779, "en-US", 0);
+
+    expect(compactSpec.candidates[0]?.value).toBe("30.0M");
+    expect(compactSpec.fullValue).toBe("30,030,779");
+    expect(ordinarySpec.candidates[0]?.value).toBe("10,376");
+    expect(defaultSpec.candidates[0]?.value).toBe("30,030,779");
+  });
+
+  it("keeps the exact full value accessible when an account card starts compact", () => {
+    const spec = buildAdaptiveNumberTextSpec(30_030_779, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+    metricContainerWidth = 120;
+    metricMeasureWidths = new Map([
+      ["30.0M", 60],
+      ["30.031M", 80],
+      ["30.03M", 72],
+      ["30M", 48],
+      ["30,030,779", 180],
+    ]);
+
+    render(<AdaptiveDisplayValue spec={spec} data-testid="adaptive-metric" />);
+
+    expect(getVisibleMetricText()).toBe("30.0M");
+    expect(getMetric().getAttribute("title")).toBe("30,030,779");
+    expect(getMetric().getAttribute("data-compact")).toBe("true");
+  });
+
+  it("does not lock an account card to the full candidate while measurements are unavailable", () => {
+    const spec = buildAdaptiveNumberTextSpec(30_030_779, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+    metricContainerWidth = 76;
+    metricMeasureWidths = new Map();
+
+    render(<AdaptiveDisplayValue spec={spec} data-testid="adaptive-metric" />);
+
+    metricMeasureWidths = new Map([
+      ["30.0M", 60],
+      ["30.031M", 80],
+      ["30.03M", 72],
+      ["30M", 48],
+      ["30,030,779", 180],
+    ]);
+    act(() => {
+      MockResizeObserver.notify(getMeasure());
+    });
+
+    expect(getVisibleMetricText()).toBe("30.0M");
+    expect(getMetric().getAttribute("data-compact")).toBe("true");
+  });
+
+  it("upgrades a compact value when rounding crosses its unit boundary", () => {
+    const spec = buildAdaptiveNumberTextSpec(999_950, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+
+    expect(spec.candidates.some((candidate) => candidate.value === "1.00M")).toBe(true);
+    expect(spec.candidates.some((candidate) => candidate.value.includes("1000K"))).toBe(false);
+  });
+
+  it("uses the account-card duration ladder without changing the default duration contract", () => {
+    expect(
+      buildAdaptiveDurationTextSpec(9_300, "en-US", { presentation: "account-stat-card" })
+        .fullValue,
+    ).toBe("9.3 s");
+    expect(
+      buildAdaptiveDurationTextSpec(65_000, "en-US", { presentation: "account-stat-card" })
+        .fullValue,
+    ).toBe("1.08 min");
+    expect(
+      buildAdaptiveDurationTextSpec(3_600_000, "en-US", { presentation: "account-stat-card" })
+        .fullValue,
+    ).toBe("1 h");
+    expect(buildAdaptiveDurationTextSpec(65_000, "en-US").fullValue).toBe("65 s");
+  });
+
+  it("uses dollar-prefixed compact candidates for account-card currency amounts", () => {
+    const spec = buildAdaptiveCurrencyAmountTextSpec(30_030_779, "en-US", {
+      presentation: "account-stat-card",
+    });
+
+    expect(spec.candidates[0]?.value).toBe("$30.0M");
+    expect(spec.fullValue).toBe("30,030,779.00");
+  });
+
   it("switches to compact notation when the measured text widens without a container resize", () => {
     metricMeasureWidths = new Map([
       ["1,314,275,579", 120],

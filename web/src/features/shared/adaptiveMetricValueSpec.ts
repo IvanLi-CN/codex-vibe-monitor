@@ -1,5 +1,6 @@
 export type AdaptiveMetricValueKind = "number" | "integer" | "currency";
 export type AdaptiveCurrencyProfile = "default" | "rate";
+export type AdaptiveMetricPresentation = "default" | "account-stat-card";
 
 const COMPACT_SUFFIX_LOCALE = "en-US";
 const COMPACT_UNITS = [
@@ -22,8 +23,14 @@ export interface AdaptiveDisplayValueSpec {
   candidates: AdaptiveDisplayMeasureCandidate[];
 }
 
-interface AdaptiveMetricSpecOptions {
+export interface AdaptiveMetricSpecOptions {
   currencyProfile?: AdaptiveCurrencyProfile;
+  presentation?: AdaptiveMetricPresentation;
+}
+
+interface AdaptiveCurrencyTextSpecOptions extends AdaptiveMetricSpecOptions {
+  maximumFractionDigits?: number;
+  minimumFractionDigits?: number;
 }
 
 interface StandardFormatterOptions {
@@ -97,6 +104,21 @@ function minimumPrimaryCompactPrecision(scaledAbsValue: number) {
   return Math.max(0, 3 - integerDigits);
 }
 
+function hasAtLeastTwoGroupingSeparators(
+  value: number,
+  localeTag: string,
+  kind: AdaptiveMetricValueKind,
+) {
+  const formatter = createStandardMetricFormatter(localeTag, kind, {
+    maximumFractionDigits: kind === "integer" ? 0 : 2,
+  });
+  return formatter.formatToParts(value).filter((part) => part.type === "group").length >= 2;
+}
+
+function nextCompactUnit(unitLevel: number) {
+  return COMPACT_UNITS.find((unit) => unit.level === unitLevel + 1);
+}
+
 function createCompactMetricValue(
   value: number,
   localeTag: string,
@@ -104,8 +126,16 @@ function createCompactMetricValue(
   unitLevel: number,
   precision: number,
   minimumFractionDigits = 0,
+  allowUnitUpgrade = true,
+  useShortCurrencySymbol = false,
 ) {
-  const unit = COMPACT_UNITS.find((candidate) => candidate.level === unitLevel);
+  const initialUnit = COMPACT_UNITS.find((candidate) => candidate.level === unitLevel);
+  const initialScaledValue = initialUnit ? value / initialUnit.divisor : value;
+  const roundedInitialAbsValue = Math.abs(Number(initialScaledValue.toFixed(precision)));
+  const unit =
+    allowUnitUpgrade && roundedInitialAbsValue >= 1_000
+      ? (nextCompactUnit(unitLevel) ?? initialUnit)
+      : initialUnit;
   if (!unit) {
     return createStandardMetricFormatter(localeTag, kind, {
       maximumFractionDigits: precision,
@@ -114,19 +144,35 @@ function createCompactMetricValue(
   }
 
   const scaledValue = value / unit.divisor;
+  const compactPrecision =
+    unit.level !== unitLevel
+      ? Math.max(precision, minimumPrimaryCompactPrecision(Math.abs(scaledValue)))
+      : precision;
+  const compactMinimumFractionDigits =
+    unit.level !== unitLevel
+      ? Math.min(compactPrecision, minimumPrimaryCompactPrecision(Math.abs(scaledValue)))
+      : minimumFractionDigits;
   const numberFormatter = new Intl.NumberFormat(
-    kind === "currency" ? localeTag : compactNumberLocale(localeTag),
+    kind === "currency" && useShortCurrencySymbol
+      ? COMPACT_SUFFIX_LOCALE
+      : kind === "currency"
+        ? localeTag
+        : compactNumberLocale(localeTag),
     {
-      minimumFractionDigits,
-      maximumFractionDigits: precision,
+      minimumFractionDigits: compactMinimumFractionDigits,
+      maximumFractionDigits: compactPrecision,
     },
   );
   const formattedScaledValue =
     kind === "currency"
-      ? createStandardMetricFormatter(localeTag, kind, {
-          maximumFractionDigits: precision,
-          minimumFractionDigits,
-        }).format(scaledValue)
+      ? createStandardMetricFormatter(
+          useShortCurrencySymbol ? COMPACT_SUFFIX_LOCALE : localeTag,
+          kind,
+          {
+            maximumFractionDigits: compactPrecision,
+            minimumFractionDigits: compactMinimumFractionDigits,
+          },
+        ).format(scaledValue)
       : numberFormatter.format(scaledValue);
 
   return `${formattedScaledValue}${unit.suffix}`;
@@ -161,6 +207,7 @@ export function buildAdaptiveMetricSpec(
   options: AdaptiveMetricSpecOptions = {},
 ): AdaptiveDisplayValueSpec {
   const currencyProfile = options.currencyProfile ?? "default";
+  const presentation = options.presentation ?? "default";
   const standardPrecisions =
     kind === "currency" && currencyProfile === "rate"
       ? [2, 1, 0]
@@ -172,6 +219,8 @@ export function buildAdaptiveMetricSpec(
     maximumFractionDigits: defaultPrecision,
     minimumFractionDigits: defaultMinimumFractionDigits,
   }).format(value);
+  const preferCompact =
+    presentation === "account-stat-card" && hasAtLeastTwoGroupingSeparators(value, localeTag, kind);
   const candidates: AdaptiveDisplayMeasureCandidate[] = [];
 
   for (const [index, precision] of standardPrecisions.entries()) {
@@ -184,7 +233,7 @@ export function buildAdaptiveMetricSpec(
       }).format(value),
       compact: false,
       precisionLabel: index === 0 ? "full" : `standard-${precision}`,
-      priority: index,
+      priority: preferCompact ? 100 + index : index,
     });
   }
 
@@ -209,6 +258,8 @@ export function buildAdaptiveMetricSpec(
         primaryUnit.level,
         precision,
         minimumFractionDigits,
+        true,
+        presentation === "account-stat-card",
       ),
       compact: true,
       precisionLabel: String(precision),
@@ -219,14 +270,23 @@ export function buildAdaptiveMetricSpec(
     });
   }
 
-  if (primaryScaledAbsValue < 10 && primaryUnit.level > 1) {
+  if (primaryScaledAbsValue < 10 && primaryUnit.level > 1 && !preferCompact) {
     const fallbackUnit = COMPACT_UNITS.find((unit) => unit.level === primaryUnit.level - 1);
     if (fallbackUnit) {
       const fallbackScaledAbsValue = absValue / fallbackUnit.divisor;
       for (const precision of compactPrecisionCandidates(fallbackScaledAbsValue)) {
         candidates.push({
           key: `compact-${fallbackUnit.suffix}-${precision}`,
-          value: createCompactMetricValue(value, localeTag, kind, fallbackUnit.level, precision),
+          value: createCompactMetricValue(
+            value,
+            localeTag,
+            kind,
+            fallbackUnit.level,
+            precision,
+            0,
+            false,
+            false,
+          ),
           compact: true,
           precisionLabel: `${fallbackUnit.suffix}-${precision}`,
           priority: 40 + (4 - precision),
@@ -258,21 +318,70 @@ export function buildAdaptiveNumberTextSpec(
   value: number | null,
   localeTag: string,
   maximumFractionDigits = 2,
+  options: AdaptiveMetricSpecOptions = {},
 ) {
   if (value == null || !Number.isFinite(value)) {
     return buildAdaptiveTextSpec("—", [{ key: "placeholder", value: "—", priority: 0 }]);
   }
 
   const kind: AdaptiveMetricValueKind = maximumFractionDigits === 0 ? "integer" : "number";
-  return buildAdaptiveMetricSpec(value, localeTag, kind);
+  return buildAdaptiveMetricSpec(value, localeTag, kind, options);
 }
 
-export function buildAdaptiveCurrencyTextSpec(value: number | null, localeTag: string) {
+export function buildAdaptiveCurrencyTextSpec(
+  value: number | null,
+  localeTag: string,
+  {
+    maximumFractionDigits = 2,
+    minimumFractionDigits = 0,
+    ...options
+  }: AdaptiveCurrencyTextSpecOptions = {},
+) {
   if (value == null || !Number.isFinite(value)) {
     return buildAdaptiveTextSpec("—", [{ key: "placeholder", value: "—", priority: 0 }]);
   }
 
-  const fullValue = createCurrencyFormatter(localeTag, 2).format(value);
+  const currencyDisplayLocale =
+    options.presentation === "account-stat-card" ? COMPACT_SUFFIX_LOCALE : localeTag;
+  const fullValue = createCurrencyFormatter(
+    currencyDisplayLocale,
+    maximumFractionDigits,
+    minimumFractionDigits,
+  ).format(value);
+
+  if (options.presentation === "account-stat-card") {
+    const metricSpec = buildAdaptiveMetricSpec(value, localeTag, "currency", options);
+    const preferCompact = hasAtLeastTwoGroupingSeparators(value, localeTag, "currency");
+
+    return buildAdaptiveTextSpec(fullValue, [
+      {
+        key: "full",
+        value: fullValue,
+        priority: preferCompact ? 100 : 0,
+      },
+      {
+        key: "standard-1",
+        value: createCurrencyFormatter(
+          currencyDisplayLocale,
+          1,
+          Math.min(1, minimumFractionDigits),
+        ).format(value),
+        priority: preferCompact ? 101 : 1,
+      },
+      {
+        key: "standard-0",
+        value: createCurrencyFormatter(currencyDisplayLocale, 0).format(value),
+        priority: preferCompact ? 102 : 2,
+      },
+      ...metricSpec.candidates
+        .filter((candidate) => candidate.compact)
+        .map((candidate) => ({
+          key: candidate.key,
+          value: candidate.value,
+          priority: candidate.priority,
+        })),
+    ]);
+  }
 
   return buildAdaptiveTextSpec(fullValue, [
     {
@@ -304,9 +413,11 @@ export function buildAdaptiveCurrencyAmountTextSpec(
   {
     maximumFractionDigits = 2,
     minimumFractionDigits = maximumFractionDigits,
+    presentation = "default",
   }: {
     maximumFractionDigits?: number;
     minimumFractionDigits?: number;
+    presentation?: AdaptiveMetricPresentation;
   } = {},
 ) {
   if (value == null || !Number.isFinite(value)) {
@@ -322,6 +433,37 @@ export function buildAdaptiveCurrencyAmountTextSpec(
     maximumFractionDigits,
     minimumFractionDigits,
   ).format(value);
+
+  if (presentation === "account-stat-card") {
+    const metricSpec = buildAdaptiveMetricSpec(value, localeTag, "currency", { presentation });
+    const preferCompact = hasAtLeastTwoGroupingSeparators(value, localeTag, "currency");
+
+    return buildAdaptiveTextSpec(fullValue, [
+      {
+        key: "full",
+        value: fullValue,
+        priority: preferCompact ? 100 : 0,
+      },
+      ...precisionCandidates
+        .filter((precision) => precision !== maximumFractionDigits)
+        .map((precision, index) => ({
+          key: `standard-${precision}`,
+          value: createDecimalFormatter(
+            localeTag,
+            precision,
+            Math.min(precision, minimumFractionDigits),
+          ).format(value),
+          priority: preferCompact ? 101 + index : index + 1,
+        })),
+      ...metricSpec.candidates
+        .filter((candidate) => candidate.compact)
+        .map((candidate) => ({
+          key: candidate.key,
+          value: candidate.value,
+          priority: candidate.priority,
+        })),
+    ]);
+  }
 
   return buildAdaptiveTextSpec(fullValue, [
     {
@@ -394,9 +536,59 @@ export function buildAdaptivePercentTextSpec(
   );
 }
 
-export function buildAdaptiveDurationTextSpec(valueMs: number | null, localeTag: string) {
+function buildAccountDurationTextSpec(valueMs: number, localeTag: string) {
+  const absoluteMs = Math.abs(valueMs);
+  const durationUnit =
+    absoluteMs < 1_000
+      ? { divisor: 1, suffix: "ms" }
+      : absoluteMs < 60_000
+        ? { divisor: 1_000, suffix: "s" }
+        : absoluteMs < 3_600_000
+          ? { divisor: 60_000, suffix: "min" }
+          : { divisor: 3_600_000, suffix: "h" };
+  const scaledValue = valueMs / durationUnit.divisor;
+  const maximumFractionDigits =
+    durationUnit.suffix === "ms" ? 1 : Math.abs(scaledValue) >= 10 ? 1 : 2;
+  const formatValue = (precision: number, compact: boolean) =>
+    `${new Intl.NumberFormat(localeTag, {
+      maximumFractionDigits: precision,
+      minimumFractionDigits: 0,
+    }).format(scaledValue)}${compact ? "" : " "}${durationUnit.suffix}`;
+  const fullValue = formatValue(maximumFractionDigits, false);
+  const candidates: Array<{ key: string; value: string; priority: number }> = [
+    { key: "full", value: fullValue, priority: 0 },
+  ];
+
+  for (let precision = maximumFractionDigits; precision >= 0; precision -= 1) {
+    const formattedValue = formatValue(precision, false);
+    if (formattedValue !== fullValue) {
+      candidates.push({
+        key: `account-${durationUnit.suffix}-${precision}`,
+        value: formattedValue,
+        priority: candidates.length,
+      });
+    }
+    candidates.push({
+      key: `account-${durationUnit.suffix}-${precision}-compact`,
+      value: formatValue(precision, true),
+      priority: candidates.length,
+    });
+  }
+
+  return buildAdaptiveTextSpec(fullValue, candidates);
+}
+
+export function buildAdaptiveDurationTextSpec(
+  valueMs: number | null,
+  localeTag: string,
+  options: Pick<AdaptiveMetricSpecOptions, "presentation"> = {},
+) {
   if (valueMs == null || !Number.isFinite(valueMs)) {
     return buildAdaptiveTextSpec("—", [{ key: "placeholder", value: "—", priority: 0 }]);
+  }
+
+  if (options.presentation === "account-stat-card") {
+    return buildAccountDurationTextSpec(valueMs, localeTag);
   }
 
   if (valueMs < 1_000) {

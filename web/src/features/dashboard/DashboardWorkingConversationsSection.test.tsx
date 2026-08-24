@@ -1802,6 +1802,98 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(host?.textContent).not.toContain("[object Object]");
   });
 
+  it("keeps account-card hard compaction active at wide widths without changing header metrics", async () => {
+    const response = createUpstreamAccountActivityResponse();
+    const account = response.accounts[0];
+    if (!account) {
+      throw new Error("missing upstream activity account");
+    }
+    account.requestCount = 10_376;
+    account.successCount = 10_233;
+    account.failureCount = 143;
+    account.nonSuccessCount = 143;
+    account.totalTokens = 30_030_779;
+    account.failureTokens = 19_068_751;
+    account.totalCost = 30_030_779;
+    account.failureCost = 19_068.751;
+    account.currentFirstTokenAvgMs = 65_000;
+    account.currentAvgResponseMs = 3_600_000;
+    account.tokensPerMinute = 1_324_743;
+    account.spendRate = 39.45;
+    upstreamAccountActivityMock.data = response;
+
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricContainer === "true") {
+        return 1700;
+      }
+      return 1700;
+    });
+    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function () {
+      if ((this as HTMLElement).dataset.adaptiveMetricMeasure === "true") {
+        return Math.max(28, ((this as HTMLElement).textContent ?? "").length * 10);
+      }
+      return 0;
+    });
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-account-wide-hard-compaction", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-account-wide-hard-compaction",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() => {
+      const requestValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-requests-value"]',
+      );
+      const latencyValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-latency-value"]',
+      );
+      const costValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-cost-value"]',
+      );
+      const tokenValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-token-value"]',
+      );
+      const tpmValue = host?.querySelector(
+        '[data-testid="dashboard-upstream-account-inline-tpm-value"]',
+      );
+
+      expect(requestValue?.textContent).toBe("10,376");
+      expect(requestValue?.getAttribute("data-compact")).toBe("false");
+      expect(latencyValue?.textContent).toBe("1.08 min");
+      expect(costValue?.textContent).toBe("$30.0M");
+      expect(costValue?.getAttribute("title")).toBe("30,030,779.00");
+      expect(tokenValue?.textContent).toBe("30.0M");
+      expect(tokenValue?.getAttribute("title")).toBe("30,030,779");
+      expect(tpmValue?.textContent).toBe("1,324,743");
+      expect(tpmValue?.getAttribute("data-compact")).toBe("false");
+    });
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-upstream-account-token-breakdown"]')
+        ?.textContent,
+    ).toContain("19.1M");
+  });
+
   it("applies the TPM width budget only to split-header TPM values", async () => {
     const response = createUpstreamAccountActivityResponse();
     const account = response.accounts[0];

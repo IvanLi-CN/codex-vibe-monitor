@@ -85,6 +85,10 @@
 - Dashboard 顶部实时 `TTFT` 与 `响应时间` 必须先读取同一个最近 60 秒滚动窗口：`currentFirstTokenAvgMs` 只统计 `#6qe6u` 定义的真实首 Token 样本，窗口无样本时返回 `null` 并显示 `—`，不得从范围均值、TTFB 或旧累计首字节回填；`currentAvgTotalMs` 只统计终态成功且 `t_total_ms >= 0` 的样本，并保留当前所选 range 最近一次有效总响应时间的既有回退。`currentFirstResponseByteTotalAvgMs` 仅作兼容读取，不得作为 TTFT fallback。
 - 已选中上游账号的 pool running 调用必须在账号活动 live rows、账号卡 `inProgressInvocationCount` / `retryInvocationCount` 与 account-scoped summary 中归属到该账号；当 invocation payload 尚未写入 `upstreamAccountId` 时，可以用同 `invokeId` 的 `pool_upstream_request_attempts.upstream_account_id` 作为读侧 fallback，并且账号级 retry 计数必须基于该 fallback 后的账号重新判定。
 - 单账号卡周期统计必须改为四组：`TTFT + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`。TTFT 只读取 `firstTokenAvgMs`；成本组里的失败成本比率必须按 `failureCost / totalCost` 计算，不得复用请求失败率。
+- 四组统计卡的主值与卡面常驻分解值必须使用 `account-stat-card` 自适应展示策略：完整本地化数字含两个或以上千分位分隔符时，计数与 Token 优先显示 `K/M/B/T`，紧凑成本显示 `$K/$M/$B/$T`；含零或一个分隔符的值只有在实际可用内容宽度不足时才降级。
+- 紧凑统计值默认保留三位有效数字；数值元素的实际可用内容宽度不足时，按三位、两位、一位有效数字逐级回退。舍入结果跨越量级时必须升级单位（例如 `999.95K` 显示为 `1.00M`），不得显示 `1000K`。
+- 账号卡 TTFT 与响应时间按 `ms -> s -> min -> h` 选择语义单位；所有主值和常驻分解值必须保持单行、不换行、不裁切、不省略。紧凑值仍须通过现有整卡 tooltip、title 与 ARIA 标签披露精确原始值；百分比、时间戳和请求标识符不参与紧凑化。
+- 该策略只适用于账号卡四组统计，不得改变 Today Stats 或其他共享自适应消费者的仅按宽度候选顺序；账号卡标题区的进行中调用、TPM、消费速率继续沿用现有格式，其中宽屏 split header 的 TPM 保持约 `6ch` 预算。
 - 单账号卡四组周期统计必须以整张统计卡作为 hover / focus / click / long-press 的浮层触发区域；浮层顶部展示该卡主字段和值，下方按“当前字段 / 相关数据”分组明确列出字段名和值，不得只展示裸数值。
 - 单账号卡四组周期统计的卡内分解段落不得再各自挂载独立 tooltip，避免在整卡 tooltip 内形成嵌套 trigger；recent 区标题行右侧状态分解不受此限制，继续保留自身 hover/title 行为。
 - 单账号卡四组周期统计浮层的补充数据最多 3 项，且只能来自账号活动接口已有字段或前端可安全计算值；不得为了 tooltip 新增后端字段、接口或改变聚合口径。
@@ -216,6 +220,9 @@
 - Given 账号卡标题区同时存在多个异常/注意状态，When 渲染 `上游拒绝 / 限流` 等 badge，Then 每个 badge 直接并排显示，不再出现把它们整体包起来的外层 chip。
 - Given 用户点击账号卡齿轮按钮，When 打开账号详情，Then 必须进入 `routing` 标签页。
 - Given 查看账号卡周期统计，When 卡片渲染完成，Then 可见四组统计：`TTFT + 响应时间`、`请求数 + 成功 / 失败 / 其他`、`成本 + 失败 / 失败成本比率(%)`、`Token + 缓存命中率 / 失败`，且 TTFT 不从 TTFB 或旧累计首字节字段回退；当 `failureCost=0` 时，成本组失败成本比率显示为 `0%`。
+- Given 账号卡主值或常驻分解值的完整本地化文本含两个或以上千分位分隔符，When 卡片处于宽桌面或窄屏布局，Then 计数与 Token 分别按 `K/M/B/T` 紧凑显示，成本按 `$K/$M/$B/$T` 紧凑显示，且不发生换行、裁切或省略；Given 值为 `10,376`，Then 宽度足够时仍显示完整值。
+- Given 紧凑值默认使用三位有效数字，When 实际可用内容宽度不足，Then 精度依次降至两位和一位；When 舍入跨越单位边界，Then `999.95K` 升级为 `1.00M`，不得出现 `1000K`。
+- Given 账号卡显示耗时，When 数值跨越毫秒、秒、分钟或小时范围，Then 使用 `ms / s / min / h` 语义单位；Given 数值已紧凑，Then title、ARIA 与整卡详情仍包含精确原始值。
 - Given 查看账号卡四组周期统计，When 对任一统计卡 hover、focus、点击或移动端长按，Then 整张统计卡打开结构化浮层，浮层明确展示主字段名和值、卡面已有分解字段名和值，以及 0 到 3 个相关补充数据。
 - Given 查看账号卡四组周期统计，When 卡片常驻态渲染完成，Then 卡内分解段落不再各自创建独立 tooltip trigger，避免和整卡浮层形成嵌套触发区域。
 - Given 两个工作区视图分别选择了不同排序，When 切换标签或刷新页面，Then 每个标签恢复自己的选择，并显示对应排序名称。

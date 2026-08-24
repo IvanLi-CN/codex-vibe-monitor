@@ -1,5 +1,7 @@
 # Dashboard 工作区卡片双视图与上游账号活动聚合 演进历史（#z6ysw）
 
+- 2026-08-24：修正上游账号四组统计卡的常驻数值展示。新增账号卡专用量级策略：两个或以上千分位分隔符强制使用 `K/M/B/T` 或 `$K/$M/$B/$T`，默认三位有效数字并按实际内容宽度回退；耗时补齐 `ms/s/min/h` 与舍入进位升级，同时保持共享 Today Stats、TPM 和消费速率的既有自适应合同不变。
+
 - active coverage priority 的 archive selection 改为 normalized epoch range + partial index，并在 SQLite selection 本身安装 progress deadline；这保留 legacy month fallback，同时避免 168 个 bucket 对 archive manifest 做带日期函数的 correlated scan。
 
 - 2026-07-28：线上 `v2.50.8` 复查确认 v2 coverage 长期缺失仍令活跃 Dashboard 窗口持续 exact fallback。修复边界改为 owner 活跃窗口优先的 `2 buckets / 2s` repair，并把历史无进展扫描收敛到封顶 15 分钟的指数退避；永久 blocked target 与 actionable backlog 分开判责。
