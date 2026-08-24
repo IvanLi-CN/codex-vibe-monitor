@@ -1134,7 +1134,16 @@ pub(crate) async fn invalidate_system_status_cache(state: &AppState) {
 }
 
 pub(crate) async fn hydrate_system_status_snapshot(state: &AppState) -> Result<()> {
-    refresh_system_status_snapshot(state).await
+    refresh_system_status_snapshot_with_deadline(state).await
+}
+
+async fn refresh_system_status_snapshot_with_deadline(state: &AppState) -> Result<()> {
+    tokio::time::timeout(
+        SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
+        refresh_system_status_snapshot(state),
+    )
+    .await
+    .map_err(|_| anyhow!("system status snapshot refresh exceeded its deadline"))?
 }
 
 async fn refresh_system_status_snapshot(state: &AppState) -> Result<()> {
@@ -1185,14 +1194,7 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {}
             }
-            if let Err(error) = tokio::time::timeout(
-                SYSTEM_STATUS_SNAPSHOT_REFRESH_DEADLINE,
-                refresh_system_status_snapshot(state.as_ref()),
-            )
-            .await
-            .map_err(|_| anyhow!("system status snapshot refresh exceeded its deadline"))
-            .and_then(|result| result)
-            {
+            if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
                 warn!(
                     ?error,
                     "system status background refresh failed; retaining last-good snapshot"

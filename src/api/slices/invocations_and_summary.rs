@@ -7393,18 +7393,6 @@ impl SummaryProjection {
                     || refresh_due(self.all_time_oldest_account_refreshed_at)))
     }
 
-    pub(crate) fn startup_hydration_is_fresh_within(&self, max_age: Duration) -> bool {
-        let fresh = |refreshed_at: Option<Instant>| {
-            refreshed_at.is_some_and(|refreshed_at| refreshed_at.elapsed() <= max_age)
-        };
-        fresh(self.freshness.rolling_at(self.refreshed_at))
-            && fresh(self.all_time_refreshed_at)
-            && self
-                .all_time_account_refreshed_at
-                .values()
-                .all(|refreshed_at| fresh(Some(*refreshed_at)))
-    }
-
     fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
         let in_progress = self
             .in_progress_by_account
@@ -9217,19 +9205,14 @@ fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = S
 }
 
 pub(crate) async fn hydrate_summary_snapshots(state: &AppState) -> Result<()> {
-    // Readiness remains unavailable until this complete durable hydration succeeds. The short
-    // runtime deadline prevents serving stale hot reads during normal operation, but must not
-    // reject a valid startup build solely because it needs more than that runtime budget.
-    refresh_summary_snapshots_startup(state, true).await
+    // Startup warm-up runs after listener readiness, so it must use the same bounded work budget
+    // as every later background refresh instead of holding readiness behind durable I/O.
+    refresh_summary_snapshots_with_mode(state, true).await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     let include_all_time = state.subscription_hub.has_summary_all_time_owner().await;
     refresh_summary_snapshots_with_mode(state, include_all_time).await
-}
-
-async fn refresh_summary_snapshots_startup(state: &AppState, include_all_time: bool) -> Result<()> {
-    refresh_summary_snapshots_with_deadline(state, include_all_time, None).await
 }
 
 async fn refresh_summary_snapshots_with_mode(
