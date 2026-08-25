@@ -11,8 +11,13 @@ use chrono_tz::TZ_VARIANTS;
 use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::{FromRow, SqliteConnection};
+use sqlx::{
+    FromRow, SqliteConnection,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode},
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -63,7 +68,6 @@ pub(crate) const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
 pub(crate) const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
 const INVOCATION_ANCHOR_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_ANCHOR_CACHE_LIMIT: usize = 32;
-const SUMMARY_PROJECTION_STABLE_SQLITE_VERSION_ATTEMPTS: usize = 3;
 
 #[derive(Clone)]
 struct InvocationAnchorSnapshot {
@@ -8294,11 +8298,14 @@ async fn summary_projection_live_history_within_aggregate_budget(
     }
 }
 
-async fn count_summary_projection_rollup_rows(
-    pool: &Pool<Sqlite>,
+async fn count_summary_projection_rollup_rows<'e, E>(
+    executor: E,
     table_name: &'static str,
     range: Option<(i64, i64)>,
-) -> Result<usize> {
+) -> Result<usize>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM ");
     // Callers pass only the two fixed rollup table names in this module. Keeping the table name
     // out of user-controlled SQL preserves the background-only hydration boundary.
@@ -8312,7 +8319,7 @@ async fn count_summary_projection_rollup_rows(
     }
     let count = query
         .build_query_scalar::<i64>()
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .with_context(|| format!("summary projection {table_name} row count failed"))?;
     let count = usize::try_from(count).context("summary projection rollup row count overflow")?;
@@ -8456,12 +8463,16 @@ async fn load_summary_projection_rollup_usage_in_range(
     pool: &Pool<Sqlite>,
     range: Option<(i64, i64)>,
 ) -> Result<HashMap<(i64, Option<i64>), UsageBreakdownResponse>> {
-    count_summary_projection_rollup_rows(pool, "upstream_account_usage_breakdown_hourly", range)
-        .await?;
-    let mut tx = pool.begin().await?;
+    let mut connection = pool.acquire().await?;
+    count_summary_projection_rollup_rows(
+        &mut *connection,
+        "upstream_account_usage_breakdown_hourly",
+        range,
+    )
+    .await?;
     let (start_epoch, end_epoch) = range.unwrap_or((i64::MIN, i64::MAX));
     let rows = query_upstream_account_usage_breakdown_hourly_rollup_range_bounded_tx(
-        tx.as_mut(),
+        &mut connection,
         start_epoch,
         end_epoch,
         InvocationSourceScope::All,
@@ -8470,7 +8481,6 @@ async fn load_summary_projection_rollup_usage_in_range(
     )
     .await
     .map_err(|error| anyhow!("summary projection usage rollup hydration failed: {error:?}"))?;
-    tx.commit().await?;
 
     let mut accumulators = HashMap::<(i64, Option<i64>), UsageBreakdownAccumulator>::new();
     let mut rollup_bytes = 0usize;
@@ -8993,22 +9003,19 @@ fn summary_projection_mark_account_exact_replacement_buckets(
     archive_has_materialized_rollups: bool,
     exact_range: ExactUtcRange,
     exact_account_total_rollup_buckets: &mut HashSet<i64>,
-    exact_account_usage_rollup_buckets: &mut HashSet<i64>,
 ) -> Result<()> {
     if !archive_has_materialized_rollups {
         return Ok(());
     }
     // A stale account manifest makes the account compact aggregate unverifiable even when the
     // global replay is complete. The paged raw fallback owns this whole bucket for account
-    // totals and usage, while the global compact aggregates remain available.
+    // totals, while the independently replay-proven account usage rollup remains canonical.
     summary_projection_exact_range_fits_bucket_budget(exact_range)?;
     let mut bucket = align_bucket_epoch(exact_range.start.timestamp(), 3_600, 0);
     let last_bucket = align_bucket_epoch(exact_range.end.timestamp().saturating_sub(1), 3_600, 0);
     while bucket <= last_bucket {
         exact_account_total_rollup_buckets.insert(bucket);
-        exact_account_usage_rollup_buckets.insert(bucket);
         summary_projection_ensure_exact_bucket_budget(exact_account_total_rollup_buckets)?;
-        summary_projection_ensure_exact_bucket_budget(exact_account_usage_rollup_buckets)?;
         bucket = bucket.saturating_add(3_600);
     }
     Ok(())
@@ -9561,14 +9568,12 @@ async fn refresh_summary_snapshots_with_deadline(
 }
 
 async fn load_summary_projection_rollup_live_cursor(pool: &Pool<Sqlite>) -> Result<i64> {
-    let mut tx = pool.begin().await?;
-    let cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut())
+    let mut connection = pool.acquire().await?;
+    load_invocation_summary_rollup_live_cursor_tx(&mut connection)
         .await
         .map_err(|error| {
             anyhow!("summary projection live rollup cursor hydration failed: {error:?}")
-        })?;
-    tx.commit().await?;
-    Ok(cursor)
+        })
 }
 
 async fn load_summary_projection_account_rollup_live_cursor(
@@ -9659,6 +9664,74 @@ async fn load_summary_projection_archive_row_counts(
         }
     }
     Ok(counts)
+}
+
+async fn load_summary_projection_archive_manifest_sha256(
+    pool: &Pool<Sqlite>,
+    archive_paths: &[String],
+) -> Result<HashMap<String, String>> {
+    if archive_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let expected_count = archive_paths.iter().collect::<HashSet<_>>().len();
+    let mut sha256_by_file_path = HashMap::with_capacity(expected_count);
+    for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
+    {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT file_path, sha256 FROM archive_batches WHERE dataset = 'codex_invocations' \
+             AND status = 'completed' AND file_path IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for path in archive_paths {
+                separated.push_bind(path);
+            }
+        }
+        query.push(")");
+        for (file_path, sha256) in query
+            .build_query_as::<(String, String)>()
+            .fetch_all(pool)
+            .await
+            .context("summary projection archive manifest SHA hydration failed")?
+        {
+            if sha256.trim().is_empty()
+                || sha256_by_file_path
+                    .insert(file_path.clone(), sha256)
+                    .is_some()
+            {
+                return Err(anyhow!(
+                    "summary projection archive manifest SHA is missing or ambiguous for {file_path}"
+                ));
+            }
+        }
+    }
+    if sha256_by_file_path.len() != expected_count {
+        return Err(anyhow!(
+            "summary projection archive manifest SHA hydration omitted snapshot rows"
+        ));
+    }
+    Ok(sha256_by_file_path)
+}
+
+fn verify_summary_projection_archive_file_sha256(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    expected_sha256: &str,
+) -> Result<()> {
+    let actual_sha256 = crate::maintenance::sha256_hex_file(Path::new(archive.file_path()))
+        .with_context(|| {
+            format!(
+                "summary projection archive identity read failed for {}",
+                archive.file_path()
+            )
+        })?;
+    if actual_sha256 != expected_sha256 {
+        return Err(anyhow!(
+            "summary projection archive changed during hydration for {}",
+            archive.file_path()
+        ));
+    }
+    Ok(())
 }
 
 async fn load_summary_projection_archive_manifest_accounts(
@@ -10201,42 +10274,68 @@ async fn build_summary_projection(
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
-    // The pool performs each query on its own connection, so a stable archive id alone cannot
-    // prevent a retention commit from replacing a manifest and its compact rollups between two
-    // projection reads. Keep one observer connection for the whole build and retry only a small,
-    // fixed number of times whenever another connection commits any SQLite change.
-    for _ in 0..SUMMARY_PROJECTION_STABLE_SQLITE_VERSION_ATTEMPTS {
-        let mut observer = state
-            .pool
-            .acquire()
-            .await
-            .context("summary projection stable SQLite observer acquisition failed")?;
-        let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
-            .fetch_one(&mut *observer)
-            .await
-            .context("summary projection stable SQLite version hydration failed")?;
-        let projection = build_summary_projection_once(
+    #[cfg(test)]
+    if state.config.database_path == std::path::Path::new(":memory:") {
+        // Stateful unit fixtures use a private shared-memory URI while their AppConfig retains
+        // `:memory:`. A second URI would point at a blank database, so exercise the regular
+        // bounded builder directly in those fixtures.
+        return build_summary_projection_once(
             state,
+            &state.pool,
             include_all_time,
-            previous_all_time.clone(),
+            previous_all_time,
             durable_terminal_sequence_watermark,
         )
-        .await?;
-        let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
-            .fetch_one(&mut *observer)
-            .await
-            .context("summary projection stable SQLite version revalidation failed")?;
-        if version_before == version_after {
-            return Ok(projection);
-        }
+        .await;
     }
-    Err(anyhow!(
-        "summary projection SQLite source changed during bounded hydration retries"
-    ))
+
+    // Hydration issues hundreds of bounded queries. Keep them on one read transaction so a
+    // retention commit cannot mix an old rollup with a replacement manifest. WAL readers do not
+    // block terminal writers, unlike a global `data_version` retry which treats any new request
+    // as a source invalidation and can leave the first snapshot unavailable under normal load.
+    let snapshot_options = SqliteConnectOptions::from_str(&state.config.database_url())
+        .context("summary projection snapshot connection options failed")?
+        .create_if_missing(false)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS));
+    let snapshot_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(snapshot_options)
+        .await
+        .context("summary projection snapshot connection failed")?;
+    let mut connection = snapshot_pool
+        .acquire()
+        .await
+        .context("summary projection snapshot acquisition failed")?;
+    sqlx::query("BEGIN")
+        .execute(&mut *connection)
+        .await
+        .context("summary projection snapshot begin failed")?;
+    drop(connection);
+
+    let build = build_summary_projection_once(
+        state,
+        &snapshot_pool,
+        include_all_time,
+        previous_all_time,
+        durable_terminal_sequence_watermark,
+    )
+    .await;
+    let rollback = sqlx::query("ROLLBACK")
+        .execute(&snapshot_pool)
+        .await
+        .context("summary projection snapshot rollback failed");
+    snapshot_pool.close().await;
+
+    match (build, rollback) {
+        (Ok(projection), Ok(_)) => Ok(projection),
+        (Ok(_), Err(error)) | (Err(error), Ok(_)) | (Err(error), Err(_)) => Err(error),
+    }
 }
 
 async fn build_summary_projection_once(
     state: &AppState,
+    pool: &Pool<Sqlite>,
     include_all_time: bool,
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
@@ -10280,22 +10379,18 @@ async fn build_summary_projection_once(
         align_bucket_epoch(end.timestamp(), 3_600, 0) + 3_600,
     );
     let (hourly_rollup_totals, hourly_rollup_non_success_tokens) =
-        load_summary_projection_rollup_totals_in_range(&state.pool, Some(rollup_range)).await?;
+        load_summary_projection_rollup_totals_in_range(pool, Some(rollup_range)).await?;
     let hourly_rollup_usage =
-        load_summary_projection_rollup_usage_in_range(&state.pool, Some(rollup_range)).await?;
+        load_summary_projection_rollup_usage_in_range(pool, Some(rollup_range)).await?;
     #[cfg(test)]
-    pause_summary_projection_test_interleave(&state.pool).await?;
+    pause_summary_projection_test_interleave(pool).await?;
     // Rolling aggregation must still distinguish an archive-backed retention database from a
     // live-only one. This bounded existence probe is independent of the expensive all-history
     // manifest admission below.
     let has_any_completed_archive =
-        !crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-            &state.pool,
-            None,
-            1,
-        )
-        .await?
-        .is_empty();
+        !crate::stats::load_completed_invocation_archive_paths_in_range_bounded(pool, None, 1)
+            .await?
+            .is_empty();
     // All-time aggregation needs manifest-level key proof, while rolling windows only need the
     // bounded exact horizon below. An oversized, fully materialized history is validated in
     // fixed manifest pages against one immutable high-watermark; it never needs an unbounded
@@ -10306,16 +10401,14 @@ async fn build_summary_projection_once(
         all_time_manifest_high_watermark_id,
     ) = if all_time_was_fully_rebuilt && has_any_completed_archive {
         let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-            &state.pool,
+            pool,
             None,
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
         .await?;
         if archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-            match summary_projection_overflowed_all_time_manifests_have_complete_rollups(
-                &state.pool,
-            )
-            .await?
+            match summary_projection_overflowed_all_time_manifests_have_complete_rollups(pool)
+                .await?
             {
                 Some(high_watermark_id) => (Vec::new(), false, Some(high_watermark_id)),
                 None => (Vec::new(), true, None),
@@ -10331,8 +10424,7 @@ async fn build_summary_projection_once(
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
     let all_time_archive_replay_coverage =
-        load_summary_projection_archive_replay_coverage(&state.pool, &all_time_archive_paths)
-            .await?;
+        load_summary_projection_archive_replay_coverage(pool, &all_time_archive_paths).await?;
     let mut all_time_archive_account_ids_by_file = HashMap::<String, HashSet<i64>>::new();
     let all_time_account_manifest_admission_attempted = all_time_was_fully_rebuilt
         && summary_projection_manifest_admission_retry_is_due(
@@ -10345,11 +10437,7 @@ async fn build_summary_projection_once(
     if all_time_account_manifest_admission_attempted
         && all_time_manifest_high_watermark_id.is_none()
     {
-        match load_summary_projection_archive_manifest_accounts(
-            &state.pool,
-            &all_time_archive_paths,
-        )
-        .await
+        match load_summary_projection_archive_manifest_accounts(pool, &all_time_archive_paths).await
         {
             Ok(accounts) => {
                 for (file_path, account_id) in accounts {
@@ -10369,11 +10457,11 @@ async fn build_summary_projection_once(
             Err(error) => return Err(error),
         }
     }
-    let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
+    let rollup_live_cursor = load_summary_projection_rollup_live_cursor(pool).await?;
     let account_rollup_live_cursor =
-        load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
+        load_summary_projection_account_rollup_live_cursor(pool).await?;
     let rows = query_summary_projection_live_rows_with_budget(
-        &state.pool,
+        pool,
         InvocationSourceScope::All,
         ExactUtcRange {
             start: live_start,
@@ -10430,7 +10518,7 @@ async fn build_summary_projection_once(
         ));
     }
     let mut recent_rows = query_summary_projection_live_rows_with_budget(
-        &state.pool,
+        pool,
         InvocationSourceScope::All,
         ExactUtcRange {
             start: Utc
@@ -10487,7 +10575,7 @@ async fn build_summary_projection_once(
             .values()
             .flat_map(|account_ids| account_ids.iter().copied()),
     );
-    known_account_ids.extend(load_summary_projection_durable_account_ids(&state.pool).await?);
+    known_account_ids.extend(load_summary_projection_durable_account_ids(pool).await?);
     known_account_ids.extend(
         hourly_rollup_totals
             .keys()
@@ -10514,7 +10602,7 @@ async fn build_summary_projection_once(
     };
     let boundary_archive_admission =
         crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-            &state.pool,
+            pool,
             Some((archive_start, end)),
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
@@ -10524,7 +10612,7 @@ async fn build_summary_projection_once(
     {
         let Some(high_watermark_id) =
             summary_projection_overflowed_boundary_manifests_have_complete_rollups(
-                &state.pool,
+                pool,
                 exact_horizon,
             )
             .await?
@@ -10554,9 +10642,11 @@ async fn build_summary_projection_once(
         ));
     }
     let archive_row_counts =
-        load_summary_projection_archive_row_counts(&state.pool, &archive_paths).await?;
+        load_summary_projection_archive_row_counts(pool, &archive_paths).await?;
+    let archive_manifest_sha256 =
+        load_summary_projection_archive_manifest_sha256(pool, &archive_paths).await?;
     let archive_replay_coverage =
-        load_summary_projection_archive_replay_coverage(&state.pool, &archive_paths).await?;
+        load_summary_projection_archive_replay_coverage(pool, &archive_paths).await?;
     // All-time has no finite request boundary. A materialized archive outside the bounded exact
     // horizon whose replay marker is absent cannot be reconstructed without an unbounded file
     // scan, so preserve an exact last-good all-time response (or its existing unavailable
@@ -10572,7 +10662,7 @@ async fn build_summary_projection_once(
     }) {
         Vec::new()
     } else {
-        load_summary_projection_archive_manifest_accounts(&state.pool, &archive_paths).await?
+        load_summary_projection_archive_manifest_accounts(pool, &archive_paths).await?
     };
     for (file_path, account_id) in manifest_accounts {
         if !archive_path_set.contains(&file_path) {
@@ -10596,7 +10686,7 @@ async fn build_summary_projection_once(
         known_account_ids.extend(account_ids.iter().copied());
     }
     let usage_rollup_progress =
-        load_usage_breakdown_archive_progress_by_file_path(&state.pool, &archive_paths)
+        load_usage_breakdown_archive_progress_by_file_path(pool, &archive_paths)
             .await
             .map_err(|error| {
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
@@ -10667,6 +10757,17 @@ async fn build_summary_projection_once(
                 "summary projection cannot prove account coverage for a large materialized archive without complete replay coverage"
             ));
         }
+        let manifest_sha256 = archive_manifest_sha256
+            .get(archive.file_path())
+            .ok_or_else(|| {
+                anyhow!(
+                    "summary projection archive manifest SHA is missing for {}",
+                    archive.file_path()
+                )
+            })?;
+        if Path::new(archive.file_path()).exists() {
+            verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+        }
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
         else {
@@ -10682,6 +10783,7 @@ async fn build_summary_projection_once(
             )?;
             continue;
         };
+        verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         if !summary_projection_archive_has_coverage_bounds(archive)
             && let Some(actual_range) = load_summary_projection_archive_coverage_range(
                 &archive_pool,
@@ -10718,6 +10820,7 @@ async fn build_summary_projection_once(
             ));
         }
         archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
+        verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -10819,7 +10922,7 @@ async fn build_summary_projection_once(
         let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
-                &state.pool,
+                pool,
                 Some(exact_horizon),
                 after_id,
                 high_watermark_id,
@@ -10834,8 +10937,7 @@ async fn build_summary_projection_once(
                 .map(|archive| archive.file_path().to_string())
                 .collect::<Vec<_>>();
             let page_account_ids_by_file =
-                load_summary_projection_archive_manifest_account_sets(&state.pool, &page_paths)
-                    .await?;
+                load_summary_projection_archive_manifest_account_sets(pool, &page_paths).await?;
             for account_ids in page_account_ids_by_file.values() {
                 known_account_ids.extend(account_ids.iter().copied());
             }
@@ -10861,7 +10963,6 @@ async fn build_summary_projection_once(
                         true,
                         archive_range,
                         &mut exact_account_total_rollup_buckets,
-                        &mut exact_account_usage_rollup_buckets,
                     )?;
                 }
                 let (account_replayed, usage_replayed) = if !account_manifest_complete {
@@ -10925,7 +11026,7 @@ async fn build_summary_projection_once(
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
         let exact_live_rows = query_summary_projection_live_rows_with_budget(
-            &state.pool,
+            pool,
             InvocationSourceScope::All,
             range,
             None,
@@ -11038,6 +11139,17 @@ async fn build_summary_projection_once(
                 "summary projection exact archive boundary exceeds bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
+        let manifest_sha256 = archive_manifest_sha256
+            .get(archive.file_path())
+            .ok_or_else(|| {
+                anyhow!(
+                    "summary projection archive manifest SHA is missing for {}",
+                    archive.file_path()
+                )
+            })?;
+        if Path::new(archive.file_path()).exists() {
+            verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+        }
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
@@ -11052,9 +11164,10 @@ async fn build_summary_projection_once(
             )?;
             continue;
         };
+        verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
         merge_summary_projection_archive_records_with_coverage(
             &archive_pool,
-            &state.pool,
+            pool,
             &persisted_live_ids,
             &hourly_rollup_totals,
             &hourly_rollup_usage,
@@ -11077,6 +11190,7 @@ async fn build_summary_projection_once(
                 archive.file_path()
             )
         })?;
+        verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -11084,7 +11198,7 @@ async fn build_summary_projection_once(
         let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
-                &state.pool,
+                pool,
                 Some(exact_horizon),
                 after_id,
                 high_watermark_id,
@@ -11098,8 +11212,10 @@ async fn build_summary_projection_once(
                 .iter()
                 .map(|archive| archive.file_path().to_string())
                 .collect::<Vec<_>>();
+            let page_manifest_sha256 =
+                load_summary_projection_archive_manifest_sha256(pool, &page_paths).await?;
             let usage_rollup_progress = load_usage_breakdown_archive_progress_by_file_path(
-                &state.pool,
+                pool,
                 &page_paths,
             )
             .await
@@ -11109,8 +11225,7 @@ async fn build_summary_projection_once(
                 )
             })?;
             let page_account_ids_by_file =
-                load_summary_projection_archive_manifest_account_sets(&state.pool, &page_paths)
-                    .await?;
+                load_summary_projection_archive_manifest_account_sets(pool, &page_paths).await?;
             for archive in page.archives {
                 let Some(archive_range) =
                     summary_projection_archive_overlap_range(&archive, exact_horizon)
@@ -11147,6 +11262,18 @@ async fn build_summary_projection_once(
                 summary_projection_admit_paged_boundary_raw_archive(
                     &mut paged_boundary_raw_archive_admissions,
                 )?;
+                let manifest_sha256 =
+                    page_manifest_sha256
+                        .get(archive.file_path())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "summary projection paged archive manifest SHA is missing for {}",
+                                archive.file_path()
+                            )
+                        })?;
+                if Path::new(archive.file_path()).exists() {
+                    verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+                }
                 let Some((archive_pool, temp_cleanup)) =
                     crate::stats::open_invocation_archive_batch_pool(
                         &archive,
@@ -11163,9 +11290,10 @@ async fn build_summary_projection_once(
                     )?;
                     continue;
                 };
+                verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
                 merge_summary_projection_archive_records_with_coverage(
                     &archive_pool,
-                    &state.pool,
+                    pool,
                     &persisted_live_ids,
                     &hourly_rollup_totals,
                     &hourly_rollup_usage,
@@ -11188,6 +11316,7 @@ async fn build_summary_projection_once(
                         archive.file_path()
                     )
                 })?;
+                verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
                 archive_pool.close().await;
                 drop(temp_cleanup);
             }
@@ -11301,7 +11430,7 @@ async fn build_summary_projection_once(
             .filter(|account_id| *account_id > 0)
             .collect::<HashSet<_>>(),
     );
-    account_ids.extend(load_summary_projection_durable_account_ids(&state.pool).await?);
+    account_ids.extend(load_summary_projection_durable_account_ids(pool).await?);
     if account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
         return Err(anyhow!(
             "summary projection account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
@@ -11378,8 +11507,7 @@ async fn build_summary_projection_once(
         // All-time must use the same bounded projection inputs as rolling windows. The generic
         // stats query can open every unmaterialized archive and therefore cannot run in the
         // refresh path without defeating the rebuild deadline.
-        let (all_time_rollup_totals, _) =
-            load_summary_projection_rollup_totals(&state.pool).await?;
+        let (all_time_rollup_totals, _) = load_summary_projection_rollup_totals(pool).await?;
         // The finite exact tail deliberately does not retain every historical live row. When a
         // retained boundary replacement row is older than that tail, the complete all-time map
         // is the durable proof that it is already included. Refresh its per-scope flags before
@@ -11408,7 +11536,7 @@ async fn build_summary_projection_once(
             paged_all_time_account_ids,
         ) = if let Some(high_watermark_id) = all_time_manifest_high_watermark_id {
             summary_projection_paged_all_time_materialized_scope_coverage(
-                &state.pool,
+                pool,
                 high_watermark_id,
                 &all_time_rollup_totals,
             )
@@ -11453,7 +11581,7 @@ async fn build_summary_projection_once(
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
         let live_history_admission = if !has_any_completed_archive {
-            summary_projection_live_history_within_aggregate_budget(&state.pool).await?
+            summary_projection_live_history_within_aggregate_budget(pool).await?
         } else {
             None
         };
@@ -11471,7 +11599,7 @@ async fn build_summary_projection_once(
             if let Some(admission) = live_history_admission.as_ref() {
                 StatsTotals::from(
                     crate::stats::query_stats_row_through_id(
-                        &state.pool,
+                        pool,
                         InvocationSourceScope::All,
                         admission.upper_bound_id,
                     )
@@ -11500,7 +11628,7 @@ async fn build_summary_projection_once(
             }
         } else {
             crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
-                &state.pool,
+                pool,
                 InvocationSourceScope::All,
                 rollup_live_cursor,
                 SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
@@ -11528,7 +11656,7 @@ async fn build_summary_projection_once(
         if has_any_completed_archive && rollup_live_cursor > 0 {
             global_totals = global_totals.add(
                 crate::stats::query_live_invocation_totals_after_id(
-                    &state.pool,
+                    pool,
                     InvocationSourceScope::All,
                     rollup_live_cursor,
                     live_tail.upper_bound_id,
@@ -11541,7 +11669,7 @@ async fn build_summary_projection_once(
         }
         let unmaterialized_archive_totals =
             crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
-                &state.pool,
+                pool,
                 InvocationSourceScope::All,
                 None,
                 Some(live_tail_ids),
@@ -11593,17 +11721,13 @@ async fn build_summary_projection_once(
 
         let account_totals = if !has_any_completed_archive {
             if let Some(admission) = live_history_admission.as_ref() {
-                load_summary_projection_live_account_totals(&state.pool, admission.upper_bound_id)
-                    .await?
+                load_summary_projection_live_account_totals(pool, admission.upper_bound_id).await?
             } else {
                 HashMap::new()
             }
         } else {
-            load_summary_projection_account_rollup_totals(
-                &state.pool,
-                &exact_account_total_rollup_buckets,
-            )
-            .await?
+            load_summary_projection_account_rollup_totals(pool, &exact_account_total_rollup_buckets)
+                .await?
         };
         for (account_id, totals) in account_totals {
             batched_all_time_by_account.insert(account_id, totals);
@@ -11613,13 +11737,11 @@ async fn build_summary_projection_once(
         // fenced above. A lagging account cursor must not turn one background refresh into an
         // unbounded table scan or absorb writes that arrived after this projection revision.
         if has_any_completed_archive {
-            let account_live_tail = admit_summary_projection_live_tail_account_ids(
-                &state.pool,
-                account_rollup_live_cursor,
-            )
-            .await?;
+            let account_live_tail =
+                admit_summary_projection_live_tail_account_ids(pool, account_rollup_live_cursor)
+                    .await?;
             for (account_id, totals) in load_summary_projection_live_tail_account_totals(
-                &state.pool,
+                pool,
                 account_rollup_live_cursor,
                 account_live_tail.map(|tail| tail.upper_bound_id),
             )
@@ -11631,7 +11753,7 @@ async fn build_summary_projection_once(
         }
         let account_archive_totals =
             crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
-                &state.pool,
+                pool,
                 HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
                 InvocationSourceScope::All,
                 None,
@@ -16281,9 +16403,9 @@ async fn query_summary_projection_live_rows_with_budget(
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, anyhow::Error> {
     let text_columns = load_summary_projection_live_text_columns(pool).await?;
-    let mut tx = pool.begin().await?;
+    let mut connection = pool.acquire().await?;
     let max_id = ensure_summary_projection_live_text_budget(
-        &mut *tx,
+        &mut *connection,
         &text_columns,
         source_scope,
         range,
@@ -16293,7 +16415,7 @@ async fn query_summary_projection_live_rows_with_budget(
     )
     .await?;
     let mut rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
-        &mut *tx,
+        &mut *connection,
         source_scope,
         range,
         upstream_account_id,
@@ -16304,10 +16426,9 @@ async fn query_summary_projection_live_rows_with_budget(
     )
     .await
     .map_err(|error| anyhow!("summary projection live preview fetch failed: {error:?}"))?;
-    restore_summary_projection_persisted_statuses(&mut tx, &mut rows)
+    restore_summary_projection_persisted_statuses(&mut connection, &mut rows)
         .await
         .context("summary projection live status hydration failed")?;
-    tx.commit().await?;
     Ok(rows)
 }
 

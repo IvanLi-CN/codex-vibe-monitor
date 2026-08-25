@@ -22236,9 +22236,26 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
 
 #[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
+    let temp_dir = make_temp_test_dir("summary-paged-boundary-snapshot");
+    let database_path = temp_dir.join("summary-projection.db");
+    fs::File::create(&database_path).expect("create summary projection database");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&test_sqlite_url_for_path(&database_path))
+        .await
+        .expect("open summary projection database");
     let mut config = test_config();
+    config.database_path = database_path;
+    config.archive_dir = temp_dir.join("archives");
+    config.proxy_raw_dir = temp_dir.join("proxy-raw");
+    fs::create_dir_all(&config.archive_dir).expect("create summary projection archive directory");
+    fs::create_dir_all(&config.proxy_raw_dir).expect("create summary projection raw directory");
     config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
-    let state = test_state_from_config(config, true).await;
+    let state = test_state_from_existing_pool(pool, config, true).await;
+    sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
+        .fetch_one(&state.pool)
+        .await
+        .expect("enable WAL for concurrent snapshot writer coverage");
     let archived_bucket_start = Utc
         .timestamp_opt(
             crate::stats::align_bucket_epoch(
@@ -22312,7 +22329,7 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         tx.as_mut(),
         &[InvocationHourlySourceRecord {
             id: 70_001,
-            occurred_at: archived_at,
+            occurred_at: archived_at.clone(),
             source: SOURCE_PROXY.to_string(),
             status: Some("success".to_string()),
             detail_level: DETAIL_LEVEL_FULL.to_string(),
@@ -22353,6 +22370,39 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     .expect("seed complete compact rollups for the readable boundary archive");
     tx.commit().await.expect("commit boundary rollup tx");
     mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
+
+    // Prepare a valid replacement archive that would add a second exact-boundary row if it
+    // were combined with the snapshot's old durable rollup and manifest state.
+    let replacement_archive_db_path = state
+        .config
+        .archive_dir
+        .join("summary-paged-boundary-replacement.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &replacement_archive_db_path)
+        .expect("inflate replacement archive source");
+    let replacement_archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&replacement_archive_db_path))
+            .await
+            .expect("open replacement archive source");
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (id, invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response, created_at) \
+         VALUES (70002, 'summary-paged-boundary-replacement', ?1, 'proxy', 'success', 99, 9.9, 'full', \
+                 '{\"upstreamAccountId\":42,\"responseModel\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '{}', ?1)",
+    )
+    .bind(&archived_at)
+    .execute(&replacement_archive_pool)
+    .await
+    .expect("seed replacement archive row");
+    replacement_archive_pool.close().await;
+    let replacement_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-paged-boundary-replacement.sqlite.gz");
+    deflate_sqlite_file_to_gzip(&replacement_archive_db_path, &replacement_archive_path)
+        .expect("compress replacement archive");
+    let replacement_archive_sha256 =
+        sha256_hex_file(&replacement_archive_path).expect("hash replacement archive");
+    fs::remove_file(&replacement_archive_db_path).expect("remove replacement archive source");
 
     // These fully materialized older manifests force paging without needing raw records for a
     // legal current/1d selection. Their compact aggregate belongs outside the exact boundary.
@@ -22421,49 +22471,79 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         .expect("record complete durable replay coverage");
     }
 
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("publish initial exact paged-boundary snapshot");
+
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
         .expect("create summary projection interleave gate");
     let interleave = install_summary_projection_test_interleave();
-    let replacement_path = "/tmp/summary-boundary-manifest-admission-1.sqlite.gz".to_string();
+    let replacement_path = archive_path.to_string_lossy().to_string();
+    let concurrent_terminal_at = archived_at.clone();
     let replacement_pool = state.pool.clone();
     let replacement_interleave = interleave.clone();
+    let replacement_archive_path_for_writer = replacement_archive_path.clone();
+    let archive_path_for_writer = archive_path.clone();
     let replacement = tokio::spawn(async move {
         replacement_interleave.wait_for_writer().await;
+        fs::rename(
+            &replacement_archive_path_for_writer,
+            &archive_path_for_writer,
+        )
+        .expect("atomically publish replacement archive file");
         let mut tx = replacement_pool
             .begin()
             .await
             .expect("begin legacy manifest replacement");
         sqlx::query(
-            "UPDATE archive_batches SET sha256 = 'summary-boundary-manifest-admission-1-replacement' \
-             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+            "UPDATE archive_batches SET sha256 = ?1 \
+             WHERE dataset = 'codex_invocations' AND file_path = ?2",
         )
+        .bind(&replacement_archive_sha256)
         .bind(&replacement_path)
         .execute(tx.as_mut())
         .await
-        .expect("replace legacy manifest SHA");
+        .expect("replace readable manifest SHA");
         sqlx::query(
-            "UPDATE hourly_rollup_archive_replay \
-             SET archive_sha256 = 'summary-boundary-manifest-admission-1-replacement' \
-             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+            "UPDATE hourly_rollup_archive_replay SET archive_sha256 = ?1 \
+             WHERE dataset = 'codex_invocations' AND file_path = ?2",
         )
+        .bind(&replacement_archive_sha256)
         .bind(&replacement_path)
         .execute(tx.as_mut())
         .await
         .expect("refresh replacement replay markers");
-        tx.commit()
-            .await
-            .expect("commit legacy manifest replacement");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response) \
+             VALUES ('summary-paged-boundary-concurrent-terminal', ?1, 'proxy', 'success', 7, 0.07, 'full', '{\"upstreamAccountId\":42}', '')",
+        )
+        .bind(&concurrent_terminal_at)
+        .execute(tx.as_mut())
+        .await
+        .expect("commit terminal write after snapshot establishment");
+        let commit = tokio::time::timeout(Duration::from_secs(2), tx.commit()).await;
         replacement_interleave.resume_build();
+        commit
+            .expect("legacy manifest replacement must not block the snapshot reader")
+            .expect("commit legacy manifest replacement");
     });
-    let hydration = hydrate_summary_snapshots(state.as_ref()).await;
+    let hydration = refresh_summary_snapshots_with_mode(state.as_ref(), false).await;
     replacement.await.expect("run legacy manifest replacement");
     clear_summary_projection_test_interleave();
-    hydration.expect("retry after legacy manifest replacement before publishing hydration");
+    let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");
     assert!(
-        interleave.build_attempts() >= 2,
-        "the replacement commit must invalidate the first projection build"
+        hydration_error
+            .to_string()
+            .contains("summary projection archive changed during hydration"),
+        "unexpected hydration failure: {hydration_error:?}"
+    );
+    assert_eq!(
+        interleave.build_attempts(),
+        1,
+        "the archive mismatch must fail closed without retrying under normal terminal writes"
     );
     state.pool.close().await;
 
@@ -22504,6 +22584,7 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             }
         }
     }
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
