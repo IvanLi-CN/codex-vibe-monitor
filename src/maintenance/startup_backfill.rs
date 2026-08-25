@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future;
 
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
@@ -280,7 +281,7 @@ fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StartupBackfillTaskRunOutcome {
+pub(crate) struct StartupBackfillTaskRunOutcome {
     actionable: bool,
     failed: bool,
     deferred: bool,
@@ -1167,6 +1168,21 @@ async fn run_startup_backfill_coverage_repair_if_due(
     state: &Arc<AppState>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<StartupBackfillTaskRunOutcome> {
+    run_startup_backfill_coverage_repair_if_due_with_repair(state, gate, || {
+        repair_active_account_activity_v2_coverage(&state.pool)
+    })
+    .await
+}
+
+pub(crate) async fn run_startup_backfill_coverage_repair_if_due_with_repair<Repair, RepairFuture>(
+    state: &Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
+    repair: Repair,
+) -> Result<StartupBackfillTaskRunOutcome>
+where
+    Repair: FnOnce() -> RepairFuture,
+    RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
+{
     let task = StartupBackfillTask::AccountActivityV2Coverage;
 
     // Coverage repair owns this one permit. The hourly-rollup convenience wrapper also acquires
@@ -1207,7 +1223,7 @@ async fn run_startup_backfill_coverage_repair_if_due(
 
     let repair_outcome = {
         let _guard = state.hourly_rollup_sync_lock.lock().await;
-        repair_active_account_activity_v2_coverage(&state.pool).await
+        repair().await
     };
     let repair_outcome = match repair_outcome {
         Ok(outcome) => outcome,
@@ -1237,7 +1253,11 @@ async fn run_startup_backfill_coverage_repair_if_due(
     match repair_outcome {
         outcome if outcome.repaired_bucket_count > 0 => {
             let next_due =
-                record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome).await?;
+                record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
+                    .await
+                    .inspect_err(|err| {
+                        record_startup_backfill_pressure_error(gate, err);
+                    })?;
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: true,
                 failed: false,
@@ -1247,7 +1267,11 @@ async fn run_startup_backfill_coverage_repair_if_due(
             })
         }
         outcome if outcome.priority_bucket_count > 0 => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
+            let next_due = defer_startup_backfill_coverage_repair(state.as_ref())
+                .await
+                .inspect_err(|err| {
+                    record_startup_backfill_pressure_error(gate, err);
+                })?;
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
@@ -1258,7 +1282,11 @@ async fn run_startup_backfill_coverage_repair_if_due(
         }
         _ => {
             let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-            let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+            let progress = load_startup_backfill_progress(&state.pool, &task_name)
+                .await
+                .inspect_err(|err| {
+                    record_startup_backfill_pressure_error(gate, err);
+                })?;
             let next_retry_after = format_utc_iso(
                 Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_IDLE_INTERVAL_SECS as i64),
             );
@@ -1275,7 +1303,10 @@ async fn run_startup_backfill_coverage_repair_if_due(
                     suspension_reason: None,
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|err| {
+                record_startup_backfill_pressure_error(gate, err);
+            })?;
             let next_due = parse_to_utc_datetime(&next_retry_after).unwrap_or_else(Utc::now);
             STARTUP_BACKFILL_SCHEDULER.record_next_due(task, next_due);
             debug!(
