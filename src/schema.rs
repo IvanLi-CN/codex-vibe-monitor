@@ -2721,6 +2721,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             OR OLD.t_req_parse_ms IS NOT NEW.t_req_parse_ms
             OR OLD.t_upstream_connect_ms IS NOT NEW.t_upstream_connect_ms
             OR OLD.t_upstream_ttfb_ms IS NOT NEW.t_upstream_ttfb_ms
+            OR OLD.t_upstream_stream_ms IS NOT NEW.t_upstream_stream_ms
             OR OLD.first_token_ms IS NOT NEW.first_token_ms
         )
         BEGIN

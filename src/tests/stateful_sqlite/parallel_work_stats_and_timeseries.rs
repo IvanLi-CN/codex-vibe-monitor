@@ -21482,6 +21482,63 @@ async fn exact_fallback_warm_invalidates_direct_non_proxy_terminal_replacement()
 }
 
 #[tokio::test]
+async fn exact_fallback_warm_invalidates_non_proxy_stream_duration_replacement() {
+    let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_at = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, raw_response) VALUES (?1, ?2, 'cli', 'success', 10, 0.01, '{}')",
+    )
+    .bind("non-proxy-stream-duration-replacement")
+    .bind(&occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert terminal non-proxy invocation");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let outcome = crate::api::store_timeseries_minute_projection_v2_warm_with_coordinator(
+        &state.pool,
+        now - ChronoDuration::minutes(62),
+        now + ChronoDuration::minutes(2),
+        InvocationSourceScope::All,
+        None,
+        state.terminal_projection_hub.as_ref(),
+        "stateful_non_proxy_stream_duration_seed",
+        &coordinator,
+    )
+    .await
+    .expect("seed ready coverage before stream-duration replacement");
+    assert_eq!(
+        outcome,
+        crate::api::TimeseriesMinuteProjectionWarmOutcome::Stored
+    );
+
+    sqlx::query("UPDATE codex_invocations SET t_upstream_stream_ms = 975.0 WHERE invoke_id = ?1")
+        .bind("non-proxy-stream-duration-replacement")
+        .execute(&state.pool)
+        .await
+        .expect("replace only the terminal stream duration");
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load durable replacement recovery marker");
+    assert_eq!(
+        recovery_pending, 1,
+        "stream-duration-only terminal replacements must fence ready minute coverage"
+    );
+}
+
+#[tokio::test]
 async fn restart_schema_installs_durable_non_proxy_replacement_fence_before_projection_supervisor()
 {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
