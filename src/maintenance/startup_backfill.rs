@@ -353,6 +353,31 @@ fn startup_backfill_pressure_retry_at(
     }
 }
 
+fn startup_backfill_pressure_defer_outcome(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> StartupBackfillTaskRunOutcome {
+    let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+    STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+    info!(
+        task = task.log_label(),
+        reason = %reason,
+        defer_kind = "pressure_gate",
+        defer_reason = %reason,
+        next_eligibility = %retry_at,
+        wake_reason = "pressure_defer",
+        "startup backfill task deferred before SQLite access because database pressure gate is closed"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
 impl StartupBackfillTask {
     pub(crate) fn ordered_tasks() -> &'static [Self] {
         &[
@@ -1140,17 +1165,77 @@ fn startup_backfill_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
 
 async fn run_startup_backfill_coverage_repair_if_due(
     state: &Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<StartupBackfillTaskRunOutcome> {
-    let repair_outcome = repair_active_account_activity_v2_coverage_best_effort(
-        &state.pool,
-        state.hourly_rollup_sync_lock.as_ref(),
-        "startup backfill account-activity coverage repair",
-    )
-    .await;
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+
+    // Coverage repair owns this one permit. The hourly-rollup convenience wrapper also acquires
+    // the global gate, so calling it while the startup path holds a permit would always defer in
+    // production. Keep admission before progress access, then call the underlying repair once.
+    let _permit = match gate.try_begin_background("startup_backfill_account_activity_v2_coverage") {
+        Ok(permit) => permit,
+        Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+    };
+
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .inspect_err(|err| {
+            record_startup_backfill_pressure_error(gate, err);
+        })?;
+    let now = Utc::now();
+    if !progress.is_due(now) {
+        debug!(
+            task = task.log_label(),
+            task_name = %progress.task_name,
+            next_run_after = progress.next_run_after.as_deref().unwrap_or("-"),
+            last_status = %progress.last_status,
+            last_started_at = progress.last_started_at.as_deref().unwrap_or("-"),
+            last_finished_at = progress.last_finished_at.as_deref().unwrap_or("-"),
+            last_scanned = progress.last_scanned,
+            last_updated = progress.last_updated,
+            "startup backfill task is not due"
+        );
+        return Ok(StartupBackfillTaskRunOutcome {
+            actionable: false,
+            failed: false,
+            deferred: false,
+            completed: false,
+            next_due: startup_backfill_progress_due(&progress),
+        });
+    }
+
+    let repair_outcome = {
+        let _guard = state.hourly_rollup_sync_lock.lock().await;
+        repair_active_account_activity_v2_coverage(&state.pool).await
+    };
+    let repair_outcome = match repair_outcome {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            record_startup_backfill_pressure_error(gate, &err);
+            warn!(
+                task = task.log_label(),
+                error = %err,
+                wake_reason = "active_window_coverage_check",
+                "startup backfill account activity v2 coverage repair failed"
+            );
+            let next_due = defer_startup_backfill_coverage_repair(state.as_ref())
+                .await
+                .inspect_err(|persist_err| {
+                    record_startup_backfill_pressure_error(gate, persist_err);
+                })?;
+            return Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: true,
+                deferred: false,
+                completed: true,
+                next_due,
+            });
+        }
+    };
+
     match repair_outcome {
-        ActiveAccountActivityV2RepairResult::Repaired(outcome)
-            if outcome.repaired_bucket_count > 0 =>
-        {
+        outcome if outcome.repaired_bucket_count > 0 => {
             let next_due =
                 record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome).await?;
             Ok(StartupBackfillTaskRunOutcome {
@@ -1161,9 +1246,7 @@ async fn run_startup_backfill_coverage_repair_if_due(
                 next_due,
             })
         }
-        ActiveAccountActivityV2RepairResult::Repaired(outcome)
-            if outcome.priority_bucket_count > 0 =>
-        {
+        outcome if outcome.priority_bucket_count > 0 => {
             let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
@@ -1173,8 +1256,7 @@ async fn run_startup_backfill_coverage_repair_if_due(
                 next_due,
             })
         }
-        ActiveAccountActivityV2RepairResult::Repaired(_) => {
-            let task = StartupBackfillTask::AccountActivityV2Coverage;
+        _ => {
             let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
             let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
             let next_retry_after = format_utc_iso(
@@ -1204,26 +1286,6 @@ async fn run_startup_backfill_coverage_repair_if_due(
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
-                deferred: false,
-                completed: true,
-                next_due,
-            })
-        }
-        ActiveAccountActivityV2RepairResult::Deferred => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
-            Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: true,
-                completed: true,
-                next_due,
-            })
-        }
-        ActiveAccountActivityV2RepairResult::Failed => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
-            Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: true,
                 deferred: false,
                 completed: true,
                 next_due,
@@ -1423,30 +1485,15 @@ async fn run_startup_backfill_task_if_due_outcome(
         });
     }
 
+    if task == StartupBackfillTask::AccountActivityV2Coverage {
+        return run_startup_backfill_coverage_repair_if_due(state, gate).await;
+    }
+
     // This admission is deliberately before progress lookup: a pressure defer must remain a
     // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
     let _permit = match gate.try_begin_background("startup_backfill") {
         Ok(permit) => permit,
-        Err(reason) => {
-            let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-            STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
-            info!(
-                task = task.log_label(),
-                reason = %reason,
-                defer_kind = "pressure_gate",
-                defer_reason = %reason,
-                next_eligibility = %retry_at,
-                wake_reason = "pressure_defer",
-                "startup backfill task deferred before SQLite access because database pressure gate is closed"
-            );
-            return Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: true,
-                completed: true,
-                next_due: retry_at,
-            });
-        }
+        Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
     };
 
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
@@ -1475,14 +1522,6 @@ async fn run_startup_backfill_task_if_due_outcome(
             completed: false,
             next_due: startup_backfill_progress_due(&progress),
         });
-    }
-
-    if task == StartupBackfillTask::AccountActivityV2Coverage {
-        return run_startup_backfill_coverage_repair_if_due(state)
-            .await
-            .inspect_err(|err| {
-                record_startup_backfill_pressure_error(gate, err);
-            });
     }
 
     mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id)

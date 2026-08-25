@@ -2883,6 +2883,95 @@ async fn idle_coverage_repair_persists_its_next_probe_deadline() {
 }
 
 #[tokio::test]
+async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
+
+    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate);
+    tokio::pin!(run);
+    tokio::select! {
+        result = &mut run => panic!("coverage repair must wait for the held rollup lock, got {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+    }
+
+    assert!(
+        matches!(
+            gate.try_begin_background("coverage_admission_probe"),
+            Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
+        ),
+        "the coverage repair must retain its single production-shaped gate permit while it waits"
+    );
+    drop(rollup_guard);
+
+    assert!(
+        !run.await
+            .expect("coverage repair should finish after the rollup lock is released")
+    );
+    let progress = load_startup_backfill_progress(&state.pool, task.name())
+        .await
+        .expect("coverage repair must persist its idle follow-up after executing");
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+}
+
+#[tokio::test]
+async fn startup_coverage_gate_denial_skips_sqlite_progress_and_task_run_audit() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let _held = gate
+        .try_begin_background("coverage_gate_holder")
+        .expect("occupy the production-shaped gate");
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before the denied coverage repair");
+
+    assert!(
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
+            .expect("closed coverage gate should defer without an error")
+    );
+
+    let progress_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM startup_backfill_progress WHERE task_name = ?1")
+            .bind(task.name())
+            .fetch_one(&state.pool)
+            .await
+            .expect("count coverage progress after the denied repair");
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the denied coverage repair");
+    assert_eq!(
+        progress_rows, 0,
+        "gate denial must not write coverage progress"
+    );
+    assert_eq!(
+        task_runs_after, task_runs_before,
+        "gate denial must not write an audit"
+    );
+
+    state.pool.close().await;
+    assert!(
+        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+            .await
+            .expect("a closed pool proves denied coverage never accesses SQLite")
+    );
+}
+
+#[tokio::test]
 async fn failure_classification_backfill_skips_success_rows_with_complete_defaults() {
     let pool = test_current_schema_pool().await;
 

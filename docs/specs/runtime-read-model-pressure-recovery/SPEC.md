@@ -57,6 +57,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 #### Pressure Defer And Backfill
 
 - `SQLite Pressure Defer` 是数据库访问前的低优先级拒绝；它不读取或修改 durable progress，而是为每个 task/cooldown 只登记一次内存 scheduler next-eligibility deadline 与 event/deadline wake。
+- Account Activity V2 coverage repair 由 startup task 持有唯一 background permit 后直接执行底层 repair；不得在已有 permit 时调用会再次获取 global gate 的 convenience wrapper。gate 拒绝时不得读取或写入 coverage progress，也不得写 task-run audit。
 - defer 不得按毫秒级重试，不得反复写 `system_task_runs`，也不得在没有 actionable work 时记录成功、跳过或失败审计。
 - 真正的 SQLite `BUSY`/`LOCKED` 仍按既有有界失败退避处理，并保留与 pressure defer 可区分的 telemetry、reason 与恢复路径。
 - cooldown 到期、符合条件的 input 变化或 pressure eligibility generation 变化可以唤醒；eligibility wake 重新进入普通 durable due 检查，不得绕过未来的 `next_run_after`。固定 ticker 不得在 cooldown 内反复派发相同 task。
@@ -89,7 +90,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 1. Summary 请求先校验 query，再从内存 Projection 选择精确 snapshot；它从不启动 hydrate 或打开 archive。
 2. Projection worker 在后台将 rollup 的完整 interiors 与精确 boundary/tail 组合成新的 immutable snapshot；失败保持 last-good 与明确 freshness 状态。
-3. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。
+3. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。Account Activity V2 coverage repair 在同一 permit 内完成这个 due 检查与 repair，避免嵌套获取 global gate。
 4. long-term migration 读取 cursor 后执行一个最多 512 行的微事务；压力、取消或时间预算耗尽时安全退出，后续从持久 cursor 继续。
 5. 每个 checkpoint 的 GitHub release 由累计 integration frontier 生成；主人部署确认后才开始相关 Ticket 的只读 900 秒观察。
 
@@ -119,6 +120,7 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - Given 低 retention 且 31 天外的高基数 rollup 超出 admission，When Summary Projection hydrate，Then 合法 30d 仍精确、可用且仅从内存读取。
 - Given global、account 与 source-partitioned rollup 覆盖不一致，When 请求边界或 account scope，Then 响应没有重复、漏项或缺失 usage/model/reasoning/cost 详情。
 - Given pressure cooldown 关闭，When 同一 startup backfill task 被触发，Then 只记录一次内存 scheduler next-eligibility/event wake，不产生毫秒级 defer storm、SQLite pre-read 或无动作 task-run audit。
+- Given Account Activity V2 coverage repair 已被 background gate 接纳，When 它等待 hourly rollup lock 后执行，Then 底层 repair 恰好在该 permit 内运行一次；Given gate 拒绝，Then 不读取或写 coverage progress，也不创建 task-run audit。
 - Given 实际 SQLite lock，When 后台任务已开始数据库访问且失败状态写入成功，Then 在释放 background permit 前关闭 pressure gate，使用独立的 bounded failure backoff，并使后续任务以零 SQLite I/O defer。
 - Given 任务的 durable `next_run_after` 仍在未来，When 该任务先因 `BackgroundBusy` defer 后收到 pressure eligibility event，Then 它不执行、不写 progress 或 task-run audit，并继续等待原 deadline。
 - Given legacy long-term backlog，When migration 运行、遇到 pressure 或取消，Then 每个写事务最多 512 行、cursor 可恢复且 P1 不被低优先级写入饥饿。
