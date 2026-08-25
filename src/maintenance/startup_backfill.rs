@@ -6,6 +6,66 @@ const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 const SQLITE_PRESSURE_COOLDOWN_SUSPENSION_REASON: &str = "sqlite_pressure_cooldown";
 const BACKGROUND_DB_BUSY_SUSPENSION_REASON: &str = "background_db_busy";
 
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct StartupBackfillPressureDeferTestInterleave {
+    persistence_ready: std::sync::Arc<Notify>,
+    resume_persistence: std::sync::Arc<Notify>,
+}
+
+#[cfg(test)]
+static STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE: Lazy<
+    std::sync::Mutex<Option<StartupBackfillPressureDeferTestInterleave>>,
+> = Lazy::new(|| std::sync::Mutex::new(None));
+
+#[cfg(test)]
+impl StartupBackfillPressureDeferTestInterleave {
+    pub(crate) async fn wait_for_persistence(&self) {
+        self.persistence_ready.notified().await;
+    }
+
+    pub(crate) fn resume_persistence(&self) {
+        self.resume_persistence.notify_one();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_startup_backfill_pressure_defer_test_interleave()
+-> StartupBackfillPressureDeferTestInterleave {
+    let interleave = StartupBackfillPressureDeferTestInterleave {
+        persistence_ready: std::sync::Arc::new(Notify::new()),
+        resume_persistence: std::sync::Arc::new(Notify::new()),
+    };
+    let mut installed = STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
+        .lock()
+        .expect("startup backfill pressure-defer test interleave lock");
+    assert!(
+        installed.is_none(),
+        "startup backfill pressure-defer test interleave is already installed"
+    );
+    *installed = Some(interleave.clone());
+    interleave
+}
+
+#[cfg(test)]
+pub(crate) fn clear_startup_backfill_pressure_defer_test_interleave() {
+    *STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
+        .lock()
+        .expect("startup backfill pressure-defer test interleave lock") = None;
+}
+
+#[cfg(test)]
+async fn pause_startup_backfill_pressure_defer_test_interleave() {
+    let interleave = STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
+        .lock()
+        .expect("startup backfill pressure-defer test interleave lock")
+        .clone();
+    if let Some(interleave) = interleave {
+        interleave.persistence_ready.notify_one();
+        interleave.resume_persistence.notified().await;
+    }
+}
+
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
@@ -37,6 +97,7 @@ struct StartupBackfillScheduler {
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
+    pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     wake_count: AtomicU64,
     due_dispatch_count: AtomicU64,
@@ -118,6 +179,30 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn mark_pressure_deferred(&self, task: StartupBackfillTask) {
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
+            tasks.insert(task);
+        }
+    }
+
+    fn take_pressure_deferred_tasks(&self) -> Vec<StartupBackfillTask> {
+        let tasks = self
+            .pressure_deferred_tasks
+            .lock()
+            .map(|mut tasks| std::mem::take(&mut *tasks))
+            .unwrap_or_default();
+        if let Ok(mut next_due) = self.next_due.lock() {
+            for task in &tasks {
+                next_due.remove(task);
+            }
+        }
+        StartupBackfillTask::ordered_tasks()
+            .iter()
+            .copied()
+            .filter(|task| tasks.contains(task))
+            .collect()
+    }
+
     fn record_task_result(&self, task: StartupBackfillTask, failed: bool, deferred: bool) {
         if failed {
             self.failure_count.fetch_add(1, Ordering::Relaxed);
@@ -125,6 +210,9 @@ impl StartupBackfillScheduler {
                 tasks.insert(task);
             }
             if let Ok(mut tasks) = self.deferred_tasks.lock() {
+                tasks.remove(&task);
+            }
+            if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
                 tasks.remove(&task);
             }
             return;
@@ -150,6 +238,9 @@ impl StartupBackfillScheduler {
         }
 
         if let Ok(mut tasks) = self.deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
             tasks.remove(&task);
         }
         if let Ok(mut tasks) = self.failed_tasks.lock() {
@@ -1229,6 +1320,23 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     selected_tasks: Option<&[StartupBackfillTask]>,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate_inner(
+        state,
+        cancel,
+        selected_tasks,
+        gate,
+        false,
+    )
+    .await
+}
+
+async fn run_startup_backfill_maintenance_pass_with_gate_inner(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+    force_pressure_eligibility_wake: bool,
+) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
@@ -1253,7 +1361,14 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
-        match run_startup_backfill_task_if_due_outcome(&state, *task, gate).await {
+        match run_startup_backfill_task_if_due_outcome(
+            &state,
+            *task,
+            gate,
+            force_pressure_eligibility_wake,
+        )
+        .await
+        {
             Ok(outcome) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
@@ -1358,6 +1473,7 @@ pub(crate) async fn run_startup_backfill_task_if_due(
         state,
         task,
         crate::db_pressure::global_db_pressure_gate(),
+        false,
     )
     .await
     .map(|outcome| outcome.actionable)
@@ -1368,7 +1484,7 @@ pub(crate) async fn run_startup_backfill_task_if_due_with_gate(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<bool> {
-    run_startup_backfill_task_if_due_outcome(state, task, gate)
+    run_startup_backfill_task_if_due_outcome(state, task, gate, false)
         .await
         .map(|outcome| outcome.actionable)
 }
@@ -1377,6 +1493,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
+    force_pressure_eligibility_wake: bool,
 ) -> Result<StartupBackfillTaskRunOutcome> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
@@ -1395,7 +1512,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
     let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
     let now = Utc::now();
-    if !progress.is_due(now) {
+    if !force_pressure_eligibility_wake && !progress.is_due(now) {
         debug!(
             task = task.log_label(),
             task_name = %progress.task_name,
@@ -1429,7 +1546,9 @@ async fn run_startup_backfill_task_if_due_outcome(
             let deadline_registered = progress.next_run_after.as_deref() != Some(&retry_after)
                 || progress.suspension_reason.as_deref() != Some(suspension_reason);
             if deadline_registered {
-                save_startup_backfill_progress(
+                #[cfg(test)]
+                pause_startup_backfill_pressure_defer_test_interleave().await;
+                let persist_result = save_startup_backfill_progress(
                     &state.pool,
                     &task_name,
                     StartupBackfillProgressUpdate {
@@ -1442,8 +1561,33 @@ async fn run_startup_backfill_task_if_due_outcome(
                         suspension_reason: Some(suspension_reason),
                     },
                 )
-                .await?;
+                .await;
+                if let Err(error) = persist_result {
+                    if startup_backfill_failure_kind(&error)
+                        == StartupBackfillFailureKind::SqliteBusyOrLocked
+                    {
+                        STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
+                        warn!(
+                            task = task.log_label(),
+                            reason = %reason,
+                            defer_kind = "pressure_gate",
+                            deadline_persisted = false,
+                            next_retry_after = %retry_after,
+                            error = %error,
+                            "startup backfill pressure defer deadline write is locked; retaining the in-memory eligibility retry"
+                        );
+                        return Ok(StartupBackfillTaskRunOutcome {
+                            actionable: false,
+                            failed: false,
+                            deferred: true,
+                            completed: true,
+                            next_due: retry_at,
+                        });
+                    }
+                    return Err(error);
+                }
             }
+            STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
             info!(
                 task = task.log_label(),
                 reason = %reason,
@@ -2046,6 +2190,26 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     }
 }
 
+async fn run_pressure_eligible_startup_backfill_tasks(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    gate: &crate::db_pressure::DbPressureGate,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let tasks = STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks();
+    if tasks.is_empty() {
+        return;
+    }
+    debug!(
+        task_count = tasks.len(),
+        "pressure eligibility changed; dispatching deferred startup backfill tasks"
+    );
+    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, Some(&tasks), gate, true)
+        .await;
+}
+
 pub(crate) fn spawn_startup_backfill_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -2072,6 +2236,8 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
 
         loop {
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            let observed_pressure_eligibility = gate.eligibility_generation();
             let next_due = STARTUP_BACKFILL_SCHEDULER.next_due();
             let mut wait_for = startup_backfill_wait_duration(next_due);
             if let Some(retry_at) = startup_prep_retry_at {
@@ -2089,6 +2255,13 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                     if !tasks.is_empty() {
                         run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&tasks)).await;
                     }
+                }
+                _ = gate.wait_for_eligibility_change(observed_pressure_eligibility) => {
+                    run_pressure_eligible_startup_backfill_tasks(
+                        state.clone(),
+                        &cancel,
+                        gate,
+                    ).await;
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -2204,6 +2377,54 @@ mod startup_backfill_tests {
         assert_eq!(deferred.pressure_defer_count, 1);
         assert_eq!(deferred.scheduled_task_count, 0);
         assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[tokio::test]
+    async fn pressure_eligibility_change_dispatches_a_deferred_task_before_its_deadline() {
+        let scheduler = Arc::new(StartupBackfillScheduler::default());
+        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+            1,
+            Duration::from_secs(30),
+        ));
+        let permit = gate
+            .try_begin_background("test-holder")
+            .expect("occupy the sole background slot");
+        let observed_eligibility = gate.eligibility_generation();
+        let task = StartupBackfillTask::ReasoningEffort;
+        let deadline = Utc::now() + ChronoDuration::minutes(5);
+
+        scheduler.record_next_due(task, deadline);
+        scheduler.mark_pressure_deferred(task);
+        scheduler.record_task_result(task, false, true);
+
+        assert!(
+            scheduler.drain_due_tasks(Utc::now()).is_empty(),
+            "the persisted fallback deadline must not be due yet"
+        );
+
+        let wake_gate = gate.clone();
+        let wake_scheduler = scheduler.clone();
+        let wake = tokio::spawn(async move {
+            wake_gate
+                .wait_for_eligibility_change(observed_eligibility)
+                .await;
+            wake_scheduler.take_pressure_deferred_tasks()
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !wake.is_finished(),
+            "the task must wait for an eligibility-clear event before its fallback deadline"
+        );
+
+        drop(permit);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), wake)
+                .await
+                .expect("permit release must wake the deferred task before its deadline")
+                .expect("eligibility waiter must not panic"),
+            vec![task]
+        );
+        assert_eq!(scheduler.next_due(), None);
     }
 
     #[test]

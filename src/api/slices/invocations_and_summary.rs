@@ -7165,14 +7165,14 @@ const SUMMARY_PROJECTION_MIN_EXACT_HORIZON: ChronoDuration = ChronoDuration::hou
 // days, so the finite calendar guard must cover that longest named range even when retention
 // is zero. HTTP still reads only the resulting in-memory projection.
 const SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS: u64 = 31;
-// The public Summary UI exposes rolling windows through 1mo. Keep arbitrary parser inputs
-// bounded at the HTTP contract so the projection never has to retain an unbounded set of
-// partial-hour boundaries; longer requests fail before hub/SQLite access.
-const SUMMARY_PROJECTION_MAX_DURATION: ChronoDuration = ChronoDuration::days(30);
+// Keep parser-compatible rolling windows through 90d. The protected hourly boundary set stays
+// below the exact-bucket admission budget, so these queries remain exact without turning the
+// memory-only HTTP handler into an I/O fallback.
+const SUMMARY_PROJECTION_MAX_DURATION: ChronoDuration = ChronoDuration::days(90);
 
 fn summary_projection_exact_horizon(invocation_max_days: u64) -> ChronoDuration {
     let supported_days = invocation_max_days.saturating_add(SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS);
-    ChronoDuration::days(supported_days.max(2) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
+    ChronoDuration::days(supported_days.max(90) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
 }
 
 fn validate_summary_projection_window(
@@ -7189,14 +7189,7 @@ fn validate_summary_projection_window(
         }
         if duration > SUMMARY_PROJECTION_MAX_DURATION {
             return Err(ApiError::bad_request(anyhow!(
-                "summary duration exceeds the supported 30d window"
-            )));
-        }
-        if duration > SUMMARY_PROJECTION_MIN_EXACT_HORIZON
-            && duration.num_minutes() % ChronoDuration::days(1).num_minutes() != 0
-        {
-            return Err(ApiError::bad_request(anyhow!(
-                "summary durations over 48h must use whole-day granularity"
+                "summary duration exceeds the supported 90d window"
             )));
         }
     }
@@ -7208,16 +7201,11 @@ fn summary_projection_boundary_buckets(end: DateTime<Utc>) -> HashSet<i64> {
     let mut add_bucket = |timestamp: DateTime<Utc>| {
         buckets.insert(align_bucket_epoch(timestamp.timestamp(), 3_600, 0));
     };
-    // Any legal duration through the 48-hour exact horizon can begin in an arbitrary partial
-    // hour. Keep every possible start bucket exact instead of enumerating a few UI presets;
-    // the middle of longer ranges still comes from compact hourly rollups.
-    for hours in 1..=SUMMARY_PROJECTION_MIN_EXACT_HORIZON.num_hours() {
+    // Every legal duration can begin inside any hourly bucket through the bounded 90-day
+    // contract. Keep each potential start exact; compact hourly rollups still serve the middle
+    // of longer windows.
+    for hours in 1..=SUMMARY_PROJECTION_MAX_DURATION.num_hours() {
         add_bucket(end - ChronoDuration::hours(hours));
-    }
-    // Whole-day durations beyond the exact horizon are also part of the bounded public
-    // contract. Their partial boundary hours remain exact without retaining raw history.
-    for days in 1..=30 {
-        add_bucket(end - ChronoDuration::days(days));
     }
     add_bucket(end);
 
@@ -28255,15 +28243,34 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_handler_rejects_unsupported_duration_before_sqlite() {
+    async fn summary_handler_serves_legal_extended_durations_from_memory_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        let historical_bucket = align_bucket_epoch(
+            (Utc::now() - ChronoDuration::days(59)).timestamp(),
+            3_600,
+            0,
+        );
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) VALUES (?1, 'proxy', 1, 1, 0, 23, 0.75, 0)",
+        )
+        .bind(historical_bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert historical exact summary rollup");
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly (bucket_start_epoch, source, upstream_account_key, upstream_account_id, normalized_model, normalized_reasoning_effort, request_count, cache_write_tokens, cache_read_tokens, output_tokens, cost_input, has_cost) VALUES (?1, 'proxy', 'none', NULL, 'gpt-5', 'high', 1, 0, 0, 23, 0.75, 1)",
+        )
+        .bind(historical_bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert historical exact usage rollup");
         hydrate_summary_projection_fixture(&state).await;
         state.pool.close().await;
 
-        for window in ["60d", "49h", "-1d"] {
+        for (window, expected_count, expected_tokens) in [("60d", 2, 40), ("49h", 1, 17)] {
             let result = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
@@ -28274,11 +28281,31 @@ mod request_compression_query_tests {
                 }),
             )
             .await;
-            assert!(
-                matches!(result, Err(ApiError::BadRequest(_))),
-                "unsupported duration {window} must fail before the memory-only handler path"
+            let Json(summary) = result.expect("legal duration {window} must use memory only");
+            assert_eq!(
+                summary.total_count, expected_count,
+                "duration {window} must stay exact"
+            );
+            assert_eq!(
+                summary.total_tokens, expected_tokens,
+                "duration {window} must stay exact"
             );
         }
+
+        let invalid = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("-1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(invalid, Err(ApiError::BadRequest(_))),
+            "invalid duration must fail before the memory-only handler path"
+        );
     }
 
     #[test]
@@ -28288,6 +28315,13 @@ mod request_compression_query_tests {
             .single()
             .expect("valid deterministic projection boundary time");
         let buckets = summary_projection_boundary_buckets(end);
+
+        for duration in [ChronoDuration::days(60), ChronoDuration::hours(49)] {
+            assert!(
+                buckets.contains(&align_bucket_epoch((end - duration).timestamp(), 3_600, 0)),
+                "legal duration boundary {duration:?} must remain exact"
+            );
+        }
 
         for boundary_now in [
             end,

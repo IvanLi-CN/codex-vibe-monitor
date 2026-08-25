@@ -4,8 +4,8 @@
 
 ## Current Status
 
-- Lifecycle: active Initiative Bootstrap.
-- Implementation: no runtime implementation is included in this Bootstrap.
+- Lifecycle: active Wave 1 recovery release.
+- Implementation: Summary archive hydration and pressure-gated startup backfill recovery are implemented in this release; long-term legacy migration remains a later Wave 2 boundary.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
 ## Delivery Boundaries

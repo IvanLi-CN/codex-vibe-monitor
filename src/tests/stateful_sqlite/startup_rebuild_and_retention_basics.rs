@@ -2161,6 +2161,117 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
 }
 
 #[tokio::test]
+async fn startup_backfill_locked_pressure_deadline_write_stays_deferred_without_an_audit() {
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-backfill-pressure-deadline-lock",
+        Duration::from_millis(25),
+    )
+    .await;
+    let task = StartupBackfillTask::ReasoningEffort;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    gate.record_pressure("test_pressure", "forced_cooldown");
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before locked pressure defer");
+
+    let interleave = install_startup_backfill_pressure_defer_test_interleave();
+    let cancel = CancellationToken::new();
+    let state_for_pass = state.clone();
+    let gate_for_pass = gate.clone();
+    let pass = tokio::spawn(async move {
+        run_startup_backfill_maintenance_pass_with_gate(
+            state_for_pass,
+            &cancel,
+            Some(&[task]),
+            gate_for_pass.as_ref(),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), interleave.wait_for_persistence())
+        .await
+        .expect("pressure defer must reach its deadline persistence write");
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect pressure-deadline lock holder");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("acquire pressure-deadline write lock");
+    interleave.resume_persistence();
+
+    let first = tokio::time::timeout(Duration::from_secs(1), pass)
+        .await
+        .expect("locked pressure defer must complete without waiting for its fallback deadline")
+        .expect("locked pressure defer task must not panic");
+    clear_startup_backfill_pressure_defer_test_interleave();
+    sqlx::query("COMMIT")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release pressure-deadline write lock");
+
+    let after_locked_write: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after locked pressure defer");
+    let unpersisted = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load transiently deferred task");
+
+    assert!(!first.ran_actionable_task);
+    assert!(!first.had_failure);
+    assert_eq!(
+        after_locked_write, before,
+        "a locked pressure-defer deadline write must not create a failed task-run audit"
+    );
+    assert!(
+        unpersisted.is_due(Utc::now()),
+        "the retry is held in the scheduler until persistence becomes available"
+    );
+
+    let second = run_startup_backfill_maintenance_pass_with_gate(
+        state.clone(),
+        &CancellationToken::new(),
+        Some(&[task]),
+        gate.as_ref(),
+    )
+    .await;
+    let persisted = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("persist the same pressure deadline after lock release");
+    let after_retry: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after deadline persistence retry");
+
+    assert!(!second.ran_actionable_task);
+    assert!(!second.had_failure);
+    assert!(persisted.next_run_after.is_some());
+    assert_eq!(
+        persisted.suspension_reason.as_deref(),
+        Some("sqlite_pressure_cooldown")
+    );
+    assert_eq!(
+        after_retry, before,
+        "retrying the one deadline persistence write must remain a defer rather than an audit"
+    );
+
+    state.pool.close().await;
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_backfill_busy_failure_persists_failed_state_and_bounded_retry() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
