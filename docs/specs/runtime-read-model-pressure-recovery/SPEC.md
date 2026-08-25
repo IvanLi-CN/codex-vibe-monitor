@@ -50,6 +50,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - Projection 必须返回完整且精确的既有 `StatsResponse`，包括 totals、usage、model、reasoning、cost 与 account scope 语义；不得把部分 aggregate、空 totals 或临时近似当作正常响应。
 - 历史全小时由 durable rollup 服务；任一 window 的未完整覆盖边界、live tail、account-lag 与 archive overlap 必须由精确记录补齐，并且 source partition 合并不得遗漏或重复。
 - archive manifest 或历史容量超过固定内存 admission 预算时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
+- rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
 - hydration、archive 读取和 reconcile 必须有 deadline、取消点、coalescing 与受控重试，不得在请求路径执行。
 
@@ -115,6 +116,7 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 ## 验收标准（Acceptance Criteria）
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
+- Given 低 retention 且 31 天外的高基数 rollup 超出 admission，When Summary Projection hydrate，Then 合法 30d 仍精确、可用且仅从内存读取。
 - Given global、account 与 source-partitioned rollup 覆盖不一致，When 请求边界或 account scope，Then 响应没有重复、漏项或缺失 usage/model/reasoning/cost 详情。
 - Given pressure cooldown 关闭，When 同一 startup backfill task 被触发，Then 只记录一次 next eligibility/event wake，不产生毫秒级 defer storm 或无动作 task-run audit。
 - Given 实际 SQLite lock，When 后台任务已开始数据库访问，Then 使用独立的 bounded failure backoff，而不是 pressure defer 语义。

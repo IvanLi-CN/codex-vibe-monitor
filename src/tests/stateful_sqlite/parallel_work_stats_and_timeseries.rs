@@ -22382,6 +22382,62 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
 }
 
 #[tokio::test]
+async fn summary_projection_keeps_30d_memory_exact_when_unreachable_rollups_exceed_admission() {
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
+    config.invocation_max_days = 0;
+    let state = test_state_from_config(config, true).await;
+    let unreachable_bucket = crate::stats::align_bucket_epoch(
+        (Utc::now() - ChronoDuration::days(60)).timestamp(),
+        3_600,
+        0,
+    );
+
+    sqlx::query(
+        "WITH RECURSIVE sources(ordinal) AS ( \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM sources WHERE ordinal < 200001 \
+         ) \
+         INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         SELECT ?1, 'summary-unreachable-rollup-' || ordinal, 1, 1, 0, 1, 0.1, 0 \
+         FROM sources",
+    )
+    .bind(unreachable_bucket)
+    .execute(&state.pool)
+    .await
+    .expect("seed rollups outside the legal summary horizon beyond admission");
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('summary-30d-exact-after-admission', datetime('now', '-1 hour'), 'proxy', 'success', 23, 2.5, \
+                 '{\"upstreamAccountId\":42}', '', 'full')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert legal-horizon exact row");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("unreachable all-time rollup admission must not block rolling hydration");
+    state.pool.close().await;
+
+    let Json(response) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("30d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("serve the exact 30d response from the hydrated projection without SQLite");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 23);
+    assert_eq!(response.total_cost, 2.5);
+}
+
+#[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     let _identity_guard = SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("summary-paged-boundary-snapshot");

@@ -3,68 +3,6 @@ use super::*;
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
-const SQLITE_PRESSURE_COOLDOWN_SUSPENSION_REASON: &str = "sqlite_pressure_cooldown";
-const BACKGROUND_DB_BUSY_SUSPENSION_REASON: &str = "background_db_busy";
-
-#[cfg(test)]
-#[derive(Clone)]
-pub(crate) struct StartupBackfillPressureDeferTestInterleave {
-    persistence_ready: std::sync::Arc<Notify>,
-    resume_persistence: std::sync::Arc<Notify>,
-}
-
-#[cfg(test)]
-static STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE: Lazy<
-    std::sync::Mutex<Option<StartupBackfillPressureDeferTestInterleave>>,
-> = Lazy::new(|| std::sync::Mutex::new(None));
-
-#[cfg(test)]
-impl StartupBackfillPressureDeferTestInterleave {
-    pub(crate) async fn wait_for_persistence(&self) {
-        self.persistence_ready.notified().await;
-    }
-
-    pub(crate) fn resume_persistence(&self) {
-        self.resume_persistence.notify_one();
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn install_startup_backfill_pressure_defer_test_interleave()
--> StartupBackfillPressureDeferTestInterleave {
-    let interleave = StartupBackfillPressureDeferTestInterleave {
-        persistence_ready: std::sync::Arc::new(Notify::new()),
-        resume_persistence: std::sync::Arc::new(Notify::new()),
-    };
-    let mut installed = STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
-        .lock()
-        .expect("startup backfill pressure-defer test interleave lock");
-    assert!(
-        installed.is_none(),
-        "startup backfill pressure-defer test interleave is already installed"
-    );
-    *installed = Some(interleave.clone());
-    interleave
-}
-
-#[cfg(test)]
-pub(crate) fn clear_startup_backfill_pressure_defer_test_interleave() {
-    *STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
-        .lock()
-        .expect("startup backfill pressure-defer test interleave lock") = None;
-}
-
-#[cfg(test)]
-async fn pause_startup_backfill_pressure_defer_test_interleave() {
-    let interleave = STARTUP_BACKFILL_PRESSURE_DEFER_TEST_INTERLEAVE
-        .lock()
-        .expect("startup backfill pressure-defer test interleave lock")
-        .clone();
-    if let Some(interleave) = interleave {
-        interleave.persistence_ready.notify_one();
-        interleave.resume_persistence.notified().await;
-    }
-}
 
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
@@ -392,31 +330,6 @@ fn startup_backfill_pressure_retry_at(
             }),
         crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
             Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
-        }
-    }
-}
-
-fn startup_backfill_pressure_retry_after(
-    retry_at: DateTime<Utc>,
-    reason: crate::db_pressure::DbPressureDenyReason,
-) -> String {
-    match reason {
-        crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
-            format_utc_iso_millis(retry_at)
-        }
-        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => format_utc_iso(retry_at),
-    }
-}
-
-fn startup_backfill_pressure_suspension_reason(
-    reason: crate::db_pressure::DbPressureDenyReason,
-) -> &'static str {
-    match reason {
-        crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
-            SQLITE_PRESSURE_COOLDOWN_SUSPENSION_REASON
-        }
-        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-            BACKGROUND_DB_BUSY_SUSPENSION_REASON
         }
     }
 }
@@ -1509,6 +1422,32 @@ async fn run_startup_backfill_task_if_due_outcome(
         });
     }
 
+    // This admission is deliberately before progress lookup: a pressure defer must remain a
+    // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
+    let _permit = match gate.try_begin_background("startup_backfill") {
+        Ok(permit) => permit,
+        Err(reason) => {
+            let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+            STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
+            info!(
+                task = task.log_label(),
+                reason = %reason,
+                defer_kind = "pressure_gate",
+                defer_reason = %reason,
+                next_eligibility = %retry_at,
+                wake_reason = "pressure_defer",
+                "startup backfill task deferred before SQLite access because database pressure gate is closed"
+            );
+            return Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: false,
+                deferred: true,
+                completed: true,
+                next_due: retry_at,
+            });
+        }
+    };
+
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
     let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
     let now = Utc::now();
@@ -1536,77 +1475,6 @@ async fn run_startup_backfill_task_if_due_outcome(
     if task == StartupBackfillTask::AccountActivityV2Coverage {
         return run_startup_backfill_coverage_repair_if_due(state).await;
     }
-
-    let _permit = match gate.try_begin_background("startup_backfill") {
-        Ok(permit) => permit,
-        Err(reason) => {
-            let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-            let retry_after = startup_backfill_pressure_retry_after(retry_at, reason);
-            let suspension_reason = startup_backfill_pressure_suspension_reason(reason);
-            let deadline_registered = progress.next_run_after.as_deref() != Some(&retry_after)
-                || progress.suspension_reason.as_deref() != Some(suspension_reason);
-            if deadline_registered {
-                #[cfg(test)]
-                pause_startup_backfill_pressure_defer_test_interleave().await;
-                let persist_result = save_startup_backfill_progress(
-                    &state.pool,
-                    &task_name,
-                    StartupBackfillProgressUpdate {
-                        cursor_id: progress.cursor_id,
-                        scanned: progress.last_scanned,
-                        updated: progress.last_updated,
-                        zero_update_streak: progress.zero_update_streak,
-                        next_run_after: &retry_after,
-                        status: &progress.last_status,
-                        suspension_reason: Some(suspension_reason),
-                    },
-                )
-                .await;
-                if let Err(error) = persist_result {
-                    if startup_backfill_failure_kind(&error)
-                        == StartupBackfillFailureKind::SqliteBusyOrLocked
-                    {
-                        STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
-                        warn!(
-                            task = task.log_label(),
-                            reason = %reason,
-                            defer_kind = "pressure_gate",
-                            deadline_persisted = false,
-                            next_retry_after = %retry_after,
-                            error = %error,
-                            "startup backfill pressure defer deadline write is locked; retaining the in-memory eligibility retry"
-                        );
-                        return Ok(StartupBackfillTaskRunOutcome {
-                            actionable: false,
-                            failed: false,
-                            deferred: true,
-                            completed: true,
-                            next_due: retry_at,
-                        });
-                    }
-                    return Err(error);
-                }
-            }
-            STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
-            info!(
-                task = task.log_label(),
-                reason = %reason,
-                defer_kind = "pressure_gate",
-                defer_reason = %reason,
-                deadline_registered,
-                next_retry_after = %retry_after,
-                wake_reason = "pressure_defer",
-                "startup backfill task deferred because database pressure gate is closed"
-            );
-            return Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: true,
-                completed: true,
-                next_due: retry_at,
-            });
-        }
-    };
 
     mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id).await?;
 
@@ -2349,14 +2217,8 @@ mod startup_backfill_tests {
         let task = StartupBackfillTask::ReasoningEffort;
         let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
             .expect("valid fixed pressure deadline");
-        let retry_after = startup_backfill_pressure_retry_after(
-            deadline,
-            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 750 },
-        );
-        let retry_at = parse_to_utc_datetime(&retry_after).expect("parse millisecond deadline");
-        assert_eq!(retry_at, deadline);
 
-        scheduler.record_next_due(task, retry_at);
+        scheduler.record_next_due(task, deadline);
         assert!(
             scheduler
                 .drain_due_tasks(deadline - ChronoDuration::milliseconds(1))

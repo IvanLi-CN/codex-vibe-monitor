@@ -7172,7 +7172,7 @@ const SUMMARY_PROJECTION_MAX_DURATION: ChronoDuration = ChronoDuration::days(30)
 
 fn summary_projection_exact_horizon(invocation_max_days: u64) -> ChronoDuration {
     let supported_days = invocation_max_days.saturating_add(SUMMARY_PROJECTION_ARCHIVE_GRACE_DAYS);
-    ChronoDuration::days(supported_days.max(90) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
+    ChronoDuration::days(supported_days.max(2) as i64).max(SUMMARY_PROJECTION_MIN_EXACT_HORIZON)
 }
 
 fn validate_summary_projection_window(
@@ -8376,6 +8376,13 @@ async fn load_summary_projection_rollup_totals(
     HashMap<(i64, Option<i64>), i64>,
 )> {
     load_summary_projection_rollup_totals_in_range(pool, None).await
+}
+
+fn summary_projection_rollup_admission_exceeded(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("summary projection ")
+        && message.contains("rollup")
+        && message.contains("budget exceeded")
 }
 
 async fn load_summary_projection_rollup_totals_in_range(
@@ -11739,13 +11746,30 @@ async fn build_summary_projection_once(
         all_time_was_fully_rebuilt.then(|| all_time_by_account.clone());
     let all_time_built_at = Instant::now();
     let mut rebuilt_all_time_account_ids = HashSet::new();
-    if all_time_was_fully_rebuilt && !all_time_archive_admission_exceeded {
+    // All-time must use the same bounded projection inputs as rolling windows. The generic
+    // stats query can open every unmaterialized archive and therefore cannot run in the
+    // refresh path without defeating the rebuild deadline.
+    let all_time_rollup_totals =
+        if all_time_was_fully_rebuilt && !all_time_archive_admission_exceeded {
+            match load_summary_projection_rollup_totals(pool).await {
+                Ok((rollups, _)) => Some(rollups),
+                Err(error) if summary_projection_rollup_admission_exceeded(&error) => {
+                    // An `all` baseline outside the finite public horizon cannot prevent an exact
+                    // rolling snapshot from publishing. Keep the existing all-time last-good (or
+                    // unavailable state) and retry through the controlled admission path.
+                    all_time_archive_admission_exceeded = true;
+                    global_all_time_source_unavailable = true;
+                    account_all_time_unavailable = true;
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+    if let Some(all_time_rollup_totals) = all_time_rollup_totals {
         let all_time_archive_scan_paths =
             load_summary_projection_all_time_archive_scan_paths(pool).await?;
-        // All-time must use the same bounded projection inputs as rolling windows. The generic
-        // stats query can open every unmaterialized archive and therefore cannot run in the
-        // refresh path without defeating the rebuild deadline.
-        let (all_time_rollup_totals, _) = load_summary_projection_rollup_totals(pool).await?;
         // The finite exact tail deliberately does not retain every historical live row. When a
         // retained boundary replacement row is older than that tail, the complete all-time map
         // is the durable proof that it is already included. Refresh its per-scope flags before
