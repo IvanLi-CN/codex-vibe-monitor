@@ -20843,6 +20843,10 @@ async fn dashboard_account_model_performance_ignores_stale_retry_timing() {
 #[tokio::test]
 async fn minute_projection_flush_defers_while_p1_terminal_write_is_active() {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     let record = api_invocation_from_runtime_record(&test_proxy_capture_record(
         "timeseries-projection-p1-priority",
         "2026-08-21 12:00:12",
