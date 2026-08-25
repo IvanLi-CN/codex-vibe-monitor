@@ -22345,7 +22345,7 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     .expect("seed compact global usage rollup for paged manifests");
     sqlx::query(
         "WITH RECURSIVE manifests(ordinal) AS ( \
-            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 4096 \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 50000 \
          ) \
          INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \

@@ -12,7 +12,7 @@ use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{FromRow, SqliteConnection};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -8796,6 +8796,57 @@ fn summary_projection_extend_exact_buckets_for_ranges(
     Ok(())
 }
 
+fn summary_projection_mark_unavailable_archive_ranges(
+    buckets: &mut BTreeSet<i64>,
+    ranges: impl IntoIterator<Item = ExactUtcRange>,
+) -> Result<()> {
+    for range in ranges {
+        if range.start >= range.end {
+            continue;
+        }
+        let first_bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+        let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+        let bucket_count = last_bucket
+            .saturating_sub(first_bucket)
+            .saturating_div(3_600)
+            .saturating_add(1) as usize;
+        if bucket_count > SUMMARY_PROJECTION_MAX_EXACT_BUCKETS {
+            return Err(anyhow!(
+                "summary projection unavailable archive range budget ({SUMMARY_PROJECTION_MAX_EXACT_BUCKETS}) exceeded"
+            ));
+        }
+        let mut bucket = first_bucket;
+        while bucket <= last_bucket {
+            if !buckets.contains(&bucket) && buckets.len() >= SUMMARY_PROJECTION_MAX_EXACT_BUCKETS {
+                return Err(anyhow!(
+                    "summary projection unavailable archive range budget ({SUMMARY_PROJECTION_MAX_EXACT_BUCKETS}) exceeded"
+                ));
+            }
+            buckets.insert(bucket);
+            bucket = bucket.saturating_add(3_600);
+        }
+    }
+    Ok(())
+}
+
+fn summary_projection_unavailable_bucket_ranges(buckets: BTreeSet<i64>) -> Vec<ExactUtcRange> {
+    let mut ranges = Vec::<ExactUtcRange>::new();
+    for bucket in buckets {
+        let Some(start) = Utc.timestamp_opt(bucket, 0).single() else {
+            continue;
+        };
+        let end = start + ChronoDuration::hours(1);
+        if let Some(previous) = ranges.last_mut()
+            && previous.end >= start
+        {
+            previous.end = previous.end.max(end);
+        } else {
+            ranges.push(ExactUtcRange { start, end });
+        }
+    }
+    ranges
+}
+
 fn summary_projection_mark_exact_replacement_buckets(
     archive_has_materialized_rollups: bool,
     replay_coverage: SummaryProjectionArchiveReplayCoverage,
@@ -9633,30 +9684,58 @@ async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
     Ok(incomplete == 0)
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct SummaryProjectionBoundaryManifestPageRow {
+    id: i64,
+    file_path: String,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+}
+
+struct SummaryProjectionBoundaryManifestPage {
+    archives: Vec<crate::stats::ArchiveBatchPathRow>,
+    next_after_id: Option<i64>,
+}
+
 async fn load_summary_projection_boundary_manifest_page(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
-    offset: usize,
-) -> Result<Vec<crate::stats::ArchiveBatchPathRow>> {
-    sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
+    after_id: i64,
+) -> Result<SummaryProjectionBoundaryManifestPage> {
+    let rows = sqlx::query_as::<_, SummaryProjectionBoundaryManifestPageRow>(
         "SELECT \
-             file_path, month_key, coverage_start_at, coverage_end_at, \
-             historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
+             id, file_path, coverage_start_at, coverage_end_at \
          FROM archive_batches \
          WHERE dataset = 'codex_invocations' \
            AND status = 'completed' \
            AND coverage_end_at >= ?1 \
            AND coverage_start_at < ?2 \
-         ORDER BY month_key ASC, created_at ASC, id ASC \
-         LIMIT ?3 OFFSET ?4",
+           AND id > ?3 \
+         ORDER BY id ASC \
+         LIMIT ?4",
     )
     .bind(db_occurred_at_upper_bound(range.start))
     .bind(crate::stats::db_occurred_at_lower_bound(range.end))
+    .bind(after_id)
     .bind(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE as i64)
-    .bind(offset as i64)
     .fetch_all(pool)
     .await
-    .context("summary projection boundary manifest page hydration failed")
+    .context("summary projection boundary manifest page hydration failed")?;
+    let next_after_id = rows.last().map(|row| row.id);
+    let archives = rows
+        .into_iter()
+        .map(|row| {
+            crate::stats::ArchiveBatchPathRow::with_coverage(
+                row.file_path,
+                row.coverage_start_at,
+                row.coverage_end_at,
+            )
+        })
+        .collect();
+    Ok(SummaryProjectionBoundaryManifestPage {
+        archives,
+        next_after_id,
+    })
 }
 
 async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Result<HashSet<i64>> {
@@ -10124,7 +10203,7 @@ async fn build_summary_projection(
             .map_err(|error| {
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
-    let mut unavailable_unmaterialized_archive_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
     // Discover accounts from archive rows before planning full-hour coverage. Pools are opened
     // and closed one at a time so a large retention horizon never keeps every inflated archive
     // resident concurrently. Immutable completed archives reuse the cached account set on later
@@ -10199,9 +10278,10 @@ async fn build_summary_projection(
                 // global total could conceal missing account or usage/model detail.
                 continue;
             }
-            if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
-                unavailable_unmaterialized_archive_ranges.push(archive_range);
-            }
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut unavailable_unmaterialized_archive_buckets,
+                [archive_range],
+            )?;
             continue;
         };
         if !summary_projection_archive_has_coverage_bounds(archive)
@@ -10337,15 +10417,18 @@ async fn build_summary_projection(
         // The admission overflow is proved fully materialized above. Page only manifest metadata
         // while planning the finite exact buckets; the raw archives themselves are opened later
         // one at a time after live boundary records have been admitted.
-        let mut offset = 0usize;
+        let mut after_id = 0_i64;
         loop {
-            let page =
-                load_summary_projection_boundary_manifest_page(&state.pool, exact_horizon, offset)
-                    .await?;
-            if page.is_empty() {
+            let page = load_summary_projection_boundary_manifest_page(
+                &state.pool,
+                exact_horizon,
+                after_id,
+            )
+            .await?;
+            if page.archives.is_empty() {
                 break;
             }
-            for archive in &page {
+            for archive in &page.archives {
                 let Some(archive_range) =
                     summary_projection_archive_overlap_range(archive, exact_horizon)
                 else {
@@ -10367,11 +10450,10 @@ async fn build_summary_projection(
                     raw_fallback_ranges,
                 )?;
             }
-            let page_len = page.len();
-            offset = offset.saturating_add(page_len);
-            if page_len < SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
+            let Some(next_after_id) = page.next_after_id else {
                 break;
-            }
+            };
+            after_id = next_after_id;
         }
     }
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
@@ -10524,9 +10606,10 @@ async fn build_summary_projection(
             // request-visible partial hour or its usage/model detail. The raw archive is an
             // exact source for every range in `exact_ranges`; without it, retain unavailable
             // rather than allowing the memory-only reducer to omit that contribution.
-            if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
-                unavailable_unmaterialized_archive_ranges.push(archive_range);
-            }
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut unavailable_unmaterialized_archive_buckets,
+                exact_ranges,
+            )?;
             continue;
         };
         merge_summary_projection_archive_records_with_coverage(
@@ -10558,15 +10641,19 @@ async fn build_summary_projection(
         drop(temp_cleanup);
     }
     if paged_boundary_manifest_recovery {
-        let mut offset = 0usize;
+        let mut after_id = 0_i64;
         loop {
-            let page =
-                load_summary_projection_boundary_manifest_page(&state.pool, exact_horizon, offset)
-                    .await?;
-            if page.is_empty() {
+            let page = load_summary_projection_boundary_manifest_page(
+                &state.pool,
+                exact_horizon,
+                after_id,
+            )
+            .await?;
+            if page.archives.is_empty() {
                 break;
             }
             let page_paths = page
+                .archives
                 .iter()
                 .map(|archive| archive.file_path().to_string())
                 .collect::<Vec<_>>();
@@ -10580,7 +10667,7 @@ async fn build_summary_projection(
                     "summary projection paged boundary usage progress hydration failed: {error:?}"
                 )
             })?;
-            for archive in page {
+            for archive in page.archives {
                 let Some(archive_range) =
                     summary_projection_archive_overlap_range(&archive, exact_horizon)
                 else {
@@ -10610,9 +10697,10 @@ async fn build_summary_projection(
                     // The page is durable enough to use compact rollups for full hours, but the
                     // planned exact ranges still need raw partial-hour records. Mark the range
                     // unavailable so HTTP cannot publish an undercount from the compact source.
-                    if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
-                        unavailable_unmaterialized_archive_ranges.push(archive_range);
-                    }
+                    summary_projection_mark_unavailable_archive_ranges(
+                        &mut unavailable_unmaterialized_archive_buckets,
+                        exact_ranges,
+                    )?;
                     continue;
                 };
                 merge_summary_projection_archive_records_with_coverage(
@@ -10643,11 +10731,10 @@ async fn build_summary_projection(
                 archive_pool.close().await;
                 drop(temp_cleanup);
             }
-            let page_len = page_paths.len();
-            offset = offset.saturating_add(page_len);
-            if page_len < SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
+            let Some(next_after_id) = page.next_after_id else {
                 break;
-            }
+            };
+            after_id = next_after_id;
         }
     }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
@@ -10871,7 +10958,8 @@ async fn build_summary_projection(
         // An unreadable archive without replay coverage cannot contribute to either compact
         // all-time aggregate. Preserve last-good/unavailable for `all`; range selections use
         // the bounded marker carried by this projection.
-        global_all_time_source_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
+        global_all_time_source_unavailable |=
+            !unavailable_unmaterialized_archive_buckets.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -10947,7 +11035,7 @@ async fn build_summary_projection(
                 account_all_time_unavailable = true;
             }
         }
-        account_all_time_unavailable |= !unavailable_unmaterialized_archive_ranges.is_empty();
+        account_all_time_unavailable |= !unavailable_unmaterialized_archive_buckets.is_empty();
         if has_any_completed_archive && rollup_live_cursor > 0 {
             global_totals = global_totals.add(
                 crate::stats::query_live_invocation_totals_after_id(
@@ -11282,6 +11370,8 @@ async fn build_summary_projection(
             previous_all_time_account_persisted_live_terminal_invoke_ids,
         )
     };
+    let unavailable_unmaterialized_archive_ranges =
+        summary_projection_unavailable_bucket_ranges(unavailable_unmaterialized_archive_buckets);
     let projection = SummaryProjection {
         records,
         persisted_live_terminal_invoke_ids,
@@ -27228,6 +27318,58 @@ mod request_compression_query_tests {
         assert!(
             !projection.needs_cadence_refresh(true),
             "a blocked all-time admission must not turn an active owner into a retry loop"
+        );
+    }
+
+    #[test]
+    fn summary_unavailable_archive_ranges_compact_many_boundary_fragments() {
+        let start = Utc
+            .timestamp_opt(align_bucket_epoch(1_700_000_000, 3_600, 0), 0)
+            .single()
+            .expect("valid fixed test timestamp");
+        let mut buckets = BTreeSet::new();
+        for fragment in 0..50_001_i64 {
+            let fragment_start = start + ChronoDuration::milliseconds(fragment);
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut buckets,
+                [ExactUtcRange {
+                    start: fragment_start,
+                    end: fragment_start + ChronoDuration::milliseconds(1),
+                }],
+            )
+            .expect("many fragments in one boundary bucket remain bounded");
+        }
+        assert_eq!(buckets.len(), 1);
+        let ranges = summary_projection_unavailable_bucket_ranges(buckets);
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].end - ranges[0].start, ChronoDuration::hours(1));
+
+        let mut distinct_buckets = BTreeSet::new();
+        for offset in 0..SUMMARY_PROJECTION_MAX_EXACT_BUCKETS {
+            let bucket_start = start + ChronoDuration::hours(offset as i64);
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut distinct_buckets,
+                [ExactUtcRange {
+                    start: bucket_start,
+                    end: bucket_start + ChronoDuration::hours(1),
+                }],
+            )
+            .expect("the configured unavailable-bucket budget is accepted exactly");
+        }
+        let next_bucket =
+            start + ChronoDuration::hours(SUMMARY_PROJECTION_MAX_EXACT_BUCKETS as i64);
+        let error = summary_projection_mark_unavailable_archive_ranges(
+            &mut distinct_buckets,
+            [ExactUtcRange {
+                start: next_bucket,
+                end: next_bucket + ChronoDuration::hours(1),
+            }],
+        )
+        .expect_err("a distinct bucket beyond the unavailable-range budget must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("unavailable archive range budget")
         );
     }
 
