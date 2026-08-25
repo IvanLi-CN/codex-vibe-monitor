@@ -7002,6 +7002,7 @@ const SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // Do not turn a locked or overloaded SQLite database into a continuous sequence of timed-out
 // full hydrations. Mutations remain coalesced as dirty while this bounded retry gate is active.
 const SUMMARY_SNAPSHOT_FAILURE_RETRY_BACKOFF: Duration = Duration::from_secs(30);
+const SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF: Duration = Duration::from_secs(5 * 60);
 // A cadence refresh begins after the 10-second floor without event debounce. Its scheduling
 // phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
 // serving ceiling; mutations still use the separate debounce below.
@@ -7227,6 +7228,16 @@ impl SummaryProjectionFreshness {
     }
 }
 
+fn summary_projection_manifest_admission_retry_is_due(
+    blocked_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    blocked_at.is_none_or(|blocked_at| {
+        now.saturating_duration_since(blocked_at)
+            >= SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SummaryProjection {
     records: Vec<SummaryProjectionRecord>,
@@ -7290,9 +7301,12 @@ pub(crate) struct SummaryProjection {
     // keep their freshness independent from the projection-wide timestamp.
     all_time_refreshed_at: Option<Instant>,
     // An all-history manifest set beyond admission cannot be made exact without an unbounded
-    // proof. Preserve that fail-closed result so maintenance does not retry the same query on
-    // every rolling refresh.
-    all_time_manifest_admission_blocked: bool,
+    // proof. Retry only after a long, controlled backoff so maintenance does not recreate the
+    // production pressure pattern while a recoverable all-time source is unavailable.
+    all_time_manifest_admission_blocked_at: Option<Instant>,
+    // Account discovery has a distinct admission budget. It must not suppress an exact global
+    // all-time aggregate when only the account scope cannot be proven.
+    all_time_account_manifest_admission_blocked_at: Option<Instant>,
     // Global all-time rollups and account archive fallbacks have independent durable coverage.
     // A failed account rebuild must not make a fresh global aggregate stale, and an old account
     // response must never borrow the global aggregate's freshness.
@@ -7317,10 +7331,6 @@ pub(crate) struct SummaryProjection {
     // than publishing an undercount or turning a selection-level unavailability into an HTTP
     // builder failure.
     unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
-    // Boundary archive admission is independent from all-time admission. The projection keeps
-    // this state so an oversized exact-horizon manifest set does not make later refreshes repeat
-    // the same SQLite work while affected windows remain unavailable.
-    archive_boundary_manifest_admission_blocked: bool,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
     // Keep that reconciled view alongside the immutable history projection.
@@ -7401,11 +7411,30 @@ impl SummaryProjection {
                 refreshed_at.elapsed() >= SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
             })
         };
+        let now = Instant::now();
+        let all_time_refresh_due = if self.all_time_manifest_admission_blocked_at.is_some() {
+            summary_projection_manifest_admission_retry_is_due(
+                self.all_time_manifest_admission_blocked_at,
+                now,
+            )
+        } else {
+            refresh_due(self.all_time_refreshed_at)
+        };
+        let account_refresh_due = if self.all_time_manifest_admission_blocked_at.is_some() {
+            false
+        } else if self
+            .all_time_account_manifest_admission_blocked_at
+            .is_some()
+        {
+            summary_projection_manifest_admission_retry_is_due(
+                self.all_time_account_manifest_admission_blocked_at,
+                now,
+            )
+        } else {
+            refresh_due(self.all_time_oldest_account_refreshed_at)
+        };
         refresh_due(self.freshness.rolling_at(self.refreshed_at))
-            || (has_all_time_owner
-                && !self.all_time_manifest_admission_blocked
-                && (refresh_due(self.all_time_refreshed_at)
-                    || refresh_due(self.all_time_oldest_account_refreshed_at)))
+            || (has_all_time_owner && (all_time_refresh_due || account_refresh_due))
     }
 
     fn empty_all_time_account_response(&self, upstream_account_id: Option<i64>) -> StatsResponse {
@@ -7446,11 +7475,14 @@ impl SummaryProjection {
             Some(_) => return Err(ApiError::bad_request(anyhow!("invalid upstream account"))),
             None => None,
         };
-        if self.archive_boundary_manifest_admission_blocked
-            && matches!(window, SummaryWindow::Current(_))
+        if matches!(window, SummaryWindow::All)
+            && upstream_account_id.is_some()
+            && self
+                .all_time_account_manifest_admission_blocked_at
+                .is_some()
         {
             return Err(ApiError::unavailable(anyhow!(
-                "summary projection archive manifest admission is unavailable for the requested range"
+                "summary all-time account manifest admission is unavailable"
             )));
         }
         let now = Utc::now();
@@ -9276,29 +9308,29 @@ async fn refresh_summary_snapshots_with_deadline(
         .subscription_hub
         .summary_projection()
         .await
-        .map(|projection| {
-            (
-                projection.all_time_by_account.clone(),
-                projection.all_time_refreshed_at,
-                projection.all_time_manifest_admission_blocked,
-                projection.all_time_account_refreshed_at.clone(),
-                projection.archive_account_ids_by_file.clone(),
-                projection.archive_coverage_ranges_by_file.clone(),
-                projection.freshness.global_all_time_eligible,
-                projection.freshness.account_all_time_eligible.clone(),
-                projection.all_time_terminal_coverage_complete(),
-                projection.all_time_terminal_sequence_watermark(),
-                projection
-                    .all_time_persisted_live_terminal_invoke_ids
-                    .clone(),
-                projection
-                    .all_time_account_terminal_sequence_watermarks
-                    .clone(),
-                projection
-                    .all_time_account_persisted_live_terminal_invoke_ids
-                    .clone(),
-                projection.archive_boundary_manifest_admission_blocked,
-            )
+        .map(|projection| PreviousSummaryProjectionAllTime {
+            all_time_by_account: projection.all_time_by_account.clone(),
+            all_time_refreshed_at: projection.all_time_refreshed_at,
+            all_time_manifest_admission_blocked_at: projection
+                .all_time_manifest_admission_blocked_at,
+            all_time_account_manifest_admission_blocked_at: projection
+                .all_time_account_manifest_admission_blocked_at,
+            all_time_account_refreshed_at: projection.all_time_account_refreshed_at.clone(),
+            archive_account_ids_by_file: projection.archive_account_ids_by_file.clone(),
+            archive_coverage_ranges_by_file: projection.archive_coverage_ranges_by_file.clone(),
+            global_all_time_eligible: projection.freshness.global_all_time_eligible,
+            account_all_time_eligible: projection.freshness.account_all_time_eligible.clone(),
+            all_time_terminal_coverage_complete: projection.all_time_terminal_coverage_complete(),
+            all_time_terminal_sequence_watermark: projection.all_time_terminal_sequence_watermark(),
+            all_time_persisted_live_terminal_invoke_ids: projection
+                .all_time_persisted_live_terminal_invoke_ids
+                .clone(),
+            all_time_account_terminal_sequence_watermarks: projection
+                .all_time_account_terminal_sequence_watermarks
+                .clone(),
+            all_time_account_persisted_live_terminal_invoke_ids: projection
+                .all_time_account_persisted_live_terminal_invoke_ids
+                .clone(),
         });
     let had_previous_projection = previous_all_time.is_some();
     // The runtime read model advances this watermark only after SQLite ACKs every preceding
@@ -9326,7 +9358,6 @@ async fn refresh_summary_snapshots_with_deadline(
         && !projection
             .unavailable_unmaterialized_archive_ranges
             .is_empty()
-        && !projection.archive_boundary_manifest_admission_blocked
     {
         // A background failure must never replace a complete revision with a partial one.  The
         // existing revision remains the exact last-good response until its own freshness budget
@@ -9540,6 +9571,85 @@ async fn load_summary_projection_archive_replay_coverage(
     Ok(coverage)
 }
 
+async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+) -> Result<bool> {
+    // The overflow path may page manifests only when durable compact state proves every source
+    // partition is already materialized. Missing bounds or replay markers require the regular
+    // exact-source path, because a bounded prefix cannot safely stand in for those archives.
+    let incomplete = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS( \
+             SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND ( \
+                    batches.coverage_start_at IS NULL \
+                    OR batches.coverage_end_at IS NULL \
+                    OR (batches.coverage_end_at >= ?1 AND batches.coverage_start_at < ?2) \
+               ) \
+               AND ( \
+                    batches.coverage_start_at IS NULL \
+                    OR batches.coverage_end_at IS NULL \
+                    OR batches.historical_rollups_materialized_at IS NULL \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?3 \
+                    ) \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?4 \
+                    ) \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?5 \
+                    ) \
+               ) \
+         )",
+    )
+    .bind(db_occurred_at_upper_bound(range.start))
+    .bind(crate::stats::db_occurred_at_lower_bound(range.end))
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(pool)
+    .await
+    .context("summary projection overflowed boundary manifest coverage hydration failed")?;
+    Ok(incomplete == 0)
+}
+
+async fn load_summary_projection_boundary_manifest_page(
+    pool: &Pool<Sqlite>,
+    range: ExactUtcRange,
+    offset: usize,
+) -> Result<Vec<crate::stats::ArchiveBatchPathRow>> {
+    sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
+        "SELECT \
+             file_path, month_key, coverage_start_at, coverage_end_at, \
+             historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
+         FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND coverage_end_at >= ?1 \
+           AND coverage_start_at < ?2 \
+         ORDER BY month_key ASC, created_at ASC, id ASC \
+         LIMIT ?3 OFFSET ?4",
+    )
+    .bind(db_occurred_at_upper_bound(range.start))
+    .bind(crate::stats::db_occurred_at_lower_bound(range.end))
+    .bind(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await
+    .context("summary projection boundary manifest page hydration failed")
+}
+
 async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Result<HashSet<i64>> {
     let pool_rows =
         sqlx::query_scalar::<_, i64>("SELECT id FROM pool_upstream_accounts WHERE id > 0 LIMIT ?1")
@@ -9634,65 +9744,58 @@ fn summary_projection_live_record_from_preview(
     ))
 }
 
+#[derive(Default)]
+struct PreviousSummaryProjectionAllTime {
+    all_time_by_account: HashMap<Option<i64>, StatsResponse>,
+    all_time_refreshed_at: Option<Instant>,
+    all_time_manifest_admission_blocked_at: Option<Instant>,
+    all_time_account_manifest_admission_blocked_at: Option<Instant>,
+    all_time_account_refreshed_at: HashMap<i64, Instant>,
+    archive_account_ids_by_file: HashMap<String, HashSet<i64>>,
+    archive_coverage_ranges_by_file: HashMap<String, ExactUtcRange>,
+    global_all_time_eligible: bool,
+    account_all_time_eligible: HashSet<i64>,
+    all_time_terminal_coverage_complete: bool,
+    all_time_terminal_sequence_watermark: u64,
+    all_time_persisted_live_terminal_invoke_ids: HashSet<String>,
+    all_time_account_terminal_sequence_watermarks: HashMap<i64, u64>,
+    all_time_account_persisted_live_terminal_invoke_ids: HashMap<i64, HashSet<String>>,
+}
+
 /// Reads every input needed by the hot path while running off-request.  The resulting projection
 /// is swapped atomically in the subscription hub only after the complete baseline is available.
 async fn build_summary_projection(
     state: &AppState,
     include_all_time: bool,
-    previous_all_time: Option<(
-        HashMap<Option<i64>, StatsResponse>,
-        Option<Instant>,
-        bool,
-        HashMap<i64, Instant>,
-        HashMap<String, HashSet<i64>>,
-        HashMap<String, ExactUtcRange>,
-        bool,
-        HashSet<i64>,
-        bool,
-        u64,
-        HashSet<String>,
-        HashMap<i64, u64>,
-        HashMap<i64, HashSet<String>>,
-        bool,
-    )>,
+    previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
     let end = Utc::now() + ChronoDuration::seconds(1);
-    let (
+    let PreviousSummaryProjectionAllTime {
         mut all_time_by_account,
-        previous_all_time_refreshed_at,
-        previous_all_time_manifest_admission_blocked,
+        all_time_refreshed_at: previous_all_time_refreshed_at,
+        all_time_manifest_admission_blocked_at: previous_all_time_manifest_admission_blocked_at,
+        all_time_account_manifest_admission_blocked_at:
+            previous_all_time_account_manifest_admission_blocked_at,
         mut all_time_account_refreshed_at,
         mut archive_account_ids_by_file,
         mut archive_coverage_ranges_by_file,
-        previous_global_all_time_eligible,
-        previous_account_all_time_eligible,
-        previous_all_time_terminal_coverage_complete,
-        previous_all_time_terminal_sequence_watermark,
-        previous_all_time_persisted_live_terminal_invoke_ids,
-        previous_all_time_account_terminal_sequence_watermarks,
-        previous_all_time_account_persisted_live_terminal_invoke_ids,
-        previous_archive_boundary_manifest_admission_blocked,
-    ) = previous_all_time.unwrap_or_else(|| {
-        (
-            HashMap::new(),
-            None,
-            false,
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            false,
-            HashSet::new(),
-            false,
-            0,
-            HashSet::new(),
-            HashMap::new(),
-            HashMap::new(),
-            false,
-        )
-    });
-    let all_time_was_fully_rebuilt = !previous_all_time_manifest_admission_blocked
-        && (include_all_time || previous_all_time_refreshed_at.is_none());
+        global_all_time_eligible: previous_global_all_time_eligible,
+        account_all_time_eligible: previous_account_all_time_eligible,
+        all_time_terminal_coverage_complete: previous_all_time_terminal_coverage_complete,
+        all_time_terminal_sequence_watermark: previous_all_time_terminal_sequence_watermark,
+        all_time_persisted_live_terminal_invoke_ids:
+            previous_all_time_persisted_live_terminal_invoke_ids,
+        all_time_account_terminal_sequence_watermarks:
+            previous_all_time_account_terminal_sequence_watermarks,
+        all_time_account_persisted_live_terminal_invoke_ids:
+            previous_all_time_account_persisted_live_terminal_invoke_ids,
+    } = previous_all_time.unwrap_or_default();
+    let all_time_was_fully_rebuilt = summary_projection_manifest_admission_retry_is_due(
+        previous_all_time_manifest_admission_blocked_at,
+        Instant::now(),
+    ) && (include_all_time
+        || previous_all_time_refreshed_at.is_none());
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
     // are limited to the moving exact tail; older live rows are represented by their durable
     // hourly rollups. Archive boundary rows use the wider finite range below so supported 7d/
@@ -9748,26 +9851,38 @@ async fn build_summary_projection(
         load_summary_projection_archive_replay_coverage(&state.pool, &all_time_archive_paths)
             .await?;
     let mut all_time_archive_account_ids_by_file = HashMap::<String, HashSet<i64>>::new();
-    let mut all_time_account_manifest_admission_exceeded = false;
-    match load_summary_projection_archive_manifest_accounts(&state.pool, &all_time_archive_paths)
+    let all_time_account_manifest_admission_attempted = all_time_was_fully_rebuilt
+        && summary_projection_manifest_admission_retry_is_due(
+            previous_all_time_account_manifest_admission_blocked_at,
+            Instant::now(),
+        );
+    let mut all_time_account_manifest_admission_exceeded =
+        previous_all_time_account_manifest_admission_blocked_at.is_some()
+            && !all_time_account_manifest_admission_attempted;
+    if all_time_account_manifest_admission_attempted {
+        match load_summary_projection_archive_manifest_accounts(
+            &state.pool,
+            &all_time_archive_paths,
+        )
         .await
-    {
-        Ok(accounts) => {
-            for (file_path, account_id) in accounts {
-                all_time_archive_account_ids_by_file
-                    .entry(file_path)
-                    .or_default()
-                    .insert(account_id);
-            }
-        }
-        Err(error)
-            if error.to_string().starts_with(
-                "summary projection archive account manifest exceeded bounded row budget",
-            ) =>
         {
-            all_time_account_manifest_admission_exceeded = true;
+            Ok(accounts) => {
+                for (file_path, account_id) in accounts {
+                    all_time_archive_account_ids_by_file
+                        .entry(file_path)
+                        .or_default()
+                        .insert(account_id);
+                }
+            }
+            Err(error)
+                if error.to_string().starts_with(
+                    "summary projection archive account manifest exceeded bounded row budget",
+                ) =>
+            {
+                all_time_account_manifest_admission_exceeded = true;
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => return Err(error),
     }
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(&state.pool).await?;
     let account_rollup_live_cursor =
@@ -9908,22 +10023,34 @@ async fn build_summary_projection(
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
-    let (archives, archive_boundary_manifest_admission_blocked) =
-        if previous_archive_boundary_manifest_admission_blocked {
-            (Vec::new(), true)
-        } else {
-            let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-                &state.pool,
-                Some((archive_start, end)),
-                SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
-            )
-            .await?;
-            if archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-                (Vec::new(), true)
-            } else {
-                (archives, false)
-            }
-        };
+    let exact_horizon = ExactUtcRange {
+        start: archive_start,
+        end,
+    };
+    let boundary_archive_admission =
+        crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
+            &state.pool,
+            Some((archive_start, end)),
+            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+        )
+        .await?;
+    let (archives, paged_boundary_manifest_recovery) = if boundary_archive_admission.len()
+        > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
+    {
+        if !summary_projection_overflowed_boundary_manifests_have_complete_rollups(
+            &state.pool,
+            exact_horizon,
+        )
+        .await?
+        {
+            return Err(anyhow!(
+                "summary projection overflowed boundary manifests lack complete durable rollup coverage"
+            ));
+        }
+        (Vec::new(), true)
+    } else {
+        (boundary_archive_admission, false)
+    };
     let archive_paths = archives
         .iter()
         .map(|archive| archive.file_path().to_string())
@@ -9989,15 +10116,6 @@ async fn build_summary_projection(
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
     let mut unavailable_unmaterialized_archive_ranges = Vec::<ExactUtcRange>::new();
-    if archive_boundary_manifest_admission_blocked {
-        // The manifest cardinality does not disclose which completed archive contains a boundary
-        // row. Treat the complete exact horizon as unavailable rather than folding only the
-        // retained prefix into an otherwise plausible, but incomplete, rolling response.
-        unavailable_unmaterialized_archive_ranges.push(ExactUtcRange {
-            start: archive_start,
-            end,
-        });
-    }
     // Discover accounts from archive rows before planning full-hour coverage. Pools are opened
     // and closed one at a time so a large retention horizon never keeps every inflated archive
     // resident concurrently. Immutable completed archives reuse the cached account set on later
@@ -10206,6 +10324,47 @@ async fn build_summary_projection(
             raw_fallback_ranges,
         )?;
     }
+    if paged_boundary_manifest_recovery {
+        // The admission overflow is proved fully materialized above. Page only manifest metadata
+        // while planning the finite exact buckets; the raw archives themselves are opened later
+        // one at a time after live boundary records have been admitted.
+        let mut offset = 0usize;
+        loop {
+            let page =
+                load_summary_projection_boundary_manifest_page(&state.pool, exact_horizon, offset)
+                    .await?;
+            if page.is_empty() {
+                break;
+            }
+            for archive in &page {
+                let Some(archive_range) =
+                    summary_projection_archive_overlap_range(archive, exact_horizon)
+                else {
+                    continue;
+                };
+                let raw_fallback_ranges = summary_projection_archive_exact_ranges_with_coverage(
+                    true,
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    archive_range,
+                    &exact_archive_buckets,
+                    &hourly_rollup_totals,
+                    &hourly_rollup_usage,
+                    &known_account_ids,
+                );
+                summary_projection_extend_exact_buckets_for_ranges(
+                    &mut exact_archive_buckets,
+                    raw_fallback_ranges,
+                )?;
+            }
+            let page_len = page.len();
+            offset = offset.saturating_add(page_len);
+            if page_len < SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
+                break;
+            }
+        }
+    }
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
         .into_iter()
         .filter_map(|range| {
@@ -10389,6 +10548,96 @@ async fn build_summary_projection(
         })?;
         archive_pool.close().await;
         drop(temp_cleanup);
+    }
+    if paged_boundary_manifest_recovery {
+        let mut offset = 0usize;
+        loop {
+            let page =
+                load_summary_projection_boundary_manifest_page(&state.pool, exact_horizon, offset)
+                    .await?;
+            if page.is_empty() {
+                break;
+            }
+            let page_paths = page
+                .iter()
+                .map(|archive| archive.file_path().to_string())
+                .collect::<Vec<_>>();
+            let usage_rollup_progress = load_usage_breakdown_archive_progress_by_file_path(
+                &state.pool,
+                &page_paths,
+            )
+            .await
+            .map_err(|error| {
+                anyhow!(
+                    "summary projection paged boundary usage progress hydration failed: {error:?}"
+                )
+            })?;
+            for archive in page {
+                let Some(archive_range) =
+                    summary_projection_archive_overlap_range(&archive, exact_horizon)
+                else {
+                    continue;
+                };
+                let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
+                    true,
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    archive_range,
+                    &exact_archive_buckets,
+                    &hourly_rollup_totals,
+                    &hourly_rollup_usage,
+                    &known_account_ids,
+                );
+                if exact_ranges.is_empty() {
+                    continue;
+                }
+                let Some((archive_pool, temp_cleanup)) =
+                    crate::stats::open_invocation_archive_batch_pool(
+                        &archive,
+                        "summary-projection-paged-boundary",
+                    )
+                    .await?
+                else {
+                    // Eligibility proved all targets are materialized. A missing immutable file
+                    // can therefore use the same compact baseline without degrading this exact
+                    // window; a missing proof would have taken the normal fail-closed path.
+                    continue;
+                };
+                merge_summary_projection_archive_records_with_coverage(
+                    &archive_pool,
+                    &state.pool,
+                    &persisted_live_ids,
+                    &hourly_rollup_totals,
+                    &hourly_rollup_usage,
+                    true,
+                    Some(true),
+                    Some(true),
+                    Some(true),
+                    archive_range,
+                    &exact_archive_buckets,
+                    usage_rollup_progress.get(archive.file_path()).copied(),
+                    &known_account_ids,
+                    &mut records_by_invoke_id,
+                    &mut exact_record_budget,
+                    &mut exact_record_bytes,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!(
+                        "summary projection paged boundary archive hydration failed for {}: {error:?}",
+                        archive.file_path()
+                    )
+                })?;
+                archive_pool.close().await;
+                drop(temp_cleanup);
+            }
+            let page_len = page_paths.len();
+            offset = offset.saturating_add(page_len);
+            if page_len < SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
+                break;
+            }
+        }
     }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
     // coverage decision once every exact archive/live contribution is present.
@@ -11049,9 +11298,17 @@ async fn build_summary_projection(
         } else {
             previous_all_time_refreshed_at
         },
-        all_time_manifest_admission_blocked: previous_all_time_manifest_admission_blocked
-            || all_time_archive_admission_exceeded
-            || all_time_account_manifest_admission_exceeded,
+        all_time_manifest_admission_blocked_at: if all_time_was_fully_rebuilt {
+            all_time_archive_admission_exceeded.then(Instant::now)
+        } else {
+            previous_all_time_manifest_admission_blocked_at
+        },
+        all_time_account_manifest_admission_blocked_at:
+            if all_time_account_manifest_admission_attempted {
+                all_time_account_manifest_admission_exceeded.then(Instant::now)
+            } else {
+                previous_all_time_account_manifest_admission_blocked_at
+            },
         all_time_account_refreshed_at,
         all_time_oldest_account_refreshed_at,
         all_time_account_ids_with_projection_data: account_ids_with_projection_data,
@@ -11059,7 +11316,6 @@ async fn build_summary_projection(
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
         unavailable_unmaterialized_archive_ranges,
-        archive_boundary_manifest_admission_blocked,
         in_progress_by_account,
         maintenance: Some(maintenance),
         refreshed_at,
@@ -26935,6 +27191,33 @@ mod request_compression_query_tests {
         };
         assert!(!projection.needs_cadence_refresh(false));
         assert!(projection.needs_cadence_refresh(true));
+    }
+
+    #[test]
+    fn summary_manifest_admission_retries_only_after_the_controlled_backoff() {
+        let blocked_at = Instant::now();
+        assert!(!summary_projection_manifest_admission_retry_is_due(
+            Some(blocked_at),
+            blocked_at + SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF
+                - Duration::from_secs(1),
+        ));
+        assert!(summary_projection_manifest_admission_retry_is_due(
+            Some(blocked_at),
+            blocked_at + SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF,
+        ));
+    }
+
+    #[test]
+    fn summary_cadence_does_not_rebuild_all_time_during_manifest_admission_backoff() {
+        let projection = SummaryProjection {
+            refreshed_at: Some(Instant::now()),
+            all_time_manifest_admission_blocked_at: Some(Instant::now()),
+            ..SummaryProjection::default()
+        };
+        assert!(
+            !projection.needs_cadence_refresh(true),
+            "a blocked all-time admission must not turn an active owner into a retry loop"
+        );
     }
 
     #[test]

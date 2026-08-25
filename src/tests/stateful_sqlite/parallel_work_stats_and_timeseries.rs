@@ -22213,7 +22213,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
 }
 
 #[tokio::test]
-async fn summary_projection_fails_closed_when_archive_boundary_manifest_admission_exceeds_budget() {
+async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
@@ -22246,27 +22246,163 @@ async fn summary_projection_fails_closed_when_archive_boundary_manifest_admissio
     .execute(&state.pool)
     .await
     .expect("insert exact-horizon manifests beyond bounded admission");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+             WHERE file_path GLOB '/tmp/summary-boundary-manifest-admission-*.sqlite.gz'",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record complete durable replay coverage");
+    }
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('summary-boundary-manifest-live', datetime('now'), 'proxy', 'success', 23, 2.5, \
+                 '{\"upstreamAccountId\":42,\"responseModel\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert exact live-tail row");
 
     hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect("publish a controlled rolling snapshot instead of failing hydration");
+        .expect("page durable boundary manifests instead of failing hydration");
     state.pool.close().await;
 
-    for window in ["current", "1d"] {
-        assert!(matches!(
-            fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some(window.to_string()),
-                    limit: None,
-                    time_zone: Some("UTC".to_string()),
-                    upstream_account_id: None,
-                }),
-            )
-            .await,
-            Err(ApiError::Unavailable(_))
-        ));
+    for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some(window.to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve the exact paged-boundary response without SQLite");
+        assert_eq!(response.total_count, 1, "window {window}");
+        assert_eq!(response.total_tokens, 23, "window {window}");
+        assert_eq!(response.total_cost, 2.5, "window {window}");
     }
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_global_all_exact_when_account_manifest_admission_exceeds_budget()
+{
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let archive_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::days(1_000)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align archive fixture to a full hour");
+    let archive_end = archive_start + ChronoDuration::hours(1);
+    let bucket = crate::stats::align_bucket_epoch(archive_start.timestamp(), 3_600, 0);
+    let file_path = "/tmp/summary-account-manifest-admission.sqlite.gz";
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("insert durable global rollup");
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, created_at) \
+         VALUES ('codex_invocations', '2026-01', ?1, 'summary-account-manifest-admission', 1, 'completed', \
+                 ?2, ?3, datetime('now'), datetime('now'))",
+    )
+    .bind(file_path)
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .execute(&state.pool)
+    .await
+    .expect("insert materialized archive manifest");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(file_path)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load archive manifest id");
+    sqlx::query(
+        "WITH RECURSIVE accounts(account_id) AS ( \
+            SELECT 1 UNION ALL SELECT account_id + 1 FROM accounts WHERE account_id <= 50000 \
+         ) \
+         INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) \
+         SELECT ?1, account_id, ?2 FROM accounts",
+    )
+    .bind(archive_batch_id)
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .execute(&state.pool)
+    .await
+    .expect("insert account activity beyond bounded admission");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', ?2, 'summary-account-manifest-admission')",
+        )
+        .bind(target)
+        .bind(file_path)
+        .execute(&state.pool)
+        .await
+        .expect("record durable replay coverage");
+    }
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate exact global all-time response despite account admission overflow");
+    state.pool.close().await;
+
+    let Json(global) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve exact global all-time response without SQLite");
+    assert_eq!(global.total_count, 1);
+    assert_eq!(global.total_tokens, 17);
+    assert_eq!(global.total_cost, 1.25);
+    assert!(matches!(
+        fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await,
+        Err(ApiError::Unavailable(_))
+    ));
 }
 
 #[tokio::test]
