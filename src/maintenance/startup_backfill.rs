@@ -289,6 +289,13 @@ pub(crate) struct StartupBackfillTaskRunOutcome {
     next_due: DateTime<Utc>,
 }
 
+#[cfg(test)]
+impl StartupBackfillTaskRunOutcome {
+    pub(crate) fn is_pressure_deferred(self) -> bool {
+        !self.actionable && !self.failed && self.deferred && self.completed
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupBackfillFailureKind {
     SqliteBusyOrLocked,
@@ -377,6 +384,47 @@ fn startup_backfill_pressure_defer_outcome(
         completed: true,
         next_due: retry_at,
     }
+}
+
+fn startup_backfill_pressure_error_defer_outcome(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillTaskRunOutcome {
+    let retry_at = gate
+        .pressure_cooldown_deadline_epoch_ms()
+        .and_then(|deadline_ms| {
+            i64::try_from(deadline_ms)
+                .ok()
+                .and_then(DateTime::<Utc>::from_timestamp_millis)
+        })
+        .unwrap_or_else(|| {
+            Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
+        });
+    STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+    info!(
+        task = task.log_label(),
+        defer_kind = "sqlite_pressure_error",
+        defer_reason = "sqlite_busy_or_locked",
+        next_eligibility = %retry_at,
+        wake_reason = "pressure_error_defer",
+        "startup backfill task deferred after a SQLite pressure error"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
+fn startup_backfill_pressure_error_defer_outcome_if_recorded(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    err: &anyhow::Error,
+) -> Option<StartupBackfillTaskRunOutcome> {
+    record_startup_backfill_pressure_error(gate, err)
+        .then(|| startup_backfill_pressure_error_defer_outcome(task, gate))
 }
 
 impl StartupBackfillTask {
@@ -1194,11 +1242,17 @@ where
     };
 
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-    let progress = load_startup_backfill_progress(&state.pool, &task_name)
-        .await
-        .inspect_err(|err| {
-            record_startup_backfill_pressure_error(gate, err);
-        })?;
+    let progress = match load_startup_backfill_progress(&state.pool, &task_name).await {
+        Ok(progress) => progress,
+        Err(err) => {
+            if let Some(outcome) =
+                startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+            {
+                return Ok(outcome);
+            }
+            return Err(err);
+        }
+    };
     let now = Utc::now();
     if !progress.is_due(now) {
         debug!(
@@ -1237,15 +1291,29 @@ where
             let next_due = match defer_startup_backfill_coverage_repair(state.as_ref()).await {
                 Ok(next_due) => next_due,
                 Err(persist_err) => {
-                    // Prefer the retry-progress failure so a repair lock followed by another
-                    // lock still closes the gate exactly once for this failed attempt.
-                    if !record_startup_backfill_pressure_error(gate, &persist_err) {
-                        record_startup_backfill_pressure_error(gate, &err);
+                    // A retry-progress lock is still a pressure defer, even though the durable
+                    // retry deadline could not be written. Prefer that error so two locks close
+                    // the gate once, then leave re-dispatch to the in-memory eligibility wake.
+                    if let Some(outcome) = startup_backfill_pressure_error_defer_outcome_if_recorded(
+                        task,
+                        gate,
+                        &persist_err,
+                    ) {
+                        return Ok(outcome);
+                    }
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
                     }
                     return Err(persist_err);
                 }
             };
-            record_startup_backfill_pressure_error(gate, &err);
+            if let Some(outcome) =
+                startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+            {
+                return Ok(outcome);
+            }
             return Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
@@ -1259,11 +1327,21 @@ where
     match repair_outcome {
         outcome if outcome.repaired_bucket_count > 0 => {
             let next_due =
-                record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
+                match record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
                     .await
-                    .inspect_err(|err| {
-                        record_startup_backfill_pressure_error(gate, err);
-                    })?;
+                {
+                    Ok(next_due) => next_due,
+                    Err(err) => {
+                        if let Some(outcome) =
+                            startup_backfill_pressure_error_defer_outcome_if_recorded(
+                                task, gate, &err,
+                            )
+                        {
+                            return Ok(outcome);
+                        }
+                        return Err(err);
+                    }
+                };
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: true,
                 failed: false,
@@ -1273,11 +1351,17 @@ where
             })
         }
         outcome if outcome.priority_bucket_count > 0 => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref())
-                .await
-                .inspect_err(|err| {
-                    record_startup_backfill_pressure_error(gate, err);
-                })?;
+            let next_due = match defer_startup_backfill_coverage_repair(state.as_ref()).await {
+                Ok(next_due) => next_due,
+                Err(err) => {
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(err);
+                }
+            };
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
@@ -1288,15 +1372,21 @@ where
         }
         _ => {
             let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-            let progress = load_startup_backfill_progress(&state.pool, &task_name)
-                .await
-                .inspect_err(|err| {
-                    record_startup_backfill_pressure_error(gate, err);
-                })?;
+            let progress = match load_startup_backfill_progress(&state.pool, &task_name).await {
+                Ok(progress) => progress,
+                Err(err) => {
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(err);
+                }
+            };
             let next_retry_after = format_utc_iso(
                 Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_IDLE_INTERVAL_SECS as i64),
             );
-            save_startup_backfill_progress(
+            let save_result = save_startup_backfill_progress(
                 &state.pool,
                 &task_name,
                 StartupBackfillProgressUpdate {
@@ -1309,10 +1399,15 @@ where
                     suspension_reason: None,
                 },
             )
-            .await
-            .inspect_err(|err| {
-                record_startup_backfill_pressure_error(gate, err);
-            })?;
+            .await;
+            if let Err(err) = save_result {
+                if let Some(outcome) =
+                    startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                {
+                    return Ok(outcome);
+                }
+                return Err(err);
+            }
             let next_due = parse_to_utc_datetime(&next_retry_after).unwrap_or_else(Utc::now);
             STARTUP_BACKFILL_SCHEDULER.record_next_due(task, next_due);
             debug!(

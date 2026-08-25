@@ -59,7 +59,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 - `SQLite Pressure Defer` 是数据库访问前的低优先级拒绝；它不读取或修改 durable progress，而是为每个 task/cooldown 只登记一次内存 scheduler next-eligibility deadline 与 event/deadline wake。
 - Account Activity V2 coverage repair 由 startup task 持有唯一 background permit 后直接执行底层 repair；不得在已有 permit 时调用会再次获取 global gate 的 convenience wrapper。gate 拒绝时不得读取或写入 coverage progress，也不得写 task-run audit。
-- coverage repair outcome 及其后每次 coverage progress 读写都在该 permit 内使用同一 SQLite 错误分类。实际 `BUSY`/`LOCKED` 在 permit 释放前恰好关闭一次 pressure gate；repair 失败后的 retry progress 读写即使也返回锁错误，也不得产生第二个 pressure event；非锁错误保持普通 scheduler failure 路径且不记录 pressure。
+- coverage repair outcome 及其后每次 coverage progress 读写都在该 permit 内使用同一 SQLite 错误分类。实际 `BUSY`/`LOCKED` 在 permit 释放前恰好关闭一次 pressure gate，并作为 pressure-deferred outcome 返回外层 maintenance loop，不得写 task-run audit 或走普通 failure retry；repair 失败后的 retry progress 读写即使也返回锁错误，也不得产生第二个 pressure event；非锁错误保持普通 scheduler failure 路径、审计与重试，且不记录 pressure。
 - defer 不得按毫秒级重试，不得反复写 `system_task_runs`，也不得在没有 actionable work 时记录成功、跳过或失败审计。
 - 真正的 SQLite `BUSY`/`LOCKED` 仍按既有有界失败退避处理，并保留与 pressure defer 可区分的 telemetry、reason 与恢复路径。
 - cooldown 到期、符合条件的 input 变化或 pressure eligibility generation 变化可以唤醒；eligibility wake 重新进入普通 durable due 检查，不得绕过未来的 `next_run_after`。固定 ticker 不得在 cooldown 内反复派发相同 task。
@@ -124,7 +124,7 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - Given 49,999 个 48 小时内的 live 行和至少两个仍在合法 rolling window 内、但落后 global/account cursor 的更早 live 行，When 最近索引超过 50,000 条，Then 覆盖省略边界的 global 与 account rolling 请求返回 `unavailable`，较新的完整窗口仍从内存精确响应且不执行 SQL 或文件 I/O。
 - Given pressure cooldown 关闭，When 同一 startup backfill task 被触发，Then 只记录一次内存 scheduler next-eligibility/event wake，不产生毫秒级 defer storm、SQLite pre-read 或无动作 task-run audit。
 - Given Account Activity V2 coverage repair 已被 background gate 接纳，When 它等待 hourly rollup lock 后执行，Then 底层 repair 恰好在该 permit 内运行一次；Given gate 拒绝，Then 不读取或写 coverage progress，也不创建 task-run audit。
-- Given Account Activity V2 coverage repair 的 outcome 或后续 progress SQLite 操作返回实际 `BUSY`/`LOCKED`，When 该 permit 仍被持有，Then 只关闭一次 pressure gate，permit 释放后的下一个后台 task 以零 SQLite I/O defer；非锁错误不关闭 pressure gate。
+- Given Account Activity V2 coverage repair 的 outcome 或后续 progress SQLite 操作返回实际 `BUSY`/`LOCKED`，When 该 permit 仍被持有，Then 只关闭一次 pressure gate，outer maintenance loop 不写 task-run audit 或通用失败重试，permit 释放后的下一个后台 task 以零 SQLite I/O defer；非锁错误不关闭 pressure gate，并保留 task-run failure audit。
 - Given 实际 SQLite lock，When 后台任务已开始数据库访问且失败状态写入成功，Then 在释放 background permit 前关闭 pressure gate，使用独立的 bounded failure backoff，并使后续任务以零 SQLite I/O defer。
 - Given 任务的 durable `next_run_after` 仍在未来，When 该任务先因 `BackgroundBusy` defer 后收到 pressure eligibility event，Then 它不执行、不写 progress 或 task-run audit，并继续等待原 deadline。
 - Given legacy long-term backlog，When migration 运行、遇到 pressure 或取消，Then 每个写事务最多 512 行、cursor 可恢复且 P1 不被低优先级写入饥饿。

@@ -53,10 +53,10 @@ async fn assert_startup_coverage_repair_busy_error_closes_gate_before_next_task<
     Repair: FnOnce() -> RepairFuture,
     RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
 {
-    let err = run_startup_backfill_coverage_repair_if_due_with_repair(state, gate, repair)
+    let outcome = run_startup_backfill_coverage_repair_if_due_with_repair(state, gate, repair)
         .await
-        .expect_err("injected SQLite lock should fail the coverage repair task");
-    assert_startup_coverage_repair_busy_or_locked(&err);
+        .expect("injected SQLite lock should defer the coverage repair task");
+    assert!(outcome.is_pressure_deferred());
     assert_eq!(
         gate.snapshot().pressure_events,
         1,
@@ -82,20 +82,6 @@ async fn assert_startup_coverage_repair_busy_error_closes_gate_before_next_task<
     assert!(
         gate.snapshot().background_skips >= 1,
         "the next task must not enter SQLite before the pressure cooldown"
-    );
-}
-
-fn assert_startup_coverage_repair_busy_or_locked(err: &anyhow::Error) {
-    let is_busy_or_locked = crate::is_sqlite_lock_error(err)
-        || err.chain().any(|cause| {
-            cause
-                .to_string()
-                .to_ascii_lowercase()
-                .contains("database is busy")
-        });
-    assert!(
-        is_busy_or_locked,
-        "expected an actual SQLite BUSY/LOCKED error: {err:#}"
     );
 }
 
@@ -2660,6 +2646,147 @@ async fn startup_backfill_busy_failure_closes_pressure_gate_before_the_next_task
 }
 
 #[tokio::test]
+async fn startup_coverage_lock_maintenance_pass_defers_without_audit_but_non_lock_failure_audits() {
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    let cancel = CancellationToken::new();
+    let selected_tasks = [task];
+
+    let pressure_state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_due_startup_backfill_progress(&pressure_state, task).await;
+    sqlx::query(
+        "DELETE FROM hourly_rollup_live_progress WHERE dataset = 'invocation_account_activity_v2_repair_generation'",
+    )
+    .execute(&pressure_state.pool)
+    .await
+    .expect("make the coverage repair generation initialization due");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_coverage_repair_maintenance_busy
+        BEFORE INSERT ON hourly_rollup_live_progress
+        WHEN NEW.dataset = 'invocation_account_activity_v2_repair_generation'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&pressure_state.pool)
+    .await
+    .expect("inject a SQLite lock into the coverage repair");
+
+    let pressure_gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let pressure_audits_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&pressure_state.pool)
+    .await
+    .expect("count task runs before the locked coverage maintenance pass");
+
+    let pressure_outcome = run_startup_backfill_maintenance_pass_with_gate(
+        pressure_state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &pressure_gate,
+    )
+    .await;
+    let pressure_audits_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&pressure_state.pool)
+    .await
+    .expect("count task runs after the locked coverage maintenance pass");
+    let retry_progress = load_startup_backfill_progress(&pressure_state.pool, task.name())
+        .await
+        .expect("load the coverage retry deadline after the lock");
+
+    assert!(!pressure_outcome.ran_actionable_task);
+    assert!(!pressure_outcome.had_failure);
+    assert_eq!(pressure_audits_after, pressure_audits_before);
+    assert_eq!(pressure_gate.snapshot().pressure_events, 1);
+    assert!(!retry_progress.is_due(Utc::now()));
+
+    // Closing the pool proves the next task's pressure-cooldown path has zero SQLite I/O.
+    pressure_state.pool.close().await;
+    let next_tasks = [StartupBackfillTask::PromptCacheKey];
+    let next_outcome = run_startup_backfill_maintenance_pass_with_gate(
+        pressure_state.clone(),
+        &cancel,
+        Some(&next_tasks),
+        &pressure_gate,
+    )
+    .await;
+    assert!(!next_outcome.ran_actionable_task);
+    assert!(!next_outcome.had_failure);
+    assert!(pressure_gate.snapshot().background_skips >= 1);
+
+    let non_pressure_state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_due_startup_backfill_progress(&non_pressure_state, task).await;
+    sqlx::query(
+        "DELETE FROM hourly_rollup_live_progress WHERE dataset = 'invocation_account_activity_v2_repair_generation'",
+    )
+    .execute(&non_pressure_state.pool)
+    .await
+    .expect("make the non-lock coverage repair generation initialization due");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_coverage_repair_maintenance_error
+        BEFORE INSERT ON hourly_rollup_live_progress
+        WHEN NEW.dataset = 'invocation_account_activity_v2_repair_generation'
+        BEGIN
+            SELECT RAISE(ABORT, 'coverage repair operation failed');
+        END
+        "#,
+    )
+    .execute(&non_pressure_state.pool)
+    .await
+    .expect("inject a non-lock coverage repair failure");
+
+    let non_pressure_gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let non_pressure_audits_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&non_pressure_state.pool)
+    .await
+    .expect("count task runs before the non-lock coverage maintenance pass");
+
+    let non_pressure_outcome = run_startup_backfill_maintenance_pass_with_gate(
+        non_pressure_state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &non_pressure_gate,
+    )
+    .await;
+    non_pressure_state
+        .sqlite_batch_writer
+        .flush_now(&non_pressure_state.pool)
+        .await
+        .expect("flush the non-lock coverage failure audit");
+    let non_pressure_audits_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&non_pressure_state.pool)
+    .await
+    .expect("count task runs after the non-lock coverage maintenance pass");
+    let non_pressure_audit_status: String = sqlx::query_scalar(
+        "SELECT status FROM system_task_runs WHERE task_kind = 'startup_backfill' ORDER BY started_at DESC LIMIT 1",
+    )
+    .fetch_one(&non_pressure_state.pool)
+    .await
+    .expect("load the non-lock coverage failure audit");
+
+    assert!(!non_pressure_outcome.ran_actionable_task);
+    assert!(non_pressure_outcome.had_failure);
+    assert_eq!(non_pressure_audits_after, non_pressure_audits_before + 1);
+    assert_eq!(non_pressure_audit_status, "failed");
+    assert_eq!(non_pressure_gate.snapshot().pressure_events, 0);
+}
+
+#[tokio::test]
 async fn coverage_repair_defer_persists_its_own_retry_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
@@ -3134,12 +3261,13 @@ async fn startup_coverage_repair_and_retry_progress_persist_busy_record_one_pres
     .await
     .expect("count task runs before combined repair and retry-progress failures");
 
-    let err = run_startup_backfill_coverage_repair_if_due_with_repair(&state, &gate, || async {
-        Err(anyhow::anyhow!("database is busy"))
-    })
-    .await
-    .expect_err("repair and retry progress locks should fail coverage repair");
-    assert_startup_coverage_repair_busy_or_locked(&err);
+    let outcome =
+        run_startup_backfill_coverage_repair_if_due_with_repair(&state, &gate, || async {
+            Err(anyhow::anyhow!("database is busy"))
+        })
+        .await
+        .expect("repair and retry progress locks should defer coverage repair");
+    assert!(outcome.is_pressure_deferred());
     assert_eq!(
         gate.snapshot().pressure_events,
         1,
@@ -3189,7 +3317,7 @@ async fn startup_coverage_repair_and_retry_progress_lookup_busy_record_one_press
     .await
     .expect("count task runs before combined repair and retry-progress failures");
 
-    let err = run_startup_backfill_coverage_repair_if_due_with_repair(&state, &gate, move || {
+    let outcome = run_startup_backfill_coverage_repair_if_due_with_repair(&state, &gate, move || {
         let db_url = db_url.clone();
         let lock_holder = lock_holder_for_repair.clone();
         async move {
@@ -3207,8 +3335,8 @@ async fn startup_coverage_repair_and_retry_progress_lookup_busy_record_one_press
         }
     })
     .await
-    .expect_err("repair and retry progress locks should fail coverage repair");
-    assert_startup_coverage_repair_busy_or_locked(&err);
+    .expect("repair and retry progress locks should defer coverage repair");
+    assert!(outcome.is_pressure_deferred());
     assert_eq!(
         gate.snapshot().pressure_events,
         1,
