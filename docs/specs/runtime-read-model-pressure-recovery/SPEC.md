@@ -59,7 +59,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 - `SQLite Pressure Defer` 是数据库访问前的低优先级拒绝；它不读取或修改 durable progress，而是为每个 task/cooldown 只登记一次内存 scheduler next-eligibility deadline 与 event/deadline wake。
 - Account Activity V2 coverage repair 由 startup task 持有唯一 background permit 后直接执行底层 repair；不得在已有 permit 时调用会再次获取 global gate 的 convenience wrapper。gate 拒绝时不得读取或写入 coverage progress，也不得写 task-run audit。
-- coverage repair outcome 及其后每次 coverage progress 读写都在该 permit 内使用同一 SQLite 错误分类。实际 `BUSY`/`LOCKED` 在 permit 释放前恰好关闭一次 pressure gate；非锁错误保持普通 scheduler failure 路径且不记录 pressure。
+- coverage repair outcome 及其后每次 coverage progress 读写都在该 permit 内使用同一 SQLite 错误分类。实际 `BUSY`/`LOCKED` 在 permit 释放前恰好关闭一次 pressure gate；repair 失败后的 retry progress 读写即使也返回锁错误，也不得产生第二个 pressure event；非锁错误保持普通 scheduler failure 路径且不记录 pressure。
 - defer 不得按毫秒级重试，不得反复写 `system_task_runs`，也不得在没有 actionable work 时记录成功、跳过或失败审计。
 - 真正的 SQLite `BUSY`/`LOCKED` 仍按既有有界失败退避处理，并保留与 pressure defer 可区分的 telemetry、reason 与恢复路径。
 - cooldown 到期、符合条件的 input 变化或 pressure eligibility generation 变化可以唤醒；eligibility wake 重新进入普通 durable due 检查，不得绕过未来的 `next_run_after`。固定 ticker 不得在 cooldown 内反复派发相同 task。

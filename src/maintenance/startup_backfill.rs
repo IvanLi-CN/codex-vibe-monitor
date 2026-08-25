@@ -1228,18 +1228,24 @@ where
     let repair_outcome = match repair_outcome {
         Ok(outcome) => outcome,
         Err(err) => {
-            record_startup_backfill_pressure_error(gate, &err);
             warn!(
                 task = task.log_label(),
                 error = %err,
                 wake_reason = "active_window_coverage_check",
                 "startup backfill account activity v2 coverage repair failed"
             );
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref())
-                .await
-                .inspect_err(|persist_err| {
-                    record_startup_backfill_pressure_error(gate, persist_err);
-                })?;
+            let next_due = match defer_startup_backfill_coverage_repair(state.as_ref()).await {
+                Ok(next_due) => next_due,
+                Err(persist_err) => {
+                    // Prefer the retry-progress failure so a repair lock followed by another
+                    // lock still closes the gate exactly once for this failed attempt.
+                    if !record_startup_backfill_pressure_error(gate, &persist_err) {
+                        record_startup_backfill_pressure_error(gate, &err);
+                    }
+                    return Err(persist_err);
+                }
+            };
+            record_startup_backfill_pressure_error(gate, &err);
             return Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
