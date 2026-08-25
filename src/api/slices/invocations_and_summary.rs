@@ -7014,7 +7014,11 @@ const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 // rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
 // previous projection, rather than publishing a partial aggregate.
 const SUMMARY_PROJECTION_MAX_ACCOUNTS: usize = 50_000;
-const SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES: usize = 4_096;
+// Archive manifests remain a bounded background input, but share the established exact-record
+// admission rather than rejecting a durable rollup solely because it spans more than 4,096
+// archive batches. Path-based SQLite reads are chunked below to stay well under bind limits.
+const SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES: usize = SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
+const SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE: usize = 512;
 // Exact replacement is intentionally exceptional. Keeping this separately bounded prevents a
 // wide retention horizon with a compact-coverage gap from turning a background rebuild into an
 // uninterruptible hour-by-hour allocation and CPU sweep.
@@ -9389,30 +9393,35 @@ async fn load_summary_projection_archive_row_counts(
     if archive_paths.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT file_path, row_count FROM archive_batches \
-         WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path IN (",
-    );
+
+    let mut counts = HashMap::new();
+    for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
     {
-        let mut separated = query.separated(", ");
-        for path in archive_paths {
-            separated.push_bind(path);
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT file_path, row_count FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for path in archive_paths {
+                separated.push_bind(path);
+            }
+        }
+        query.push(")");
+        counts.extend(
+            query
+                .build_query_as::<(String, i64)>()
+                .fetch_all(pool)
+                .await
+                .context("summary projection archive row-count hydration failed")?,
+        );
+        if counts.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+            return Err(anyhow!(
+                "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+            ));
         }
     }
-    query
-        .push(") LIMIT ")
-        .push_bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64);
-    let rows = query
-        .build_query_as::<(String, i64)>()
-        .fetch_all(pool)
-        .await
-        .context("summary projection archive row-count hydration failed")?;
-    if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-        return Err(anyhow!(
-            "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
-        ));
-    }
-    Ok(rows.into_iter().collect())
+    Ok(counts)
 }
 
 async fn load_summary_projection_archive_manifest_accounts(
@@ -9422,36 +9431,41 @@ async fn load_summary_projection_archive_manifest_accounts(
     if archive_paths.is_empty() {
         return Ok(Vec::new());
     }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT batches.file_path, activity.account_id \
-         FROM archive_batches AS batches \
-         JOIN archive_batch_upstream_activity AS activity \
-           ON activity.archive_batch_id = batches.id \
-         WHERE batches.dataset = 'codex_invocations' \
-           AND batches.status = 'completed' \
-           AND activity.account_id > 0 \
-           AND batches.file_path IN (",
-    );
+
+    let mut accounts = Vec::new();
+    for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
     {
-        let mut separated = query.separated(", ");
-        for path in archive_paths {
-            separated.push_bind(path);
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT batches.file_path, activity.account_id \
+             FROM archive_batches AS batches \
+             JOIN archive_batch_upstream_activity AS activity \
+               ON activity.archive_batch_id = batches.id \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND activity.account_id > 0 \
+               AND batches.file_path IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for path in archive_paths {
+                separated.push_bind(path);
+            }
+        }
+        query.push(")");
+        accounts.extend(
+            query
+                .build_query_as::<(String, i64)>()
+                .fetch_all(pool)
+                .await
+                .context("summary projection archive account manifest hydration failed")?,
+        );
+        if accounts.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+            return Err(anyhow!(
+                "summary projection archive account manifest exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+            ));
         }
     }
-    query
-        .push(") LIMIT ")
-        .push_bind((SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64);
-    let rows = query
-        .build_query_as::<(String, i64)>()
-        .fetch_all(pool)
-        .await
-        .context("summary projection archive account manifest hydration failed")?;
-    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
-        return Err(anyhow!(
-            "summary projection archive account manifest exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-        ));
-    }
-    Ok(rows)
+    Ok(accounts)
 }
 
 async fn load_summary_projection_archive_replay_coverage(
@@ -9461,40 +9475,43 @@ async fn load_summary_projection_archive_replay_coverage(
     if archive_paths.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT file_path, target FROM hourly_rollup_archive_replay \
-         WHERE dataset = 'codex_invocations' AND target IN (",
-    );
-    query
-        .push_bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
-        .push(", ")
-        .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
-        .push(", ")
-        .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-        .push(") AND file_path IN (");
-    {
-        let mut separated = query.separated(", ");
-        for path in archive_paths {
-            separated.push_bind(path);
-        }
-    }
-    query.push(")");
-    let rows = query
-        .build_query_as::<(String, String)>()
-        .fetch_all(pool)
-        .await
-        .context("summary projection archive replay coverage hydration failed")?;
     let mut coverage = HashMap::<String, SummaryProjectionArchiveReplayCoverage>::new();
-    for (file_path, target) in rows {
-        let entry = coverage.entry(file_path).or_default();
-        if target == HOURLY_ROLLUP_TARGET_INVOCATIONS {
-            entry.overall = true;
+    for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
+    {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT file_path, target FROM hourly_rollup_archive_replay \
+             WHERE dataset = 'codex_invocations' AND target IN (",
+        );
+        query
+            .push_bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+            .push(", ")
+            .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+            .push(", ")
+            .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+            .push(") AND file_path IN (");
+        {
+            let mut separated = query.separated(", ");
+            for path in archive_paths {
+                separated.push_bind(path);
+            }
         }
-        if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY {
-            entry.account_stats = true;
-        }
-        if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN {
-            entry.usage_breakdown = true;
+        query.push(")");
+        let rows = query
+            .build_query_as::<(String, String)>()
+            .fetch_all(pool)
+            .await
+            .context("summary projection archive replay coverage hydration failed")?;
+        for (file_path, target) in rows {
+            let entry = coverage.entry(file_path).or_default();
+            if target == HOURLY_ROLLUP_TARGET_INVOCATIONS {
+                entry.overall = true;
+            }
+            if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY {
+                entry.account_stats = true;
+            }
+            if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN {
+                entry.usage_breakdown = true;
+            }
         }
     }
     Ok(coverage)
@@ -16041,26 +16058,30 @@ async fn load_hourly_rollup_archive_progress_by_file_path(
         return Ok(HashMap::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT file_path, cursor_id FROM hourly_rollup_archive_progress WHERE dataset = ",
-    );
-    query.push_bind(dataset).push(" AND file_path IN (");
-    {
-        let mut separated = query.separated(", ");
-        for file_path in file_paths {
-            separated.push_bind(file_path);
+    let mut progress = HashMap::new();
+    for file_paths in file_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT file_path, cursor_id FROM hourly_rollup_archive_progress WHERE dataset = ",
+        );
+        query.push_bind(dataset).push(" AND file_path IN (");
+        {
+            let mut separated = query.separated(", ");
+            for file_path in file_paths {
+                separated.push_bind(file_path);
+            }
         }
-    }
-    query.push(")");
+        query.push(")");
 
-    let rows = query
-        .build_query_as::<HourlyRollupArchiveProgressRow>()
-        .fetch_all(pool)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.file_path, row.cursor_id.max(0)))
-        .collect())
+        progress.extend(
+            query
+                .build_query_as::<HourlyRollupArchiveProgressRow>()
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .map(|row| (row.file_path, row.cursor_id.max(0))),
+        );
+    }
+    Ok(progress)
 }
 
 async fn load_usage_breakdown_archive_progress_by_file_path(
@@ -26498,6 +26519,122 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate summary projection fixture");
+    }
+
+    #[tokio::test]
+    async fn summary_projection_hydrates_more_than_legacy_archive_manifest_limit_from_rollups() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let archive_start = Utc
+            .timestamp_opt(
+                align_bucket_epoch(
+                    (Utc::now() - ChronoDuration::days(1_000)).timestamp(),
+                    3_600,
+                    0,
+                ),
+                0,
+            )
+            .single()
+            .expect("align archive fixture to a full hour");
+        let archive_end = archive_start + ChronoDuration::hours(1);
+        let bucket = align_bucket_epoch(archive_start.timestamp(), 3_600, 0);
+
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert durable summary rollup");
+        sqlx::query(
+            "INSERT INTO upstream_account_stats_hourly \
+             (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert durable account summary rollup");
+        sqlx::query(
+            "WITH RECURSIVE manifests(ordinal) AS ( \
+                SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal <= 4096 \
+             ) \
+             INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+              historical_rollups_materialized_at, created_at) \
+             SELECT 'codex_invocations', '2026-01', \
+                    '/tmp/summary-manifest-admission-' || ordinal || '.sqlite.gz', \
+                    'summary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now') \
+             FROM manifests",
+        )
+        .bind(db_occurred_at_lower_bound(archive_start))
+        .bind(db_occurred_at_upper_bound(archive_end))
+        .execute(&state.pool)
+        .await
+        .expect("insert archive manifests beyond the legacy limit");
+        sqlx::query(
+            "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) \
+             SELECT id, 42, ?1 FROM archive_batches \
+             WHERE file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
+        )
+        .bind(db_occurred_at_lower_bound(archive_end))
+        .execute(&state.pool)
+        .await
+        .expect("record archive account manifests");
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+                 SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+                 WHERE file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
+            )
+            .bind(target)
+            .execute(&state.pool)
+            .await
+            .expect("record complete rollup replay coverage");
+        }
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate exact summary projection beyond the legacy manifest limit");
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve the hydrated all-time response without SQLite");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+        assert_eq!(response.total_cost, 1.25);
+
+        let Json(account_response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve the hydrated account response without SQLite");
+        assert_eq!(account_response.total_count, 1);
+        assert_eq!(account_response.total_tokens, 17);
+        assert_eq!(account_response.total_cost, 1.25);
     }
 
     #[tokio::test]
