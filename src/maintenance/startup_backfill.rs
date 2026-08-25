@@ -305,6 +305,18 @@ fn startup_backfill_pressure_retry_at(
     }
 }
 
+fn startup_backfill_pressure_retry_after(
+    retry_at: DateTime<Utc>,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> String {
+    match reason {
+        crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+            format_utc_iso_millis(retry_at)
+        }
+        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => format_utc_iso(retry_at),
+    }
+}
+
 fn startup_backfill_pressure_suspension_reason(
     reason: crate::db_pressure::DbPressureDenyReason,
 ) -> &'static str {
@@ -1412,14 +1424,7 @@ async fn run_startup_backfill_task_if_due_outcome(
         Ok(permit) => permit,
         Err(reason) => {
             let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-            let retry_after = match reason {
-                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
-                    format_utc_iso_millis(retry_at)
-                }
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                    format_utc_iso(retry_at)
-                }
-            };
+            let retry_after = startup_backfill_pressure_retry_after(retry_at, reason);
             let suspension_reason = startup_backfill_pressure_suspension_reason(reason);
             let deadline_registered = progress.next_run_after.as_deref() != Some(&retry_after)
                 || progress.suspension_reason.as_deref() != Some(suspension_reason);
@@ -1441,6 +1446,7 @@ async fn run_startup_backfill_task_if_due_outcome(
             }
             info!(
                 task = task.log_label(),
+                reason = %reason,
                 defer_kind = "pressure_gate",
                 defer_reason = %reason,
                 deadline_registered,
@@ -1535,46 +1541,61 @@ async fn run_startup_backfill_task_if_due_outcome(
             }
         }
         Err(err) => {
-            let failure_kind = startup_backfill_failure_kind(&err);
-            let retry_after = format_utc_iso(
-                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-            );
-            save_startup_backfill_progress(
-                &state.pool,
-                &task_name,
-                StartupBackfillProgressUpdate {
-                    cursor_id: progress.cursor_id,
-                    scanned: 0,
-                    updated: 0,
-                    zero_update_streak: progress.zero_update_streak,
-                    next_run_after: &retry_after,
-                    status: STARTUP_BACKFILL_STATUS_FAILED,
-                    suspension_reason: None,
-                },
+            let next_due = persist_startup_backfill_task_failure(
+                state, task, &task_name, &progress, started_at, &err,
             )
             .await?;
-            warn!(
-                task = task.log_label(),
-                task_name = %task_name,
-                cursor_id = progress.cursor_id,
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                next_run_after = %retry_after,
-                failure_kind = failure_kind.telemetry_reason(),
-                retry_kind = "bounded_operation_backoff",
-                error = %err,
-                "startup backfill pass failed"
-            );
             StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
                 deferred: false,
                 completed: true,
-                next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
+                next_due,
             }
         }
     };
 
     Ok(outcome)
+}
+
+pub(crate) async fn persist_startup_backfill_task_failure(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    started_at: Instant,
+    err: &anyhow::Error,
+) -> Result<DateTime<Utc>> {
+    let failure_kind = startup_backfill_failure_kind(err);
+    let retry_after = format_utc_iso(
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+    );
+    save_startup_backfill_progress(
+        &state.pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+            suspension_reason: None,
+        },
+    )
+    .await?;
+    warn!(
+        task = task.log_label(),
+        task_name,
+        cursor_id = progress.cursor_id,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        next_run_after = %retry_after,
+        failure_kind = failure_kind.telemetry_reason(),
+        retry_kind = "bounded_operation_backoff",
+        error = %err,
+        "startup backfill pass failed"
+    );
+    Ok(parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now))
 }
 
 fn startup_backfill_run_is_actionable(run: &StartupBackfillRunState) -> bool {
@@ -2150,6 +2171,42 @@ mod startup_backfill_tests {
     }
 
     #[test]
+    fn pressure_defer_schedules_one_deadline_and_dispatches_once() {
+        let scheduler = StartupBackfillScheduler::default();
+        let task = StartupBackfillTask::ReasoningEffort;
+        let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
+            .expect("valid fixed pressure deadline");
+        let retry_after = startup_backfill_pressure_retry_after(
+            deadline,
+            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 750 },
+        );
+        let retry_at = parse_to_utc_datetime(&retry_after).expect("parse millisecond deadline");
+        assert_eq!(retry_at, deadline);
+
+        scheduler.record_next_due(task, retry_at);
+        assert!(
+            scheduler
+                .drain_due_tasks(deadline - ChronoDuration::milliseconds(1))
+                .is_empty()
+        );
+        let waiting = scheduler.health_snapshot();
+        assert_eq!(waiting.wake_count, 0);
+        assert_eq!(waiting.due_dispatch_count, 0);
+        assert_eq!(waiting.pressure_defer_count, 0);
+        assert_eq!(waiting.scheduled_task_count, 1);
+
+        assert_eq!(scheduler.drain_due_tasks(deadline), vec![task]);
+        scheduler.record_task_result(task, false, true);
+        assert!(scheduler.drain_due_tasks(deadline).is_empty());
+        let deferred = scheduler.health_snapshot();
+        assert_eq!(deferred.wake_count, 0);
+        assert_eq!(deferred.due_dispatch_count, 1);
+        assert_eq!(deferred.pressure_defer_count, 1);
+        assert_eq!(deferred.scheduled_task_count, 0);
+        assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[test]
     fn sqlite_busy_and_locked_are_actual_backfill_failures() {
         for error in [
             anyhow::anyhow!("database is busy"),
@@ -2164,6 +2221,15 @@ mod startup_backfill_tests {
             startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
             StartupBackfillFailureKind::Operation
         );
+
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_task_result(StartupBackfillTask::ReasoningEffort, true, false);
+        let health = scheduler.health_snapshot();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.failure_count, 1);
+        assert_eq!(health.pressure_defer_count, 0);
+        assert_eq!(health.failed_task_count, 1);
+        assert_eq!(health.deferred_task_count, 0);
     }
 
     #[test]

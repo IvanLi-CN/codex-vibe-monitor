@@ -2086,11 +2086,11 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
     .await;
     let task = StartupBackfillTask::ReasoningEffort;
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-    while Utc::now().timestamp_subsec_millis() > 400 {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_millis(500));
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
     gate.record_pressure("test_pressure", "forced_cooldown");
+    let expected_deadline = gate
+        .pressure_cooldown_deadline_epoch_ms()
+        .expect("active pressure cooldown deadline");
     let before: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
     )
@@ -2115,6 +2115,12 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
         .clone()
         .expect("persisted pressure defer deadline");
     let first_finished_at = deferred.last_finished_at.clone();
+    assert_eq!(
+        parse_to_utc_datetime(&first_deadline)
+            .expect("parse persisted pressure deadline")
+            .timestamp_millis() as u64,
+        expected_deadline
+    );
     assert!(
         !deferred.is_due(Utc::now()),
         "the subsecond cooldown deadline must not be truncated into an immediate retry"
@@ -2151,6 +2157,61 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
         repeated.suspension_reason.as_deref(),
         Some("sqlite_pressure_cooldown"),
         "a gate refusal must remain distinct from a SQLite operation failure"
+    );
+}
+
+#[tokio::test]
+async fn startup_backfill_busy_failure_persists_failed_state_and_bounded_retry() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::ReasoningEffort;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let suspended_until = format_utc_iso(Utc::now() + ChronoDuration::hours(1));
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 12,
+            scanned: 4,
+            updated: 0,
+            zero_update_streak: 2,
+            next_run_after: &suspended_until,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: Some("sqlite_pressure_cooldown"),
+        },
+    )
+    .await
+    .expect("seed pressure-deferred progress");
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load seeded startup backfill progress");
+    let before_retry = Utc::now();
+    persist_startup_backfill_task_failure(
+        &state,
+        task,
+        &task_name,
+        &progress,
+        std::time::Instant::now(),
+        &anyhow::anyhow!("database table is locked"),
+    )
+    .await
+    .expect("record SQLite locked backfill failure");
+
+    let failed = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load failed startup backfill progress");
+    let retry_at = failed
+        .next_run_after
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .expect("parse bounded failure retry");
+    assert_eq!(failed.last_status, STARTUP_BACKFILL_STATUS_FAILED);
+    assert_eq!(failed.suspension_reason, None);
+    assert!(
+        retry_at >= before_retry + ChronoDuration::seconds(10),
+        "SQLite BUSY/LOCKED must use the bounded failure retry rather than a pressure defer"
     );
 }
 
