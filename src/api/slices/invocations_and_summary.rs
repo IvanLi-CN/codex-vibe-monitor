@@ -8,6 +8,7 @@ use crate::{
 use anyhow::anyhow;
 use chrono::{TimeZone, Timelike};
 use chrono_tz::TZ_VARIANTS;
+use flate2::read::GzDecoder;
 use futures_util::TryStreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -20,6 +21,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use std::{fs, io};
 use tracing::debug;
 
 #[cfg(test)]
@@ -9714,18 +9716,29 @@ async fn load_summary_projection_archive_manifest_sha256(
     Ok(sha256_by_file_path)
 }
 
+fn summary_projection_archive_file_is_readable(file_path: &str) -> bool {
+    let Ok(file) = fs::File::open(file_path) else {
+        return false;
+    };
+    let mut decoder = GzDecoder::new(file);
+    io::copy(&mut decoder, &mut io::sink()).is_ok()
+}
+
 fn verify_summary_projection_archive_file_path_sha256(
     file_path: &str,
     expected_sha256: &str,
 ) -> Result<()> {
-    let actual_sha256 =
-        crate::maintenance::sha256_hex_file(Path::new(file_path)).with_context(|| {
-            format!(
-                "summary projection archive identity read failed for {}",
-                file_path
-            )
-        })?;
+    let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(file_path)) {
+        Ok(actual_sha256) => actual_sha256,
+        // An unreadable archive contributes no raw data. Preserve the existing exact fallback:
+        // materialized rollups remain usable, while an unmaterialized source is marked
+        // unavailable by the strict archive readers below.
+        Err(_) => return Ok(()),
+    };
     if actual_sha256 != expected_sha256 {
+        if !summary_projection_archive_file_is_readable(file_path) {
+            return Ok(());
+        }
         return Err(anyhow!(
             "summary projection archive changed during hydration for {}",
             file_path
@@ -11224,6 +11237,12 @@ async fn build_summary_projection_once(
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
+            if replay_coverage.supports_unavailable_archive() {
+                // A complete replay marker is coupled to the same manifest SHA captured for
+                // this build. Its durable hourly baseline remains exact when the optional raw
+                // file is unreadable, so retain that source instead of degrading a full hour.
+                continue;
+            }
             // Complete replay can replace a full compact hour, but it cannot reconstruct this
             // request-visible partial hour or its usage/model detail. The raw archive is an
             // exact source for every range in `exact_ranges`; without it, retain unavailable
