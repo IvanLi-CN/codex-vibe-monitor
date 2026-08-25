@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 
 static TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+static SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
     pool: &SqlitePool,
@@ -22236,6 +22238,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
 
 #[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
+    let _identity_guard = SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("summary-paged-boundary-snapshot");
     let database_path = temp_dir.join("summary-projection.db");
     fs::File::create(&database_path).expect("create summary projection database");
@@ -22584,6 +22587,170 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             }
         }
     }
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
+    let _identity_guard = SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK.lock().await;
+    let temp_dir = make_temp_test_dir("summary-all-time-archive-identity");
+    let database_path = temp_dir.join("summary-projection.db");
+    fs::File::create(&database_path).expect("create summary projection database");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(4)
+        .connect(&test_sqlite_url_for_path(&database_path))
+        .await
+        .expect("open summary projection database");
+    let mut config = test_config();
+    config.database_path = database_path;
+    config.archive_dir = temp_dir.join("archives");
+    config.proxy_raw_dir = temp_dir.join("proxy-raw");
+    config.invocation_max_days = 7;
+    config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
+    fs::create_dir_all(&config.archive_dir).expect("create summary projection archive directory");
+    fs::create_dir_all(&config.proxy_raw_dir).expect("create summary projection raw directory");
+    let state = test_state_from_existing_pool(pool, config, true).await;
+    sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
+        .fetch_one(&state.pool)
+        .await
+        .expect("enable WAL for concurrent all-time snapshot writer coverage");
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(6, 0, 0)
+    .expect("valid archived local hour");
+    let archived_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("archived invocation time"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-all-time-archive-identity",
+        &[(
+            80_001,
+            "summary-all-time-archive-identity",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10,
+            0.10,
+            Some(100.0),
+        )],
+    )
+    .await;
+
+    let replacement_archive_db_path = state
+        .config
+        .archive_dir
+        .join("summary-all-time-archive-identity-replacement.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &replacement_archive_db_path)
+        .expect("inflate replacement all-time archive");
+    let replacement_archive_pool =
+        SqlitePool::connect(&test_sqlite_url_for_path(&replacement_archive_db_path))
+            .await
+            .expect("open replacement all-time archive");
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (id, invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response, created_at) \
+         VALUES (80002, 'summary-all-time-archive-identity-replacement', ?1, 'proxy', 'success', 99, 9.9, 'full', '{}', '{}', ?1)",
+    )
+    .bind(&archived_at)
+    .execute(&replacement_archive_pool)
+    .await
+    .expect("seed replacement all-time archive row");
+    replacement_archive_pool.close().await;
+    let replacement_archive_path = state
+        .config
+        .archive_dir
+        .join("summary-all-time-archive-identity-replacement.sqlite.gz");
+    deflate_sqlite_file_to_gzip(&replacement_archive_db_path, &replacement_archive_path)
+        .expect("compress replacement all-time archive");
+    let replacement_archive_sha256 =
+        sha256_hex_file(&replacement_archive_path).expect("hash replacement all-time archive");
+    fs::remove_file(&replacement_archive_db_path)
+        .expect("remove replacement all-time archive source");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("publish initial exact all-time archive snapshot");
+    sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
+        .execute(&state.pool)
+        .await
+        .expect("create all-time summary interleave gate");
+    let interleave = install_summary_projection_test_interleave();
+    let replacement_path = archive_path.to_string_lossy().to_string();
+    let replacement_pool = state.pool.clone();
+    let replacement_interleave = interleave.clone();
+    let replacement_archive_path_for_writer = replacement_archive_path.clone();
+    let archive_path_for_writer = archive_path.clone();
+    let replacement = tokio::spawn(async move {
+        replacement_interleave.wait_for_writer().await;
+        fs::rename(
+            &replacement_archive_path_for_writer,
+            &archive_path_for_writer,
+        )
+        .expect("atomically publish replacement all-time archive");
+        let mut tx = replacement_pool
+            .begin()
+            .await
+            .expect("begin all-time archive replacement");
+        sqlx::query(
+            "UPDATE archive_batches SET sha256 = ?1 \
+             WHERE dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(&replacement_archive_sha256)
+        .bind(&replacement_path)
+        .execute(tx.as_mut())
+        .await
+        .expect("replace all-time archive manifest SHA");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response) \
+             VALUES ('summary-all-time-archive-identity-terminal', ?1, 'proxy', 'success', 7, 0.07, 'full', '{}', '')",
+        )
+        .bind(&archived_at)
+        .execute(tx.as_mut())
+        .await
+        .expect("write terminal beside all-time archive replacement");
+        let commit = tokio::time::timeout(Duration::from_secs(2), tx.commit()).await;
+        replacement_interleave.resume_build();
+        commit
+            .expect("all-time archive replacement must not block the snapshot reader")
+            .expect("commit all-time archive replacement");
+    });
+    let hydration = hydrate_summary_snapshots(state.as_ref()).await;
+    replacement.await.expect("run all-time archive replacement");
+    clear_summary_projection_test_interleave();
+    let hydration_error = hydration.expect_err("reject the mixed all-time archive snapshot");
+    assert!(
+        hydration_error
+            .to_string()
+            .contains("summary projection archive changed during hydration"),
+        "unexpected all-time hydration failure: {hydration_error:?}"
+    );
+    assert_eq!(
+        interleave.build_attempts(),
+        1,
+        "the all-time archive mismatch must fail closed without retrying"
+    );
+    state.pool.close().await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the prior all-time snapshot without SQLite");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.total_tokens, 10);
+    assert_f64_close(summary.total_cost, 0.10);
     cleanup_temp_test_dir(&temp_dir);
 }
 

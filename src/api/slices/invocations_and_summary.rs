@@ -9714,24 +9714,92 @@ async fn load_summary_projection_archive_manifest_sha256(
     Ok(sha256_by_file_path)
 }
 
-fn verify_summary_projection_archive_file_sha256(
-    archive: &crate::stats::ArchiveBatchPathRow,
+fn verify_summary_projection_archive_file_path_sha256(
+    file_path: &str,
     expected_sha256: &str,
 ) -> Result<()> {
-    let actual_sha256 = crate::maintenance::sha256_hex_file(Path::new(archive.file_path()))
-        .with_context(|| {
+    let actual_sha256 =
+        crate::maintenance::sha256_hex_file(Path::new(file_path)).with_context(|| {
             format!(
                 "summary projection archive identity read failed for {}",
-                archive.file_path()
+                file_path
             )
         })?;
     if actual_sha256 != expected_sha256 {
         return Err(anyhow!(
             "summary projection archive changed during hydration for {}",
-            archive.file_path()
+            file_path
         ));
     }
     Ok(())
+}
+
+fn verify_summary_projection_archive_file_sha256(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    expected_sha256: &str,
+) -> Result<()> {
+    verify_summary_projection_archive_file_path_sha256(archive.file_path(), expected_sha256)
+}
+
+fn verify_summary_projection_archive_file_paths_sha256(
+    archive_paths: &[String],
+    expected_sha256_by_file_path: &HashMap<String, String>,
+) -> Result<()> {
+    for file_path in archive_paths {
+        let expected_sha256 = expected_sha256_by_file_path.get(file_path).ok_or_else(|| {
+            anyhow!(
+                "summary projection archive manifest SHA is missing for {}",
+                file_path
+            )
+        })?;
+        verify_summary_projection_archive_file_path_sha256(file_path, expected_sha256)?;
+    }
+    Ok(())
+}
+
+async fn load_summary_projection_all_time_archive_scan_paths(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<String>> {
+    // These are precisely the completed archive paths that the two generic all-time
+    // aggregators may inflate: the global pass handles missing invocation replay, and the
+    // account pass additionally handles unmaterialized archives missing account replay.
+    let paths = sqlx::query_scalar::<_, String>(
+        "SELECT batches.file_path \
+         FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND ( \
+               NOT EXISTS ( \
+                   SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                   WHERE replay.target = ?1 \
+                     AND replay.dataset = 'codex_invocations' \
+                     AND replay.file_path = batches.file_path \
+               ) \
+               OR ( \
+                   batches.historical_rollups_materialized_at IS NULL \
+                   AND NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?2 \
+                         AND replay.dataset = 'codex_invocations' \
+                         AND replay.file_path = batches.file_path \
+                   ) \
+               ) \
+           ) \
+         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC \
+         LIMIT ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
+    .fetch_all(pool)
+    .await
+    .context("summary projection all-time archive scan admission failed")?;
+    if paths.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        return Err(anyhow!(
+            "summary projection all-time archive scan cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+        ));
+    }
+    Ok(paths)
 }
 
 async fn load_summary_projection_archive_manifest_accounts(
@@ -10423,6 +10491,8 @@ async fn build_summary_projection_once(
         .iter()
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
+    let all_time_archive_manifest_sha256 =
+        load_summary_projection_archive_manifest_sha256(pool, &all_time_archive_paths).await?;
     let all_time_archive_replay_coverage =
         load_summary_projection_archive_replay_coverage(pool, &all_time_archive_paths).await?;
     let mut all_time_archive_account_ids_by_file = HashMap::<String, HashSet<i64>>::new();
@@ -11504,6 +11574,8 @@ async fn build_summary_projection_once(
     let all_time_built_at = Instant::now();
     let mut rebuilt_all_time_account_ids = HashSet::new();
     if all_time_was_fully_rebuilt && !all_time_archive_admission_exceeded {
+        let all_time_archive_scan_paths =
+            load_summary_projection_all_time_archive_scan_paths(pool).await?;
         // All-time must use the same bounded projection inputs as rolling windows. The generic
         // stats query can open every unmaterialized archive and therefore cannot run in the
         // refresh path without defeating the rebuild deadline.
@@ -11667,6 +11739,10 @@ async fn build_summary_projection_once(
                 })?,
             );
         }
+        verify_summary_projection_archive_file_paths_sha256(
+            &all_time_archive_scan_paths,
+            &all_time_archive_manifest_sha256,
+        )?;
         let unmaterialized_archive_totals =
             crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
                 pool,
@@ -11677,7 +11753,13 @@ async fn build_summary_projection_once(
             )
             .await;
         match unmaterialized_archive_totals {
-            Ok(totals) => global_totals = global_totals.add(totals),
+            Ok(totals) => {
+                verify_summary_projection_archive_file_paths_sha256(
+                    &all_time_archive_scan_paths,
+                    &all_time_archive_manifest_sha256,
+                )?;
+                global_totals = global_totals.add(totals);
+            }
             Err(error)
                 if error
                     .to_string()
@@ -11751,6 +11833,10 @@ async fn build_summary_projection_once(
                 *entry = entry.add(totals);
             }
         }
+        verify_summary_projection_archive_file_paths_sha256(
+            &all_time_archive_scan_paths,
+            &all_time_archive_manifest_sha256,
+        )?;
         let account_archive_totals =
             crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
                 pool,
@@ -11761,7 +11847,13 @@ async fn build_summary_projection_once(
             )
             .await;
         let account_archive_totals = match account_archive_totals {
-            Ok(totals) => totals,
+            Ok(totals) => {
+                verify_summary_projection_archive_file_paths_sha256(
+                    &all_time_archive_scan_paths,
+                    &all_time_archive_manifest_sha256,
+                )?;
+                totals
+            }
             Err(error)
                 if error
                     .to_string()
