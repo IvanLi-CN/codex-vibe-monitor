@@ -22214,24 +22214,138 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
 
 #[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
-    let state =
-        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
-            .await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
+    let state = test_state_from_config(config, true).await;
+    let archived_at_utc = Utc
+        .timestamp_opt(
+            (Utc::now() - ChronoDuration::hours(23) - ChronoDuration::minutes(58)).timestamp(),
+            0,
+        )
+        .single()
+        .expect("align boundary fixture to a whole second");
+    let archived_at = format_naive(archived_at_utc.with_timezone(&Shanghai).naive_local());
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-paged-boundary-manifest",
+        &[SeedInvocationArchiveBatchRow {
+            id: 70_001,
+            invoke_id: "summary-paged-boundary-manifest",
+            occurred_at: archived_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 20,
+            cost: 0.20,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":42,"responseModel":"gpt-5","reasoningEffort":"high"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches \
+         SET coverage_start_at = ?1, coverage_end_at = ?2, historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path = ?3",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(archived_at_utc))
+    .bind(crate::db_occurred_at_upper_bound(
+        archived_at_utc + ChronoDuration::minutes(1),
+    ))
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark the readable partial-hour archive materialized");
+    let mut tx = state.pool.begin().await.expect("begin boundary rollup tx");
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &[InvocationHourlySourceRecord {
+            id: 70_001,
+            occurred_at: archived_at,
+            source: SOURCE_PROXY.to_string(),
+            status: Some("success".to_string()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
+            model: None,
+            input_tokens: None,
+            output_tokens: Some(20),
+            cache_input_tokens: None,
+            reasoning_tokens: None,
+            total_tokens: Some(20),
+            cost: Some(0.20),
+            upstream_account_id: Some(42),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none".to_string()),
+            is_actionable: Some(0),
+            payload: Some(
+                r#"{"upstreamAccountId":42,"responseModel":"gpt-5","reasoningEffort":"high"}"#
+                    .to_string(),
+            ),
+            t_total_ms: None,
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: Some(120.0),
+            first_token_ms: None,
+            t_upstream_stream_ms: None,
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+        }],
+        &INVOCATION_HOURLY_ROLLUP_TARGETS,
+    )
+    .await
+    .expect("seed complete compact rollups for the readable boundary archive");
+    tx.commit().await.expect("commit boundary rollup tx");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
+
+    // These fully materialized older manifests force paging without needing raw records for a
+    // legal current/1d selection. Their compact aggregate belongs outside the exact boundary.
     let archive_start = Utc
         .timestamp_opt(
             crate::stats::align_bucket_epoch(
-                (Utc::now() - ChronoDuration::days(2)).timestamp(),
+                (Utc::now() - ChronoDuration::days(100)).timestamp(),
                 3_600,
                 0,
             ),
             0,
         )
         .single()
-        .expect("align archive fixture to a full hour within the exact horizon");
+        .expect("align compact manifest fixture to a full hour");
     let archive_end = archive_start + ChronoDuration::hours(1);
+    let compact_bucket = archive_start.timestamp();
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 4096, 4096, 0, 40960, 409.6, 0)",
+    )
+    .bind(compact_bucket)
+    .execute(&state.pool)
+    .await
+    .expect("seed compact global rollup for paged manifests");
+    sqlx::query(
+        "INSERT INTO upstream_account_usage_breakdown_hourly \
+         (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
+          request_count, output_tokens, cost_output, has_cost) \
+         VALUES (?1, 'proxy', '-1', 'gpt-5', 'high', 4096, 40960, 409.6, 1)",
+    )
+    .bind(compact_bucket)
+    .execute(&state.pool)
+    .await
+    .expect("seed compact global usage rollup for paged manifests");
     sqlx::query(
         "WITH RECURSIVE manifests(ordinal) AS ( \
-            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal <= 4096 \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 4096 \
          ) \
          INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
@@ -22261,36 +22375,47 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         .await
         .expect("record complete durable replay coverage");
     }
-    sqlx::query(
-        "INSERT INTO codex_invocations \
-         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-         VALUES ('summary-boundary-manifest-live', datetime('now'), 'proxy', 'success', 23, 2.5, \
-                 '{\"upstreamAccountId\":42,\"responseModel\":\"gpt-5\",\"reasoningEffort\":\"high\"}', '', 'full')",
-    )
-    .execute(&state.pool)
-    .await
-    .expect("insert exact live-tail row");
 
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("page durable boundary manifests instead of failing hydration");
     state.pool.close().await;
 
-    for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
-        let Json(response) = fetch_summary(
-            State(state.clone()),
-            Query(SummaryQuery {
-                window: Some(window.to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id,
-            }),
-        )
-        .await
-        .expect("serve the exact paged-boundary response without SQLite");
-        assert_eq!(response.total_count, 1, "window {window}");
-        assert_eq!(response.total_tokens, 23, "window {window}");
-        assert_eq!(response.total_cost, 2.5, "window {window}");
+    for window in ["current", "1d"] {
+        for upstream_account_id in [None, Some(42)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("serve the exact paged-boundary response without SQLite");
+            assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
+            assert_eq!(
+                response.total_tokens, 20,
+                "{window} {upstream_account_id:?}"
+            );
+            assert_f64_close(response.total_cost, 0.20);
+            if window == "1d" {
+                let model = response
+                    .usage_breakdown
+                    .expect("paged boundary usage breakdown")
+                    .models
+                    .into_iter()
+                    .find(|model| {
+                        model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high")
+                    })
+                    .expect("paged boundary model/reasoning detail");
+                assert_f64_close(
+                    model.costs.expect("paged boundary model costs").unknown,
+                    0.20,
+                );
+            }
+        }
     }
 }
 

@@ -7487,12 +7487,21 @@ impl SummaryProjection {
         }
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
-        if let Some((start, end)) = range
-            && self
+        let unavailable_archive_range_affects_query = match range {
+            Some((start, end)) => self
                 .unavailable_unmaterialized_archive_ranges
                 .iter()
-                .any(|unavailable| unavailable.start < end && start < unavailable.end)
-        {
+                .any(|unavailable| unavailable.start < end && start < unavailable.end),
+            // `current` is a bounded recent-record selection, rather than a timestamp range.
+            // Once a protected archive boundary cannot be reconstructed, its position in that
+            // selection is unknown without request-time I/O. Fail closed instead of returning a
+            // shorter in-memory list that silently omits the archive record.
+            None => {
+                matches!(window, SummaryWindow::Current(_))
+                    && !self.unavailable_unmaterialized_archive_ranges.is_empty()
+            }
+        };
+        if unavailable_archive_range_affects_query {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection archive source is unavailable for the requested range"
             )));
@@ -10511,11 +10520,10 @@ async fn build_summary_projection(
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if replay_coverage.supports_unavailable_archive() {
-                // Preserve the read-only historical fallback only when durable state proves
-                // every response dimension. A global-only replay marker is not enough.
-                continue;
-            }
+            // Complete replay can replace a full compact hour, but it cannot reconstruct this
+            // request-visible partial hour or its usage/model detail. The raw archive is an
+            // exact source for every range in `exact_ranges`; without it, retain unavailable
+            // rather than allowing the memory-only reducer to omit that contribution.
             if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
                 unavailable_unmaterialized_archive_ranges.push(archive_range);
             }
@@ -10599,9 +10607,12 @@ async fn build_summary_projection(
                     )
                     .await?
                 else {
-                    // Eligibility proved all targets are materialized. A missing immutable file
-                    // can therefore use the same compact baseline without degrading this exact
-                    // window; a missing proof would have taken the normal fail-closed path.
+                    // The page is durable enough to use compact rollups for full hours, but the
+                    // planned exact ranges still need raw partial-hour records. Mark the range
+                    // unavailable so HTTP cannot publish an undercount from the compact source.
+                    if !unavailable_unmaterialized_archive_ranges.contains(&archive_range) {
+                        unavailable_unmaterialized_archive_ranges.push(archive_range);
+                    }
                     continue;
                 };
                 merge_summary_projection_archive_records_with_coverage(
@@ -28256,7 +28267,7 @@ mod request_compression_query_tests {
         );
         state.pool.close().await;
 
-        for window in ["1d", "all"] {
+        for window in ["current", "1d", "all"] {
             let response = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
