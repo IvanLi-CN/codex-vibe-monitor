@@ -20,6 +20,32 @@ _Avoid_: 压缩响应, 最终已压缩
 The response-side proof that the upstream actually emitted a compaction item for the invocation.
 _Avoid_: 压缩请求, 已启用压缩
 
+## Runtime Read Models
+
+**Summary Projection**:
+An exact, immutable in-memory `StatsResponse` read model for a validated Summary
+selection. It is hydrated and reconciled outside the HTTP request path; it never
+stands for an approximate aggregate or a request-time SQLite/file fallback.
+_Avoid_: partial summary, zero fallback, request-time summary rebuild
+
+**Last-Good Snapshot**:
+The most recent exact read-model value that remains internally retained while a
+background refresh is unavailable. Its retention does not permit a stale or
+partial value to be represented as a fresh projection.
+_Avoid_: fabricated empty summary, implicit fresh cache
+
+**SQLite Pressure Defer**:
+A deliberate refusal of low-priority background database work before it acquires
+SQLite because the shared pressure gate is closed. It has one persisted next
+eligibility and an event/deadline wake; it is not a failed database operation.
+_Avoid_: lock retry, millisecond polling, work-completed audit
+
+**SQLite Lock Failure**:
+An actual SQLite `BUSY` or `LOCKED` result after work attempts database access.
+It follows the operation's bounded error backoff and is distinct from a pressure
+defer.
+_Avoid_: pressure defer, successful no-op
+
 ## Dashboard 上游账号活动
 
 **统计卡片**:
