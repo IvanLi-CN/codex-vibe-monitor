@@ -25,7 +25,7 @@ use std::{fs, io};
 use tracing::debug;
 
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
@@ -87,12 +87,21 @@ static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
 const SUMMARY_PROJECTION_TEST_INTERLEAVE_TABLE: &str = "summary_projection_test_interleave_gate";
 
 #[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SummaryProjectionTestInterleaveStage {
+    AfterRollupLoad,
+    AfterAllTimeArchiveDiscovery,
+    BeforeAllTimeArchiveScan,
+}
+
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct SummaryProjectionTestInterleave {
     writer_ready: Arc<tokio::sync::Notify>,
     resume_build: Arc<tokio::sync::Notify>,
-    paused: Arc<AtomicBool>,
     build_attempts: Arc<AtomicUsize>,
+    stages: Arc<[SummaryProjectionTestInterleaveStage]>,
+    next_stage_index: Arc<AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -117,11 +126,32 @@ impl SummaryProjectionTestInterleave {
 
 #[cfg(test)]
 pub(crate) fn install_summary_projection_test_interleave() -> SummaryProjectionTestInterleave {
+    install_summary_projection_test_interleave_at(
+        SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn install_summary_projection_test_interleave_at(
+    stage: SummaryProjectionTestInterleaveStage,
+) -> SummaryProjectionTestInterleave {
+    install_summary_projection_test_interleave_for_stages(&[stage])
+}
+
+#[cfg(test)]
+pub(crate) fn install_summary_projection_test_interleave_for_stages(
+    stages: &[SummaryProjectionTestInterleaveStage],
+) -> SummaryProjectionTestInterleave {
+    assert!(
+        !stages.is_empty(),
+        "summary projection test interleave needs at least one stage"
+    );
     let interleave = SummaryProjectionTestInterleave {
         writer_ready: Arc::new(tokio::sync::Notify::new()),
         resume_build: Arc::new(tokio::sync::Notify::new()),
-        paused: Arc::new(AtomicBool::new(false)),
         build_attempts: Arc::new(AtomicUsize::new(0)),
+        stages: stages.into(),
+        next_stage_index: Arc::new(AtomicUsize::new(0)),
     };
     let mut installed = SUMMARY_PROJECTION_TEST_INTERLEAVE
         .lock()
@@ -142,7 +172,10 @@ pub(crate) fn clear_summary_projection_test_interleave() {
 }
 
 #[cfg(test)]
-async fn pause_summary_projection_test_interleave(pool: &Pool<Sqlite>) -> Result<()> {
+async fn pause_summary_projection_test_interleave(
+    pool: &Pool<Sqlite>,
+    stage: SummaryProjectionTestInterleaveStage,
+) -> Result<()> {
     let table_present = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
     )
@@ -159,11 +192,14 @@ async fn pause_summary_projection_test_interleave(pool: &Pool<Sqlite>) -> Result
     let Some(interleave) = interleave else {
         return Ok(());
     };
-    interleave.build_attempts.fetch_add(1, Ordering::SeqCst);
-    if !interleave.paused.swap(true, Ordering::SeqCst) {
-        interleave.writer_ready.notify_one();
-        interleave.resume_build.notified().await;
+    let next_stage_index = interleave.next_stage_index.load(Ordering::SeqCst);
+    if interleave.stages.get(next_stage_index) != Some(&stage) {
+        return Ok(());
     }
+    interleave.next_stage_index.fetch_add(1, Ordering::SeqCst);
+    interleave.build_attempts.fetch_add(1, Ordering::SeqCst);
+    interleave.writer_ready.notify_one();
+    interleave.resume_build.notified().await;
     Ok(())
 }
 
@@ -9818,18 +9854,37 @@ fn require_summary_projection_archive_file_paths_sha256(
     Ok(())
 }
 
+struct SummaryProjectionAllTimeArchiveScanPaths {
+    global: Vec<String>,
+    account: Vec<String>,
+    global_unmaterialized_count: usize,
+}
+
 async fn load_summary_projection_all_time_archive_scan_paths(
     pool: &Pool<Sqlite>,
-) -> Result<Vec<String>> {
+) -> Result<SummaryProjectionAllTimeArchiveScanPaths> {
     // These are precisely the completed archive paths that the two generic all-time
     // aggregators may inflate: the global pass handles missing invocation replay, and the
     // account pass additionally handles unmaterialized archives missing account replay.
-    let paths = sqlx::query_scalar::<_, String>(
-        "SELECT batches.file_path \
+    let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT batches.file_path, \
+                NOT EXISTS ( \
+                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                    WHERE replay.target = ?1 \
+                      AND replay.dataset = 'codex_invocations' \
+                      AND replay.file_path = batches.file_path \
+                ) AS needs_global_archive_scan, \
+                (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
+                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                    WHERE replay.target = ?2 \
+                      AND replay.dataset = 'codex_invocations' \
+                      AND replay.file_path = batches.file_path \
+                )) AS needs_account_archive_scan, \
+                batches.historical_rollups_materialized_at IS NULL AS is_unmaterialized \
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
-           AND batches.status = 'completed' \
-           AND ( \
+         AND batches.status = 'completed' \
+         AND ( \
                NOT EXISTS ( \
                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                    WHERE replay.target = ?1 \
@@ -9855,12 +9910,32 @@ async fn load_summary_projection_all_time_archive_scan_paths(
     .fetch_all(pool)
     .await
     .context("summary projection all-time archive scan admission failed")?;
-    if paths.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+    if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
         return Err(anyhow!(
             "summary projection all-time archive scan cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
         ));
     }
-    Ok(paths)
+    let mut global = Vec::new();
+    let mut account = Vec::new();
+    let mut global_unmaterialized_count = 0usize;
+    for (file_path, needs_global_archive_scan, needs_account_archive_scan, is_unmaterialized) in
+        rows
+    {
+        if needs_global_archive_scan != 0 {
+            if is_unmaterialized != 0 {
+                global_unmaterialized_count += 1;
+            }
+            global.push(file_path.clone());
+        }
+        if needs_account_archive_scan != 0 {
+            account.push(file_path);
+        }
+    }
+    Ok(SummaryProjectionAllTimeArchiveScanPaths {
+        global,
+        account,
+        global_unmaterialized_count,
+    })
 }
 
 async fn load_summary_projection_archive_manifest_accounts(
@@ -10512,7 +10587,11 @@ async fn build_summary_projection_once(
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(pool, Some(rollup_range)).await?;
     #[cfg(test)]
-    pause_summary_projection_test_interleave(pool).await?;
+    pause_summary_projection_test_interleave(
+        pool,
+        SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+    )
+    .await?;
     // Rolling aggregation must still distinguish an archive-backed retention database from a
     // live-only one. This bounded existence probe is independent of the expensive all-history
     // manifest admission below.
@@ -11820,39 +11899,62 @@ async fn build_summary_projection_once(
                 })?,
             );
         }
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            pool,
+            SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
+        )
+        .await?;
         let global_archive_scan_verified_paths =
             verify_summary_projection_archive_file_paths_sha256(
-                &all_time_archive_scan_paths,
+                &all_time_archive_scan_paths.global,
                 &all_time_archive_manifest_sha256,
             )?;
-        let unmaterialized_archive_totals =
-            crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
-                pool,
-                InvocationSourceScope::All,
-                None,
-                Some(live_tail_ids),
-                SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
-            )
-            .await;
-        match unmaterialized_archive_totals {
-            Ok(totals) => {
-                require_summary_projection_archive_file_paths_sha256(
-                    &global_archive_scan_verified_paths,
-                    &all_time_archive_manifest_sha256,
-                )?;
-                global_totals = global_totals.add(totals);
-            }
-            Err(error)
-                if error
-                    .to_string()
-                    .starts_with("summary archive is unavailable:") =>
-            {
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            pool,
+            SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
+        )
+        .await?;
+        if global_archive_scan_verified_paths.len() != all_time_archive_scan_paths.global.len() {
+            // The generic global aggregate chooses its own archive paths inside `stats`. Do not
+            // let a source which was unavailable at preflight become readable and enter that
+            // scan under a different manifest revision. When every candidate is already
+            // materialized, the compact global rollup is its exact all-time source and no raw
+            // reconciliation is necessary; otherwise retain the last-good global aggregate.
+            if all_time_archive_scan_paths.global_unmaterialized_count != 0 {
                 global_all_time_source_unavailable = true;
             }
-            Err(error) => {
-                return Err(anyhow!(
-                    "summary projection global archive hydration failed: {error:?}"
-                ));
+        } else {
+            let unmaterialized_archive_totals =
+                crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
+                    pool,
+                    InvocationSourceScope::All,
+                    None,
+                    Some(live_tail_ids),
+                    SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+                )
+                .await;
+            match unmaterialized_archive_totals {
+                Ok(totals) => {
+                    require_summary_projection_archive_file_paths_sha256(
+                        &all_time_archive_scan_paths.global,
+                        &all_time_archive_manifest_sha256,
+                    )?;
+                    global_totals = global_totals.add(totals);
+                }
+                Err(error)
+                    if error
+                        .to_string()
+                        .starts_with("summary archive is unavailable:") =>
+                {
+                    global_all_time_source_unavailable = true;
+                }
+                Err(error) => {
+                    return Err(anyhow!(
+                        "summary projection global archive hydration failed: {error:?}"
+                    ));
+                }
             }
         }
         // Any materialized compact gap, including a missing rollup key with complete replay
@@ -11917,52 +12019,47 @@ async fn build_summary_projection_once(
         }
         let account_archive_scan_verified_paths =
             verify_summary_projection_archive_file_paths_sha256(
-                &all_time_archive_scan_paths,
+                &all_time_archive_scan_paths.account,
                 &all_time_archive_manifest_sha256,
             )?;
-        let account_archive_totals =
-            crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
-                pool,
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-                InvocationSourceScope::All,
-                None,
-                Some(live_tail_ids),
-            )
-            .await;
-        let account_archive_totals = match account_archive_totals {
-            Ok(totals) => {
-                require_summary_projection_archive_file_paths_sha256(
-                    &account_archive_scan_verified_paths,
-                    &all_time_archive_manifest_sha256,
-                )?;
-                totals
-            }
-            Err(error)
-                if error
-                    .to_string()
-                    .starts_with("summary account archive is unavailable:") =>
-            {
-                // Global rollups remain a valid read-only fallback for this refresh, but an
-                // account response would be an undercount without the missing archive. Restore
-                // the exact last-good account map so a fresh prior response remains serviceable
-                // within its own freshness budget instead of publishing a partial aggregate.
-                account_all_time_unavailable = true;
-                all_time_by_account.retain(|account_id, _| account_id.is_none());
-                for (account_id, response) in previous_all_time_by_account
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(HashMap::iter)
-                {
-                    if account_id.is_some() {
-                        all_time_by_account.insert(*account_id, response.clone());
-                    }
+        let account_archive_totals = if account_archive_scan_verified_paths.len()
+            != all_time_archive_scan_paths.account.len()
+        {
+            account_all_time_unavailable = true;
+            HashMap::new()
+        } else {
+            let account_archive_totals =
+                crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
+                    pool,
+                    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+                    InvocationSourceScope::All,
+                    None,
+                    Some(live_tail_ids),
+                )
+                .await;
+            match account_archive_totals {
+                Ok(totals) => {
+                    require_summary_projection_archive_file_paths_sha256(
+                        &all_time_archive_scan_paths.account,
+                        &all_time_archive_manifest_sha256,
+                    )?;
+                    totals
                 }
-                HashMap::new()
-            }
-            Err(error) => {
-                return Err(anyhow!(
-                    "summary projection account archive hydration failed: {error:?}"
-                ));
+                Err(error)
+                    if error
+                        .to_string()
+                        .starts_with("summary account archive is unavailable:") =>
+                {
+                    // Global rollups remain a valid read-only fallback for this refresh, but an
+                    // account response would be an undercount without the missing archive.
+                    account_all_time_unavailable = true;
+                    HashMap::new()
+                }
+                Err(error) => {
+                    return Err(anyhow!(
+                        "summary projection account archive hydration failed: {error:?}"
+                    ));
+                }
             }
         };
         for (account_id, totals) in account_archive_totals {

@@ -22787,6 +22787,12 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
         )],
     )
     .await;
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        &archive_path,
+    )
+    .await;
 
     let replacement_archive_db_path = state
         .config
@@ -22826,13 +22832,20 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
         .execute(&state.pool)
         .await
         .expect("create all-time summary interleave gate");
-    let interleave = install_summary_projection_test_interleave();
+    let interleave = install_summary_projection_test_interleave_for_stages(&[
+        SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
+        SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
+    ]);
     let replacement_path = archive_path.to_string_lossy().to_string();
     let replacement_pool = state.pool.clone();
     let replacement_interleave = interleave.clone();
     let replacement_archive_path_for_writer = replacement_archive_path.clone();
     let archive_path_for_writer = archive_path.clone();
     let replacement = tokio::spawn(async move {
+        replacement_interleave.wait_for_writer().await;
+        fs::write(&archive_path_for_writer, b"not-a-gzip-archive")
+            .expect("make all-time archive unavailable after discovery");
+        replacement_interleave.resume_build();
         replacement_interleave.wait_for_writer().await;
         fs::rename(
             &replacement_archive_path_for_writer,
@@ -22870,17 +22883,11 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
     let hydration = hydrate_summary_snapshots(state.as_ref()).await;
     replacement.await.expect("run all-time archive replacement");
     clear_summary_projection_test_interleave();
-    let hydration_error = hydration.expect_err("reject the mixed all-time archive snapshot");
-    assert!(
-        hydration_error
-            .to_string()
-            .contains("summary projection archive changed during hydration"),
-        "unexpected all-time hydration failure: {hydration_error:?}"
-    );
+    hydration.expect("retain the prior all-time aggregate without scanning a replaced archive");
     assert_eq!(
         interleave.build_attempts(),
-        1,
-        "the all-time archive mismatch must fail closed without retrying"
+        2,
+        "the all-time identity regression must drive both preflight transitions exactly once"
     );
     state.pool.close().await;
 
