@@ -181,6 +181,9 @@ pub(crate) async fn run() -> Result<()> {
 
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
+    // Keep all existing minute coverage behind exact reads until the P2 supervisor has invalidated
+    // it in bounded transactions. This happens before the HTTP listener is created.
+    mark_timeseries_minute_projection_startup_recovery(&pool).await?;
     log_startup_phase("schema", schema_started_at);
     recover_raw_overflow_spools(&config).await;
     if should_recover_pending_pool_attempts_on_startup(&cli) {

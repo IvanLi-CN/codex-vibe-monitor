@@ -474,7 +474,7 @@ async fn raw_overflow_spool_recovery_retains_a_capture_when_a_later_segment_is_c
 }
 
 #[tokio::test]
-async fn non_proxy_terminal_transition_invalidates_all_timeseries_projection_coverage() {
+async fn non_proxy_terminal_transition_marks_timeseries_projection_recovery() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -509,7 +509,14 @@ async fn non_proxy_terminal_transition_invalidates_all_timeseries_projection_cov
     .fetch_one(&state.pool)
     .await
     .expect("load all projection coverage");
-    assert_eq!(coverage_state, "warming");
+    assert_eq!(coverage_state, "ready");
+    let recovery_pending = sqlx::query_scalar::<_, i64>(
+        "SELECT invalidation_pending FROM timeseries_minute_projection_v2_recovery WHERE consumer = 'timeseries_minute_v2'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load durable projection recovery marker");
+    assert_eq!(recovery_pending, 1);
 }
 
 #[tokio::test]
