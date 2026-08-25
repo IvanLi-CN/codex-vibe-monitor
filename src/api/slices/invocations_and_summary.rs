@@ -9724,37 +9724,77 @@ fn summary_projection_archive_file_is_readable(file_path: &str) -> bool {
     io::copy(&mut decoder, &mut io::sink()).is_ok()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SummaryProjectionArchiveFileIdentity {
+    Verified,
+    Unavailable,
+}
+
 fn verify_summary_projection_archive_file_path_sha256(
     file_path: &str,
     expected_sha256: &str,
-) -> Result<()> {
+) -> Result<SummaryProjectionArchiveFileIdentity> {
     let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(file_path)) {
         Ok(actual_sha256) => actual_sha256,
         // An unreadable archive contributes no raw data. Preserve the existing exact fallback:
         // materialized rollups remain usable, while an unmaterialized source is marked
         // unavailable by the strict archive readers below.
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(SummaryProjectionArchiveFileIdentity::Unavailable),
     };
     if actual_sha256 != expected_sha256 {
         if !summary_projection_archive_file_is_readable(file_path) {
-            return Ok(());
+            return Ok(SummaryProjectionArchiveFileIdentity::Unavailable);
         }
         return Err(anyhow!(
             "summary projection archive changed during hydration for {}",
             file_path
         ));
     }
-    Ok(())
+    Ok(SummaryProjectionArchiveFileIdentity::Verified)
 }
 
 fn verify_summary_projection_archive_file_sha256(
     archive: &crate::stats::ArchiveBatchPathRow,
     expected_sha256: &str,
-) -> Result<()> {
+) -> Result<SummaryProjectionArchiveFileIdentity> {
     verify_summary_projection_archive_file_path_sha256(archive.file_path(), expected_sha256)
 }
 
+fn require_summary_projection_archive_file_sha256(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    expected_sha256: &str,
+) -> Result<()> {
+    match verify_summary_projection_archive_file_sha256(archive, expected_sha256)? {
+        SummaryProjectionArchiveFileIdentity::Verified => Ok(()),
+        SummaryProjectionArchiveFileIdentity::Unavailable => Err(anyhow!(
+            "summary projection archive became unavailable during hydration for {}",
+            archive.file_path()
+        )),
+    }
+}
+
 fn verify_summary_projection_archive_file_paths_sha256(
+    archive_paths: &[String],
+    expected_sha256_by_file_path: &HashMap<String, String>,
+) -> Result<Vec<String>> {
+    let mut verified_paths = Vec::with_capacity(archive_paths.len());
+    for file_path in archive_paths {
+        let expected_sha256 = expected_sha256_by_file_path.get(file_path).ok_or_else(|| {
+            anyhow!(
+                "summary projection archive manifest SHA is missing for {}",
+                file_path
+            )
+        })?;
+        if verify_summary_projection_archive_file_path_sha256(file_path, expected_sha256)?
+            == SummaryProjectionArchiveFileIdentity::Verified
+        {
+            verified_paths.push(file_path.clone());
+        }
+    }
+    Ok(verified_paths)
+}
+
+fn require_summary_projection_archive_file_paths_sha256(
     archive_paths: &[String],
     expected_sha256_by_file_path: &HashMap<String, String>,
 ) -> Result<()> {
@@ -9765,7 +9805,15 @@ fn verify_summary_projection_archive_file_paths_sha256(
                 file_path
             )
         })?;
-        verify_summary_projection_archive_file_path_sha256(file_path, expected_sha256)?;
+        match verify_summary_projection_archive_file_path_sha256(file_path, expected_sha256)? {
+            SummaryProjectionArchiveFileIdentity::Verified => {}
+            SummaryProjectionArchiveFileIdentity::Unavailable => {
+                return Err(anyhow!(
+                    "summary projection archive became unavailable during hydration for {}",
+                    file_path
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -10775,6 +10823,9 @@ async fn build_summary_projection_once(
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
     let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
+    // Rolling boundary ranges may need raw records even when an all-time compact rollup is
+    // complete. Keep that narrower unavailability separate from all-time source proof.
+    let mut all_time_source_unavailable_from_archive_ranges = false;
     // Discover accounts from archive rows before planning full-hour coverage. Pools are opened
     // and closed one at a time so a large retention horizon never keeps every inflated archive
     // resident concurrently. Immutable completed archives reuse the cached account set on later
@@ -10860,13 +10911,14 @@ async fn build_summary_projection_once(
                 // global total could conceal missing account or usage/model detail.
                 continue;
             }
+            all_time_source_unavailable_from_archive_ranges = true;
             summary_projection_mark_unavailable_archive_ranges(
                 &mut unavailable_unmaterialized_archive_buckets,
                 [archive_range],
             )?;
             continue;
         };
-        verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         if !summary_projection_archive_has_coverage_bounds(archive)
             && let Some(actual_range) = load_summary_projection_archive_coverage_range(
                 &archive_pool,
@@ -10903,7 +10955,7 @@ async fn build_summary_projection_once(
             ));
         }
         archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
-        verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -11230,18 +11282,25 @@ async fn build_summary_projection_once(
                     archive.file_path()
                 )
             })?;
-        if Path::new(archive.file_path()).exists() {
-            verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+        if Path::new(archive.file_path()).exists()
+            && verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?
+                == SummaryProjectionArchiveFileIdentity::Unavailable
+        {
+            if !replay_coverage.supports_unavailable_archive() {
+                all_time_source_unavailable_from_archive_ranges = true;
+            }
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut unavailable_unmaterialized_archive_buckets,
+                exact_ranges,
+            )?;
+            continue;
         }
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if replay_coverage.supports_unavailable_archive() {
-                // A complete replay marker is coupled to the same manifest SHA captured for
-                // this build. Its durable hourly baseline remains exact when the optional raw
-                // file is unreadable, so retain that source instead of degrading a full hour.
-                continue;
+            if !replay_coverage.supports_unavailable_archive() {
+                all_time_source_unavailable_from_archive_ranges = true;
             }
             // Complete replay can replace a full compact hour, but it cannot reconstruct this
             // request-visible partial hour or its usage/model detail. The raw archive is an
@@ -11253,7 +11312,7 @@ async fn build_summary_projection_once(
             )?;
             continue;
         };
-        verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+        require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
         merge_summary_projection_archive_records_with_coverage(
             &archive_pool,
             pool,
@@ -11279,7 +11338,7 @@ async fn build_summary_projection_once(
                 archive.file_path()
             )
         })?;
-        verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+        require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
         archive_pool.close().await;
         drop(temp_cleanup);
     }
@@ -11360,8 +11419,15 @@ async fn build_summary_projection_once(
                                 archive.file_path()
                             )
                         })?;
-                if Path::new(archive.file_path()).exists() {
-                    verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+                if Path::new(archive.file_path()).exists()
+                    && verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?
+                        == SummaryProjectionArchiveFileIdentity::Unavailable
+                {
+                    summary_projection_mark_unavailable_archive_ranges(
+                        &mut unavailable_unmaterialized_archive_buckets,
+                        exact_ranges,
+                    )?;
+                    continue;
                 }
                 let Some((archive_pool, temp_cleanup)) =
                     crate::stats::open_invocation_archive_batch_pool(
@@ -11379,7 +11445,7 @@ async fn build_summary_projection_once(
                     )?;
                     continue;
                 };
-                verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+                require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
                 merge_summary_projection_archive_records_with_coverage(
                     &archive_pool,
                     pool,
@@ -11405,7 +11471,7 @@ async fn build_summary_projection_once(
                         archive.file_path()
                     )
                 })?;
-                verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
+                require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
                 archive_pool.close().await;
                 drop(temp_cleanup);
             }
@@ -11432,8 +11498,9 @@ async fn build_summary_projection_once(
             record.usage_account_rollup_covered = false;
         }
     }
-    let mut global_all_time_source_unavailable =
-        all_time_global_exact_source_unavailable || all_time_archive_admission_exceeded;
+    let mut global_all_time_source_unavailable = all_time_global_exact_source_unavailable
+        || all_time_archive_admission_exceeded
+        || all_time_source_unavailable_from_archive_ranges;
     // Runtime is an authoritative typed overlay until the terminal writer persists it.  Replace
     // only matching live keys; a new in-flight record is inserted exactly once.
     for runtime_record in state.proxy_runtime_invocations.snapshot() {
@@ -11584,7 +11651,8 @@ async fn build_summary_projection_once(
     let mut batched_all_time_by_account = HashMap::<i64, StatsTotals>::new();
     let mut account_all_time_unavailable = all_time_account_exact_source_unavailable
         || all_time_archive_admission_exceeded
-        || all_time_account_manifest_admission_exceeded;
+        || all_time_account_manifest_admission_exceeded
+        || all_time_source_unavailable_from_archive_ranges;
     // Rolling-only rebuilds preserve the already-owned all-time map unchanged. Avoid a second
     // high-cardinality clone on that path; a previous copy is needed only when an all-time
     // rebuild may have to restore an exact last-good aggregate after a source failure.
@@ -11663,11 +11731,6 @@ async fn build_summary_projection_once(
             all_time_archive_admission_exceeded |= !global_rollup_coverage_proven;
             all_time_account_manifest_admission_exceeded |= !account_rollup_coverage_proven;
         }
-        // An unreadable archive without replay coverage cannot contribute to either compact
-        // all-time aggregate. Preserve last-good/unavailable for `all`; range selections use
-        // the bounded marker carried by this projection.
-        global_all_time_source_unavailable |=
-            !unavailable_unmaterialized_archive_buckets.is_empty();
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
@@ -11743,7 +11806,6 @@ async fn build_summary_projection_once(
                 account_all_time_unavailable = true;
             }
         }
-        account_all_time_unavailable |= !unavailable_unmaterialized_archive_buckets.is_empty();
         if has_any_completed_archive && rollup_live_cursor > 0 {
             global_totals = global_totals.add(
                 crate::stats::query_live_invocation_totals_after_id(
@@ -11758,10 +11820,11 @@ async fn build_summary_projection_once(
                 })?,
             );
         }
-        verify_summary_projection_archive_file_paths_sha256(
-            &all_time_archive_scan_paths,
-            &all_time_archive_manifest_sha256,
-        )?;
+        let global_archive_scan_verified_paths =
+            verify_summary_projection_archive_file_paths_sha256(
+                &all_time_archive_scan_paths,
+                &all_time_archive_manifest_sha256,
+            )?;
         let unmaterialized_archive_totals =
             crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
                 pool,
@@ -11773,8 +11836,8 @@ async fn build_summary_projection_once(
             .await;
         match unmaterialized_archive_totals {
             Ok(totals) => {
-                verify_summary_projection_archive_file_paths_sha256(
-                    &all_time_archive_scan_paths,
+                require_summary_projection_archive_file_paths_sha256(
+                    &global_archive_scan_verified_paths,
                     &all_time_archive_manifest_sha256,
                 )?;
                 global_totals = global_totals.add(totals);
@@ -11852,10 +11915,11 @@ async fn build_summary_projection_once(
                 *entry = entry.add(totals);
             }
         }
-        verify_summary_projection_archive_file_paths_sha256(
-            &all_time_archive_scan_paths,
-            &all_time_archive_manifest_sha256,
-        )?;
+        let account_archive_scan_verified_paths =
+            verify_summary_projection_archive_file_paths_sha256(
+                &all_time_archive_scan_paths,
+                &all_time_archive_manifest_sha256,
+            )?;
         let account_archive_totals =
             crate::stats::query_unmaterialized_upstream_account_archive_totals_by_account(
                 pool,
@@ -11867,8 +11931,8 @@ async fn build_summary_projection_once(
             .await;
         let account_archive_totals = match account_archive_totals {
             Ok(totals) => {
-                verify_summary_projection_archive_file_paths_sha256(
-                    &all_time_archive_scan_paths,
+                require_summary_projection_archive_file_paths_sha256(
+                    &account_archive_scan_verified_paths,
                     &all_time_archive_manifest_sha256,
                 )?;
                 totals

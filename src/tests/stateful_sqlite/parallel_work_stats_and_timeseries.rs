@@ -4208,6 +4208,151 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_materialized_s
 }
 
 #[tokio::test]
+async fn summary_projection_rejects_clipped_rolling_boundary_for_unreadable_replayed_archive() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let boundary = Utc::now() - ChronoDuration::days(7);
+    let before_boundary = format_naive(
+        (boundary - ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let after_boundary = format_naive(
+        (boundary + ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let original_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-clipped-boundary-unreadable",
+        &[
+            (
+                1_i64,
+                "summary-clipped-boundary-before",
+                before_boundary.as_str(),
+                SOURCE_PROXY,
+                "success",
+                10_i64,
+                0.10_f64,
+                Some(100.0),
+            ),
+            (
+                2_i64,
+                "summary-clipped-boundary-after",
+                after_boundary.as_str(),
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            ),
+        ],
+    )
+    .await;
+    let archive_path = state
+        .config
+        .archive_dir
+        .join("summary-clipped-boundary-unreadable.sqlite.gz");
+    let _ = fs::remove_file(&archive_path);
+    fs::rename(&original_path, &archive_path)
+        .expect("move clipped-boundary archive to a unique path");
+    sqlx::query(
+        "UPDATE archive_batches \
+         SET file_path = ?1, historical_rollups_materialized_at = datetime('now'), \
+             coverage_start_at = ?3, coverage_end_at = ?4 \
+         WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(original_path.to_string_lossy().to_string())
+    .bind(&before_boundary)
+    .bind(&after_boundary)
+    .execute(&state.pool)
+    .await
+    .expect("mark clipped-boundary archive as materialized");
+
+    let mut materialized_buckets = std::collections::HashSet::new();
+    for (occurred_at, total_tokens, total_cost) in [
+        (before_boundary.as_str(), 10_i64, 0.10_f64),
+        (after_boundary.as_str(), 20_i64, 0.20_f64),
+    ] {
+        let bucket_start_epoch = invocation_bucket_start_epoch(occurred_at)
+            .expect("clipped-boundary hour should have a durable bucket");
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) \
+             VALUES (?1, ?2, 1, 1, 0, ?3, ?4) \
+             ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET \
+                 total_count = total_count + excluded.total_count, \
+                 success_count = success_count + excluded.success_count, \
+                 total_tokens = total_tokens + excluded.total_tokens, \
+                 total_cost = total_cost + excluded.total_cost",
+        )
+        .bind(bucket_start_epoch)
+        .bind(SOURCE_PROXY)
+        .bind(total_tokens)
+        .bind(total_cost)
+        .execute(&state.pool)
+        .await
+        .expect("seed full-hour durable rollup");
+        if materialized_buckets.insert(bucket_start_epoch) {
+            insert_materialized_rollup_bucket_marker(
+                &state.pool,
+                HOURLY_ROLLUP_TARGET_INVOCATIONS,
+                bucket_start_epoch,
+                SOURCE_PROXY,
+            )
+            .await;
+        }
+    }
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("corrupt clipped-boundary archive after durable replay");
+
+    let Json(all_time) = fetch_summary_from_memory_snapshot(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("all-time durable rollup remains exact");
+    assert_eq!(all_time.total_count, 2);
+    assert_eq!(all_time.total_tokens, 30);
+
+    let refresh_error = hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect_err("a clipped rolling boundary requires the unreadable raw archive");
+    assert!(
+        refresh_error
+            .to_string()
+            .contains("summary projection archive source is unavailable"),
+        "the refresh must fail closed instead of publishing a clipped full-hour rollup: {refresh_error:#}"
+    );
+    let rolling = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(rolling, Err(ApiError::Unavailable(_))),
+        "a clipped rolling boundary must not use the over-inclusive full-hour rollup: {rolling:?}"
+    );
+}
+
+#[tokio::test]
 async fn all_time_summary_skips_double_count_for_readable_materialized_archive_when_same_bucket_sibling_is_unreadable()
  {
     let mut config = test_config();
