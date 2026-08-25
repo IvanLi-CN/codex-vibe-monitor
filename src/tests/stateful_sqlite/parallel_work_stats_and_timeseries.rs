@@ -2632,8 +2632,10 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     config.invocation_max_days = 7;
     let state = test_state_from_config(config, true).await;
 
+    // Keep this beyond the rolling exact horizon (retention plus the 31-day grace window) so
+    // only the all-time generic archive aggregation can observe the replacement.
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
+        - ChronoDuration::days(45))
     .and_hms_opt(8, 0, 0)
     .expect("valid archived local hour");
     let archived_success_at = format_naive(
