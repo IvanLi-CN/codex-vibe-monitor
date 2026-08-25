@@ -22081,3 +22081,109 @@ async fn materialized_timeseries_uses_exact_fallback_for_same_cursor_terminal_re
     assert_eq!(point["successCount"], 0);
     assert_eq!(point["failureCount"], 1);
 }
+
+#[tokio::test]
+async fn summary_projection_hydrates_rollups_beyond_archive_manifest_admission() {
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let archive_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::days(1_000)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align archive fixture to a full hour");
+    let archive_end = archive_start + ChronoDuration::hours(1);
+    let bucket = crate::stats::align_bucket_epoch(archive_start.timestamp(), 3_600, 0);
+
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("insert durable summary rollup");
+    sqlx::query(
+        "INSERT INTO upstream_account_stats_hourly \
+         (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("insert durable account summary rollup");
+    sqlx::query(
+        "WITH RECURSIVE manifests(ordinal) AS ( \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal <= 50000 \
+         ) \
+         INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, created_at) \
+         SELECT 'codex_invocations', '2026-01', \
+                '/tmp/summary-manifest-admission-' || ordinal || '.sqlite.gz', \
+                'summary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now') \
+         FROM manifests",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .execute(&state.pool)
+    .await
+    .expect("insert archive manifests beyond the exact-record admission");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+             WHERE file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record complete rollup replay coverage");
+    }
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate exact summary projection beyond manifest admission");
+    state.pool.close().await;
+
+    let Json(response) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the hydrated all-time response without SQLite");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 17);
+    assert_eq!(response.total_cost, 1.25);
+
+    let Json(account_response) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await
+    .expect("serve the hydrated account response without SQLite");
+    assert_eq!(account_response.total_count, 1);
+    assert_eq!(account_response.total_tokens, 17);
+    assert_eq!(account_response.total_cost, 1.25);
+}
