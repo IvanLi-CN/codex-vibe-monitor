@@ -49,6 +49,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 对已验证的合法 Summary query，HTTP handler 只能读取内存 Projection；SQL 与文件访问计数必须为零。
 - Projection 必须返回完整且精确的既有 `StatsResponse`，包括 totals、usage、model、reasoning、cost 与 account scope 语义；不得把部分 aggregate、空 totals 或临时近似当作正常响应。
 - 历史全小时由 durable rollup 服务；任一 window 的未完整覆盖边界、live tail、account-lag 与 archive overlap 必须由精确记录补齐，并且 source partition 合并不得遗漏或重复。
+- 最近索引超过固定预算时，Projection 必须保留首个省略 live 行的时间边界；任何覆盖该边界或更早时间的 rolling/calendar 全局或 account 请求必须 `unavailable`，不得以截断索引或请求期回源返回 totals；边界之后、完整保留的窗口继续从内存精确响应。
 - archive manifest 或历史容量超过固定内存 admission 预算时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
@@ -119,6 +120,7 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
 - Given 低 retention 且 31 天外的高基数 rollup 超出 admission，When Summary Projection hydrate，Then 合法 30d 仍精确、可用且仅从内存读取。
 - Given global、account 与 source-partitioned rollup 覆盖不一致，When 请求边界或 account scope，Then 响应没有重复、漏项或缺失 usage/model/reasoning/cost 详情。
+- Given 49,999 个 48 小时内的 live 行和至少两个仍在合法 rolling window 内、但落后 global/account cursor 的更早 live 行，When 最近索引超过 50,000 条，Then 覆盖省略边界的 global 与 account rolling 请求返回 `unavailable`，较新的完整窗口仍从内存精确响应且不执行 SQL 或文件 I/O。
 - Given pressure cooldown 关闭，When 同一 startup backfill task 被触发，Then 只记录一次内存 scheduler next-eligibility/event wake，不产生毫秒级 defer storm、SQLite pre-read 或无动作 task-run audit。
 - Given Account Activity V2 coverage repair 已被 background gate 接纳，When 它等待 hourly rollup lock 后执行，Then 底层 repair 恰好在该 permit 内运行一次；Given gate 拒绝，Then 不读取或写 coverage progress，也不创建 task-run audit。
 - Given 实际 SQLite lock，When 后台任务已开始数据库访问且失败状态写入成功，Then 在释放 background permit 前关闭 pressure gate，使用独立的 bounded failure backoff，并使后续任务以零 SQLite I/O defer。

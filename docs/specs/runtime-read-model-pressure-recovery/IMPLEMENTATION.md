@@ -26,7 +26,7 @@
 
 ## Verification Ownership
 
-- Summary: exact-response comparison, >legacy-cardinality archive coverage, HTTP SQL/file counters, freshness and last-good behavior.
+- Summary: exact-response comparison, >legacy-cardinality archive coverage, bounded recent-index overflow boundaries for rolling/account reads, HTTP SQL/file counters, freshness and last-good behavior.
 - Pressure: one in-memory scheduler defer deadline per cooldown, no SQLite pre-read or no-op task-run write; Account Activity V2 coverage repair owns one admitted permit across its durable due check and underlying repair; eligibility wakes recheck durable due state; and real-lock cooldown/backoff separation happens before permit release.
 - Long-term: query-plan assertion, cursor persistence, 512-row transaction cap, pressure/cancel recovery and P1 priority.
 - Observation: `$srv-101-ops` is read-only and only starts after the owner confirms the exact released version is deployed.

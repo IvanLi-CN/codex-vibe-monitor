@@ -7423,6 +7423,10 @@ pub(crate) struct SummaryProjection {
     // its index. If the scan overflowed and fewer entries are retained, serving a shorter list
     // would silently omit older invocations, so that selection uses unavailable instead.
     recent_index_complete: bool,
+    // The first row omitted by the globally ordered recent index. Every older row is likewise
+    // absent from `records`, so a rolling range that reaches this boundary cannot prove its
+    // live/rollup partition is complete without request-time I/O.
+    recent_index_overflow_at: Option<DateTime<Utc>>,
     // `all` has no reporting-timezone boundary.  Hydration therefore folds the legacy
     // archive/rollup coverage rules into a canonical aggregate per account once, instead of
     // attempting to recreate those rules from raw archive rows on every request.
@@ -7618,6 +7622,14 @@ impl SummaryProjection {
         }
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
+        if range.is_some_and(|(start, _)| {
+            self.recent_index_overflow_at
+                .is_some_and(|overflow_at| start <= overflow_at)
+        }) {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary rolling snapshot is outside the bounded recent index"
+            )));
+        }
         let unavailable_archive_range_affects_query = match range {
             Some((start, end)) => self
                 .unavailable_unmaterialized_archive_ranges
@@ -10755,6 +10767,18 @@ async fn build_summary_projection_once(
     )
     .await?;
     let recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
+    let recent_index_overflow_at = if recent_index_complete {
+        None
+    } else {
+        let overflow_row = recent_rows
+            .get(SUMMARY_PROJECTION_MAX_EXACT_RECORDS)
+            .expect("recent index overflow includes the first omitted row");
+        Some(
+            parse_to_utc_datetime(&overflow_row.occurred_at).ok_or_else(|| {
+                anyhow!("summary projection recent index overflow had an invalid occurred_at")
+            })?,
+        )
+    };
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
     for row in recent_rows {
         let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
@@ -12291,6 +12315,7 @@ async fn build_summary_projection_once(
         hourly_buckets,
         recent_indexes,
         recent_index_complete,
+        recent_index_overflow_at,
         hourly_rollup_totals,
         hourly_rollup_non_success_tokens,
         hourly_rollup_usage,
@@ -30028,6 +30053,89 @@ mod request_compression_query_tests {
             "in-horizon overflow must fail closed with an explicit bound: {error:#}"
         );
         assert!(state.subscription_hub.summary_projection().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_fails_closed_for_mixed_recent_index_overflow() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            r#"WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 49999)
+               INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               SELECT 'mixed-overflow-current-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full' FROM rows"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert exact-horizon fixture rows");
+        sqlx::query(
+            r#"INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
+               VALUES ('mixed-overflow-older-1', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full'),
+                      ('mixed-overflow-older-2', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full')"#,
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert legal rolling rows outside the exact horizon");
+        for dataset in [
+            "codex_invocations_summary_rollup_v2_live_cursor",
+            "invocation_account_activity_v2_repair_live_cursor",
+        ] {
+            sqlx::query(
+                r#"INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
+                   VALUES (?1, 49999, datetime('now'))
+                   ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = excluded.updated_at"#,
+            )
+            .bind(dataset)
+            .execute(&state.pool)
+            .await
+            .expect("record lagging rollup cursor");
+        }
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate bounded mixed-overflow projection");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert!(!projection.recent_index_complete);
+        assert!(projection.recent_index_overflow_at.is_some());
+        state.pool.close().await;
+
+        for upstream_account_id in [None, Some(42)] {
+            let error = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some("7d".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect_err(
+                "an unretained unrolled live row must not produce a truncated rolling total",
+            );
+            assert!(
+                matches!(error, ApiError::Unavailable(_)),
+                "rolling overflow must fail closed for {upstream_account_id:?}: {error:?}"
+            );
+        }
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("a range newer than the overflow boundary remains exact in memory");
+        assert_eq!(response.total_count, 49_999);
     }
 
     #[tokio::test]
