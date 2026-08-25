@@ -1,6 +1,70 @@
 use super::*;
 use serde_json::json;
 
+async fn assert_startup_backfill_busy_error_closes_gate_before_next_task(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+) {
+    let err = run_startup_backfill_task_if_due_with_gate(state, task, gate)
+        .await
+        .expect_err("injected SQLite lock should fail the startup backfill task");
+    assert!(
+        crate::is_sqlite_lock_error(&err),
+        "expected an actual SQLite BUSY/LOCKED error: {err:#}"
+    );
+    assert_eq!(
+        gate.snapshot().pressure_events,
+        1,
+        "the failure must close the gate before its permit is released"
+    );
+
+    // A closed pool turns this into a zero-SQL admission assertion. The only valid result is a
+    // scheduler-only pressure defer after the failed task releases its permit.
+    state.pool.close().await;
+    let next = run_startup_backfill_task_if_due_with_gate(
+        state,
+        StartupBackfillTask::PromptCacheKey,
+        gate,
+    )
+    .await
+    .expect("the next task should be deferred before SQLite access");
+    assert!(!next);
+    assert_eq!(
+        gate.snapshot().pressure_events,
+        1,
+        "a gate-closed admission must not record the already-classified error again"
+    );
+    assert!(
+        gate.snapshot().background_skips >= 1,
+        "the next task must not enter SQLite during the permit-release gap"
+    );
+}
+
+async fn seed_due_startup_backfill_progress(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+) -> String {
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let due = format_utc_iso(Utc::now() - ChronoDuration::seconds(1));
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 0,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: 0,
+            next_run_after: &due,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .expect("seed due startup backfill progress");
+    task_name
+}
+
 #[tokio::test]
 async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
@@ -2124,6 +2188,248 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
     assert_eq!(after, before, "deferred passes must not create audit rows");
     assert!(progress.is_due(Utc::now()));
     assert_eq!(progress.suspension_reason, None);
+}
+
+#[tokio::test]
+async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::PoolUpstreamNodeHealthArchives;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let future_due = format_utc_iso(Utc::now() + ChronoDuration::hours(1));
+    save_startup_backfill_progress(
+        &state.pool,
+        &task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: 17,
+            scanned: 8,
+            updated: 3,
+            zero_update_streak: 0,
+            next_run_after: &future_due,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .expect("seed a durable future failure backoff");
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before pressure eligibility wake");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let held = gate
+        .try_begin_background("test_pressure_eligibility_busy")
+        .expect("occupy the background slot");
+    let first = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        .await
+        .expect("background-busy admission should be a scheduler-only defer");
+    assert!(!first);
+    assert_eq!(gate.snapshot().background_skips, 1);
+
+    let observed_eligibility = gate.eligibility_generation();
+    drop(held);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        gate.wait_for_eligibility_change(observed_eligibility),
+    )
+    .await
+    .expect("background-slot release should emit an eligibility event");
+
+    let cancel = CancellationToken::new();
+    run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, &gate).await;
+
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load progress after pressure eligibility wake");
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after pressure eligibility wake");
+    assert_eq!(progress.cursor_id, 17);
+    assert_eq!(progress.last_scanned, 8);
+    assert_eq!(progress.last_updated, 3);
+    assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_FAILED);
+    assert_eq!(
+        progress.next_run_after.as_deref(),
+        Some(future_due.as_str())
+    );
+    assert!(!progress.is_due(Utc::now()));
+    assert_eq!(
+        task_runs_after, task_runs_before,
+        "an eligibility event must not bypass a real durable failure backoff"
+    );
+}
+
+#[tokio::test]
+async fn startup_backfill_progress_lookup_busy_closes_gate_before_permit_release() {
+    let (state, temp_dir, db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-backfill-progress-lookup-busy",
+        Duration::from_millis(50),
+    )
+    .await;
+
+    let mut lock_conn = SqliteConnection::connect(&db_url)
+        .await
+        .expect("connect progress lookup lock holder");
+    sqlx::query("BEGIN EXCLUSIVE")
+        .execute(&mut lock_conn)
+        .await
+        .expect("begin exclusive schema lock transaction");
+    sqlx::query("CREATE TABLE startup_backfill_progress_lookup_lock_guard (id INTEGER)")
+        .execute(&mut lock_conn)
+        .await
+        .expect("hold the schema lock across the progress lookup");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    assert_startup_backfill_busy_error_closes_gate_before_next_task(
+        &state,
+        StartupBackfillTask::ReasoningEffort,
+        &gate,
+    )
+    .await;
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut lock_conn)
+        .await
+        .expect("release progress lookup lock");
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn startup_backfill_running_state_busy_closes_gate_before_permit_release() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_due_startup_backfill_progress(&state, StartupBackfillTask::ReasoningEffort).await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_backfill_running_state_busy
+        BEFORE UPDATE OF last_status ON startup_backfill_progress
+        WHEN NEW.task_name = 'proxy_reasoning_effort_v1' AND NEW.last_status = 'running'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite lock into running-state persistence");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    assert_startup_backfill_busy_error_closes_gate_before_next_task(
+        &state,
+        StartupBackfillTask::ReasoningEffort,
+        &gate,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn startup_backfill_progress_persist_busy_closes_gate_before_permit_release() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_due_startup_backfill_progress(&state, StartupBackfillTask::ReasoningEffort).await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_backfill_progress_persist_busy
+        BEFORE UPDATE OF last_status ON startup_backfill_progress
+        WHEN NEW.task_name = 'proxy_reasoning_effort_v1' AND NEW.last_status = 'ok'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite lock into backfill progress persistence");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    assert_startup_backfill_busy_error_closes_gate_before_next_task(
+        &state,
+        StartupBackfillTask::ReasoningEffort,
+        &gate,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn startup_backfill_failure_persist_busy_closes_gate_before_permit_release() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    seed_due_startup_backfill_progress(&state, StartupBackfillTask::ReasoningEffort).await;
+    let temp_dir = make_temp_test_dir("startup-backfill-failure-persist-busy");
+    let request_path = temp_dir.join("request.json");
+    fs::write(
+        &request_path,
+        r#"{"model":"gpt-5.3-codex","reasoning":{"effort":"low"}}"#,
+    )
+    .expect("write reasoning backfill request");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response, request_raw_path
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+    )
+    .bind("startup-backfill-failure-persist-busy")
+    .bind("2026-03-09 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("{}")
+    .bind("{}")
+    .bind(request_path.to_string_lossy().as_ref())
+    .execute(&state.pool)
+    .await
+    .expect("insert reasoning backfill candidate");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_backfill_inner_busy
+        BEFORE UPDATE OF payload ON codex_invocations
+        WHEN NEW.invoke_id = 'startup-backfill-failure-persist-busy'
+        BEGIN
+            SELECT RAISE(ABORT, 'database is busy');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite busy failure into backfill work");
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_backfill_failure_persist_busy
+        BEFORE UPDATE OF last_status ON startup_backfill_progress
+        WHEN NEW.task_name = 'proxy_reasoning_effort_v1' AND NEW.last_status = 'failed'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite lock into failure persistence");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    assert_startup_backfill_busy_error_closes_gate_before_next_task(
+        &state,
+        StartupBackfillTask::ReasoningEffort,
+        &gate,
+    )
+    .await;
+
+    let _ = fs::remove_dir_all(&temp_dir);
 }
 
 #[tokio::test]

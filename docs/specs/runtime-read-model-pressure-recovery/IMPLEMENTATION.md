@@ -27,6 +27,6 @@
 ## Verification Ownership
 
 - Summary: exact-response comparison, >legacy-cardinality archive coverage, HTTP SQL/file counters, freshness and last-good behavior.
-- Pressure: one in-memory scheduler defer deadline per cooldown, no SQLite pre-read or no-op task-run write, and real-lock cooldown/backoff separation before permit release.
+- Pressure: one in-memory scheduler defer deadline per cooldown, no SQLite pre-read or no-op task-run write; eligibility wakes recheck durable due state; and real-lock cooldown/backoff separation happens before permit release.
 - Long-term: query-plan assertion, cursor persistence, 512-row transaction cap, pressure/cancel recovery and P1 priority.
 - Observation: `$srv-101-ops` is read-only and only starts after the owner confirms the exact released version is deployed.
