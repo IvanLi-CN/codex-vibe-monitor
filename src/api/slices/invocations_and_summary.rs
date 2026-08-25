@@ -7289,6 +7289,10 @@ pub(crate) struct SummaryProjection {
     // Regular rolling refreshes may reuse all-time responses when no all-time owner is active;
     // keep their freshness independent from the projection-wide timestamp.
     all_time_refreshed_at: Option<Instant>,
+    // An all-history manifest set beyond admission cannot be made exact without an unbounded
+    // proof. Preserve that fail-closed result so maintenance does not retry the same query on
+    // every rolling refresh.
+    all_time_manifest_admission_blocked: bool,
     // Global all-time rollups and account archive fallbacks have independent durable coverage.
     // A failed account rebuild must not make a fresh global aggregate stale, and an old account
     // response must never borrow the global aggregate's freshness.
@@ -7313,6 +7317,10 @@ pub(crate) struct SummaryProjection {
     // than publishing an undercount or turning a selection-level unavailability into an HTTP
     // builder failure.
     unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
+    // Boundary archive admission is independent from all-time admission. The projection keeps
+    // this state so an oversized exact-horizon manifest set does not make later refreshes repeat
+    // the same SQLite work while affected windows remain unavailable.
+    archive_boundary_manifest_admission_blocked: bool,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
     // Keep that reconciled view alongside the immutable history projection.
@@ -7395,6 +7403,7 @@ impl SummaryProjection {
         };
         refresh_due(self.freshness.rolling_at(self.refreshed_at))
             || (has_all_time_owner
+                && !self.all_time_manifest_admission_blocked
                 && (refresh_due(self.all_time_refreshed_at)
                     || refresh_due(self.all_time_oldest_account_refreshed_at)))
     }
@@ -7437,6 +7446,13 @@ impl SummaryProjection {
             Some(_) => return Err(ApiError::bad_request(anyhow!("invalid upstream account"))),
             None => None,
         };
+        if self.archive_boundary_manifest_admission_blocked
+            && matches!(window, SummaryWindow::Current(_))
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary projection archive manifest admission is unavailable for the requested range"
+            )));
+        }
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
         if let Some((start, end)) = range
@@ -9228,7 +9244,7 @@ async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     refresh_summary_snapshots_with_mode(state, include_all_time).await
 }
 
-async fn refresh_summary_snapshots_with_mode(
+pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     include_all_time: bool,
 ) -> Result<()> {
@@ -9264,6 +9280,7 @@ async fn refresh_summary_snapshots_with_deadline(
             (
                 projection.all_time_by_account.clone(),
                 projection.all_time_refreshed_at,
+                projection.all_time_manifest_admission_blocked,
                 projection.all_time_account_refreshed_at.clone(),
                 projection.archive_account_ids_by_file.clone(),
                 projection.archive_coverage_ranges_by_file.clone(),
@@ -9280,6 +9297,7 @@ async fn refresh_summary_snapshots_with_deadline(
                 projection
                     .all_time_account_persisted_live_terminal_invoke_ids
                     .clone(),
+                projection.archive_boundary_manifest_admission_blocked,
             )
         });
     let had_previous_projection = previous_all_time.is_some();
@@ -9308,6 +9326,7 @@ async fn refresh_summary_snapshots_with_deadline(
         && !projection
             .unavailable_unmaterialized_archive_ranges
             .is_empty()
+        && !projection.archive_boundary_manifest_admission_blocked
     {
         // A background failure must never replace a complete revision with a partial one.  The
         // existing revision remains the exact last-good response until its own freshness budget
@@ -9623,6 +9642,7 @@ async fn build_summary_projection(
     previous_all_time: Option<(
         HashMap<Option<i64>, StatsResponse>,
         Option<Instant>,
+        bool,
         HashMap<i64, Instant>,
         HashMap<String, HashSet<i64>>,
         HashMap<String, ExactUtcRange>,
@@ -9633,6 +9653,7 @@ async fn build_summary_projection(
         HashSet<String>,
         HashMap<i64, u64>,
         HashMap<i64, HashSet<String>>,
+        bool,
     )>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -9640,6 +9661,7 @@ async fn build_summary_projection(
     let (
         mut all_time_by_account,
         previous_all_time_refreshed_at,
+        previous_all_time_manifest_admission_blocked,
         mut all_time_account_refreshed_at,
         mut archive_account_ids_by_file,
         mut archive_coverage_ranges_by_file,
@@ -9650,8 +9672,27 @@ async fn build_summary_projection(
         previous_all_time_persisted_live_terminal_invoke_ids,
         previous_all_time_account_terminal_sequence_watermarks,
         previous_all_time_account_persisted_live_terminal_invoke_ids,
-    ) = previous_all_time.unwrap_or_default();
-    let all_time_was_fully_rebuilt = include_all_time || previous_all_time_refreshed_at.is_none();
+        previous_archive_boundary_manifest_admission_blocked,
+    ) = previous_all_time.unwrap_or_else(|| {
+        (
+            HashMap::new(),
+            None,
+            false,
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            false,
+            HashSet::new(),
+            false,
+            0,
+            HashSet::new(),
+            HashMap::new(),
+            HashMap::new(),
+            false,
+        )
+    });
+    let all_time_was_fully_rebuilt = !previous_all_time_manifest_admission_blocked
+        && (include_all_time || previous_all_time_refreshed_at.is_none());
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
     // are limited to the moving exact tail; older live rows are represented by their durable
     // hourly rollups. Archive boundary rows use the wider finite range below so supported 7d/
@@ -9668,9 +9709,9 @@ async fn build_summary_projection(
         load_summary_projection_rollup_totals_in_range(&state.pool, Some(rollup_range)).await?;
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(&state.pool, Some(rollup_range)).await?;
-    // All-time aggregation must distinguish "no archives exist" from "archives are older than
-    // the bounded exact horizon". The latter still has durable rollup history even though those
-    // archive files are intentionally not opened during this refresh.
+    // Rolling aggregation must still distinguish an archive-backed retention database from a
+    // live-only one. This bounded existence probe is independent of the expensive all-history
+    // manifest admission below.
     let has_any_completed_archive =
         !crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
             &state.pool,
@@ -9867,21 +9908,26 @@ async fn build_summary_projection(
     // Boundary-hour selection is record-exact, including when the range starts or ends inside
     // an archived hour. Archive rows are streamed into the bounded exact set while building;
     // HTTP never opens or probes archive files.
-    let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-        &state.pool,
-        Some((archive_start, end)),
-        SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
-    )
-    .await?;
+    let (archives, archive_boundary_manifest_admission_blocked) =
+        if previous_archive_boundary_manifest_admission_blocked {
+            (Vec::new(), true)
+        } else {
+            let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
+                &state.pool,
+                Some((archive_start, end)),
+                SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+            )
+            .await?;
+            if archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+                (Vec::new(), true)
+            } else {
+                (archives, false)
+            }
+        };
     let archive_paths = archives
         .iter()
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
-    if archive_paths.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-        return Err(anyhow!(
-            "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
-        ));
-    }
     let archive_path_set = archive_paths.iter().cloned().collect::<HashSet<_>>();
     archive_account_ids_by_file.retain(|path, _| archive_path_set.contains(path));
     archive_coverage_ranges_by_file.retain(|path, _| archive_path_set.contains(path));
@@ -9943,6 +9989,15 @@ async fn build_summary_projection(
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
     let mut unavailable_unmaterialized_archive_ranges = Vec::<ExactUtcRange>::new();
+    if archive_boundary_manifest_admission_blocked {
+        // The manifest cardinality does not disclose which completed archive contains a boundary
+        // row. Treat the complete exact horizon as unavailable rather than folding only the
+        // retained prefix into an otherwise plausible, but incomplete, rolling response.
+        unavailable_unmaterialized_archive_ranges.push(ExactUtcRange {
+            start: archive_start,
+            end,
+        });
+    }
     // Discover accounts from archive rows before planning full-hour coverage. Pools are opened
     // and closed one at a time so a large retention horizon never keeps every inflated archive
     // resident concurrently. Immutable completed archives reuse the cached account set on later
@@ -10994,6 +11049,9 @@ async fn build_summary_projection(
         } else {
             previous_all_time_refreshed_at
         },
+        all_time_manifest_admission_blocked: previous_all_time_manifest_admission_blocked
+            || all_time_archive_admission_exceeded
+            || all_time_account_manifest_admission_exceeded,
         all_time_account_refreshed_at,
         all_time_oldest_account_refreshed_at,
         all_time_account_ids_with_projection_data: account_ids_with_projection_data,
@@ -11001,6 +11059,7 @@ async fn build_summary_projection(
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
         unavailable_unmaterialized_archive_ranges,
+        archive_boundary_manifest_admission_blocked,
         in_progress_by_account,
         maintenance: Some(maintenance),
         refreshed_at,

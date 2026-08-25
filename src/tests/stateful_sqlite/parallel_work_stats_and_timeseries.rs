@@ -22164,6 +22164,20 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate rolling summary projection beyond manifest admission");
+
+    // The admission result is retained as a fail-closed all-time state. A normal rolling refresh
+    // must not enumerate the same historical manifest set again just because `all` has no exact
+    // snapshot yet.
+    sqlx::query(
+        "DELETE FROM archive_batches \
+         WHERE file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("remove the admitted manifest fixture before rolling-only refresh");
+    refresh_summary_snapshots_with_mode(state.as_ref(), false)
+        .await
+        .expect("rolling refresh retains the controlled all-time admission state");
     state.pool.close().await;
 
     for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
@@ -22196,6 +22210,63 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .await,
         Err(ApiError::Unavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn summary_projection_fails_closed_when_archive_boundary_manifest_admission_exceeds_budget() {
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let archive_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::days(2)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align archive fixture to a full hour within the exact horizon");
+    let archive_end = archive_start + ChronoDuration::hours(1);
+    sqlx::query(
+        "WITH RECURSIVE manifests(ordinal) AS ( \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal <= 4096 \
+         ) \
+         INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, created_at) \
+         SELECT 'codex_invocations', '2026-01', \
+                '/tmp/summary-boundary-manifest-admission-' || ordinal || '.sqlite.gz', \
+                'summary-boundary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now') \
+         FROM manifests",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .execute(&state.pool)
+    .await
+    .expect("insert exact-horizon manifests beyond bounded admission");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("publish a controlled rolling snapshot instead of failing hydration");
+    state.pool.close().await;
+
+    for window in ["current", "1d"] {
+        assert!(matches!(
+            fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await,
+            Err(ApiError::Unavailable(_))
+        ));
+    }
 }
 
 #[tokio::test]
