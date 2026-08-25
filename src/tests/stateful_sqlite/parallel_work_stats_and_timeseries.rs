@@ -2894,10 +2894,8 @@ async fn all_time_summary_includes_unmaterialized_archived_history_without_inlin
     config.invocation_max_days = 7;
     let state = test_state_from_config(config, true).await;
 
-    // Keep this beyond the rolling exact horizon (retention plus the 31-day grace window) so
-    // only the all-time generic archive aggregation can observe the replacement.
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(45))
+        - ChronoDuration::days(10))
     .and_hms_opt(6, 0, 0)
     .expect("valid archived local hour");
     let archived_success_at = format_naive(
@@ -22617,8 +22615,10 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
         .await
         .expect("enable WAL for concurrent all-time snapshot writer coverage");
 
+    // Keep this beyond the rolling exact horizon (retention plus the 31-day grace window) so
+    // only the all-time generic archive aggregation can observe the replacement.
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(10))
+        - ChronoDuration::days(45))
     .and_hms_opt(6, 0, 0)
     .expect("valid archived local hour");
     let archived_at = format_naive(
