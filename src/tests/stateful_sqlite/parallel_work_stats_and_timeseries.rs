@@ -22083,7 +22083,7 @@ async fn materialized_timeseries_uses_exact_fallback_for_same_cursor_terminal_re
 }
 
 #[tokio::test]
-async fn summary_projection_hydrates_rollups_beyond_archive_manifest_admission() {
+async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_admission() {
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
@@ -22151,39 +22151,129 @@ async fn summary_projection_hydrates_rollups_beyond_archive_manifest_admission()
         .await
         .expect("record complete rollup replay coverage");
     }
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('summary-manifest-admission-live', datetime('now'), 'proxy', 'success', 23, 2.5, \
+                 '{\"upstreamAccountId\":42}', '', 'full')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert exact live-tail row");
 
     hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect("hydrate exact summary projection beyond manifest admission");
+        .expect("hydrate rolling summary projection beyond manifest admission");
     state.pool.close().await;
 
-    let Json(response) = fetch_summary(
+    for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some(window.to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve the hydrated rolling response without SQLite");
+        assert_eq!(response.total_count, 1, "window {window}");
+        assert_eq!(response.total_tokens, 23, "window {window}");
+        assert_eq!(response.total_cost, 2.5, "window {window}");
+    }
+
+    assert!(matches!(
+        fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await,
+        Err(ApiError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_all_unavailable_when_materialized_rollup_key_is_missing() {
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let archive_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::days(1_000)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align archive fixture to a full hour");
+    let archive_end = archive_start + ChronoDuration::hours(1);
+    let file_path = "/tmp/summary-missing-rollup-key.sqlite.gz";
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, created_at) \
+         VALUES ('codex_invocations', '2026-01', ?1, 'summary-missing-rollup-key', 1, 'completed', \
+                 ?2, ?3, datetime('now'), datetime('now'))",
+    )
+    .bind(file_path)
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .execute(&state.pool)
+    .await
+    .expect("insert materialized archive manifest");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', ?2, 'summary-missing-rollup-key')",
+        )
+        .bind(target)
+        .bind(file_path)
+        .execute(&state.pool)
+        .await
+        .expect("record materialized replay marker");
+    }
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate rolling projection with an incomplete all-time rollup");
+    state.pool.close().await;
+
+    let Json(rolling) = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
-            window: Some("all".to_string()),
+            window: Some("1d".to_string()),
             limit: None,
             time_zone: Some("UTC".to_string()),
             upstream_account_id: None,
         }),
     )
     .await
-    .expect("serve the hydrated all-time response without SQLite");
-    assert_eq!(response.total_count, 1);
-    assert_eq!(response.total_tokens, 17);
-    assert_eq!(response.total_cost, 1.25);
+    .expect("serve the exact rolling zero response without SQLite");
+    assert_eq!(rolling.total_count, 0);
 
-    let Json(account_response) = fetch_summary(
-        State(state),
-        Query(SummaryQuery {
-            window: Some("all".to_string()),
-            limit: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: Some(42),
-        }),
-    )
-    .await
-    .expect("serve the hydrated account response without SQLite");
-    assert_eq!(account_response.total_count, 1);
-    assert_eq!(account_response.total_tokens, 17);
-    assert_eq!(account_response.total_cost, 1.25);
+    assert!(matches!(
+        fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await,
+        Err(ApiError::Unavailable(_))
+    ));
 }
