@@ -9631,18 +9631,36 @@ async fn load_summary_projection_archive_replay_coverage(
     Ok(coverage)
 }
 
+async fn summary_projection_completed_manifest_high_watermark(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed'",
+    )
+    .fetch_one(pool)
+    .await
+    .context("summary projection completed manifest high-watermark hydration failed")
+}
+
 async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
-) -> Result<bool> {
+) -> Result<Option<i64>> {
     // The overflow path may page manifests only when durable compact state proves every source
     // partition is already materialized. Missing bounds or replay markers require the regular
     // exact-source path, because a bounded prefix cannot safely stand in for those archives.
+    let Some(high_watermark_id) =
+        summary_projection_completed_manifest_high_watermark(pool).await?
+    else {
+        return Ok(None);
+    };
     let incomplete = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS( \
              SELECT 1 FROM archive_batches AS batches \
              WHERE batches.dataset = 'codex_invocations' \
                AND batches.status = 'completed' \
+               AND batches.id <= ?6 \
                AND ( \
                     batches.coverage_start_at IS NULL \
                     OR batches.coverage_end_at IS NULL \
@@ -9678,10 +9696,60 @@ async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(high_watermark_id)
     .fetch_one(pool)
     .await
     .context("summary projection overflowed boundary manifest coverage hydration failed")?;
-    Ok(incomplete == 0)
+    Ok((incomplete == 0).then_some(high_watermark_id))
+}
+
+async fn summary_projection_overflowed_all_time_manifests_have_complete_rollups(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    let Some(high_watermark_id) =
+        summary_projection_completed_manifest_high_watermark(pool).await?
+    else {
+        return Ok(None);
+    };
+    let incomplete = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS( \
+             SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND batches.id <= ?1 \
+               AND ( \
+                    batches.coverage_start_at IS NULL \
+                    OR batches.coverage_end_at IS NULL \
+                    OR batches.historical_rollups_materialized_at IS NULL \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?2 \
+                    ) \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?3 \
+                    ) \
+                    OR NOT EXISTS( \
+                        SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                        WHERE replay.dataset = batches.dataset \
+                          AND replay.file_path = batches.file_path \
+                          AND replay.target = ?4 \
+                    ) \
+               ) \
+         )",
+    )
+    .bind(high_watermark_id)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(pool)
+    .await
+    .context("summary projection overflowed all-time manifest coverage hydration failed")?;
+    Ok((incomplete == 0).then_some(high_watermark_id))
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -9690,38 +9758,53 @@ struct SummaryProjectionBoundaryManifestPageRow {
     file_path: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
+    upstream_activity_manifest_refreshed_at: Option<String>,
 }
 
 struct SummaryProjectionBoundaryManifestPage {
     archives: Vec<crate::stats::ArchiveBatchPathRow>,
+    account_manifest_refreshed_paths: HashSet<String>,
     next_after_id: Option<i64>,
 }
 
 async fn load_summary_projection_boundary_manifest_page(
     pool: &Pool<Sqlite>,
-    range: ExactUtcRange,
+    range: Option<ExactUtcRange>,
     after_id: i64,
+    high_watermark_id: i64,
 ) -> Result<SummaryProjectionBoundaryManifestPage> {
-    let rows = sqlx::query_as::<_, SummaryProjectionBoundaryManifestPageRow>(
-        "SELECT \
-             id, file_path, coverage_start_at, coverage_end_at \
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, file_path, coverage_start_at, coverage_end_at, \
+                upstream_activity_manifest_refreshed_at \
          FROM archive_batches \
          WHERE dataset = 'codex_invocations' \
            AND status = 'completed' \
-           AND coverage_end_at >= ?1 \
-           AND coverage_start_at < ?2 \
-           AND id > ?3 \
-         ORDER BY id ASC \
-         LIMIT ?4",
-    )
-    .bind(db_occurred_at_upper_bound(range.start))
-    .bind(crate::stats::db_occurred_at_lower_bound(range.end))
-    .bind(after_id)
-    .bind(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE as i64)
-    .fetch_all(pool)
-    .await
-    .context("summary projection boundary manifest page hydration failed")?;
+           AND id > ",
+    );
+    query
+        .push_bind(after_id)
+        .push(" AND id <= ")
+        .push_bind(high_watermark_id);
+    if let Some(range) = range {
+        query
+            .push(" AND coverage_end_at >= ")
+            .push_bind(db_occurred_at_upper_bound(range.start))
+            .push(" AND coverage_start_at < ")
+            .push_bind(crate::stats::db_occurred_at_lower_bound(range.end));
+    }
+    let rows = query
+        .push(" ORDER BY id ASC LIMIT ")
+        .push_bind(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE as i64)
+        .build_query_as::<SummaryProjectionBoundaryManifestPageRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection boundary manifest page hydration failed")?;
     let next_after_id = rows.last().map(|row| row.id);
+    let account_manifest_refreshed_paths = rows
+        .iter()
+        .filter(|row| row.upstream_activity_manifest_refreshed_at.is_some())
+        .map(|row| row.file_path.clone())
+        .collect();
     let archives = rows
         .into_iter()
         .map(|row| {
@@ -9734,8 +9817,132 @@ async fn load_summary_projection_boundary_manifest_page(
         .collect();
     Ok(SummaryProjectionBoundaryManifestPage {
         archives,
+        account_manifest_refreshed_paths,
         next_after_id,
     })
+}
+
+async fn load_summary_projection_archive_manifest_account_sets(
+    pool: &Pool<Sqlite>,
+    archive_paths: &[String],
+) -> Result<HashMap<String, HashSet<i64>>> {
+    let mut account_ids_by_file = archive_paths
+        .iter()
+        .cloned()
+        .map(|path| (path, HashSet::new()))
+        .collect::<HashMap<_, _>>();
+    for (file_path, account_id) in
+        load_summary_projection_archive_manifest_accounts(pool, archive_paths).await?
+    {
+        if let Some(account_ids) = account_ids_by_file.get_mut(&file_path) {
+            account_ids.insert(account_id);
+        }
+    }
+    Ok(account_ids_by_file)
+}
+
+fn summary_projection_all_time_manifest_scope_coverage(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    replay_coverage: SummaryProjectionArchiveReplayCoverage,
+    account_manifest_complete: bool,
+    account_ids: &HashSet<i64>,
+    hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+) -> Result<(bool, bool)> {
+    let Some(range) = summary_projection_archive_coverage_range(archive) else {
+        return Ok((false, false));
+    };
+    if summary_projection_exact_range_fits_bucket_budget(range).is_err() {
+        return Ok((false, false));
+    }
+    let mut global_covered = replay_coverage.overall;
+    let mut accounts_covered = replay_coverage.account_stats && account_manifest_complete;
+    let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+    let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+    while bucket <= last_bucket {
+        global_covered &= hourly_rollup_totals.contains_key(&(bucket, None));
+        accounts_covered &= account_ids
+            .iter()
+            .all(|account_id| hourly_rollup_totals.contains_key(&(bucket, Some(*account_id))));
+        if !global_covered && !accounts_covered {
+            break;
+        }
+        bucket = bucket.saturating_add(3_600);
+    }
+    Ok((global_covered, accounts_covered))
+}
+
+async fn summary_projection_paged_all_time_materialized_scope_coverage(
+    pool: &Pool<Sqlite>,
+    high_watermark_id: i64,
+    hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+) -> Result<(bool, bool, HashSet<i64>)> {
+    let mut global_covered = true;
+    let mut accounts_covered = true;
+    let mut discovered_account_ids = HashSet::new();
+    let mut after_id = i64::MIN;
+    loop {
+        let page =
+            load_summary_projection_boundary_manifest_page(pool, None, after_id, high_watermark_id)
+                .await?;
+        if page.archives.is_empty() {
+            break;
+        }
+        let paths = page
+            .archives
+            .iter()
+            .map(|archive| archive.file_path().to_string())
+            .collect::<Vec<_>>();
+        let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+        let account_ids_by_file =
+            match load_summary_projection_archive_manifest_account_sets(pool, &paths).await {
+                Ok(account_ids_by_file) => account_ids_by_file,
+                Err(error)
+                    if error.to_string().starts_with(
+                        "summary projection archive account manifest exceeded bounded row budget",
+                    ) =>
+                {
+                    accounts_covered = false;
+                    paths
+                        .iter()
+                        .cloned()
+                        .map(|path| (path, HashSet::new()))
+                        .collect()
+                }
+                Err(error) => return Err(error),
+            };
+        for archive in &page.archives {
+            let account_ids = account_ids_by_file
+                .get(archive.file_path())
+                .expect("page account manifest includes every requested archive path");
+            if accounts_covered {
+                discovered_account_ids.extend(account_ids.iter().copied());
+                if discovered_account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+                    accounts_covered = false;
+                    discovered_account_ids.clear();
+                }
+            }
+            let replay = replay_coverage
+                .get(archive.file_path())
+                .copied()
+                .unwrap_or_default();
+            let (archive_global_covered, archive_accounts_covered) =
+                summary_projection_all_time_manifest_scope_coverage(
+                    archive,
+                    replay,
+                    page.account_manifest_refreshed_paths
+                        .contains(archive.file_path()),
+                    account_ids,
+                    hourly_rollup_totals,
+                )?;
+            global_covered &= archive_global_covered;
+            accounts_covered &= archive_accounts_covered;
+        }
+        let Some(next_after_id) = page.next_after_id else {
+            break;
+        };
+        after_id = next_after_id;
+    }
+    Ok((global_covered, accounts_covered, discovered_account_ids))
 }
 
 async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Result<HashSet<i64>> {
@@ -9912,25 +10119,35 @@ async fn build_summary_projection(
         .await?
         .is_empty();
     // All-time aggregation needs manifest-level key proof, while rolling windows only need the
-    // bounded exact horizon below. A history that exceeds the manifest admission limit keeps
-    // `all` on its last-good/unavailable contract, but must not prevent the first rolling
-    // snapshot from becoming available.
-    let (all_time_archives, all_time_archive_admission_exceeded) =
-        if all_time_was_fully_rebuilt && has_any_completed_archive {
-            let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
+    // bounded exact horizon below. An oversized, fully materialized history is validated in
+    // fixed manifest pages against one immutable high-watermark; it never needs an unbounded
+    // path vector or a request-time source fallback.
+    let (
+        all_time_archives,
+        mut all_time_archive_admission_exceeded,
+        all_time_manifest_high_watermark_id,
+    ) = if all_time_was_fully_rebuilt && has_any_completed_archive {
+        let archives = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
+            &state.pool,
+            None,
+            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+        )
+        .await?;
+        if archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+            match summary_projection_overflowed_all_time_manifests_have_complete_rollups(
                 &state.pool,
-                None,
-                SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
             )
-            .await?;
-            if archives.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-                (Vec::new(), true)
-            } else {
-                (archives, false)
+            .await?
+            {
+                Some(high_watermark_id) => (Vec::new(), false, Some(high_watermark_id)),
+                None => (Vec::new(), true, None),
             }
         } else {
-            (Vec::new(), false)
-        };
+            (archives, false, None)
+        }
+    } else {
+        (Vec::new(), false, None)
+    };
     let all_time_archive_paths = all_time_archives
         .iter()
         .map(|archive| archive.file_path().to_string())
@@ -9947,7 +10164,9 @@ async fn build_summary_projection(
     let mut all_time_account_manifest_admission_exceeded =
         previous_all_time_account_manifest_admission_blocked_at.is_some()
             && !all_time_account_manifest_admission_attempted;
-    if all_time_account_manifest_admission_attempted {
+    if all_time_account_manifest_admission_attempted
+        && all_time_manifest_high_watermark_id.is_none()
+    {
         match load_summary_projection_archive_manifest_accounts(
             &state.pool,
             &all_time_archive_paths,
@@ -10122,22 +10341,23 @@ async fn build_summary_projection(
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
         .await?;
-    let (archives, paged_boundary_manifest_recovery) = if boundary_archive_admission.len()
+    let (archives, paged_boundary_manifest_high_watermark_id) = if boundary_archive_admission.len()
         > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
     {
-        if !summary_projection_overflowed_boundary_manifests_have_complete_rollups(
-            &state.pool,
-            exact_horizon,
-        )
-        .await?
-        {
+        let Some(high_watermark_id) =
+            summary_projection_overflowed_boundary_manifests_have_complete_rollups(
+                &state.pool,
+                exact_horizon,
+            )
+            .await?
+        else {
             return Err(anyhow!(
                 "summary projection overflowed boundary manifests lack complete durable rollup coverage"
             ));
-        }
-        (Vec::new(), true)
+        };
+        (Vec::new(), Some(high_watermark_id))
     } else {
-        (boundary_archive_admission, false)
+        (boundary_archive_admission, None)
     };
     let archive_paths = archives
         .iter()
@@ -10413,20 +10633,37 @@ async fn build_summary_projection(
             raw_fallback_ranges,
         )?;
     }
-    if paged_boundary_manifest_recovery {
+    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
         // The admission overflow is proved fully materialized above. Page only manifest metadata
         // while planning the finite exact buckets; the raw archives themselves are opened later
         // one at a time after live boundary records have been admitted.
-        let mut after_id = 0_i64;
+        let mut after_id = i64::MIN;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
                 &state.pool,
-                exact_horizon,
+                Some(exact_horizon),
                 after_id,
+                high_watermark_id,
             )
             .await?;
             if page.archives.is_empty() {
                 break;
+            }
+            let page_paths = page
+                .archives
+                .iter()
+                .map(|archive| archive.file_path().to_string())
+                .collect::<Vec<_>>();
+            let page_account_ids_by_file =
+                load_summary_projection_archive_manifest_account_sets(&state.pool, &page_paths)
+                    .await?;
+            for account_ids in page_account_ids_by_file.values() {
+                known_account_ids.extend(account_ids.iter().copied());
+            }
+            if known_account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+                return Err(anyhow!(
+                    "summary projection paged boundary account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+                ));
             }
             for archive in &page.archives {
                 let Some(archive_range) =
@@ -10434,16 +10671,28 @@ async fn build_summary_projection(
                 else {
                     continue;
                 };
+                let account_ids = page_account_ids_by_file
+                    .get(archive.file_path())
+                    .expect("page account manifest includes every requested archive path");
+                let (account_replayed, usage_replayed) = if account_ids.is_empty()
+                    && page
+                        .account_manifest_refreshed_paths
+                        .contains(archive.file_path())
+                {
+                    (Some(true), Some(true))
+                } else {
+                    (None, None)
+                };
                 let raw_fallback_ranges = summary_projection_archive_exact_ranges_with_coverage(
                     true,
                     Some(true),
-                    Some(true),
-                    Some(true),
+                    account_replayed,
+                    usage_replayed,
                     archive_range,
                     &exact_archive_buckets,
                     &hourly_rollup_totals,
                     &hourly_rollup_usage,
-                    &known_account_ids,
+                    account_ids,
                 );
                 summary_projection_extend_exact_buckets_for_ranges(
                     &mut exact_archive_buckets,
@@ -10640,13 +10889,14 @@ async fn build_summary_projection(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
-    if paged_boundary_manifest_recovery {
-        let mut after_id = 0_i64;
+    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
+        let mut after_id = i64::MIN;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
                 &state.pool,
-                exact_horizon,
+                Some(exact_horizon),
                 after_id,
+                high_watermark_id,
             )
             .await?;
             if page.archives.is_empty() {
@@ -10667,22 +10917,37 @@ async fn build_summary_projection(
                     "summary projection paged boundary usage progress hydration failed: {error:?}"
                 )
             })?;
+            let page_account_ids_by_file =
+                load_summary_projection_archive_manifest_account_sets(&state.pool, &page_paths)
+                    .await?;
             for archive in page.archives {
                 let Some(archive_range) =
                     summary_projection_archive_overlap_range(&archive, exact_horizon)
                 else {
                     continue;
                 };
+                let account_ids = page_account_ids_by_file
+                    .get(archive.file_path())
+                    .expect("page account manifest includes every requested archive path");
+                let (account_replayed, usage_replayed) = if account_ids.is_empty()
+                    && page
+                        .account_manifest_refreshed_paths
+                        .contains(archive.file_path())
+                {
+                    (Some(true), Some(true))
+                } else {
+                    (None, None)
+                };
                 let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
                     true,
                     Some(true),
-                    Some(true),
-                    Some(true),
+                    account_replayed,
+                    usage_replayed,
                     archive_range,
                     &exact_archive_buckets,
                     &hourly_rollup_totals,
                     &hourly_rollup_usage,
-                    &known_account_ids,
+                    account_ids,
                 );
                 if exact_ranges.is_empty() {
                     continue;
@@ -10711,12 +10976,12 @@ async fn build_summary_projection(
                     &hourly_rollup_usage,
                     true,
                     Some(true),
-                    Some(true),
-                    Some(true),
+                    account_replayed,
+                    usage_replayed,
                     archive_range,
                     &exact_archive_buckets,
                     usage_rollup_progress.get(archive.file_path()).copied(),
-                    &known_account_ids,
+                    account_ids,
                     &mut records_by_invoke_id,
                     &mut exact_record_budget,
                     &mut exact_record_bytes,
@@ -10942,19 +11207,48 @@ async fn build_summary_projection(
                 record.account_rollup_covered = true;
             }
         }
-        let (global_rollup_coverage_proven, account_rollup_coverage_proven) =
-            summary_projection_all_time_materialized_scope_coverage(
-                &all_time_archives,
-                &all_time_archive_replay_coverage,
-                &all_time_archive_account_ids_by_file,
+        let (
+            global_rollup_coverage_proven,
+            account_rollup_coverage_proven,
+            paged_all_time_account_ids,
+        ) = if let Some(high_watermark_id) = all_time_manifest_high_watermark_id {
+            summary_projection_paged_all_time_materialized_scope_coverage(
+                &state.pool,
+                high_watermark_id,
                 &all_time_rollup_totals,
-            )?;
+            )
+            .await?
+        } else {
+            let (global_covered, account_covered) =
+                summary_projection_all_time_materialized_scope_coverage(
+                    &all_time_archives,
+                    &all_time_archive_replay_coverage,
+                    &all_time_archive_account_ids_by_file,
+                    &all_time_rollup_totals,
+                )?;
+            (global_covered, account_covered, HashSet::new())
+        };
+        account_ids.extend(paged_all_time_account_ids.iter().copied());
+        account_ids_with_projection_data.extend(paged_all_time_account_ids);
+        if account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+            return Err(anyhow!(
+                "summary projection all-time account cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ACCOUNTS})"
+            ));
+        }
         // A replay marker is not sufficient by itself: a deleted or never-written aggregate key
         // would make the compact all-time baseline silently lose that archive bucket. Preserve
         // an exact last-good aggregate (or its existing unavailable contract) until durable
         // coverage can again be proven off-request.
         global_all_time_source_unavailable |= !global_rollup_coverage_proven;
         account_all_time_unavailable |= !account_rollup_coverage_proven;
+        // A failed paged proof is retried on the same controlled admission cadence as a failed
+        // bounded admission. A normally admitted manifest set keeps its existing immediate
+        // repair behavior, but an overflowed history must not rescan every 10 seconds after an
+        // incomplete durable repair.
+        if all_time_manifest_high_watermark_id.is_some() {
+            all_time_archive_admission_exceeded |= !global_rollup_coverage_proven;
+            all_time_account_manifest_admission_exceeded |= !account_rollup_coverage_proven;
+        }
         // An unreadable archive without replay coverage cannot contribute to either compact
         // all-time aggregate. Preserve last-good/unavailable for `all`; range selections use
         // the bounded marker carried by this projection.
@@ -26655,7 +26949,7 @@ mod request_compression_query_tests {
         );
 
         totals.insert((missing_account_bucket, Some(42)), StatsTotals::default());
-        usage_totals.insert((missing_account_bucket, Some(42)), usage);
+        usage_totals.insert((missing_account_bucket, Some(42)), usage.clone());
         let covered_ranges = summary_projection_archive_exact_ranges(
             true,
             exact_range,
@@ -26684,6 +26978,32 @@ mod request_compression_query_tests {
             &known_accounts,
         );
         assert!(replayed_ranges.is_empty());
+
+        // Paged manifests must not let their replay marker bypass account-key verification. The
+        // compact global bucket is present here, but a manifest-proven account without both
+        // account rollup dimensions still requires the exact archive boundary source.
+        totals.remove(&(missing_account_bucket, Some(42)));
+        usage_totals.remove(&(missing_account_bucket, Some(42)));
+        let paged_missing_account_ranges = summary_projection_archive_exact_ranges_with_coverage(
+            true,
+            Some(true),
+            None,
+            None,
+            exact_range,
+            &HashSet::new(),
+            &totals,
+            &usage_totals,
+            &known_accounts,
+        );
+        assert!(paged_missing_account_ranges.iter().any(|range| {
+            range.start <= Utc.timestamp_opt(missing_account_bucket, 0).unwrap()
+                && range.end
+                    >= Utc
+                        .timestamp_opt(missing_account_bucket + 3_600, 0)
+                        .unwrap()
+        }));
+        totals.insert((missing_account_bucket, Some(42)), StatsTotals::default());
+        usage_totals.insert((missing_account_bucket, Some(42)), usage.clone());
 
         let missing_global_replay_ranges = summary_projection_archive_exact_ranges_with_coverage(
             true,

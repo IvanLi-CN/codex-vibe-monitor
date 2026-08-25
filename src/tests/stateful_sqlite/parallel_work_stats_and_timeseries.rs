@@ -22104,7 +22104,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     sqlx::query(
         "INSERT INTO invocation_rollup_hourly \
          (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
-         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+         VALUES (?1, 'proxy', 50001, 50001, 0, 850017, 62501.25, 0)",
     )
     .bind(bucket)
     .execute(&state.pool)
@@ -22113,7 +22113,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     sqlx::query(
         "INSERT INTO upstream_account_stats_hourly \
          (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
-         VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+         VALUES (?1, 'proxy', 42, 50001, 50001, 0, 850017, 62501.25, 0)",
     )
     .bind(bucket)
     .execute(&state.pool)
@@ -22125,10 +22125,10 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
          ) \
          INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
-          historical_rollups_materialized_at, created_at) \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
          SELECT 'codex_invocations', '2026-01', \
                 '/tmp/summary-manifest-admission-' || ordinal || '.sqlite.gz', \
-                'summary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now') \
+                'summary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now'), datetime('now') \
          FROM manifests",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
@@ -22151,7 +22151,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .await
         .expect("record complete rollup replay coverage");
     }
-    sqlx::query(
+    let live_id = sqlx::query(
         "INSERT INTO codex_invocations \
          (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
          VALUES ('summary-manifest-admission-live', datetime('now'), 'proxy', 'success', 23, 2.5, \
@@ -22159,15 +22159,31 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     )
     .execute(&state.pool)
     .await
-    .expect("insert exact live-tail row");
+    .expect("insert exact live-tail row")
+    .last_insert_rowid();
+    for dataset in [
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        "invocation_account_activity_v2_repair_live_cursor",
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+             VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(dataset) DO UPDATE SET \
+                 cursor_id = excluded.cursor_id, updated_at = excluded.updated_at",
+        )
+        .bind(dataset)
+        .bind(live_id)
+        .execute(&state.pool)
+        .await
+        .expect("mark the compact live cursor as caught up");
+    }
 
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate rolling summary projection beyond manifest admission");
 
-    // The admission result is retained as a fail-closed all-time state. A normal rolling refresh
-    // must not enumerate the same historical manifest set again just because `all` has no exact
-    // snapshot yet.
+    // A rolling-only refresh must retain the fully hydrated all-time snapshot without reopening
+    // its large manifest set.
     sqlx::query(
         "DELETE FROM archive_batches \
          WHERE file_path GLOB '/tmp/summary-manifest-admission-*.sqlite.gz'",
@@ -22177,7 +22193,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .expect("remove the admitted manifest fixture before rolling-only refresh");
     refresh_summary_snapshots_with_mode(state.as_ref(), false)
         .await
-        .expect("rolling refresh retains the controlled all-time admission state");
+        .expect("rolling refresh retains the exact all-time snapshot");
     state.pool.close().await;
 
     for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
@@ -22197,19 +22213,22 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         assert_eq!(response.total_cost, 2.5, "window {window}");
     }
 
-    assert!(matches!(
-        fetch_summary(
-            State(state),
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
                 limit: None,
                 time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
+                upstream_account_id,
             }),
         )
-        .await,
-        Err(ApiError::Unavailable(_))
-    ));
+        .await
+        .expect("serve the exact all-time snapshot without SQLite");
+        assert_eq!(response.total_count, 50_002);
+        assert_eq!(response.total_tokens, 850_040);
+        assert_eq!(response.total_cost, 62_503.75);
+    }
 }
 
 #[tokio::test]
@@ -22345,14 +22364,14 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     .expect("seed compact global usage rollup for paged manifests");
     sqlx::query(
         "WITH RECURSIVE manifests(ordinal) AS ( \
-            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 50000 \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 4097 \
          ) \
          INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
-          historical_rollups_materialized_at, created_at) \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
          SELECT 'codex_invocations', '2026-01', \
                 '/tmp/summary-boundary-manifest-admission-' || ordinal || '.sqlite.gz', \
-                'summary-boundary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now') \
+                'summary-boundary-manifest-admission-' || ordinal, 1, 'completed', ?1, ?2, datetime('now'), datetime('now'), datetime('now') \
          FROM manifests",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
