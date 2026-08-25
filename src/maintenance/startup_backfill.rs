@@ -123,6 +123,11 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn defer_for_pressure(&self, task: StartupBackfillTask, retry_at: DateTime<Utc>) {
+        self.mark_pressure_deferred(task);
+        self.record_next_due(task, retry_at);
+    }
+
     fn take_pressure_deferred_tasks(&self) -> Vec<StartupBackfillTask> {
         let tasks = self
             .pressure_deferred_tasks
@@ -1428,7 +1433,7 @@ async fn run_startup_backfill_task_if_due_outcome(
         Ok(permit) => permit,
         Err(reason) => {
             let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-            STARTUP_BACKFILL_SCHEDULER.mark_pressure_deferred(task);
+            STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
             info!(
                 task = task.log_label(),
                 reason = %reason,
@@ -1553,10 +1558,16 @@ async fn run_startup_backfill_task_if_due_outcome(
             }
         }
         Err(err) => {
+            let failure_kind = startup_backfill_failure_kind(&err);
             let next_due = persist_startup_backfill_task_failure(
                 state, task, &task_name, &progress, started_at, &err,
             )
             .await?;
+            if failure_kind == StartupBackfillFailureKind::SqliteBusyOrLocked {
+                // Keep the permit until the failure state is durable and the cooldown is visible.
+                // Releasing it first would let another background task enter SQLite immediately.
+                gate.record_pressure("startup_backfill", "sqlite_busy_or_locked");
+            }
             StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
@@ -2218,7 +2229,7 @@ mod startup_backfill_tests {
         let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
             .expect("valid fixed pressure deadline");
 
-        scheduler.record_next_due(task, deadline);
+        scheduler.defer_for_pressure(task, deadline);
         assert!(
             scheduler
                 .drain_due_tasks(deadline - ChronoDuration::milliseconds(1))
@@ -2255,13 +2266,12 @@ mod startup_backfill_tests {
         let task = StartupBackfillTask::ReasoningEffort;
         let deadline = Utc::now() + ChronoDuration::minutes(5);
 
-        scheduler.record_next_due(task, deadline);
-        scheduler.mark_pressure_deferred(task);
+        scheduler.defer_for_pressure(task, deadline);
         scheduler.record_task_result(task, false, true);
 
         assert!(
             scheduler.drain_due_tasks(Utc::now()).is_empty(),
-            "the persisted fallback deadline must not be due yet"
+            "the in-memory fallback deadline must not be due yet"
         );
 
         let wake_gate = gate.clone();

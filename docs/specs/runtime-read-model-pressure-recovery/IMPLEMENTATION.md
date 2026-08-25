@@ -10,11 +10,11 @@
 
 ## Delivery Boundaries
 
-| Delivery slice                      | Purpose                                                                                                    | Integration order                            | Completion evidence                                                                                    |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Summary archive hydration           | Recover exact Summary Projection from durable rollup plus exact boundary records without request-time I/O. | Wave 1                                       | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
-| Pressure defer and startup backfill | Make pressure-gated background work event/deadline driven and distinguish it from real lock failure.       | Wave 1                                       | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
-| Long-term legacy migration          | Replace legacy full-window migration scans with cursor/seek microtransactions.                             | Wave 2, after the pressure slice is observed | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
+| Delivery slice                      | Purpose                                                                                                     | Integration order                            | Completion evidence                                                                                    |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Summary archive hydration           | Recover exact Summary Projection from durable rollup plus exact boundary records without request-time I/O.  | Wave 1                                       | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
+| Pressure defer and startup backfill | Keep gate defers in an in-memory scheduler deadline/event path and distinguish them from real lock failure. | Wave 1                                       | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
+| Long-term legacy migration          | Replace legacy full-window migration scans with cursor/seek microtransactions.                              | Wave 2, after the pressure slice is observed | child/integration CI, checkpoint release, owner-confirmed deployment, 900-second read-only observation |
 
 ## Integration Rules
 
@@ -27,6 +27,6 @@
 ## Verification Ownership
 
 - Summary: exact-response comparison, >legacy-cardinality archive coverage, HTTP SQL/file counters, freshness and last-good behavior.
-- Pressure: one defer wake per cooldown, no no-op task-run write, real-lock backoff separation and scheduler recovery.
+- Pressure: one in-memory scheduler defer deadline per cooldown, no SQLite pre-read or no-op task-run write, and real-lock cooldown/backoff separation before permit release.
 - Long-term: query-plan assertion, cursor persistence, 512-row transaction cap, pressure/cancel recovery and P1 priority.
 - Observation: `$srv-101-ops` is read-only and only starts after the owner confirms the exact released version is deployed.

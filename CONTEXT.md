@@ -36,8 +36,9 @@ _Avoid_: fabricated empty summary, implicit fresh cache
 
 **SQLite Pressure Defer**:
 A deliberate refusal of low-priority background database work before it acquires
-SQLite because the shared pressure gate is closed. It has one persisted next
-eligibility and an event/deadline wake; it is not a failed database operation.
+SQLite because the shared pressure gate is closed. It leaves durable progress
+unchanged and has one in-memory scheduler eligibility deadline plus an
+event/deadline wake; it is not a failed database operation.
 _Avoid_: lock retry, millisecond polling, work-completed audit
 
 **SQLite Lock Failure**:
