@@ -2079,6 +2079,82 @@ async fn startup_backfill_pressure_defer_persists_a_retry_deadline() {
 }
 
 #[tokio::test]
+async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::ReasoningEffort;
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    while Utc::now().timestamp_subsec_millis() > 400 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_millis(500));
+    gate.record_pressure("test_pressure", "forced_cooldown");
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before pressure defer");
+
+    let cancel = CancellationToken::new();
+    let selected_tasks = [task];
+    let first = run_startup_backfill_maintenance_pass_with_gate(
+        state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &gate,
+    )
+    .await;
+    let deferred = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load pressure-deferred task");
+    let first_deadline = deferred
+        .next_run_after
+        .clone()
+        .expect("persisted pressure defer deadline");
+    let first_finished_at = deferred.last_finished_at.clone();
+    assert!(
+        !deferred.is_due(Utc::now()),
+        "the subsecond cooldown deadline must not be truncated into an immediate retry"
+    );
+
+    let second = run_startup_backfill_maintenance_pass_with_gate(
+        state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &gate,
+    )
+    .await;
+    let after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after pressure defer");
+    let repeated = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .expect("load repeated pressure defer");
+
+    assert!(!first.ran_actionable_task);
+    assert!(!first.had_failure);
+    assert!(!second.ran_actionable_task);
+    assert!(!second.had_failure);
+    assert_eq!(after, before, "deferred passes must not create audit rows");
+    assert_eq!(
+        repeated.next_run_after.as_deref(),
+        Some(first_deadline.as_str())
+    );
+    assert_eq!(repeated.last_finished_at, first_finished_at);
+    assert_eq!(
+        repeated.suspension_reason.as_deref(),
+        Some("sqlite_pressure_cooldown"),
+        "a gate refusal must remain distinct from a SQLite operation failure"
+    );
+}
+
+#[tokio::test]
 async fn coverage_repair_defer_persists_its_own_retry_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),

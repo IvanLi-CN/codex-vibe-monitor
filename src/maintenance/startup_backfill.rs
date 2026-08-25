@@ -3,6 +3,8 @@ use super::*;
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
+const SQLITE_PRESSURE_COOLDOWN_SUSPENSION_REASON: &str = "sqlite_pressure_cooldown";
+const BACKGROUND_DB_BUSY_SUSPENSION_REASON: &str = "background_db_busy";
 
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
@@ -250,6 +252,70 @@ struct StartupBackfillTaskRunOutcome {
     deferred: bool,
     completed: bool,
     next_due: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupBackfillFailureKind {
+    SqliteBusyOrLocked,
+    Operation,
+}
+
+impl StartupBackfillFailureKind {
+    fn telemetry_reason(self) -> &'static str {
+        match self {
+            Self::SqliteBusyOrLocked => "sqlite_busy_or_locked",
+            Self::Operation => "operation_error",
+        }
+    }
+}
+
+fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureKind {
+    let has_busy_message = err.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("database is busy")
+    });
+    if crate::is_sqlite_lock_error(err) || has_busy_message {
+        StartupBackfillFailureKind::SqliteBusyOrLocked
+    } else {
+        StartupBackfillFailureKind::Operation
+    }
+}
+
+fn startup_backfill_pressure_retry_at(
+    gate: &crate::db_pressure::DbPressureGate,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> DateTime<Utc> {
+    match reason {
+        crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .and_then(|deadline_ms| {
+                i64::try_from(deadline_ms)
+                    .ok()
+                    .and_then(DateTime::<Utc>::from_timestamp_millis)
+            })
+            .unwrap_or_else(|| {
+                let remaining_ms = i64::try_from(remaining_ms.max(1)).unwrap_or(i64::MAX);
+                Utc::now() + ChronoDuration::milliseconds(remaining_ms)
+            }),
+        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+            Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
+        }
+    }
+}
+
+fn startup_backfill_pressure_suspension_reason(
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> &'static str {
+    match reason {
+        crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+            SQLITE_PRESSURE_COOLDOWN_SUSPENSION_REASON
+        }
+        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+            BACKGROUND_DB_BUSY_SUSPENSION_REASON
+        }
+    }
 }
 
 impl StartupBackfillTask {
@@ -1136,6 +1202,21 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     cancel: &CancellationToken,
     selected_tasks: Option<&[StartupBackfillTask]>,
 ) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate(
+        state,
+        cancel,
+        selected_tasks,
+        crate::db_pressure::global_db_pressure_gate(),
+    )
+    .await
+}
+
+pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
     let mut had_deferred_task = false;
@@ -1160,13 +1241,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
-        match run_startup_backfill_task_if_due_outcome(
-            &state,
-            *task,
-            crate::db_pressure::global_db_pressure_gate(),
-        )
-        .await
-        {
+        match run_startup_backfill_task_if_due_outcome(&state, *task, gate).await {
             Ok(outcome) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
@@ -1188,8 +1263,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                     Utc::now()
                         + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
                 );
-                crate::db_pressure::global_db_pressure_gate()
-                    .record_error("startup_backfill", &err);
+                gate.record_error("startup_backfill", &err);
                 warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
             }
         }
@@ -1337,33 +1411,39 @@ async fn run_startup_backfill_task_if_due_outcome(
     let _permit = match gate.try_begin_background("startup_backfill") {
         Ok(permit) => permit,
         Err(reason) => {
+            let retry_at = startup_backfill_pressure_retry_at(gate, reason);
             let retry_after = match reason {
-                crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => {
-                    Utc::now() + ChronoDuration::milliseconds(remaining_ms as i64)
+                crate::db_pressure::DbPressureDenyReason::PressureCooldown { .. } => {
+                    format_utc_iso_millis(retry_at)
                 }
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                    Utc::now()
-                        + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
+                    format_utc_iso(retry_at)
                 }
             };
-            let retry_after = format_utc_iso(retry_after);
-            save_startup_backfill_progress(
-                &state.pool,
-                &task_name,
-                StartupBackfillProgressUpdate {
-                    cursor_id: progress.cursor_id,
-                    scanned: progress.last_scanned,
-                    updated: progress.last_updated,
-                    zero_update_streak: progress.zero_update_streak,
-                    next_run_after: &retry_after,
-                    status: &progress.last_status,
-                    suspension_reason: progress.suspension_reason.as_deref(),
-                },
-            )
-            .await?;
+            let suspension_reason = startup_backfill_pressure_suspension_reason(reason);
+            let deadline_registered = progress.next_run_after.as_deref() != Some(&retry_after)
+                || progress.suspension_reason.as_deref() != Some(suspension_reason);
+            if deadline_registered {
+                save_startup_backfill_progress(
+                    &state.pool,
+                    &task_name,
+                    StartupBackfillProgressUpdate {
+                        cursor_id: progress.cursor_id,
+                        scanned: progress.last_scanned,
+                        updated: progress.last_updated,
+                        zero_update_streak: progress.zero_update_streak,
+                        next_run_after: &retry_after,
+                        status: &progress.last_status,
+                        suspension_reason: Some(suspension_reason),
+                    },
+                )
+                .await?;
+            }
             info!(
                 task = task.log_label(),
-                reason = %reason,
+                defer_kind = "pressure_gate",
+                defer_reason = %reason,
+                deadline_registered,
                 next_retry_after = %retry_after,
                 wake_reason = "pressure_defer",
                 "startup backfill task deferred because database pressure gate is closed"
@@ -1373,7 +1453,7 @@ async fn run_startup_backfill_task_if_due_outcome(
                 failed: false,
                 deferred: true,
                 completed: true,
-                next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
+                next_due: retry_at,
             });
         }
     };
@@ -1455,6 +1535,7 @@ async fn run_startup_backfill_task_if_due_outcome(
             }
         }
         Err(err) => {
+            let failure_kind = startup_backfill_failure_kind(&err);
             let retry_after = format_utc_iso(
                 Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
             );
@@ -1478,6 +1559,8 @@ async fn run_startup_backfill_task_if_due_outcome(
                 cursor_id = progress.cursor_id,
                 elapsed_ms = started_at.elapsed().as_millis() as u64,
                 next_run_after = %retry_after,
+                failure_kind = failure_kind.telemetry_reason(),
+                retry_kind = "bounded_operation_backoff",
                 error = %err,
                 "startup backfill pass failed"
             );
@@ -2048,6 +2131,39 @@ mod startup_backfill_tests {
         assert_eq!(recovered.state, "healthy");
         assert_eq!(recovered.failure_count, 1);
         assert_eq!(recovered.failed_task_count, 0);
+    }
+
+    #[test]
+    fn pressure_defer_uses_the_gate_absolute_deadline() {
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+        gate.record_pressure("test", "forced");
+        let expected_deadline = gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .expect("active pressure cooldown deadline");
+
+        let retry_at = startup_backfill_pressure_retry_at(
+            &gate,
+            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 1 },
+        );
+
+        assert_eq!(retry_at.timestamp_millis() as u64, expected_deadline);
+    }
+
+    #[test]
+    fn sqlite_busy_and_locked_are_actual_backfill_failures() {
+        for error in [
+            anyhow::anyhow!("database is busy"),
+            anyhow::anyhow!("database table is locked"),
+        ] {
+            assert_eq!(
+                startup_backfill_failure_kind(&error),
+                StartupBackfillFailureKind::SqliteBusyOrLocked
+            );
+        }
+        assert_eq!(
+            startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
+            StartupBackfillFailureKind::Operation
+        );
     }
 
     #[test]
