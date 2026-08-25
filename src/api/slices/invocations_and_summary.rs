@@ -7480,6 +7480,7 @@ impl SummaryProjection {
             && self
                 .all_time_account_manifest_admission_blocked_at
                 .is_some()
+            && !self.all_time_by_account.contains_key(&upstream_account_id)
         {
             return Err(ApiError::unavailable(anyhow!(
                 "summary all-time account manifest admission is unavailable"
@@ -8829,6 +8830,18 @@ fn summary_projection_mark_unavailable_archive_ranges(
     Ok(())
 }
 
+fn summary_projection_admit_paged_boundary_raw_archive(
+    admitted_archives: &mut usize,
+) -> Result<()> {
+    if *admitted_archives >= SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        return Err(anyhow!(
+            "summary projection paged boundary raw archive admission exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
+        ));
+    }
+    *admitted_archives += 1;
+    Ok(())
+}
+
 fn summary_projection_unavailable_bucket_ranges(buckets: BTreeSet<i64>) -> Vec<ExactUtcRange> {
     let mut ranges = Vec::<ExactUtcRange>::new();
     for bucket in buckets {
@@ -9770,7 +9783,7 @@ struct SummaryProjectionBoundaryManifestPage {
 async fn load_summary_projection_boundary_manifest_page(
     pool: &Pool<Sqlite>,
     range: Option<ExactUtcRange>,
-    after_id: i64,
+    after_id: Option<i64>,
     high_watermark_id: i64,
 ) -> Result<SummaryProjectionBoundaryManifestPage> {
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -9778,13 +9791,12 @@ async fn load_summary_projection_boundary_manifest_page(
                 upstream_activity_manifest_refreshed_at \
          FROM archive_batches \
          WHERE dataset = 'codex_invocations' \
-           AND status = 'completed' \
-           AND id > ",
+           AND status = 'completed'",
     );
-    query
-        .push_bind(after_id)
-        .push(" AND id <= ")
-        .push_bind(high_watermark_id);
+    if let Some(after_id) = after_id {
+        query.push(" AND id > ").push_bind(after_id);
+    }
+    query.push(" AND id <= ").push_bind(high_watermark_id);
     if let Some(range) = range {
         query
             .push(" AND coverage_end_at >= ")
@@ -9879,7 +9891,7 @@ async fn summary_projection_paged_all_time_materialized_scope_coverage(
     let mut global_covered = true;
     let mut accounts_covered = true;
     let mut discovered_account_ids = HashSet::new();
-    let mut after_id = i64::MIN;
+    let mut after_id = None;
     loop {
         let page =
             load_summary_projection_boundary_manifest_page(pool, None, after_id, high_watermark_id)
@@ -9940,7 +9952,7 @@ async fn summary_projection_paged_all_time_materialized_scope_coverage(
         let Some(next_after_id) = page.next_after_id else {
             break;
         };
-        after_id = next_after_id;
+        after_id = Some(next_after_id);
     }
     Ok((global_covered, accounts_covered, discovered_account_ids))
 }
@@ -10633,11 +10645,12 @@ async fn build_summary_projection(
             raw_fallback_ranges,
         )?;
     }
+    let mut paged_boundary_raw_archive_admissions = 0usize;
     if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
         // The admission overflow is proved fully materialized above. Page only manifest metadata
         // while planning the finite exact buckets; the raw archives themselves are opened later
         // one at a time after live boundary records have been admitted.
-        let mut after_id = i64::MIN;
+        let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
                 &state.pool,
@@ -10674,11 +10687,12 @@ async fn build_summary_projection(
                 let account_ids = page_account_ids_by_file
                     .get(archive.file_path())
                     .expect("page account manifest includes every requested archive path");
-                let (account_replayed, usage_replayed) = if account_ids.is_empty()
-                    && page
-                        .account_manifest_refreshed_paths
-                        .contains(archive.file_path())
-                {
+                let account_manifest_complete = page
+                    .account_manifest_refreshed_paths
+                    .contains(archive.file_path());
+                let (account_replayed, usage_replayed) = if !account_manifest_complete {
+                    (Some(false), Some(false))
+                } else if account_ids.is_empty() {
                     (Some(true), Some(true))
                 } else {
                     (None, None)
@@ -10702,7 +10716,7 @@ async fn build_summary_projection(
             let Some(next_after_id) = page.next_after_id else {
                 break;
             };
-            after_id = next_after_id;
+            after_id = Some(next_after_id);
         }
     }
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
@@ -10890,7 +10904,7 @@ async fn build_summary_projection(
         drop(temp_cleanup);
     }
     if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
-        let mut after_id = i64::MIN;
+        let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
                 &state.pool,
@@ -10929,11 +10943,12 @@ async fn build_summary_projection(
                 let account_ids = page_account_ids_by_file
                     .get(archive.file_path())
                     .expect("page account manifest includes every requested archive path");
-                let (account_replayed, usage_replayed) = if account_ids.is_empty()
-                    && page
-                        .account_manifest_refreshed_paths
-                        .contains(archive.file_path())
-                {
+                let account_manifest_complete = page
+                    .account_manifest_refreshed_paths
+                    .contains(archive.file_path());
+                let (account_replayed, usage_replayed) = if !account_manifest_complete {
+                    (Some(false), Some(false))
+                } else if account_ids.is_empty() {
                     (Some(true), Some(true))
                 } else {
                     (None, None)
@@ -10952,6 +10967,9 @@ async fn build_summary_projection(
                 if exact_ranges.is_empty() {
                     continue;
                 }
+                summary_projection_admit_paged_boundary_raw_archive(
+                    &mut paged_boundary_raw_archive_admissions,
+                )?;
                 let Some((archive_pool, temp_cleanup)) =
                     crate::stats::open_invocation_archive_batch_pool(
                         &archive,
@@ -10999,7 +11017,7 @@ async fn build_summary_projection(
             let Some(next_after_id) = page.next_after_id else {
                 break;
             };
-            after_id = next_after_id;
+            after_id = Some(next_after_id);
         }
     }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
@@ -26853,6 +26871,51 @@ mod request_compression_query_tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
+    #[tokio::test]
+    async fn summary_projection_paged_manifests_include_minimum_legacy_id() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE archive_batches ( \
+                 id INTEGER PRIMARY KEY, \
+                 dataset TEXT NOT NULL, \
+                 status TEXT NOT NULL, \
+                 file_path TEXT NOT NULL, \
+                 coverage_start_at TEXT, \
+                 coverage_end_at TEXT, \
+                 upstream_activity_manifest_refreshed_at TEXT \
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive manifest table");
+        for (id, path) in [(i64::MIN, "minimum-id.sqlite.gz"), (0, "zero-id.sqlite.gz")] {
+            sqlx::query(
+                "INSERT INTO archive_batches \
+                 (id, dataset, status, file_path) \
+                 VALUES (?1, 'codex_invocations', 'completed', ?2)",
+            )
+            .bind(id)
+            .bind(path)
+            .execute(&pool)
+            .await
+            .expect("insert legacy manifest id");
+        }
+        let page = load_summary_projection_boundary_manifest_page(&pool, None, None, 0)
+            .await
+            .expect("load first keyset page without a sentinel cursor");
+        let paths = page
+            .archives
+            .iter()
+            .map(|archive| archive.file_path())
+            .collect::<HashSet<_>>();
+        assert!(paths.contains("minimum-id.sqlite.gz"));
+        assert!(paths.contains("zero-id.sqlite.gz"));
+    }
+
     #[test]
     fn summary_projection_terminal_coverage_includes_occurred_at() {
         let mut projection = SummaryProjection::default();
@@ -27004,6 +27067,21 @@ mod request_compression_query_tests {
         }));
         totals.insert((missing_account_bucket, Some(42)), StatsTotals::default());
         usage_totals.insert((missing_account_bucket, Some(42)), usage.clone());
+
+        // An account manifest without its durable refresh marker may omit another archived
+        // account. Treat it as untrusted even when the listed account happens to have rollups.
+        let stale_manifest_ranges = summary_projection_archive_exact_ranges_with_coverage(
+            true,
+            Some(true),
+            Some(false),
+            Some(false),
+            exact_range,
+            &HashSet::new(),
+            &totals,
+            &usage_totals,
+            &known_accounts,
+        );
+        assert!(!stale_manifest_ranges.is_empty());
 
         let missing_global_replay_ranges = summary_projection_archive_exact_ranges_with_coverage(
             true,
@@ -27638,6 +27716,61 @@ mod request_compression_query_tests {
         assert!(
             !projection.needs_cadence_refresh(true),
             "a blocked all-time admission must not turn an active owner into a retry loop"
+        );
+    }
+
+    #[test]
+    fn summary_all_time_account_manifest_backoff_retains_fresh_last_good() {
+        let account_id = 42;
+        let response = StatsTotals {
+            total_count: 3,
+            success_count: 3,
+            total_tokens: 91,
+            total_cost: 4.5,
+            ..StatsTotals::default()
+        }
+        .into_response();
+        let projection = SummaryProjection {
+            all_time_by_account: HashMap::from([(Some(account_id), response)]),
+            all_time_refreshed_at: Some(Instant::now()),
+            all_time_account_refreshed_at: HashMap::from([(account_id, Instant::now())]),
+            all_time_account_manifest_admission_blocked_at: Some(Instant::now()),
+            all_time_account_ids_with_projection_data: HashSet::from([account_id]),
+            refreshed_at: Some(Instant::now()),
+            freshness: SummaryProjectionFreshness {
+                global_all_time_eligible: true,
+                account_all_time_eligible: HashSet::from([account_id]),
+            },
+            ..SummaryProjection::default()
+        };
+        let response = projection
+            .response_for_query(
+                &SummaryQuery {
+                    window: Some("all".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: Some(account_id),
+                },
+                50,
+            )
+            .expect("fresh last-good account snapshot remains memory-readable during backoff");
+        assert_eq!(response.total_count, 3);
+        assert_eq!(response.total_tokens, 91);
+    }
+
+    #[test]
+    fn summary_paged_boundary_raw_archive_admission_is_bounded() {
+        let mut admitted_archives = 0usize;
+        for _ in 0..SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+            summary_projection_admit_paged_boundary_raw_archive(&mut admitted_archives)
+                .expect("each archive within the bounded admission is accepted");
+        }
+        let error = summary_projection_admit_paged_boundary_raw_archive(&mut admitted_archives)
+            .expect_err("the next raw archive must fail closed before it is opened");
+        assert!(
+            error
+                .to_string()
+                .contains("paged boundary raw archive admission exceeded")
         );
     }
 
