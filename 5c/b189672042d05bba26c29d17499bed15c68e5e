@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.67.9",
+  "base_stable_version": "2.67.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-25T03:33:39Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.67.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7abd0701f4b91c7e831f33b4e0b71c6915686305",
+  "pr_number": 837,
+  "pr_title": "fix(timeseries): yield minute projection writes",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.67.9",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.67.9",
+  "target_sha": "5cb189672042d05bba26c29d17499bed15c68e5e",
+  "type_label": "type:patch"
+}
