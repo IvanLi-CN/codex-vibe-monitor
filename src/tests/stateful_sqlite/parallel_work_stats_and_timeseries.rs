@@ -268,8 +268,11 @@ async fn insert_hourly_rollup_archive_replay_marker(
 ) {
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay
+            (target, dataset, file_path, archive_sha256, replayed_at)
+        SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+        FROM archive_batches AS batches
+        WHERE batches.dataset = ?2 AND batches.file_path = ?3
         "#,
     )
     .bind(target)
@@ -22236,13 +22239,18 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
     let state = test_state_from_config(config, true).await;
-    let archived_at_utc = Utc
+    let archived_bucket_start = Utc
         .timestamp_opt(
-            (Utc::now() - ChronoDuration::hours(23) - ChronoDuration::minutes(58)).timestamp(),
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::hours(6)).timestamp(),
+                3_600,
+                0,
+            ),
             0,
         )
         .single()
-        .expect("align boundary fixture to a whole second");
+        .expect("align boundary fixture to a full hour");
+    let archived_at_utc = archived_bucket_start + ChronoDuration::minutes(5);
     let archived_at = format_naive(archived_at_utc.with_timezone(&Shanghai).naive_local());
     let archive_path = seed_invocation_archive_batch_with_details(
         &state.pool,
@@ -22273,14 +22281,32 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
          SET coverage_start_at = ?1, coverage_end_at = ?2, historical_rollups_materialized_at = datetime('now') \
          WHERE dataset = 'codex_invocations' AND file_path = ?3",
     )
-    .bind(crate::stats::db_occurred_at_lower_bound(archived_at_utc))
+    .bind(crate::stats::db_occurred_at_lower_bound(archived_bucket_start))
     .bind(crate::db_occurred_at_upper_bound(
-        archived_at_utc + ChronoDuration::minutes(1),
+        archived_bucket_start + ChronoDuration::hours(1),
     ))
     .bind(archive_path.to_string_lossy().to_string())
     .execute(&state.pool)
     .await
     .expect("mark the readable partial-hour archive materialized");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load readable boundary archive manifest id");
+    // Keep the account manifest deliberately unrefreshed. The paged fallback must replace the
+    // existing account compact bucket with this raw record rather than adding both sources.
+    sqlx::query(
+        "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) \
+         VALUES (?1, 42, ?2)",
+    )
+    .bind(archive_batch_id)
+    .bind(crate::stats::db_occurred_at_lower_bound(archived_at_utc))
+    .execute(&state.pool)
+    .await
+    .expect("seed unrefreshed account manifest for the readable boundary archive");
     let mut tx = state.pool.begin().await.expect("begin boundary rollup tx");
     upsert_invocation_hourly_rollups_tx(
         tx.as_mut(),
@@ -22395,9 +22421,50 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         .expect("record complete durable replay coverage");
     }
 
-    hydrate_summary_snapshots(state.as_ref())
+    sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
+        .execute(&state.pool)
         .await
-        .expect("page durable boundary manifests instead of failing hydration");
+        .expect("create summary projection interleave gate");
+    let interleave = install_summary_projection_test_interleave();
+    let replacement_path = "/tmp/summary-boundary-manifest-admission-1.sqlite.gz".to_string();
+    let replacement_pool = state.pool.clone();
+    let replacement_interleave = interleave.clone();
+    let replacement = tokio::spawn(async move {
+        replacement_interleave.wait_for_writer().await;
+        let mut tx = replacement_pool
+            .begin()
+            .await
+            .expect("begin legacy manifest replacement");
+        sqlx::query(
+            "UPDATE archive_batches SET sha256 = 'summary-boundary-manifest-admission-1-replacement' \
+             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+        )
+        .bind(&replacement_path)
+        .execute(tx.as_mut())
+        .await
+        .expect("replace legacy manifest SHA");
+        sqlx::query(
+            "UPDATE hourly_rollup_archive_replay \
+             SET archive_sha256 = 'summary-boundary-manifest-admission-1-replacement' \
+             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+        )
+        .bind(&replacement_path)
+        .execute(tx.as_mut())
+        .await
+        .expect("refresh replacement replay markers");
+        tx.commit()
+            .await
+            .expect("commit legacy manifest replacement");
+        replacement_interleave.resume_build();
+    });
+    let hydration = hydrate_summary_snapshots(state.as_ref()).await;
+    replacement.await.expect("run legacy manifest replacement");
+    clear_summary_projection_test_interleave();
+    hydration.expect("retry after legacy manifest replacement before publishing hydration");
+    assert!(
+        interleave.build_attempts() >= 2,
+        "the replacement commit must invalidate the first projection build"
+    );
     state.pool.close().await;
 
     for window in ["current", "1d"] {
@@ -22429,9 +22496,10 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
                         model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high")
                     })
                     .expect("paged boundary model/reasoning detail");
-                assert_f64_close(
-                    model.costs.expect("paged boundary model costs").unknown,
-                    0.20,
+                let model_cost = model.costs.expect("paged boundary model costs").unknown;
+                assert!(
+                    (model_cost - 0.20).abs() < 1e-6,
+                    "{window} {upstream_account_id:?}: expected model cost 0.20, got {model_cost}",
                 );
             }
         }

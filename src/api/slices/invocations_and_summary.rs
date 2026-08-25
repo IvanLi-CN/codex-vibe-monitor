@@ -17,6 +17,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tracing::debug;
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 pub(crate) const INVOCATION_PROXY_DISPLAY_SQL: &str = "NULLIF(TRIM(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.proxyDisplayName') AS TEXT) END), '')";
 pub(crate) const INVOCATION_ENDPOINT_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.endpoint') AS TEXT) END";
@@ -60,6 +63,7 @@ pub(crate) const INVOCATION_LIVE_PHASE_REQUESTING: &str = "requesting";
 pub(crate) const INVOCATION_LIVE_PHASE_RESPONDING: &str = "responding";
 const INVOCATION_ANCHOR_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_ANCHOR_CACHE_LIMIT: usize = 32;
+const SUMMARY_PROJECTION_STABLE_SQLITE_VERSION_ATTEMPTS: usize = 3;
 
 #[derive(Clone)]
 struct InvocationAnchorSnapshot {
@@ -72,6 +76,90 @@ struct InvocationAnchorSnapshot {
 static INVOCATION_ANCHOR_SNAPSHOTS: once_cell::sync::Lazy<
     StdMutex<HashMap<String, InvocationAnchorSnapshot>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(HashMap::new()));
+
+#[cfg(test)]
+const SUMMARY_PROJECTION_TEST_INTERLEAVE_TABLE: &str = "summary_projection_test_interleave_gate";
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct SummaryProjectionTestInterleave {
+    writer_ready: Arc<tokio::sync::Notify>,
+    resume_build: Arc<tokio::sync::Notify>,
+    paused: Arc<AtomicBool>,
+    build_attempts: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+static SUMMARY_PROJECTION_TEST_INTERLEAVE: once_cell::sync::Lazy<
+    StdMutex<Option<SummaryProjectionTestInterleave>>,
+> = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+impl SummaryProjectionTestInterleave {
+    pub(crate) async fn wait_for_writer(&self) {
+        self.writer_ready.notified().await;
+    }
+
+    pub(crate) fn resume_build(&self) {
+        self.resume_build.notify_one();
+    }
+
+    pub(crate) fn build_attempts(&self) -> usize {
+        self.build_attempts.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn install_summary_projection_test_interleave() -> SummaryProjectionTestInterleave {
+    let interleave = SummaryProjectionTestInterleave {
+        writer_ready: Arc::new(tokio::sync::Notify::new()),
+        resume_build: Arc::new(tokio::sync::Notify::new()),
+        paused: Arc::new(AtomicBool::new(false)),
+        build_attempts: Arc::new(AtomicUsize::new(0)),
+    };
+    let mut installed = SUMMARY_PROJECTION_TEST_INTERLEAVE
+        .lock()
+        .expect("summary projection test interleave lock");
+    assert!(
+        installed.is_none(),
+        "summary projection test interleave is already installed"
+    );
+    *installed = Some(interleave.clone());
+    interleave
+}
+
+#[cfg(test)]
+pub(crate) fn clear_summary_projection_test_interleave() {
+    *SUMMARY_PROJECTION_TEST_INTERLEAVE
+        .lock()
+        .expect("summary projection test interleave lock") = None;
+}
+
+#[cfg(test)]
+async fn pause_summary_projection_test_interleave(pool: &Pool<Sqlite>) -> Result<()> {
+    let table_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+    )
+    .bind(SUMMARY_PROJECTION_TEST_INTERLEAVE_TABLE)
+    .fetch_one(pool)
+    .await?;
+    if table_present == 0 {
+        return Ok(());
+    }
+    let interleave = SUMMARY_PROJECTION_TEST_INTERLEAVE
+        .lock()
+        .expect("summary projection test interleave lock")
+        .clone();
+    let Some(interleave) = interleave else {
+        return Ok(());
+    };
+    interleave.build_attempts.fetch_add(1, Ordering::SeqCst);
+    if !interleave.paused.swap(true, Ordering::SeqCst) {
+        interleave.writer_ready.notify_one();
+        interleave.resume_build.notified().await;
+    }
+    Ok(())
+}
 
 fn store_invocation_anchor_snapshot(
     snapshot_id: i64,
@@ -8901,6 +8989,31 @@ fn summary_projection_mark_exact_replacement_buckets(
     Ok(())
 }
 
+fn summary_projection_mark_account_exact_replacement_buckets(
+    archive_has_materialized_rollups: bool,
+    exact_range: ExactUtcRange,
+    exact_account_total_rollup_buckets: &mut HashSet<i64>,
+    exact_account_usage_rollup_buckets: &mut HashSet<i64>,
+) -> Result<()> {
+    if !archive_has_materialized_rollups {
+        return Ok(());
+    }
+    // A stale account manifest makes the account compact aggregate unverifiable even when the
+    // global replay is complete. The paged raw fallback owns this whole bucket for account
+    // totals and usage, while the global compact aggregates remain available.
+    summary_projection_exact_range_fits_bucket_budget(exact_range)?;
+    let mut bucket = align_bucket_epoch(exact_range.start.timestamp(), 3_600, 0);
+    let last_bucket = align_bucket_epoch(exact_range.end.timestamp().saturating_sub(1), 3_600, 0);
+    while bucket <= last_bucket {
+        exact_account_total_rollup_buckets.insert(bucket);
+        exact_account_usage_rollup_buckets.insert(bucket);
+        summary_projection_ensure_exact_bucket_budget(exact_account_total_rollup_buckets)?;
+        summary_projection_ensure_exact_bucket_budget(exact_account_usage_rollup_buckets)?;
+        bucket = bucket.saturating_add(3_600);
+    }
+    Ok(())
+}
+
 async fn merge_summary_projection_archive_records(
     pool: &Pool<Sqlite>,
     persisted_live_ids: &HashSet<String>,
@@ -9606,8 +9719,13 @@ async fn load_summary_projection_archive_replay_coverage(
     for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
     {
         let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT file_path, target FROM hourly_rollup_archive_replay \
-             WHERE dataset = 'codex_invocations' AND target IN (",
+            "SELECT replay.file_path, replay.target FROM hourly_rollup_archive_replay AS replay \
+             INNER JOIN archive_batches AS batches \
+               ON batches.dataset = replay.dataset \
+              AND batches.file_path = replay.file_path \
+              AND batches.status = 'completed' \
+              AND batches.sha256 = replay.archive_sha256 \
+             WHERE replay.dataset = 'codex_invocations' AND replay.target IN (",
         );
         query
             .push_bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
@@ -9615,7 +9733,7 @@ async fn load_summary_projection_archive_replay_coverage(
             .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
             .push(", ")
             .push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-            .push(") AND file_path IN (");
+            .push(") AND replay.file_path IN (");
         {
             let mut separated = query.separated(", ");
             for path in archive_paths {
@@ -9687,18 +9805,21 @@ async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?3 \
                     ) \
                     OR NOT EXISTS( \
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?4 \
                     ) \
                     OR NOT EXISTS( \
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?5 \
                     ) \
                ) \
@@ -9738,18 +9859,21 @@ async fn summary_projection_overflowed_all_time_manifests_have_complete_rollups(
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?2 \
                     ) \
                     OR NOT EXISTS( \
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?3 \
                     ) \
                     OR NOT EXISTS( \
                         SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                         WHERE replay.dataset = batches.dataset \
                           AND replay.file_path = batches.file_path \
+                          AND replay.archive_sha256 = batches.sha256 \
                           AND replay.target = ?4 \
                     ) \
                ) \
@@ -10051,7 +10175,7 @@ fn summary_projection_live_record_from_preview(
     ))
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PreviousSummaryProjectionAllTime {
     all_time_by_account: HashMap<Option<i64>, StatsResponse>,
     all_time_refreshed_at: Option<Instant>,
@@ -10072,6 +10196,46 @@ struct PreviousSummaryProjectionAllTime {
 /// Reads every input needed by the hot path while running off-request.  The resulting projection
 /// is swapped atomically in the subscription hub only after the complete baseline is available.
 async fn build_summary_projection(
+    state: &AppState,
+    include_all_time: bool,
+    previous_all_time: Option<PreviousSummaryProjectionAllTime>,
+    durable_terminal_sequence_watermark: u64,
+) -> Result<SummaryProjection> {
+    // The pool performs each query on its own connection, so a stable archive id alone cannot
+    // prevent a retention commit from replacing a manifest and its compact rollups between two
+    // projection reads. Keep one observer connection for the whole build and retry only a small,
+    // fixed number of times whenever another connection commits any SQLite change.
+    for _ in 0..SUMMARY_PROJECTION_STABLE_SQLITE_VERSION_ATTEMPTS {
+        let mut observer = state
+            .pool
+            .acquire()
+            .await
+            .context("summary projection stable SQLite observer acquisition failed")?;
+        let version_before = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await
+            .context("summary projection stable SQLite version hydration failed")?;
+        let projection = build_summary_projection_once(
+            state,
+            include_all_time,
+            previous_all_time.clone(),
+            durable_terminal_sequence_watermark,
+        )
+        .await?;
+        let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
+            .fetch_one(&mut *observer)
+            .await
+            .context("summary projection stable SQLite version revalidation failed")?;
+        if version_before == version_after {
+            return Ok(projection);
+        }
+    }
+    Err(anyhow!(
+        "summary projection SQLite source changed during bounded hydration retries"
+    ))
+}
+
+async fn build_summary_projection_once(
     state: &AppState,
     include_all_time: bool,
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
@@ -10119,6 +10283,8 @@ async fn build_summary_projection(
         load_summary_projection_rollup_totals_in_range(&state.pool, Some(rollup_range)).await?;
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(&state.pool, Some(rollup_range)).await?;
+    #[cfg(test)]
+    pause_summary_projection_test_interleave(&state.pool).await?;
     // Rolling aggregation must still distinguish an archive-backed retention database from a
     // live-only one. This bounded existence probe is independent of the expensive all-history
     // manifest admission below.
@@ -10690,8 +10856,19 @@ async fn build_summary_projection(
                 let account_manifest_complete = page
                     .account_manifest_refreshed_paths
                     .contains(archive.file_path());
+                if !account_manifest_complete {
+                    summary_projection_mark_account_exact_replacement_buckets(
+                        true,
+                        archive_range,
+                        &mut exact_account_total_rollup_buckets,
+                        &mut exact_account_usage_rollup_buckets,
+                    )?;
+                }
                 let (account_replayed, usage_replayed) = if !account_manifest_complete {
-                    (Some(false), Some(false))
+                    // The page admission proof already establishes the global usage replay
+                    // target. A stale account manifest only invalidates account-scoped usage,
+                    // which is handled by the exact account bucket set above.
+                    (Some(false), Some(true))
                 } else if account_ids.is_empty() {
                     (Some(true), Some(true))
                 } else {
@@ -10947,7 +11124,7 @@ async fn build_summary_projection(
                     .account_manifest_refreshed_paths
                     .contains(archive.file_path());
                 let (account_replayed, usage_replayed) = if !account_manifest_complete {
-                    (Some(false), Some(false))
+                    (Some(false), Some(true))
                 } else if account_ids.is_empty() {
                     (Some(true), Some(true))
                 } else {
@@ -26914,6 +27091,98 @@ mod request_compression_query_tests {
             .collect::<HashSet<_>>();
         assert!(paths.contains("minimum-id.sqlite.gz"));
         assert!(paths.contains("zero-id.sqlite.gz"));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_replay_coverage_requires_current_manifest_sha() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE archive_batches ( \
+                 id INTEGER PRIMARY KEY, \
+                 dataset TEXT NOT NULL, \
+                 status TEXT NOT NULL, \
+                 file_path TEXT NOT NULL, \
+                 sha256 TEXT NOT NULL \
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive manifest table");
+        sqlx::query(
+            "CREATE TABLE hourly_rollup_archive_replay ( \
+                 target TEXT NOT NULL, \
+                 dataset TEXT NOT NULL, \
+                 file_path TEXT NOT NULL, \
+                 archive_sha256 TEXT NOT NULL \
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create archive replay table");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (id, dataset, status, file_path, sha256) \
+             VALUES (1, 'codex_invocations', 'completed', 'replacement.sqlite.gz', 'new-sha')",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert replacement archive manifest");
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay \
+                 (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', 'replacement.sqlite.gz', 'old-sha')",
+            )
+            .bind(target)
+            .execute(&pool)
+            .await
+            .expect("insert stale replay marker");
+        }
+
+        let stale_coverage = load_summary_projection_archive_replay_coverage(
+            &pool,
+            &["replacement.sqlite.gz".to_string()],
+        )
+        .await
+        .expect("read stale replay coverage");
+        assert!(
+            !stale_coverage
+                .get("replacement.sqlite.gz")
+                .copied()
+                .unwrap_or_default()
+                .supports_unavailable_archive(),
+            "a replacement manifest must not inherit old replay proof"
+        );
+
+        sqlx::query(
+            "UPDATE hourly_rollup_archive_replay SET archive_sha256 = 'new-sha' \
+             WHERE dataset = 'codex_invocations' AND file_path = 'replacement.sqlite.gz'",
+        )
+        .execute(&pool)
+        .await
+        .expect("refresh replay markers for replacement manifest");
+        let current_coverage = load_summary_projection_archive_replay_coverage(
+            &pool,
+            &["replacement.sqlite.gz".to_string()],
+        )
+        .await
+        .expect("read current replay coverage");
+        assert!(
+            current_coverage
+                .get("replacement.sqlite.gz")
+                .copied()
+                .unwrap_or_default()
+                .supports_unavailable_archive(),
+            "current replay proof must cover every compact response dimension"
+        );
     }
 
     #[test]
