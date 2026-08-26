@@ -2224,6 +2224,23 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
                 && (sticky_fallback_handoff_enabled || sticky_source_id.is_none())
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
+            if !priority_handoff_enabled
+                && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && account.routing_source == PoolRoutingSelectionSource::FreshAssignment
+                && requested_model.is_some()
+                && !endpoint.eq_ignore_ascii_case("/v1/realtime")
+                && let Some(audit) = selection_audit.as_mut()
+            {
+                let (phase, verification_success_count) =
+                    priority_handoff_admission_snapshot(account.account_id, requested_model);
+                audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
+                    decision: "bypassedDisabled".to_string(),
+                    phase,
+                    verification_success_count,
+                    generation: priority_handoff_generation(account.account_id, requested_model)
+                        .unwrap_or_default(),
+                });
+            }
             if should_gate_priority_handoff {
                 let (admission_decision, admission_permit) =
                     admit_priority_handoff(account.account_id, requested_model);
@@ -2253,6 +2270,23 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             PriorityHandoffAdmissionDecision::CoolingDown => "deferredCooldown",
                             _ => "deferredPermitBusy",
                         };
+                        if let Some(audit) = selection_audit.as_mut() {
+                            let (phase, verification_success_count) =
+                                priority_handoff_admission_snapshot(
+                                    account.account_id,
+                                    requested_model,
+                                );
+                            audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
+                                decision: reason_code.to_string(),
+                                phase,
+                                verification_success_count,
+                                generation: priority_handoff_generation(
+                                    account.account_id,
+                                    requested_model,
+                                )
+                                .unwrap_or_default(),
+                            });
+                        }
                         if !selection_audit_exclusions
                             .iter()
                             .any(|candidate| candidate.account_id == account.account_id)

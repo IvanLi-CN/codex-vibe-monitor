@@ -302,6 +302,20 @@ pub(crate) fn priority_handoff_admission_snapshot(
     )
 }
 
+pub(crate) fn priority_handoff_generation(
+    account_id: i64,
+    requested_model: Option<&str>,
+) -> Option<u64> {
+    let model_key = normalize_model_key(requested_model)?;
+    state().lock().ok().map(|state| {
+        state
+            .entries
+            .get(&(account_id, model_key))
+            .map(|entry| entry.generation)
+            .unwrap_or(state.generation)
+    })
+}
+
 pub(crate) fn priority_handoff_client_cancellation(
     status: &str,
     downstream_http_status: Option<StatusCode>,
@@ -466,12 +480,18 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
         .ok()
         .flatten();
         let Some((attempt_status, downstream_http_status, failure_kind)) = finalized else {
+            if let Some(context) = take_priority_handoff_attempt(attempt_id) {
+                release_for_key(context.account_id, &context.model_key, context.generation);
+            }
             return;
         };
-        if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
-            || downstream_http_status.is_some()
-            || failure_kind.is_some()
-        {
+        if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS) {
+            return;
+        }
+        if downstream_http_status.is_some() || failure_kind.is_some() {
+            if let Some(context) = take_priority_handoff_attempt(attempt_id) {
+                release_for_key(context.account_id, &context.model_key, context.generation);
+            }
             return;
         }
     }
@@ -622,6 +642,26 @@ mod tests {
     }
 
     #[test]
+    fn priority_handoff_admission_is_isolated_by_model() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (model_a_decision, model_a_permit) = admit_priority_handoff(9_007, Some("model-a"));
+        assert!(matches!(
+            model_a_decision,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        let (model_b_decision, model_b_permit) = admit_priority_handoff(9_007, Some("model-b"));
+        assert!(matches!(
+            model_b_decision,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        let (model_a_busy, _) = admit_priority_handoff(9_007, Some("model-a"));
+        assert_eq!(model_a_busy, PriorityHandoffAdmissionDecision::PermitBusy);
+        drop(model_a_permit);
+        drop(model_b_permit);
+    }
+
+    #[test]
     fn priority_handoff_client_cancellation_only_releases_permit() {
         let _guard = test_guard();
         set_priority_handoff_admission_enabled(true);
@@ -700,6 +740,67 @@ mod tests {
             "coolingDown"
         );
 
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn priority_handoff_finalized_success_advances_from_attempt_record() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_008, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+            panic!("expected admission");
+        };
+        assert!(permit.is_some());
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, status TEXT, downstream_http_status INTEGER, failure_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create attempt table");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, ?2, NULL, NULL)",
+        )
+        .bind(70_008_i64)
+        .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        .execute(&pool)
+        .await
+        .expect("insert finalized successful attempt");
+        let audit_json = serde_json::json!({
+            "selectedAccountId": 9_008,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_008),
+            9_008,
+            Some("gpt-test"),
+            Some(audit_json.as_str()),
+        );
+
+        complete_priority_handoff_from_attempt(&pool, Some(70_008), true, false).await;
+
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_008, Some("gpt-test")),
+            ("verifying".to_string(), 1)
+        );
         drop(permit);
     }
 
