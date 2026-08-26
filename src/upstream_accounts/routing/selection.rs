@@ -2220,9 +2220,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 continue;
             }
             let mut priority_handoff_permit = None;
+            let fresh_assignment_handoff_enabled = sticky_source_id.is_none()
+                && excluded_ids.is_empty()
+                && binding_constraint.is_none();
             let should_gate_priority_handoff = priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && sticky_fallback_handoff_enabled
+                && (sticky_fallback_handoff_enabled || fresh_assignment_handoff_enabled)
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
             if !priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX

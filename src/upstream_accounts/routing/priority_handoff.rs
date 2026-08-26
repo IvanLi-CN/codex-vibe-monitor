@@ -251,6 +251,10 @@ pub(crate) fn admit_priority_handoff(
         return (PriorityHandoffAdmissionDecision::Disabled, None);
     }
     let global_generation = state.generation;
+    // Every admitted attempt gets a unique generation. Besides fencing global
+    // and manual resets, this keeps a late Drop or callback from touching a
+    // later permit for the same account/model pair.
+    let admission_generation = allocate_generation(&mut state);
     let entry = state
         .entries
         .entry((account_id, model_key.clone()))
@@ -287,7 +291,8 @@ pub(crate) fn admit_priority_handoff(
         return (PriorityHandoffAdmissionDecision::Open, None);
     }
     entry.in_flight = true;
-    let generation = entry.generation;
+    entry.generation = admission_generation;
+    let generation = admission_generation;
     (
         PriorityHandoffAdmissionDecision::Admitted { generation },
         Some(Arc::new(PriorityHandoffPermit {
@@ -514,7 +519,7 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
         // Success may be recorded before the streaming finalizer runs. Defer
         // in that case so a later downstream disconnect cannot become success
         // evidence; a finalized, non-cancelled attempt is safe to complete.
-        let finalized = sqlx::query_as::<_, (
+        let finalized = match sqlx::query_as::<_, (
             Option<String>,
             Option<i64>,
             Option<String>,
@@ -524,8 +529,17 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
         .bind(attempt_id)
         .fetch_optional(pool)
         .await
-        .ok()
-        .flatten();
+        {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    attempt_id,
+                    error = %error,
+                    "failed to load priority handoff attempt terminal status; deferring completion"
+                );
+                return;
+            }
+        };
         let Some((attempt_status, downstream_http_status, failure_kind)) = finalized else {
             if let Some(context) = take_priority_handoff_attempt(attempt_id) {
                 release_for_key(context.account_id, &context.model_key, context.generation);
@@ -1095,7 +1109,7 @@ mod tests {
             panic!("expected new generation admission");
         };
         assert_ne!(old_generation, new_generation);
-        assert_eq!(bumped_generation, new_generation);
+        assert!(new_generation > bumped_generation);
 
         complete_priority_handoff_for_request(
             9_005,
@@ -1109,6 +1123,46 @@ mod tests {
             0
         );
         drop(old_permit);
+        let (still_busy, still_in_flight) = admit_priority_handoff(9_005, Some("gpt-test"));
+        assert_eq!(still_busy, PriorityHandoffAdmissionDecision::PermitBusy);
+        assert!(still_in_flight.is_none());
         drop(new_permit);
+    }
+
+    #[tokio::test]
+    async fn priority_handoff_success_db_read_failure_defers_without_releasing_permit() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_014, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+            panic!("expected admission");
+        };
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        let audit_json = serde_json::json!({
+            "handoffAdmission": { "generation": generation }
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_014),
+            9_014,
+            Some("gpt-test"),
+            Some(audit_json.as_str()),
+        );
+
+        complete_priority_handoff_from_attempt(&pool, Some(70_014), true, false).await;
+
+        let (busy, no_permit) = admit_priority_handoff(9_014, Some("gpt-test"));
+        assert_eq!(busy, PriorityHandoffAdmissionDecision::PermitBusy);
+        assert!(no_permit.is_none());
+        assert_eq!(
+            permit.as_ref().and_then(|permit| permit.complete_success()),
+            Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
+        );
+        forget_priority_handoff_attempt(Some(70_014));
+        drop(permit);
     }
 }
