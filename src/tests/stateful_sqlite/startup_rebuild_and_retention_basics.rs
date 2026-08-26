@@ -2275,9 +2275,14 @@ async fn startup_backfill_repeated_cooldown_notifications_do_not_redispatch_or_r
     state.pool.close().await;
     for _ in 0..3 {
         assert_eq!(
-            wake_startup_backfill_tasks(&state.pool, &selected_tasks, "repeated_cooldown_input")
-                .await
-                .expect("a pending pressure defer must suppress input wake SQLite work"),
+            wake_startup_backfill_tasks_with_gate(
+                &state.pool,
+                &selected_tasks,
+                "repeated_cooldown_input",
+                &gate,
+            )
+            .await
+            .expect("a pending pressure defer must suppress input wake SQLite work"),
             0
         );
         gate.notify_background_eligibility();
