@@ -6927,17 +6927,23 @@ async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_accou
         .await
         .expect("seed fallback sticky route");
 
-    let resolution =
-        resolve_pool_account_for_request(&state, Some(sticky_key), &[], &HashSet::new())
-            .await
-            .expect("resolve fallback sticky handoff");
+    let resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        &state,
+        Some(sticky_key),
+        Some("gpt-fallback-sticky-handoff"),
+        &[],
+        &HashSet::new(),
+        None,
+    )
+    .await
+    .expect("resolve fallback sticky handoff");
     let PoolAccountResolution::Resolved(account) = resolution else {
         panic!("expected higher priority account to receive the request");
     };
     assert_eq!(account.account_id, primary_account_id);
     assert_eq!(
         account.routing_source,
-        PoolRoutingSelectionSource::FreshAssignment
+        PoolRoutingSelectionSource::PriorityHandoff
     );
     assert_eq!(
         load_sticky_route(&state.pool, sticky_key)

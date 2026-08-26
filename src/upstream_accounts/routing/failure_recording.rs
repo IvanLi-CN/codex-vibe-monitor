@@ -256,7 +256,9 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
         sticky_affinity_generation,
     )
     .await
-    .map(|_| ())
+    .map(|_| ())?;
+    complete_priority_handoff_from_attempt(pool, attempt_id, true, false).await;
+    Ok(())
 }
 
 async fn record_pool_route_success_inner(

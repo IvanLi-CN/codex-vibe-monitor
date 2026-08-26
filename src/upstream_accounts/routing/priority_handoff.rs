@@ -443,23 +443,44 @@ fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
 pub(crate) async fn complete_priority_handoff_from_attempt(
     pool: &Pool<Sqlite>,
     attempt_id: Option<i64>,
-    _success: bool,
+    success: bool,
     cooldown: bool,
 ) {
     let Some(attempt_id) = attempt_id else {
         return;
     };
-    // Success is finalized with the live attempt record so a later downstream
-    // disconnect cannot be mistaken for successful handoff evidence.
-    if _success {
-        return;
+    if success {
+        // Success may be recorded before the streaming finalizer runs. Defer
+        // in that case so a later downstream disconnect cannot become success
+        // evidence; a finalized, non-cancelled attempt is safe to complete.
+        let finalized = sqlx::query_as::<_, (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        )>(
+            "SELECT status, downstream_http_status, failure_kind FROM pool_upstream_request_attempts WHERE id = ?1",
+        )
+        .bind(attempt_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        let Some((attempt_status, downstream_http_status, failure_kind)) = finalized else {
+            return;
+        };
+        if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+            || downstream_http_status.is_some()
+            || failure_kind.is_some()
+        {
+            return;
+        }
     }
     if let Some(context) = take_priority_handoff_attempt(attempt_id) {
         let reason_code = complete_priority_handoff_for_request(
             context.account_id,
             Some(context.model_key.as_str()),
             Some(context.generation),
-            false,
+            success,
             cooldown,
         );
         if let Some(reason_code) = reason_code
