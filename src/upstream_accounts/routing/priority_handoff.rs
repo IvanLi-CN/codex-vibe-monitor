@@ -250,22 +250,22 @@ pub(crate) fn admit_priority_handoff(
     if !state.enabled {
         return (PriorityHandoffAdmissionDecision::Disabled, None);
     }
-    let generation = state.generation;
+    let global_generation = state.generation;
     let entry = state
         .entries
         .entry((account_id, model_key.clone()))
         .or_insert_with(|| PriorityHandoffEntry {
-            epoch: generation,
-            generation,
+            epoch: global_generation,
+            generation: global_generation,
             phase: PriorityHandoffPhase::Verifying,
             verification_successes: 0,
             failure_streak: 0,
             cooldown_until: None,
             in_flight: false,
         });
-    if entry.epoch != generation {
-        entry.epoch = generation;
-        entry.generation = generation;
+    if entry.epoch != global_generation {
+        entry.epoch = global_generation;
+        entry.generation = global_generation;
         entry.phase = PriorityHandoffPhase::Verifying;
         entry.verification_successes = 0;
         entry.failure_streak = 0;
@@ -287,6 +287,7 @@ pub(crate) fn admit_priority_handoff(
         return (PriorityHandoffAdmissionDecision::Open, None);
     }
     entry.in_flight = true;
+    let generation = entry.generation;
     (
         PriorityHandoffAdmissionDecision::Admitted { generation },
         Some(Arc::new(PriorityHandoffPermit {
