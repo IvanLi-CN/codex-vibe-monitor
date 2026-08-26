@@ -913,10 +913,6 @@ pub(crate) fn build_pool_routing_runtime_cache(
         prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
         sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
     };
-    set_priority_handoff_admission_enabled(
-        row.priority_handoff_admission_enabled
-            .is_none_or(|value| value != 0),
-    );
     Ok(cache)
 }
 
@@ -952,6 +948,10 @@ async fn refresh_pool_routing_runtime_cache_locked(
         .unwrap_or(1);
     cache.model_routing = model_routing;
     *runtime_cache = Some(cache.clone());
+    set_priority_handoff_admission_enabled(
+        row.priority_handoff_admission_enabled
+            .is_none_or(|value| value != 0),
+    );
     Ok(cache)
 }
 
