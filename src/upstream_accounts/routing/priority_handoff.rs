@@ -533,10 +533,10 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
             return;
         };
         if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS) {
-            if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING) {
-                if let Some(context) = take_priority_handoff_attempt(attempt_id) {
-                    release_for_key(context.account_id, &context.model_key, context.generation);
-                }
+            if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+                && let Some(context) = take_priority_handoff_attempt(attempt_id)
+            {
+                release_for_key(context.account_id, &context.model_key, context.generation);
             }
             return;
         }
@@ -654,6 +654,10 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The test guard serializes process-global admission state across async assertions."
+)]
 mod tests {
     use super::*;
 
@@ -767,8 +771,15 @@ mod tests {
             ("verifying".to_string(), 0)
         );
         let (_, permit) = admit_priority_handoff(9_012, Some("gpt-test"));
-        assert!(permit.is_some());
-        drop(permit);
+        let permit = permit.expect("post-reset permit");
+        assert_eq!(
+            permit.complete_success(),
+            Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
+        );
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_012, Some("gpt-test")),
+            ("verifying".to_string(), 1)
+        );
     }
 
     #[test]
@@ -788,6 +799,14 @@ mod tests {
         drop(old_permit);
         let (_, still_blocked) = admit_priority_handoff(9_013, Some("gpt-test"));
         assert!(still_blocked.is_none());
+        assert_eq!(
+            new_permit.complete_success(),
+            Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
+        );
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_013, Some("gpt-test")),
+            ("verifying".to_string(), 1)
+        );
         drop(new_permit);
     }
 

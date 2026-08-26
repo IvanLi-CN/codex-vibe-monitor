@@ -1928,14 +1928,15 @@ pub(crate) async fn finalize_tracked_pool_attempt(
                     .routing_selection_audit_json
                     .as_deref(),
             );
-            if let Some(generation) = generation {
-                if let Some(reason_code) = complete_priority_handoff_for_request(
+            if let Some(generation) = generation
+                && let Some(reason_code) = complete_priority_handoff_for_request(
                     pending_attempt_record.upstream_account_id,
                     pending_attempt_record.request_model.as_deref(),
                     Some(generation),
                     success,
                     cooldown,
-                ) && let Err(error) = persist_priority_handoff_event(
+                )
+                && let Err(error) = persist_priority_handoff_event(
                     &state.pool,
                     pending_attempt_record.upstream_account_id,
                     pending_attempt_record.attempt_id,
@@ -1946,15 +1947,14 @@ pub(crate) async fn finalize_tracked_pool_attempt(
                     reason_code,
                 )
                 .await
-                {
-                    warn!(
-                        account_id = pending_attempt_record.upstream_account_id,
-                        attempt_id = pending_attempt_record.attempt_id,
-                        error = %error,
-                        reason_code,
-                        "failed to persist priority handoff event"
-                    );
-                }
+            {
+                warn!(
+                    account_id = pending_attempt_record.upstream_account_id,
+                    attempt_id = pending_attempt_record.attempt_id,
+                    error = %error,
+                    reason_code,
+                    "failed to persist priority handoff event"
+                );
             }
         }
         forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
@@ -3245,6 +3245,13 @@ async fn continue_or_retry_pool_live_request_inner(
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
+    if initial_account.routing_source == PoolRoutingSelectionSource::PriorityHandoff {
+        // A live-first priority handoff is a single, delivery-sensitive attempt.
+        // Do not replay its body into the same or another account after any failure.
+        replay_cancel.cancel();
+        release_pool_routing_reservation(state.as_ref(), &reservation_key);
+        return Err(first_error);
+    }
     let mut replay_status_rx = replay_status_rx.clone();
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
