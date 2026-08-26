@@ -2,17 +2,43 @@ use super::*;
 use serde_json::json;
 use std::future::Future;
 
+async fn hold_background_gate_in_other_task(
+    gate: Arc<crate::db_pressure::DbPressureGate>,
+    operation: &'static str,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder = tokio::spawn(async move {
+        let _held = gate
+            .try_begin_background(operation)
+            .expect("occupy the sole background slot from another task");
+        held_tx
+            .send(())
+            .expect("test should await the competing background admission");
+        release_rx
+            .await
+            .expect("test should release the competing background admission");
+    });
+    held_rx
+        .await
+        .expect("holder should acquire the competing background slot");
+    (release_tx, holder)
+}
+
 async fn assert_startup_backfill_busy_error_closes_gate_before_next_task(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) {
-    let err = run_startup_backfill_task_if_due_with_gate(state, task, gate)
+    let deferred = run_startup_backfill_task_if_due_with_gate(state, task, gate)
         .await
-        .expect_err("injected SQLite lock should fail the startup backfill task");
+        .expect("injected SQLite lock should defer the startup backfill task");
     assert!(
-        crate::is_sqlite_lock_error(&err),
-        "expected an actual SQLite BUSY/LOCKED error: {err:#}"
+        !deferred,
+        "a classified SQLite BUSY/LOCKED outcome must become a scheduler-only defer"
     );
     assert_eq!(
         gate.snapshot().pressure_events,
@@ -1975,13 +2001,15 @@ async fn startup_historical_rollup_backfill_persists_cursor_and_defers_under_pre
     seed_missing_historical_rollup_startup_candidates(&state.pool, 32).await;
     let task = StartupBackfillTask::HistoricalRollups;
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
-    let held = gate
-        .try_begin_background("test_historical_rollup_pressure")
-        .expect("hold startup backfill gate");
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(1),
+    ));
+    let (release_tx, holder) =
+        hold_background_gate_in_other_task(gate.clone(), "test_historical_rollup_pressure").await;
 
     assert!(
-        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        !run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
             .await
             .expect("defer historical startup backfill under pressure")
     );
@@ -1993,7 +2021,10 @@ async fn startup_historical_rollup_backfill_persists_cursor_and_defers_under_pre
         deferred.is_due(Utc::now()),
         "a pre-SQL pressure defer must leave durable progress untouched; the scheduler owns its deadline"
     );
-    drop(held);
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
 
     sqlx::query("UPDATE startup_backfill_progress SET next_run_after = ?1 WHERE task_name = ?2")
         .bind(format_utc_iso(Utc::now() - ChronoDuration::seconds(1)))
@@ -2002,7 +2033,7 @@ async fn startup_historical_rollup_backfill_persists_cursor_and_defers_under_pre
         .await
         .expect("make historical startup backfill due");
     assert!(
-        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        !run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
             .await
             .expect("run bounded historical startup backfill")
     );
@@ -2065,22 +2096,31 @@ async fn startup_backfill_not_due_check_does_not_claim_background_gate() {
     .await
     .expect("seed not-due startup progress");
 
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
-    let held_permit = gate
-        .try_begin_background("upstream_account_maintenance")
-        .expect("hold local gate slot");
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(1),
+    ));
+    let (release_tx, holder) =
+        hold_background_gate_in_other_task(gate.clone(), "upstream_account_maintenance").await;
 
-    run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+    run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
         .await
         .expect("not-due startup backfill should not require a background slot");
 
+    let probe_gate = gate.clone();
+    let probe =
+        tokio::spawn(
+            async move { probe_gate.try_begin_background("upstream_account_maintenance") },
+        );
     assert_eq!(
-        gate.try_begin_background("upstream_account_maintenance")
-            .unwrap_err(),
+        probe.await.expect("probe should not panic").unwrap_err(),
         crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
         "not-due backfill should leave the already held slot untouched"
     );
-    drop(held_permit);
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
 }
 
 #[tokio::test]
@@ -2171,16 +2211,22 @@ async fn startup_backfill_pressure_defer_never_accesses_sqlite() {
     )
     .await;
     let task = StartupBackfillTask::ReasoningEffort;
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(1));
-    let _held = gate
-        .try_begin_background("test_pressure")
-        .expect("hold background slot");
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(1),
+    ));
+    let (release_tx, holder) =
+        hold_background_gate_in_other_task(gate.clone(), "test_pressure").await;
     state.pool.close().await;
 
-    let ran = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+    let ran = run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
         .await
         .expect("closed pool proves the pressure defer does not access SQLite");
     assert!(!ran);
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
 }
 
 #[tokio::test]
@@ -2235,6 +2281,175 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
 }
 
 #[tokio::test]
+async fn startup_backfill_repeated_cooldown_notifications_do_not_redispatch_or_read_sqlite() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::InvocationServiceTier;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    gate.record_pressure("test_pressure", "forced_cooldown");
+    let cancel = CancellationToken::new();
+    let selected_tasks = [task];
+    let audits_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before repeated cooldown notifications");
+
+    let first = run_startup_backfill_maintenance_pass_with_gate(
+        state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &gate,
+    )
+    .await;
+    let audits_after_first: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the first cooldown defer");
+    assert!(!first.ran_actionable_task);
+    assert!(!first.had_failure);
+    assert_eq!(audits_after_first, audits_before);
+    assert_eq!(gate.snapshot().background_skips, 1);
+
+    // A closed pool turns every repeated event path into a zero-I/O assertion. The scheduler
+    // must retain the original registration instead of reaching either the wake SQL or task read.
+    state.pool.close().await;
+    for _ in 0..3 {
+        assert_eq!(
+            wake_startup_backfill_tasks_with_gate(
+                &state.pool,
+                &selected_tasks,
+                "repeated_cooldown_input",
+                &gate,
+            )
+            .await
+            .expect("a pending pressure defer must suppress input wake SQLite work"),
+            0
+        );
+        gate.notify_background_eligibility();
+        run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, &gate).await;
+    }
+    assert_eq!(
+        gate.snapshot().background_skips,
+        1,
+        "repeated notifications in one closed cooldown must not redispatch the deferred task"
+    );
+}
+
+#[tokio::test]
+async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::PoolAttemptPublicIdLive;
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder_gate = gate.clone();
+    let holder = tokio::spawn(async move {
+        let _held = holder_gate
+            .try_begin_background("test_input_wake_busy")
+            .expect("occupy the sole background slot from another task");
+        held_tx
+            .send(())
+            .expect("test should await the competing background admission");
+        release_rx
+            .await
+            .expect("test should release the competing background admission");
+    });
+    held_rx
+        .await
+        .expect("holder should acquire the competing background slot");
+
+    state.pool.close().await;
+    assert_eq!(
+        wake_startup_backfill_tasks_with_gate(
+            &state.pool,
+            &[task],
+            "input_wake_busy_admission",
+            gate.as_ref(),
+        )
+        .await
+        .expect("busy admission must defer without SQLite access"),
+        0
+    );
+    assert_eq!(
+        gate.snapshot().background_skips,
+        1,
+        "the input wake must be denied by the gate before its progress write"
+    );
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
+}
+
+#[tokio::test]
+async fn startup_backfill_input_wake_sqlite_busy_closes_gate_and_defers() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::FailureClassification;
+    let task_name = task.name();
+    let trigger = format!(
+        r#"
+        CREATE TRIGGER startup_backfill_input_wake_busy
+        BEFORE INSERT ON startup_backfill_progress
+        WHEN NEW.task_name = '{task_name}'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#
+    );
+    sqlx::query(&trigger)
+        .execute(&state.pool)
+        .await
+        .expect("inject a SQLite lock into the input wake progress write");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before the input wake lock");
+
+    assert_eq!(
+        wake_startup_backfill_tasks_with_gate(
+            &state.pool,
+            &[task],
+            "input_wake_sqlite_busy",
+            &gate,
+        )
+        .await
+        .expect("a SQLite lock in the wake write should defer without surfacing an error"),
+        0
+    );
+    assert_eq!(gate.snapshot().pressure_events, 1);
+    assert!(
+        gate.pressure_cooldown_deadline_epoch_ms().is_some(),
+        "the lock must close the gate while the wake admission is still held"
+    );
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the input wake lock");
+    assert_eq!(task_runs_after, task_runs_before);
+}
+
+#[tokio::test]
 async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
@@ -2265,18 +2480,38 @@ async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     .await
     .expect("count task runs before pressure eligibility wake");
 
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
-    let held = gate
-        .try_begin_background("test_pressure_eligibility_busy")
-        .expect("occupy the background slot");
-    let first = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder_gate = gate.clone();
+    let holder = tokio::spawn(async move {
+        let _held = holder_gate
+            .try_begin_background("test_pressure_eligibility_busy")
+            .expect("occupy the background slot from another task");
+        held_tx
+            .send(())
+            .expect("test should await the competing background admission");
+        release_rx
+            .await
+            .expect("test should release the competing background admission");
+    });
+    held_rx
+        .await
+        .expect("holder should acquire the competing background slot");
+    let first = run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
         .await
         .expect("background-busy admission should be a scheduler-only defer");
     assert!(!first);
     assert_eq!(gate.snapshot().background_skips, 1);
 
     let observed_eligibility = gate.eligibility_generation();
-    drop(held);
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
     tokio::time::timeout(
         Duration::from_secs(1),
         gate.wait_for_eligibility_change(observed_eligibility),
@@ -2532,7 +2767,7 @@ async fn startup_backfill_busy_failure_persists_failed_state_and_bounded_retry()
 }
 
 #[tokio::test]
-async fn startup_backfill_busy_failure_closes_pressure_gate_before_the_next_task_reads_sqlite() {
+async fn startup_backfill_busy_failure_defers_without_an_audit_before_the_next_task_reads_sqlite() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -2593,32 +2828,20 @@ async fn startup_backfill_busy_failure_closes_pressure_gate_before_the_next_task
         &gate,
     )
     .await;
-    state
-        .sqlite_batch_writer
-        .flush_now(&state.pool)
-        .await
-        .expect("flush injected busy failure task audit");
-
     let task_runs_after: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
     )
     .fetch_one(&state.pool)
     .await
     .expect("count task runs after injected busy failure");
-    let task_run_status: String = sqlx::query_scalar(
-        "SELECT status FROM system_task_runs WHERE task_kind = 'startup_backfill' ORDER BY started_at DESC LIMIT 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load injected busy failure task audit");
-    let failed_progress = load_startup_backfill_progress(&state.pool, first_tasks[0].name())
+    let unchanged_progress = load_startup_backfill_progress(&state.pool, first_tasks[0].name())
         .await
-        .expect("load persisted busy failure progress");
+        .expect("load untouched busy-deferred progress");
     assert!(!first.ran_actionable_task);
-    assert!(first.had_failure);
-    assert_eq!(task_runs_after, task_runs_before + 1);
-    assert_eq!(task_run_status, "failed");
-    assert_eq!(failed_progress.last_status, STARTUP_BACKFILL_STATUS_FAILED);
+    assert!(!first.had_failure);
+    assert_eq!(task_runs_after, task_runs_before);
+    assert!(unchanged_progress.is_due(Utc::now()));
+    assert_eq!(gate.snapshot().pressure_events, 1);
     assert!(
         gate.pressure_cooldown_deadline_epoch_ms().is_some(),
         "the durable busy failure must close the gate before its permit is released"
@@ -3074,19 +3297,25 @@ async fn startup_coverage_repair_executes_under_its_single_admitted_gate_permit(
     )
     .await;
     let task = StartupBackfillTask::AccountActivityV2Coverage;
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
     let rollup_guard = state.hourly_rollup_sync_lock.lock().await;
 
-    let run = run_startup_backfill_task_if_due_with_gate(&state, task, &gate);
+    let run = run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref());
     tokio::pin!(run);
     tokio::select! {
         result = &mut run => panic!("coverage repair must wait for the held rollup lock, got {result:?}"),
         _ = tokio::time::sleep(Duration::from_millis(20)) => {}
     }
 
+    let probe_gate = gate.clone();
+    let probe =
+        tokio::spawn(async move { probe_gate.try_begin_background("coverage_admission_probe") });
     assert!(
         matches!(
-            gate.try_begin_background("coverage_admission_probe"),
+            probe.await.expect("probe should not panic"),
             Err(crate::db_pressure::DbPressureDenyReason::BackgroundBusy)
         ),
         "the coverage repair must retain its single production-shaped gate permit while it waits"
@@ -3110,10 +3339,12 @@ async fn startup_coverage_gate_denial_skips_sqlite_progress_and_task_run_audit()
     )
     .await;
     let task = StartupBackfillTask::AccountActivityV2Coverage;
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
-    let _held = gate
-        .try_begin_background("coverage_gate_holder")
-        .expect("occupy the production-shaped gate");
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
+    let (release_tx, holder) =
+        hold_background_gate_in_other_task(gate.clone(), "coverage_gate_holder").await;
     let task_runs_before: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
     )
@@ -3122,7 +3353,7 @@ async fn startup_coverage_gate_denial_skips_sqlite_progress_and_task_run_audit()
     .expect("count task runs before the denied coverage repair");
 
     assert!(
-        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        !run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
             .await
             .expect("closed coverage gate should defer without an error")
     );
@@ -3150,10 +3381,66 @@ async fn startup_coverage_gate_denial_skips_sqlite_progress_and_task_run_audit()
 
     state.pool.close().await;
     assert!(
-        !run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+        !run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
             .await
             .expect("a closed pool proves denied coverage never accesses SQLite")
     );
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
+}
+
+#[tokio::test]
+async fn startup_coverage_wake_sqlite_busy_closes_gate_and_defers() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_coverage_wake_busy
+        BEFORE INSERT ON startup_backfill_progress
+        WHEN NEW.task_name = 'account_activity_v2_coverage_repair_v1'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite lock into the coverage wake progress write");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before the coverage wake lock");
+
+    assert_eq!(
+        crate::wake_startup_backfill_coverage_repair_with_gate(
+            &state.pool,
+            "coverage_wake_sqlite_busy",
+            &gate,
+        )
+        .await
+        .expect("a SQLite lock in the coverage wake should defer without surfacing an error"),
+        0
+    );
+    assert_eq!(gate.snapshot().pressure_events, 1);
+    assert!(
+        gate.pressure_cooldown_deadline_epoch_ms().is_some(),
+        "the lock must close the gate while the coverage wake admission is still held"
+    );
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the coverage wake lock");
+    assert_eq!(task_runs_after, task_runs_before);
 }
 
 #[tokio::test]
