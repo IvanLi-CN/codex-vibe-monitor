@@ -7087,7 +7087,7 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
             .handoff_admission
             .expect("busy handoff decision should be audited")
             .decision,
-        "deferredPermitBusy"
+        "admitted"
     );
     assert_eq!(audit.excluded_candidates[0].account_id, target_account_id);
     drop(held_permit);

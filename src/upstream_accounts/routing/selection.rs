@@ -2256,14 +2256,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                     account.account_id,
                                     requested_model,
                                 );
-                            if audit.handoff_admission.is_none() {
-                                audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
-                                    decision: "admitted".to_string(),
-                                    phase,
-                                    verification_success_count,
-                                    generation,
-                                });
-                            }
+                            audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
+                                decision: "admitted".to_string(),
+                                phase,
+                                verification_success_count,
+                                generation,
+                            });
                         }
                         priority_handoff_permit = Some(permit);
                     }
