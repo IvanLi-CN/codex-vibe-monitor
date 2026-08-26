@@ -129,8 +129,39 @@ impl StartupBackfillScheduler {
         }
     }
 
-    fn record_pressure_eligibility_deadline(&self, task: StartupBackfillTask, due: DateTime<Utc>) {
-        self.record_next_due_unchecked(task, due);
+    fn record_pressure_eligibility_deadline(
+        &self,
+        task: StartupBackfillTask,
+        pressure_generation: u64,
+        due: DateTime<Utc>,
+    ) {
+        // Keep the generation check and due write ordered under the pressure-defer lock. An
+        // older arming pass must not overwrite the next deadline after a newer defer replaces it.
+        let recorded = self
+            .pressure_deferred_tasks
+            .lock()
+            .ok()
+            .and_then(|tasks| {
+                tasks
+                    .get(&task)
+                    .filter(|entry| {
+                        entry.pressure_generation == pressure_generation
+                            && entry.next_eligibility == Some(due)
+                    })
+                    .and_then(|_| {
+                        self.next_due.lock().ok().map(|mut next_due| {
+                            next_due.insert(task, due);
+                        })
+                    })
+            })
+            .is_some();
+        if !recorded {
+            return;
+        }
+        // A cooldown can be registered after the supervisor has already consumed the pressure
+        // event and selected its idle sleep. Wake it once so the new absolute deadline is armed.
+        self.wake_generation.fetch_add(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
     }
 
     fn clear_next_due(&self, task: StartupBackfillTask) {
@@ -165,7 +196,11 @@ impl StartupBackfillScheduler {
             .unwrap_or(false);
         if newly_registered {
             if let Some(next_eligibility) = next_eligibility {
-                self.record_pressure_eligibility_deadline(task, next_eligibility);
+                self.record_pressure_eligibility_deadline(
+                    task,
+                    pressure_generation,
+                    next_eligibility,
+                );
             } else {
                 self.clear_next_due(task);
             }
@@ -269,13 +304,13 @@ impl StartupBackfillScheduler {
                         entry.pressure_generation = pressure_generation;
                         entry.next_eligibility = Some(next_eligibility);
                         entry.selected_for_eligibility = false;
-                        Some(*task)
+                        Some((*task, pressure_generation))
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        for task in tasks {
-            self.record_pressure_eligibility_deadline(task, next_eligibility);
+        for (task, pressure_generation) in tasks {
+            self.record_pressure_eligibility_deadline(task, pressure_generation, next_eligibility);
         }
     }
 
@@ -2696,6 +2731,11 @@ mod startup_backfill_tests {
             !scheduler.defer_for_pressure(task, Some(deadline + ChronoDuration::minutes(1)), 41),
             "the same pressure generation must preserve its first eligibility deadline"
         );
+        assert_eq!(
+            scheduler.generation(),
+            1,
+            "one pressure generation must schedule exactly one supervisor wake"
+        );
         scheduler.wake(task);
         assert!(
             scheduler.drain_woken_tasks().is_empty(),
@@ -2721,6 +2761,26 @@ mod startup_backfill_tests {
         assert_eq!(deferred.pressure_defer_count, 1);
         assert_eq!(deferred.scheduled_task_count, 0);
         assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[tokio::test]
+    async fn pressure_deadline_wakes_an_idle_scheduler() {
+        let scheduler = Arc::new(StartupBackfillScheduler::default());
+        let task = StartupBackfillTask::ReasoningEffort;
+        let observed_generation = scheduler.generation();
+        let waiting_scheduler = scheduler.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_scheduler.wait_for_wake(observed_generation).await;
+        });
+        tokio::task::yield_now().await;
+
+        let deadline = Utc::now() + ChronoDuration::minutes(5);
+        assert!(scheduler.defer_for_pressure(task, Some(deadline), 73));
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("a new pressure deadline must wake an idle supervisor")
+            .expect("scheduler waiter should not panic");
+        assert_eq!(scheduler.next_due(), Some(deadline));
     }
 
     #[tokio::test]
