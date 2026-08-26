@@ -8086,6 +8086,21 @@ fn summary_projection_preview_row_bytes(row: &UpstreamAccountInvocationPreviewRo
         + summary_projection_optional_string_bytes(row.image_intent.as_ref())
 }
 
+fn ensure_summary_projection_resident_record_bytes(
+    rolling_record_bytes: usize,
+    current_record_bytes: usize,
+) -> Result<()> {
+    let resident_record_bytes = rolling_record_bytes
+        .checked_add(current_record_bytes)
+        .ok_or_else(|| anyhow!("summary projection resident record byte accounting overflowed"))?;
+    if resident_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+        return Err(anyhow!(
+            "summary projection resident record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+        ));
+    }
+    Ok(())
+}
+
 fn summary_projection_archive_row_bytes(row: &SummaryProjectionArchiveRow) -> usize {
     row.invoke_id.len()
         + row.occurred_at.len()
@@ -9116,7 +9131,11 @@ async fn merge_summary_projection_archive_records(
     records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
     exact_record_budget: &mut usize,
 ) -> Result<()> {
-    let mut exact_record_bytes = 0usize;
+    let mut exact_record_bytes = records_by_invoke_id
+        .values()
+        .map(|record| summary_projection_preview_row_bytes(&record.row))
+        .sum::<usize>();
+    ensure_summary_projection_resident_record_bytes(exact_record_bytes, 0)?;
     merge_summary_projection_archive_records_with_coverage(
         pool,
         pool,
@@ -9134,6 +9153,7 @@ async fn merge_summary_projection_archive_records(
         records_by_invoke_id,
         exact_record_budget,
         &mut exact_record_bytes,
+        0,
     )
     .await
 }
@@ -9155,6 +9175,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
     records_by_invoke_id: &mut HashMap<String, SummaryProjectionRecord>,
     exact_record_budget: &mut usize,
     exact_record_bytes: &mut usize,
+    resident_current_record_bytes: usize,
 ) -> Result<()> {
     let mut columns = HashMap::new();
     for column in [
@@ -9316,13 +9337,6 @@ async fn merge_summary_projection_archive_records_with_coverage(
         {
             continue;
         }
-        *exact_record_bytes =
-            exact_record_bytes.saturating_add(summary_projection_archive_row_bytes(&row));
-        if *exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-            return Err(anyhow!(
-                "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-            ));
-        }
         let full_rollup_start = ceil_hour_epoch(exact_range.start.timestamp());
         let full_rollup_end = align_bucket_epoch(exact_range.end.timestamp(), 3_600, 0);
         let bucket_is_full_rollup = bucket >= full_rollup_start
@@ -9357,6 +9371,12 @@ async fn merge_summary_projection_archive_records_with_coverage(
         {
             continue;
         }
+        *exact_record_bytes =
+            exact_record_bytes.saturating_add(summary_projection_archive_row_bytes(&row));
+        ensure_summary_projection_resident_record_bytes(
+            *exact_record_bytes,
+            resident_current_record_bytes,
+        )?;
         *exact_record_budget = exact_record_budget.saturating_add(1);
         if *exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
             return Err(anyhow!(
@@ -10755,11 +10775,7 @@ async fn build_summary_projection_once(
         .values()
         .map(|record| summary_projection_preview_row_bytes(&record.row))
         .sum::<usize>();
-    if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-        return Err(anyhow!(
-            "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-        ));
-    }
+    ensure_summary_projection_resident_record_bytes(exact_record_bytes, 0)?;
     // `current` is a latest-N view. Read only the globally newest bounded prefix so SQLite can
     // stop on its occurred-at index before evaluating account metadata. A partitioned window
     // query appears bounded at its output but ranks every retained row first, which turns each
@@ -10820,14 +10836,14 @@ async fn build_summary_projection_once(
                 .get(&invoke_id)
                 .map(|previous| summary_projection_preview_row_bytes(&previous.row))
                 .unwrap_or_default();
-            current_record_bytes = current_record_bytes
+            let next_current_record_bytes = current_record_bytes
                 .saturating_sub(replaced_bytes)
                 .saturating_add(replacement_bytes);
-            if current_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-                return Err(anyhow!(
-                    "summary projection current record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-                ));
-            }
+            ensure_summary_projection_resident_record_bytes(
+                exact_record_bytes,
+                next_current_record_bytes,
+            )?;
+            current_record_bytes = next_current_record_bytes;
             current_records_by_invoke_id.insert(invoke_id, record);
         }
     }
@@ -11337,16 +11353,19 @@ async fn build_summary_projection_once(
                 continue;
             };
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-            let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
-            if is_new {
-                exact_record_bytes =
-                    exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
-                if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-                    return Err(anyhow!(
-                        "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-                    ));
-                }
-            }
+            let replacement_bytes = summary_projection_preview_row_bytes(&row);
+            let replaced_bytes = records_by_invoke_id
+                .get(&row.invoke_id)
+                .map(|previous| summary_projection_preview_row_bytes(&previous.row))
+                .unwrap_or_default();
+            let next_rolling_record_bytes = exact_record_bytes
+                .saturating_sub(replaced_bytes)
+                .saturating_add(replacement_bytes);
+            ensure_summary_projection_resident_record_bytes(
+                next_rolling_record_bytes,
+                current_record_bytes,
+            )?;
+            exact_record_bytes = next_rolling_record_bytes;
             records_by_invoke_id.insert(
                 row.invoke_id.clone(),
                 SummaryProjectionRecord {
@@ -11483,6 +11502,7 @@ async fn build_summary_projection_once(
             &mut records_by_invoke_id,
             &mut exact_record_budget,
             &mut exact_record_bytes,
+            current_record_bytes,
         )
         .await
         .map_err(|error| {
@@ -11616,6 +11636,7 @@ async fn build_summary_projection_once(
                     &mut records_by_invoke_id,
                     &mut exact_record_budget,
                     &mut exact_record_bytes,
+                    current_record_bytes,
                 )
                 .await
                 .map_err(|error| {
@@ -11692,27 +11713,23 @@ async fn build_summary_projection_once(
             .get(&record.row.invoke_id)
             .map(|previous| summary_projection_preview_row_bytes(&previous.row))
             .unwrap_or_default();
-        exact_record_bytes = exact_record_bytes
+        let next_rolling_record_bytes = exact_record_bytes
             .saturating_sub(replaced_rolling_bytes)
             .saturating_add(replacement_bytes);
-        if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-            return Err(anyhow!(
-                "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-            ));
-        }
-        records_by_invoke_id.insert(record.row.invoke_id.clone(), record.clone());
         let replaced_bytes = current_records_by_invoke_id
             .get(&record.row.invoke_id)
             .map(|previous| summary_projection_preview_row_bytes(&previous.row))
             .unwrap_or_default();
-        current_record_bytes = current_record_bytes
+        let next_current_record_bytes = current_record_bytes
             .saturating_sub(replaced_bytes)
             .saturating_add(replacement_bytes);
-        if current_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-            return Err(anyhow!(
-                "summary projection current record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-            ));
-        }
+        ensure_summary_projection_resident_record_bytes(
+            next_rolling_record_bytes,
+            next_current_record_bytes,
+        )?;
+        exact_record_bytes = next_rolling_record_bytes;
+        current_record_bytes = next_current_record_bytes;
+        records_by_invoke_id.insert(record.row.invoke_id.clone(), record.clone());
         current_records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
     }
 
@@ -11736,7 +11753,15 @@ async fn build_summary_projection_once(
     if current_records.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
         let first_retained = current_records.len() - SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
         recent_index_complete = false;
-        recent_index_overflow_at = Some(current_records[first_retained - 1].occurred_at);
+        let newly_pruned_at = current_records[first_retained - 1].occurred_at;
+        // A runtime overlay can be older than an already omitted durable row. Keep the newest
+        // omitted timestamp so every range that could include either unretained source remains
+        // unavailable instead of letting the older overlay relax the durable proof boundary.
+        recent_index_overflow_at = Some(
+            recent_index_overflow_at
+                .map(|existing| existing.max(newly_pruned_at))
+                .unwrap_or(newly_pruned_at),
+        );
         current_records.drain(..first_retained);
     }
     let mut hourly_buckets = BTreeMap::<i64, Vec<usize>>::new();
@@ -30186,16 +30211,37 @@ mod request_compression_query_tests {
             .expect("record lagging rollup cursor");
         }
 
+        let mut old_runtime_overlay = invocation_cost_audit_tests::sample_invocation(None);
+        old_runtime_overlay.id = 0;
+        old_runtime_overlay.invoke_id = "mixed-overflow-old-runtime-overlay".to_string();
+        old_runtime_overlay.occurred_at = (Utc::now() - ChronoDuration::days(8))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        old_runtime_overlay.created_at = old_runtime_overlay.occurred_at.clone();
+        old_runtime_overlay.source = SOURCE_PROXY.to_string();
+        old_runtime_overlay.status = Some("success".to_string());
+        old_runtime_overlay.upstream_account_id = Some(42);
+        old_runtime_overlay.total_tokens = Some(1);
+        old_runtime_overlay.cost = Some(0.1);
+        state
+            .proxy_runtime_invocations
+            .upsert_terminal(old_runtime_overlay);
+
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("hydrate bounded mixed-overflow projection");
+            .expect("hydrate bounded mixed-overflow projection with an older runtime overlay");
         let projection = state
             .subscription_hub
             .summary_projection()
             .await
             .expect("hydrated projection");
         assert!(!projection.recent_index_complete);
-        assert!(projection.recent_index_overflow_at.is_some());
+        assert!(
+            projection
+                .recent_index_overflow_at
+                .is_some_and(|overflow_at| overflow_at > Utc::now() - ChronoDuration::days(4)),
+            "the durable -3d omission must remain the strictest boundary instead of being relaxed by the -8d runtime overlay"
+        );
         state.pool.close().await;
 
         for upstream_account_id in [None, Some(42)] {
@@ -30218,18 +30264,39 @@ mod request_compression_query_tests {
             );
         }
 
-        let Json(response) = fetch_summary(
-            State(state),
-            Query(SummaryQuery {
-                window: Some("1d".to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: Some(42),
-            }),
-        )
-        .await
-        .expect("a range newer than the overflow boundary remains exact in memory");
-        assert_eq!(response.total_count, 49_999);
+        for upstream_account_id in [None, Some(42)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some("1d".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("a range newer than the strictest overflow boundary remains exact in memory");
+            assert_eq!(
+                response.total_count, 49_999,
+                "safe range for {upstream_account_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_projection_resident_record_views_share_the_canonical_byte_budget() {
+        let half_budget = SUMMARY_PROJECTION_MAX_CANONICAL_BYTES / 2;
+        ensure_summary_projection_resident_record_bytes(half_budget, half_budget)
+            .expect("the two resident views may exactly fill their shared budget");
+
+        let error = ensure_summary_projection_resident_record_bytes(half_budget + 1, half_budget)
+            .expect_err("two independently sized resident views must not exceed one budget");
+        assert!(
+            error
+                .to_string()
+                .contains("resident record bytes exceeded bounded budget"),
+            "the shared resident budget must reject combined rolling/current ownership: {error:#}"
+        );
     }
 
     #[tokio::test]
@@ -30368,6 +30435,7 @@ mod request_compression_query_tests {
             &mut records,
             &mut budget,
             &mut bytes,
+            0,
         )
         .await
         .expect("bounded persisted-id lookup");
@@ -30461,6 +30529,7 @@ mod request_compression_query_tests {
             &mut records,
             &mut budget,
             &mut bytes,
+            0,
         )
         .await
         .expect("merge exact archive row when overall replay is missing");
