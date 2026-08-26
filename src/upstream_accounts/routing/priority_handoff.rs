@@ -38,6 +38,13 @@ struct PriorityHandoffState {
     entries: HashMap<(i64, String), PriorityHandoffEntry>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PriorityHandoffAttemptContext {
+    pub(crate) account_id: i64,
+    pub(crate) model_key: String,
+    pub(crate) generation: u64,
+}
+
 impl PriorityHandoffState {
     fn new() -> Self {
         Self {
@@ -53,11 +60,67 @@ fn state() -> &'static Mutex<PriorityHandoffState> {
     STATE.get_or_init(|| Mutex::new(PriorityHandoffState::new()))
 }
 
+fn attempt_contexts() -> &'static Mutex<HashMap<i64, PriorityHandoffAttemptContext>> {
+    static ATTEMPT_CONTEXTS: OnceLock<Mutex<HashMap<i64, PriorityHandoffAttemptContext>>> =
+        OnceLock::new();
+    ATTEMPT_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn normalize_model_key(model: Option<&str>) -> Option<String> {
     model
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
+}
+
+pub(crate) fn priority_handoff_generation_from_audit_json(audit_json: Option<&str>) -> Option<u64> {
+    audit_json
+        .and_then(|json| serde_json::from_str::<PoolRoutingSelectionAudit>(json).ok())
+        .and_then(|audit| {
+            audit
+                .handoff_admission
+                .map(|admission| admission.generation)
+        })
+}
+
+pub(crate) fn remember_priority_handoff_attempt(
+    attempt_id: Option<i64>,
+    account_id: i64,
+    requested_model: Option<&str>,
+    audit_json: Option<&str>,
+) {
+    let (Some(attempt_id), Some(model_key), Some(generation)) = (
+        attempt_id,
+        normalize_model_key(requested_model),
+        priority_handoff_generation_from_audit_json(audit_json),
+    ) else {
+        return;
+    };
+    if let Ok(mut contexts) = attempt_contexts().lock() {
+        contexts.insert(
+            attempt_id,
+            PriorityHandoffAttemptContext {
+                account_id,
+                model_key,
+                generation,
+            },
+        );
+    }
+}
+
+pub(crate) fn take_priority_handoff_attempt(
+    attempt_id: i64,
+) -> Option<PriorityHandoffAttemptContext> {
+    attempt_contexts()
+        .lock()
+        .ok()
+        .and_then(|mut contexts| contexts.remove(&attempt_id))
+}
+
+pub(crate) fn forget_priority_handoff_attempt(attempt_id: Option<i64>) {
+    if let Some(attempt_id) = attempt_id {
+        let _ = take_priority_handoff_attempt(attempt_id);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,27 +443,70 @@ fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
 pub(crate) async fn complete_priority_handoff_from_attempt(
     pool: &Pool<Sqlite>,
     attempt_id: Option<i64>,
-    success: bool,
+    _success: bool,
     cooldown: bool,
 ) {
     let Some(attempt_id) = attempt_id else {
         return;
     };
+    // Success is finalized with the live attempt record so a later downstream
+    // disconnect cannot be mistaken for successful handoff evidence.
+    if _success {
+        return;
+    }
+    if let Some(context) = take_priority_handoff_attempt(attempt_id) {
+        let reason_code = complete_priority_handoff_for_request(
+            context.account_id,
+            Some(context.model_key.as_str()),
+            Some(context.generation),
+            false,
+            cooldown,
+        );
+        if let Some(reason_code) = reason_code
+            && let Err(error) = super::model_health::persist_priority_handoff_event(
+                pool,
+                context.account_id,
+                Some(attempt_id),
+                context.model_key.as_str(),
+                reason_code,
+            )
+            .await
+        {
+            warn!(
+                account_id = context.account_id,
+                attempt_id,
+                error = %error,
+                reason_code,
+                "failed to persist priority handoff event"
+            );
+        }
+        return;
+    }
     let context = sqlx::query_as::<_, (
         Option<String>,
         Option<String>,
         Option<i64>,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<i64>,
     )>(
-        "SELECT routing_source, request_model, downstream_http_status, status, failure_kind FROM pool_upstream_request_attempts WHERE id = ?1",
+        "SELECT routing_source, request_model, downstream_http_status, status, failure_kind, routing_selection_audit_json, upstream_account_id FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(pool)
     .await
     .ok()
     .flatten();
-    let Some((Some(source), model, downstream_http_status, attempt_status, failure_kind)) = context
+    let Some((
+        Some(source),
+        model,
+        downstream_http_status,
+        attempt_status,
+        failure_kind,
+        routing_selection_audit_json,
+        account_id,
+    )) = context
     else {
         return;
     };
@@ -419,24 +525,19 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     let Some(model_key) = normalize_model_key(model.as_deref()) else {
         return;
     };
-    // The attempt carries the target account id in its row; keep this query
-    // separate from the diagnostic write so a persistence failure is harmless.
-    let account_id = sqlx::query_scalar::<_, i64>(
-        "SELECT upstream_account_id FROM pool_upstream_request_attempts WHERE id = ?1",
-    )
-    .bind(attempt_id)
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten();
     let Some(account_id) = account_id else {
+        return;
+    };
+    let Some(generation) =
+        priority_handoff_generation_from_audit_json(routing_selection_audit_json.as_deref())
+    else {
         return;
     };
     let reason_code = complete_priority_handoff_for_request(
         account_id,
         Some(model_key.as_str()),
-        None,
-        success,
+        Some(generation),
+        false,
         cooldown,
     );
     if let Some(reason_code) = reason_code
@@ -534,27 +635,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priority_handoff_database_failure_does_not_block_release() {
-        let (_, permit) = {
+    async fn priority_handoff_database_failure_does_not_block_local_transition() {
+        let (generation, permit) = {
             let _guard = test_guard();
             set_priority_handoff_admission_enabled(true);
-            admit_priority_handoff(9_004, Some("gpt-test"))
+            let (decision, permit) = admit_priority_handoff(9_004, Some("gpt-test"));
+            let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+                panic!("expected admission");
+            };
+            (generation, permit)
         };
         assert!(permit.is_some());
+
+        let audit_json = serde_json::json!({
+            "selectedAccountId": 9_004,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_004),
+            9_004,
+            Some("gpt-test"),
+            Some(audit_json.as_str()),
+        );
 
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect(":memory:")
             .await
             .expect("in-memory sqlite pool");
-        complete_priority_handoff_from_attempt(&pool, Some(1), true, false).await;
+        complete_priority_handoff_from_attempt(&pool, Some(70_004), false, true).await;
 
-        let (_, next) = {
+        {
             let _guard = test_guard();
-            drop(permit);
-            admit_priority_handoff(9_004, Some("gpt-test"))
-        };
-        assert!(next.is_some());
+            assert_eq!(
+                priority_handoff_admission_snapshot(9_004, Some("gpt-test")).0,
+                "coolingDown"
+            );
+        }
+
+        drop(permit);
     }
 
     #[test]

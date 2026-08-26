@@ -1923,42 +1923,41 @@ pub(crate) async fn finalize_tracked_pool_attempt(
                             | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
                     )
                 ));
-            let generation = pending_attempt_record
-                .routing_selection_audit_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<PoolRoutingSelectionAudit>(json).ok())
-                .and_then(|audit| {
-                    audit
-                        .handoff_admission
-                        .map(|admission| admission.generation)
-                });
-            if let Some(reason_code) = complete_priority_handoff_for_request(
-                pending_attempt_record.upstream_account_id,
-                pending_attempt_record.request_model.as_deref(),
-                generation,
-                success,
-                cooldown,
-            ) && let Err(error) = persist_priority_handoff_event(
-                &state.pool,
-                pending_attempt_record.upstream_account_id,
-                pending_attempt_record.attempt_id,
+            let generation = priority_handoff_generation_from_audit_json(
                 pending_attempt_record
-                    .request_model
-                    .as_deref()
-                    .unwrap_or_default(),
-                reason_code,
-            )
-            .await
-            {
-                warn!(
-                    account_id = pending_attempt_record.upstream_account_id,
-                    attempt_id = pending_attempt_record.attempt_id,
-                    error = %error,
+                    .routing_selection_audit_json
+                    .as_deref(),
+            );
+            if let Some(generation) = generation {
+                if let Some(reason_code) = complete_priority_handoff_for_request(
+                    pending_attempt_record.upstream_account_id,
+                    pending_attempt_record.request_model.as_deref(),
+                    Some(generation),
+                    success,
+                    cooldown,
+                ) && let Err(error) = persist_priority_handoff_event(
+                    &state.pool,
+                    pending_attempt_record.upstream_account_id,
+                    pending_attempt_record.attempt_id,
+                    pending_attempt_record
+                        .request_model
+                        .as_deref()
+                        .unwrap_or_default(),
                     reason_code,
-                    "failed to persist priority handoff event"
-                );
+                )
+                .await
+                {
+                    warn!(
+                        account_id = pending_attempt_record.upstream_account_id,
+                        attempt_id = pending_attempt_record.attempt_id,
+                        error = %error,
+                        reason_code,
+                        "failed to persist priority handoff event"
+                    );
+                }
             }
         }
+        forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
     }
     let finished_at = shanghai_now_string();
     if let Err(err) = finalize_pool_upstream_request_attempt(
