@@ -35,6 +35,7 @@ pub(crate) struct DbPressureGate {
     pressure_cooldown: Duration,
     pressure_until_epoch_ms: AtomicU64,
     pressure_generation: AtomicU64,
+    pressure_state_lock: Mutex<()>,
     pressure_events: AtomicU64,
     background_skips: AtomicU64,
     eligibility: Arc<DbPressureEligibility>,
@@ -131,6 +132,7 @@ impl DbPressureGate {
             pressure_cooldown,
             pressure_until_epoch_ms: AtomicU64::new(0),
             pressure_generation: AtomicU64::new(0),
+            pressure_state_lock: Mutex::new(()),
             pressure_events: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
             eligibility: Arc::new(DbPressureEligibility::default()),
@@ -178,6 +180,21 @@ impl DbPressureGate {
         let now_ms = current_epoch_ms();
         let deadline_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
         (deadline_ms > now_ms).then_some(deadline_ms)
+    }
+
+    pub(crate) fn pressure_cooldown_snapshot(&self) -> Option<(u64, u64)> {
+        let _pressure_state = self
+            .pressure_state_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now_ms = current_epoch_ms();
+        let deadline_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        (deadline_ms > now_ms).then(|| {
+            (
+                self.pressure_generation.load(Ordering::Acquire),
+                deadline_ms,
+            )
+        })
     }
 
     pub(crate) fn try_begin_background(
@@ -330,11 +347,18 @@ impl DbPressureGate {
     }
 
     pub(crate) fn record_pressure(&self, task: &'static str, reason: &'static str) {
-        let now_ms = current_epoch_ms();
-        let cooldown_ms = duration_ms_u64(self.pressure_cooldown);
-        let until_ms = now_ms.saturating_add(cooldown_ms);
-        update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
-        let generation = self.pressure_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let (generation, cooldown_ms) = {
+            let _pressure_state = self
+                .pressure_state_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now_ms = current_epoch_ms();
+            let cooldown_ms = duration_ms_u64(self.pressure_cooldown);
+            let until_ms = now_ms.saturating_add(cooldown_ms);
+            update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
+            let generation = self.pressure_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            (generation, cooldown_ms)
+        };
         let events = self.pressure_events.fetch_add(1, Ordering::Relaxed) + 1;
         self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
         self.eligibility.notify.notify_waiters();

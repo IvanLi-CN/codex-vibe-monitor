@@ -48,7 +48,7 @@ struct StartupBackfillScheduler {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PressureDeferredTask {
     pressure_generation: u64,
-    next_eligibility: Option<DateTime<Utc>>,
+    pressure_deadline: Option<DateTime<Utc>>,
     selected_for_eligibility: bool,
 }
 
@@ -133,7 +133,7 @@ impl StartupBackfillScheduler {
         &self,
         task: StartupBackfillTask,
         pressure_generation: u64,
-        due: DateTime<Utc>,
+        pressure_deadline: DateTime<Utc>,
     ) {
         // Keep the generation check and due write ordered under the pressure-defer lock. An
         // older arming pass must not overwrite the next deadline after a newer defer replaces it.
@@ -146,13 +146,20 @@ impl StartupBackfillScheduler {
                     .get(&task)
                     .filter(|entry| {
                         entry.pressure_generation == pressure_generation
-                            && entry.next_eligibility == Some(due)
+                            && entry.pressure_deadline == Some(pressure_deadline)
                     })
                     .and_then(|_| {
-                        self.next_due
-                            .lock()
-                            .ok()
-                            .map(|mut next_due| next_due.insert(task, due) != Some(due))
+                        self.next_due.lock().ok().map(|mut next_due| {
+                            let existing_due = next_due.get(&task).copied();
+                            let scheduled_due = existing_due
+                                .map(|due| due.max(pressure_deadline))
+                                .unwrap_or(pressure_deadline);
+                            if existing_due == Some(scheduled_due) {
+                                return false;
+                            }
+                            next_due.insert(task, scheduled_due);
+                            true
+                        })
                     })
             })
             .unwrap_or(false);
@@ -183,7 +190,7 @@ impl StartupBackfillScheduler {
                 .get(&task)
                 .filter(|entry| {
                     entry.pressure_generation == pressure_generation
-                        && entry.next_eligibility.is_none()
+                        && entry.pressure_deadline.is_none()
                 })
                 .and_then(|_| {
                     self.next_due.lock().ok().map(|mut next_due| {
@@ -196,7 +203,7 @@ impl StartupBackfillScheduler {
     fn defer_for_pressure(
         &self,
         task: StartupBackfillTask,
-        next_eligibility: Option<DateTime<Utc>>,
+        pressure_deadline: Option<DateTime<Utc>>,
         pressure_generation: u64,
     ) -> bool {
         let newly_registered = self
@@ -209,7 +216,7 @@ impl StartupBackfillScheduler {
                         task,
                         PressureDeferredTask {
                             pressure_generation,
-                            next_eligibility,
+                            pressure_deadline,
                             selected_for_eligibility: false,
                         },
                     );
@@ -218,11 +225,11 @@ impl StartupBackfillScheduler {
             })
             .unwrap_or(false);
         if newly_registered {
-            if let Some(next_eligibility) = next_eligibility {
+            if let Some(pressure_deadline) = pressure_deadline {
                 self.record_pressure_eligibility_deadline(
                     task,
                     pressure_generation,
-                    next_eligibility,
+                    pressure_deadline,
                 );
             } else {
                 self.clear_pressure_eligibility_deadline(task, pressure_generation);
@@ -250,16 +257,27 @@ impl StartupBackfillScheduler {
             self.wake(task);
             return None;
         };
-        let pressure_generation = gate.pressure_generation();
-        let next_eligibility = startup_backfill_pressure_eligibility_deadline(gate, reason);
+        let pressure_snapshot = gate.pressure_cooldown_snapshot();
+        let pressure_generation = pressure_snapshot
+            .map(|(generation, _)| generation)
+            .unwrap_or_else(|| gate.pressure_generation());
+        let pressure_deadline = pressure_snapshot
+            .and_then(|(_, deadline_ms)| startup_backfill_datetime_from_epoch_ms(deadline_ms));
+        let next_eligibility = match reason {
+            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => {
+                pressure_deadline.or_else(|| {
+                    let remaining_ms = i64::try_from(remaining_ms.max(1)).unwrap_or(i64::MAX);
+                    Some(Utc::now() + ChronoDuration::milliseconds(remaining_ms))
+                })
+            }
+            crate::db_pressure::DbPressureDenyReason::BackgroundBusy => None,
+        };
         let newly_registered = self.defer_for_pressure(task, next_eligibility, pressure_generation);
         // The deny recheck and generation read cannot reserve the gate. Once the deferred entry
         // is visible, absorb a concurrently-recorded cooldown before its notification can be
         // consumed by the supervisor without this task present.
         self.arm_pressure_deferred_deadlines(gate);
-        let next_eligibility = self
-            .pressure_deferred_entry(task)
-            .and_then(|entry| entry.next_eligibility);
+        let next_eligibility = self.next_due_for(task);
         Some((reason, next_eligibility, newly_registered))
     }
 
@@ -272,6 +290,13 @@ impl StartupBackfillScheduler {
 
     fn pressure_deferred_entry(&self, task: StartupBackfillTask) -> Option<PressureDeferredTask> {
         self.pressure_deferred_tasks
+            .lock()
+            .ok()
+            .and_then(|tasks| tasks.get(&task).copied())
+    }
+
+    fn next_due_for(&self, task: StartupBackfillTask) -> Option<DateTime<Utc>> {
+        self.next_due
             .lock()
             .ok()
             .and_then(|tasks| tasks.get(&task).copied())
@@ -301,17 +326,12 @@ impl StartupBackfillScheduler {
     }
 
     fn arm_pressure_deferred_deadlines(&self, gate: &crate::db_pressure::DbPressureGate) {
-        let Some(next_eligibility) =
-            gate.pressure_cooldown_deadline_epoch_ms()
-                .and_then(|deadline_ms| {
-                    i64::try_from(deadline_ms)
-                        .ok()
-                        .and_then(DateTime::<Utc>::from_timestamp_millis)
-                })
-        else {
+        let Some((pressure_generation, deadline_ms)) = gate.pressure_cooldown_snapshot() else {
             return;
         };
-        let pressure_generation = gate.pressure_generation();
+        let Some(pressure_deadline) = startup_backfill_datetime_from_epoch_ms(deadline_ms) else {
+            return;
+        };
         let tasks = self
             .pressure_deferred_tasks
             .lock()
@@ -320,12 +340,12 @@ impl StartupBackfillScheduler {
                     .iter_mut()
                     .filter_map(|(task, entry)| {
                         let needs_deadline = entry.pressure_generation != pressure_generation
-                            || entry.next_eligibility.is_none();
+                            || entry.pressure_deadline != Some(pressure_deadline);
                         if !needs_deadline {
                             return None;
                         }
                         entry.pressure_generation = pressure_generation;
-                        entry.next_eligibility = Some(next_eligibility);
+                        entry.pressure_deadline = Some(pressure_deadline);
                         entry.selected_for_eligibility = false;
                         Some((*task, pressure_generation))
                     })
@@ -333,7 +353,7 @@ impl StartupBackfillScheduler {
             })
             .unwrap_or_default();
         for (task, pressure_generation) in tasks {
-            self.record_pressure_eligibility_deadline(task, pressure_generation, next_eligibility);
+            self.record_pressure_eligibility_deadline(task, pressure_generation, pressure_deadline);
         }
     }
 
@@ -565,12 +585,8 @@ fn startup_backfill_pressure_eligibility_deadline(
 ) -> Option<DateTime<Utc>> {
     match reason {
         crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => gate
-            .pressure_cooldown_deadline_epoch_ms()
-            .and_then(|deadline_ms| {
-                i64::try_from(deadline_ms)
-                    .ok()
-                    .and_then(DateTime::<Utc>::from_timestamp_millis)
-            })
+            .pressure_cooldown_snapshot()
+            .and_then(|(_, deadline_ms)| startup_backfill_datetime_from_epoch_ms(deadline_ms))
             .or_else(|| {
                 let remaining_ms = i64::try_from(remaining_ms.max(1)).unwrap_or(i64::MAX);
                 Some(Utc::now() + ChronoDuration::milliseconds(remaining_ms))
@@ -579,6 +595,12 @@ fn startup_backfill_pressure_eligibility_deadline(
         // while the same slot remains occupied, so busy defers have no due-ticker fallback.
         crate::db_pressure::DbPressureDenyReason::BackgroundBusy => None,
     }
+}
+
+fn startup_backfill_datetime_from_epoch_ms(deadline_ms: u64) -> Option<DateTime<Utc>> {
+    i64::try_from(deadline_ms)
+        .ok()
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
 }
 
 fn register_startup_backfill_pressure_defer(
@@ -622,20 +644,18 @@ fn startup_backfill_pressure_error_defer_outcome(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillTaskRunOutcome {
-    let retry_at = gate
-        .pressure_cooldown_deadline_epoch_ms()
-        .and_then(|deadline_ms| {
-            i64::try_from(deadline_ms)
-                .ok()
-                .and_then(DateTime::<Utc>::from_timestamp_millis)
-        })
+    let pressure_snapshot = gate.pressure_cooldown_snapshot();
+    let retry_at = pressure_snapshot
+        .and_then(|(_, deadline_ms)| startup_backfill_datetime_from_epoch_ms(deadline_ms))
         .unwrap_or_else(|| {
             Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
         });
     let newly_registered = STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(
         task,
         Some(retry_at),
-        gate.pressure_generation(),
+        pressure_snapshot
+            .map(|(generation, _)| generation)
+            .unwrap_or_else(|| gate.pressure_generation()),
     );
     STARTUP_BACKFILL_SCHEDULER.requeue_pressure_deferred(task);
     if newly_registered {
@@ -2869,6 +2889,51 @@ mod startup_backfill_tests {
                 .expect("the deferred task should remain registered")
                 .pressure_generation,
             gate.pressure_generation()
+        );
+    }
+
+    #[test]
+    fn pressure_generation_rearm_replaces_a_stale_pressure_deadline() {
+        let scheduler = StartupBackfillScheduler::default();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+        let task = StartupBackfillTask::ReasoningEffort;
+
+        gate.record_pressure("test", "forced");
+        let (pressure_generation, deadline_ms) = gate
+            .pressure_cooldown_snapshot()
+            .expect("active pressure cooldown snapshot");
+        let pressure_deadline = startup_backfill_datetime_from_epoch_ms(deadline_ms)
+            .expect("pressure deadline must fit the scheduler clock");
+        let stale_deadline = pressure_deadline - ChronoDuration::milliseconds(1);
+
+        scheduler
+            .pressure_deferred_tasks
+            .lock()
+            .expect("scheduler state lock")
+            .insert(
+                task,
+                PressureDeferredTask {
+                    pressure_generation,
+                    pressure_deadline: Some(stale_deadline),
+                    selected_for_eligibility: false,
+                },
+            );
+        scheduler
+            .next_due
+            .lock()
+            .expect("scheduler due lock")
+            .insert(task, stale_deadline);
+
+        scheduler.arm_pressure_deferred_deadlines(&gate);
+
+        assert_eq!(scheduler.next_due_for(task), Some(pressure_deadline));
+        assert_eq!(
+            scheduler
+                .pressure_deferred_entry(task)
+                .expect("the deferred task should remain registered")
+                .pressure_deadline,
+            Some(pressure_deadline),
+            "a new generation paired with an old deadline must be repaired before it fires"
         );
     }
 
