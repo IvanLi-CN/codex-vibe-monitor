@@ -214,6 +214,8 @@ pub(crate) struct PoolRoutingSettingsRow {
     pub(crate) live_request_streaming_enabled: Option<i64>,
     #[sqlx(default)]
     pub(crate) live_request_streaming_treatment_percent: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) priority_handoff_admission_enabled: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

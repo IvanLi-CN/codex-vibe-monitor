@@ -2105,6 +2105,7 @@ pub(crate) struct PoolRoutingSettingsResponse {
     pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
     pub(crate) cache_hit_protection: CacheHitProtectionSettingsResponse,
     pub(crate) live_request_streaming: LiveRequestStreamingSettingsResponse,
+    pub(crate) priority_handoff_admission_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2154,6 +2155,8 @@ pub(crate) struct UpdatePoolRoutingSettingsRequest {
     pub(crate) cache_hit_protection: Option<UpdateCacheHitProtectionSettingsRequest>,
     #[serde(default)]
     pub(crate) live_request_streaming: Option<UpdateLiveRequestStreamingSettingsRequest>,
+    #[serde(default)]
+    pub(crate) priority_handoff_admission_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

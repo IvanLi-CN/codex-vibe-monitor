@@ -1229,6 +1229,7 @@ async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
                 overflow_mode: None,
             }),
             live_request_streaming: None,
+            priority_handoff_admission_enabled: None,
         }),
     )
     .await

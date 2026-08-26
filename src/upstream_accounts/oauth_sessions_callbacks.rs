@@ -144,6 +144,7 @@ pub(crate) async fn update_pool_routing_settings(
         || payload.maintenance.is_some()
         || payload.cache_hit_protection.is_some()
         || payload.live_request_streaming.is_some()
+        || payload.priority_handoff_admission_enabled.is_some()
     {
         save_pool_routing_settings(
             &state.pool,
@@ -166,6 +167,7 @@ pub(crate) async fn update_pool_routing_settings(
                     .live_request_streaming
                     .as_ref()
                     .map(|_| merged_live_request_streaming),
+                priority_handoff_admission_enabled: payload.priority_handoff_admission_enabled,
             },
         )
         .await?;

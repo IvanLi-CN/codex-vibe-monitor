@@ -3797,6 +3797,7 @@ async fn websocket_payload_owner_guard_blocks_mismatched_payload_owner() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
     };
 
     let outcome = inspect_ws_request_payload_guard(
@@ -3928,6 +3929,7 @@ async fn websocket_payload_owner_guard_disabled_does_not_block_mismatched_payloa
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
     };
 
     let outcome = inspect_ws_request_payload_guard(
@@ -9492,6 +9494,7 @@ fn test_live_first_pool_account(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
     }
 }
 

@@ -66,6 +66,7 @@ type RoutingDraft = {
   cacheHitOverflowMode: import("../lib/api").CacheHitOverflowMode;
   liveRequestStreamingEnabled: boolean;
   liveRequestStreamingTreatmentPercent: string;
+  priorityHandoffAdmissionEnabled: boolean;
 };
 
 type ForwardProxyValidationState =
@@ -278,6 +279,7 @@ function toRoutingDraft(routing: PoolRoutingSettings): RoutingDraft {
     liveRequestStreamingTreatmentPercent: String(
       routing.liveRequestStreaming?.treatmentPercent ?? 50,
     ),
+    priorityHandoffAdmissionEnabled: routing.priorityHandoffAdmissionEnabled ?? true,
   };
 }
 
@@ -797,6 +799,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
         enabled: routingDraft.liveRequestStreamingEnabled,
         treatmentPercent: liveRequestStreamingTreatmentPercent,
       },
+      priorityHandoffAdmissionEnabled: routingDraft.priorityHandoffAdmissionEnabled,
     };
 
     try {
@@ -2103,6 +2106,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                 onTimeoutChange={(key, value) => updateRoutingDraft({ [key]: value })}
                 onCacheHitProtectionChange={(patch) => updateRoutingDraft(patch)}
                 onLiveRequestStreamingChange={(patch) => updateRoutingDraft(patch)}
+                onPriorityHandoffAdmissionChange={(enabled) =>
+                  updateRoutingDraft({ priorityHandoffAdmissionEnabled: enabled })
+                }
                 onSave={() => void saveRoutingDefaults()}
               />
             ) : (

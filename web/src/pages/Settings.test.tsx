@@ -267,6 +267,14 @@ describe("Settings forward proxy table", () => {
     expect(host?.textContent).toContain("上游请求默认值");
     expect(host?.textContent).toContain("缓存命中保护");
 
+    const priorityHandoffToggle = host?.querySelector('button[aria-label="优先级迁移准入控制"]');
+    if (!(priorityHandoffToggle instanceof HTMLButtonElement)) {
+      throw new Error("Missing priority handoff admission toggle");
+    }
+    act(() => {
+      priorityHandoffToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
     const cacheHitToggle = host?.querySelector('button[aria-label="缓存命中保护"]');
     if (!(cacheHitToggle instanceof HTMLButtonElement)) {
       throw new Error("Missing cache-hit protection toggle");
@@ -303,6 +311,7 @@ describe("Settings forward proxy table", () => {
       requestCompressionAlgorithm: "identity",
       requestCompressionLevelPreset: "balanced",
       codexImagegenRewriteMode: "keep_original",
+      priorityHandoffAdmissionEnabled: false,
       cacheHitProtection: {
         enabled: true,
         lowHitRateThresholdPercent: 10,

@@ -122,7 +122,7 @@
 
 - `GET /api/pool/routing-settings` 与 `PUT /api/pool/routing-settings` 增加 `priorityHandoffAdmissionEnabled: boolean`。缺失的历史值按 `true` 解释；`PUT` 按既有局部设置更新语义处理该字段。
 - 成功的 `PUT` 先完成持久化，再原子更新本地镜像。失败响应不得改变运行时镜像；运行中的请求继续使用其开始时读取的代际。
-- `routingSelectionAudit` 可选增加 `handoffAdmission`：`decision` 为 `admitted`、`deferredPermitBusy`、`deferredCooldown` 或 `bypassedDisabled`；`phase` 为 `verifying`、`open` 或 `coolingDown`；`verificationSuccessCount` 为 `0..=3`。历史记录可省略该对象。
+- `routingSelectionAudit` 可选增加 `handoffAdmission`：`decision` 为 `admitted`、`deferredPermitBusy`、`deferredCooldown` 或 `bypassedDisabled`；`phase` 为 `verifying`、`open` 或 `coolingDown`；`verificationSuccessCount` 为 `0..=3`；准入记录可带 `generation` 以隔离开关重新开启前后的在途结果。历史记录可省略该对象。
 - 现有模型路由事件新增安全 reason code，以表达 `priorityHandoffSucceeded`、`priorityHandoffFailureCooldown` 与 `priorityHandoffRecoveryProgress`。事件仅携带既有安全上下文和模型范围，不携带原始上游错误。
 
 ## 验收标准（Acceptance Criteria）
@@ -184,7 +184,7 @@
 
 ## Visual Evidence
 
-当前无 UI 实现；实现交付时按 UI visual evidence 合同补充受控证据。
+实现已落在既有 Pool Routing Settings 卡片；交付前按 UI visual evidence 合同补充受控桌面与窄屏证据。
 
 ## Related PRs
 

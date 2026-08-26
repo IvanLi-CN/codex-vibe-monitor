@@ -1826,6 +1826,9 @@ const baseTranslations = {
     "settings.routing.cacheHit.title": "Cache hit protection",
     "settings.routing.cacheHit.description":
       "Protect an API key model route after low cache reads. Samples start at {{tokens}} input tokens.",
+    "settings.routing.priorityHandoff.title": "Priority handoff admission",
+    "settings.routing.priorityHandoff.description":
+      "Limit automatic HTTP/API key priority migrations to one real request at a time while a target recovers.",
     "settings.routing.cacheHit.threshold": "Low hit threshold (%)",
     "settings.routing.cacheHit.overflow": "When the route is limited",
     "settings.routing.cacheHit.queue": "Queue requests",
@@ -2464,6 +2467,7 @@ const baseTranslations = {
     "live.routing.record.sources.retry": "Retry",
     "live.routing.record.sources.pool": "Pool routing",
     "live.routing.record.sources.sticky": "Sticky routing",
+    "live.routing.record.sources.priorityHandoff": "Priority handoff",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
     "live.conversations.table.upstreamAccounts": "Upstream accounts",
     "live.conversations.table.summary": "Total",
@@ -2593,6 +2597,8 @@ const baseTranslations = {
     "live.conversations.drawer.operations.routingContext.sources.freshAssignment":
       "Fresh assignment",
     "live.conversations.drawer.operations.routingContext.sources.stickyReuse": "Sticky reuse",
+    "live.conversations.drawer.operations.routingContext.sources.priorityHandoff":
+      "Priority handoff",
     "live.conversations.drawer.operations.routingContext.causeAttempt":
       "Cause attempt: {{attemptId}}",
     "live.conversations.drawer.operations.routingContext.triggerAttempt":
@@ -4956,6 +4962,9 @@ const baseTranslations = {
     "settings.routing.cacheHit.title": "缓存命中保护",
     "settings.routing.cacheHit.description":
       "当 API Key 模型路由缓存读取异常偏低时限制后续请求；样本从 {{tokens}} 个输入 token 开始。",
+    "settings.routing.priorityHandoff.title": "优先级迁移准入控制",
+    "settings.routing.priorityHandoff.description":
+      "上游恢复期间，自动 HTTP/API Key 优先级迁移只允许逐个真实请求验证；来源请求不会排队。",
     "settings.routing.cacheHit.threshold": "低命中阈值（%）",
     "settings.routing.cacheHit.overflow": "路由受限时",
     "settings.routing.cacheHit.queue": "请求排队",
@@ -5567,6 +5576,7 @@ const baseTranslations = {
     "live.routing.record.sources.retry": "重试",
     "live.routing.record.sources.pool": "池路由",
     "live.routing.record.sources.sticky": "粘性路由",
+    "live.routing.record.sources.priorityHandoff": "优先级迁移",
     "live.conversations.table.promptCacheKey": "Prompt Cache Key",
     "live.conversations.table.upstreamAccounts": "上游账号",
     "live.conversations.table.summary": "总计",
@@ -5691,6 +5701,7 @@ const baseTranslations = {
     "live.conversations.drawer.operations.routingContext.source": "路由来源：{{source}}",
     "live.conversations.drawer.operations.routingContext.sources.freshAssignment": "重新分配",
     "live.conversations.drawer.operations.routingContext.sources.stickyReuse": "Sticky 复用",
+    "live.conversations.drawer.operations.routingContext.sources.priorityHandoff": "优先级迁移",
     "live.conversations.drawer.operations.routingContext.causeAttempt": "起因尝试：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.triggerAttempt": "触发尝试：{{attemptId}}",
     "live.conversations.drawer.operations.routingContext.routingDecisionAttempt":

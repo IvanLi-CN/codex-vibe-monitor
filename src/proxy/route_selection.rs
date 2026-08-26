@@ -1903,6 +1903,37 @@ pub(crate) async fn finalize_tracked_pool_attempt(
     let Some(pending_attempt_record) = pending_attempt_record else {
         return;
     };
+    if pending_attempt_record.routing_source.as_deref() == Some(PRIORITY_HANDOFF_ROUTING_SOURCE) {
+        let success = status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
+        let cooldown = !success
+            && (http_status.is_some_and(|status| {
+                status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+            }) || matches!(
+                failure_kind,
+                Some(
+                    PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                        | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                        | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+                        | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
+                )
+            ));
+        let generation = pending_attempt_record
+            .routing_selection_audit_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<PoolRoutingSelectionAudit>(json).ok())
+            .and_then(|audit| {
+                audit
+                    .handoff_admission
+                    .map(|admission| admission.generation)
+            });
+        complete_priority_handoff_for_request(
+            pending_attempt_record.upstream_account_id,
+            pending_attempt_record.request_model.as_deref(),
+            generation,
+            success,
+            cooldown,
+        );
+    }
     let finished_at = shanghai_now_string();
     if let Err(err) = finalize_pool_upstream_request_attempt(
         &state.pool,

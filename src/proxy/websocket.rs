@@ -3907,6 +3907,7 @@ mod websocket_tests {
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
             sticky_affinity_generation: None,
             routing_selection_audit: None,
+            priority_handoff_permit: None,
         }
     }
 
@@ -3939,6 +3940,7 @@ mod websocket_tests {
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
             sticky_affinity_generation: None,
             routing_selection_audit: None,
+            priority_handoff_permit: None,
         }
     }
 

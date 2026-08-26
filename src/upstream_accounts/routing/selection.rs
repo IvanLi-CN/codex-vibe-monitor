@@ -2111,9 +2111,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 .is_some_and(|account| account.account_id == excluded.account_id)
         })
     });
-    let selection_audit = resolved_candidates.first().and_then(|winner| {
+    let mut selection_audit = resolved_candidates.first().and_then(|winner| {
         let account = winner.resolved_account.as_ref()?;
-        if account.routing_source != PoolRoutingSelectionSource::FreshAssignment {
+        if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
             return None;
         }
         let runner_up = resolved_candidates
@@ -2134,6 +2134,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             compared_score: resolved_candidates
                 .get(1)
                 .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
+            handoff_admission: None,
             excluded_candidates: selection_audit_exclusions
                 .iter()
                 .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
@@ -2204,9 +2205,77 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             .await?,
         ));
     }
+    // WebSocket resolution shares this selector but keeps its pre-existing retry
+    // and concurrency semantics; priority handoff admission is HTTP-only.
+    let priority_handoff_enabled =
+        priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime");
+    let mut priority_handoff_deferred_for_sticky = false;
     let mut resolved_candidates = resolved_candidates.into_iter();
     while let Some(evaluation) = resolved_candidates.next() {
-        if let Some(account) = evaluation.resolved_account {
+        if let Some(mut account) = evaluation.resolved_account {
+            if priority_handoff_deferred_for_sticky
+                && sticky_source_id.is_some()
+                && account.routing_source != PoolRoutingSelectionSource::StickyReuse
+            {
+                continue;
+            }
+            let mut priority_handoff_permit = None;
+            let should_gate_priority_handoff = priority_handoff_enabled
+                && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && (sticky_fallback_handoff_enabled || sticky_source_id.is_none())
+                && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
+            if should_gate_priority_handoff {
+                let (admission_decision, admission_permit) =
+                    admit_priority_handoff(account.account_id, requested_model);
+                match (admission_decision, admission_permit) {
+                    (PriorityHandoffAdmissionDecision::Admitted { generation }, Some(permit)) => {
+                        if let Some(audit) = selection_audit.as_mut() {
+                            let (phase, verification_success_count) =
+                                priority_handoff_admission_snapshot(
+                                    account.account_id,
+                                    requested_model,
+                                );
+                            audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
+                                decision: "admitted".to_string(),
+                                phase,
+                                verification_success_count,
+                                generation,
+                            });
+                        }
+                        priority_handoff_permit = Some(permit);
+                    }
+                    (
+                        decision @ (PriorityHandoffAdmissionDecision::PermitBusy
+                        | PriorityHandoffAdmissionDecision::CoolingDown),
+                        None,
+                    ) => {
+                        let reason_code = match decision {
+                            PriorityHandoffAdmissionDecision::CoolingDown => "deferredCooldown",
+                            _ => "deferredPermitBusy",
+                        };
+                        if !selection_audit_exclusions
+                            .iter()
+                            .any(|candidate| candidate.account_id == account.account_id)
+                        {
+                            selection_audit_exclusions.push(
+                                PoolRoutingSelectionAuditExcludedCandidate {
+                                    account_id: account.account_id,
+                                    account_name: account.display_name.clone(),
+                                    reason_code: reason_code.to_string(),
+                                },
+                            );
+                        }
+                        if sticky_source_id.is_some() {
+                            priority_handoff_deferred_for_sticky = true;
+                        }
+                        // A sticky fallback source remains authoritative while its
+                        // preferred target is verifying. Fresh assignments simply
+                        // continue with the next eligible candidate.
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             if let Some(reservation_key) = reservation_key {
                 let concurrency_limit = model_route_concurrency_limit_from_runtime_snapshot(
                     routing_snapshot,
@@ -2316,8 +2385,22 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     continue;
                 }
             }
+            if let Some(permit) = priority_handoff_permit {
+                account.routing_source = PoolRoutingSelectionSource::PriorityHandoff;
+                account.priority_handoff_permit = Some(permit);
+            }
+            if let Some(audit) = selection_audit.as_mut() {
+                audit.selected_account_id = account.account_id;
+                audit.selected_account_name = account.display_name.clone();
+                audit.selected_score = Some(routing_selection_score_snapshot(&evaluation.score));
+                audit.excluded_candidates = selection_audit_exclusions
+                    .iter()
+                    .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+                    .cloned()
+                    .collect();
+            }
             let account = account.with_sticky_affinity_generation(sticky_affinity_generation);
-            let account = if account.routing_source == PoolRoutingSelectionSource::FreshAssignment {
+            let account = if account.routing_source != PoolRoutingSelectionSource::StickyReuse {
                 account.with_routing_selection_audit(
                     selection_audit.expect("resolved fresh assignment should have an audit"),
                 )
@@ -2542,6 +2625,7 @@ mod tests {
             compared_account_name: Some("CIII".to_string()),
             selected_score: Some(routing_selection_score_snapshot(&winner)),
             compared_score: Some(routing_selection_score_snapshot(&runner_up)),
+            handoff_admission: None,
             excluded_candidates: Vec::new(),
         };
         let value = serde_json::to_value(audit).expect("serialize routing selection audit");

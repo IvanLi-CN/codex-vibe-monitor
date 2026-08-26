@@ -470,6 +470,7 @@ export interface UpdatePoolRoutingSettingsPayload {
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
   cacheHitProtection?: Partial<CacheHitProtectionSettings>;
   liveRequestStreaming?: Partial<LiveRequestStreamingSettings>;
+  priorityHandoffAdmissionEnabled?: boolean;
 }
 
 export interface PoolRoutingSettings {
@@ -485,6 +486,7 @@ export interface PoolRoutingSettings {
   timeouts?: PoolRoutingTimeoutSettings;
   cacheHitProtection?: CacheHitProtectionSettings;
   liveRequestStreaming?: LiveRequestStreamingSettings;
+  priorityHandoffAdmissionEnabled?: boolean;
 }
 
 export type CacheHitOverflowMode = "queue" | "reroute";

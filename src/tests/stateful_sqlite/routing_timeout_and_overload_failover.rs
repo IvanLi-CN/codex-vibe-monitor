@@ -2782,6 +2782,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 未开始
+- Implementation: backend, audit contract, and Settings UI implemented; final validation in progress
 - Lifecycle: active
 - Catalog note: topic anchor: API Key / routing / sticky priority handoff
 
@@ -17,23 +17,21 @@
 
 ## Planned implementation map
 
-- 在 `src/app_state.rs` 增加小型、取消安全的优先级迁移运行时状态：按目标账号与规范化请求模型保存许可、阶段、冷却证据、恢复计数与全局设置代际。
-- 在 `src/upstream_accounts/routing/selection.rs` 保留现有比较器和 `Fallback` 边界，在候选已选定后附加迁移准入决定、延期原因和新分配绕行信息；不得把许可冲突映射为常规候选排序变化。
-- 在 `src/proxy/{route_selection.rs,failover.rs}` 标记闸门准入的 HTTP 尝试，强制单次发送和终态提交；复用现有 sticky generation guard，并实现确定未送达时的单次安全回放。
-- 在 `src/upstream_accounts/routing/{model_health.rs,failure_recording.rs}` 与本地运行时之间接入临时失败、冷却、成功和人工 reset 信号；本地转换先完成，持久化模型健康仅作兼容性与诊断同步。
-- 在 `src/{schema.rs,app_state.rs}` 及既有 routing settings API 中增加 `priorityHandoffAdmissionEnabled` 的全局存储、读取、写入和本地镜像更新，保持 Settings 写入的原子语义。
-- 在 `src/proxy/usage_persistence.rs`、路由审计投影和模型路由事件路径中补充安全的迁移阶段/结果字段；记录失败不能回写影响运行时许可。
-- 在 `web/src/features/settings/`、`web/src/lib/api/`、现有 Records 与路由实况组件中增加全局开关和审计文案，不新增独立控制面。
-- 在对应 Rust stateful SQLite 测试模块、Settings/Records Vitest 与 Storybook 中覆盖并发和 UI 状态。
+- `src/upstream_accounts/routing/priority_handoff.rs` 提供进程本地、按账号与规范化请求模型隔离的 RAII 许可、代际、冷却和三次成功恢复状态机；准入代际写入 attempt 审计，旧代际终态不会污染重新开启后的验证；数据库查询仅用于从已有 attempt 记录补充结果，失败时许可仍由本地对象释放。
+- `src/upstream_accounts/routing/selection.rs` 在既有候选排序和 `Fallback` sticky 边界之后执行准入；许可忙或冷却时 sticky 保留原来源，新分配继续扫描其他候选，不创建等待队列。
+- `src/proxy/failover.rs` 为已准入的 API Key HTTP 尝试设置单次账号预算、禁用 429/过载重试和自动故障切换；终态记录路径驱动成功、临时失败和取消释放。
+- `src/upstream_accounts/routing/settings_runtime.rs`、`core_schema_maintenance.rs` 与设置 API 增加默认开启的 `priorityHandoffAdmissionEnabled`，本地镜像优先于持久化诊断，旧数据库通过列迁移兼容。
+- 路由审计增加可选 `handoffAdmission` 快照，使用安全阶段与恢复计数；`web/src/lib/api/` 保持旧 payload 的归一化结果稳定。
+- `web/src/features/settings/PoolRoutingSettingsCard.tsx` 和 `Settings.tsx` 增加全局 HTTP/API Key 优先级迁移开关、保存状态和中英文文案，Storybook fixtures 已覆盖默认值。
+- 已加入状态机、代际、数据库故障隔离、审计结构和现有 routing settings 的 Rust 回归覆盖；Web 类型检查、单测、构建和 Storybook 设置故事覆盖已通过，完整视觉证据与 PR 收敛待最终门禁执行。
 
 ## Remaining Gaps
 
-- 运行时状态机、HTTP 发送策略、Settings 字段、审计字段和 UI 尚未实现。
-- 尚未运行本主题的 Rust、Web 或视觉验证。
+- 真实上游端到端的请求取消/交付不确定性仍依赖现有传输 harness；本地终态路径已按保守规则处理，最终 PR 仍需完成视觉证据与 CI 收敛。
 
 ## Related Changes
 
-- None
+- `e46acd37 docs(routing): define priority handoff admission contract`
 
 ## References
 
