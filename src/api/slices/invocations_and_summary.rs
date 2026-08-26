@@ -327,6 +327,12 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "END"
 );
 
+fn summary_projection_resolved_failure_class_sql() -> String {
+    // Summary projection rows must agree with durable rollups and runtime overlays, which use
+    // persisted normalized fields rather than unbounded raw payload diagnostics.
+    INVOCATION_RESOLVED_FAILURE_CLASS_SQL.replace("json_valid(payload)", "0")
+}
+
 fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
     // The shared expression is unqualified for its many single-table callers. This query joins
     // attempt rows, so every invocation column must be bound to the invocation alias.
@@ -9288,7 +9294,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL");
     let archive_failure_class =
         summary_projection_archive_column("failure_class", has("failure_class"), "NULL");
-    let archive_payload = if has("payload") { "payload" } else { "NULL" };
+    let archive_payload = "NULL";
     let archive_status_normalized = "LOWER(TRIM(COALESCE(status, '')))";
     let archive_is_success = format!(
         "CASE WHEN {archive_status_normalized} IN ('success', 'completed', '{INVOCATION_STATUS_WARNING_SUCCESS}') \
@@ -9340,6 +9346,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         archive_payload,
         upstream_account_id,
     );
+    let summary_failure_class_sql = summary_projection_resolved_failure_class_sql();
     let query = format!(
         "SELECT id, invoke_id, occurred_at, model, response_model, \
          input_tokens, output_tokens, cache_input_tokens, reasoning_effort, total_tokens, \
@@ -9347,7 +9354,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
          CASE WHEN {archive_status_normalized} IN ('running', 'pending') THEN 1 ELSE 0 END AS is_in_progress, \
          CASE WHEN {archive_status_normalized} = 'pending' THEN 1 ELSE 0 END AS is_pending, \
          {archive_is_success} AS is_success, \
-         {INVOCATION_RESOLVED_FAILURE_CLASS_SQL} AS failure_class, upstream_account_id \
+         {summary_failure_class_sql} AS failure_class, upstream_account_id \
          FROM ({archive_source_query})",
     );
     let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
@@ -16824,6 +16831,7 @@ async fn query_summary_projection_live_rows_with_budget(
              OR ({status_normalized} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '') \
          THEN 1 ELSE 0 END"
     );
+    let summary_failure_class_sql = summary_projection_resolved_failure_class_sql();
     let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
     query
         .push(resolved_upstream_account_id_sql.as_str())
@@ -16834,7 +16842,7 @@ async fn query_summary_projection_live_rows_with_budget(
         .push(" = 'pending' THEN 1 ELSE 0 END AS is_pending, ")
         .push(is_success_sql)
         .push(" AS is_success, ")
-        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(summary_failure_class_sql.as_str())
         .push(" AS failure_class, model, ")
         .push(INVOCATION_RESPONSE_MODEL_SQL)
         .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \

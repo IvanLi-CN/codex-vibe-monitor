@@ -20752,21 +20752,16 @@ async fn summary_projection_keeps_completed_unknown_failure_kinds_as_failures() 
         r#"
         INSERT INTO codex_invocations (
             invoke_id, occurred_at, source, status, total_tokens, cost, payload,
-            raw_response, failure_class
+            raw_response, failure_kind, failure_class
         )
-        VALUES (?1, ?2, ?3, 'completed', 8, 0.08, ?4, '{}', 'none')
+        VALUES (?1, ?2, ?3, 'completed', 8, 0.08, ?4, '{}', ?5, 'none')
         "#,
     )
     .bind("summary-completed-unknown-failure-kind")
     .bind(&occurred_at)
     .bind(SOURCE_PROXY)
-    .bind(
-        json!({
-            "upstreamAccountId": 42,
-            "failureKind": "unknown_future_failure_kind"
-        })
-        .to_string(),
-    )
+    .bind(json!({ "upstreamAccountId": 42 }).to_string())
+    .bind("unknown_future_failure_kind")
     .execute(&state.pool)
     .await
     .expect("insert completed row with an unknown failure kind");
@@ -20812,7 +20807,13 @@ async fn summary_projection_keeps_legacy_warning_success_without_failure_kind_as
     .bind("summary-warning-success-without-failure-kind")
     .bind(&occurred_at)
     .bind(SOURCE_PROXY)
-    .bind(json!({ "upstreamAccountId": 42 }).to_string())
+    .bind(
+        json!({
+            "upstreamAccountId": 42,
+            "downstreamErrorMessage": "socket closed after response"
+        })
+        .to_string(),
+    )
     .execute(&state.pool)
     .await
     .expect("insert legacy warning success without a failure kind");
@@ -20839,6 +20840,53 @@ async fn summary_projection_keeps_legacy_warning_success_without_failure_kind_as
         assert_eq!(response.failure_count, 0, "{upstream_account_id:?}");
         assert_eq!(response.total_tokens, 9, "{upstream_account_id:?}");
         assert_f64_close(response.total_cost, 0.09);
+    }
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_warning_success_stored_failure_kind_when_payload_kind_is_empty() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_kind, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'warning_success', 10, 0.1, ?4, '{}', ?5, 'none')
+        "#,
+    )
+    .bind("summary-warning-success-empty-payload-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(json!({ "upstreamAccountId": 42, "failureKind": "" }).to_string())
+    .bind("unknown_future_failure_kind")
+    .execute(&state.pool)
+    .await
+    .expect("insert warning success with empty payload kind and stored failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 10, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.1);
     }
 }
 
@@ -22495,24 +22543,44 @@ pub(crate) async fn summary_projection_retains_compact_fields_from_oversized_arc
         &state.pool,
         &state.config,
         "summary-compact-oversized-archive-payload",
-        &[SeedInvocationArchiveBatchRow {
-            id: 77_001,
-            invoke_id: "summary-compact-oversized-archive-payload",
-            occurred_at: archived_at.as_str(),
-            source: SOURCE_PROXY,
-            status: "success",
-            total_tokens: 23,
-            cost: 2.5,
-            ttfb_ms: Some(120.0),
-            payload: Some(
-                r#"{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high"}"#,
-            ),
-            detail_level: DETAIL_LEVEL_FULL,
-            error_message: None,
-            failure_kind: None,
-            failure_class: Some("none"),
-            is_actionable: Some(0),
-        }],
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 77_001,
+                invoke_id: "summary-compact-oversized-archive-payload",
+                occurred_at: archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 23,
+                cost: 2.5,
+                ttfb_ms: Some(120.0),
+                payload: Some(
+                    r#"{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high"}"#,
+                ),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 77_002,
+                invoke_id: "summary-compact-warning-success-archive",
+                occurred_at: archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "warning_success",
+                total_tokens: 11,
+                cost: 1.5,
+                ttfb_ms: Some(90.0),
+                payload: Some(
+                    r#"{"upstreamAccountId":42,"downstreamErrorMessage":"socket closed after response"}"#,
+                ),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
     )
     .await;
     let archive_db_path = state
@@ -22574,9 +22642,9 @@ pub(crate) async fn summary_projection_retains_compact_fields_from_oversized_arc
             )
             .await
             .expect("serve hydrated compact archive result without SQLite or archive I/O");
-            assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
+            assert_eq!(response.total_count, 2, "{window} {upstream_account_id:?}");
             assert_eq!(
-                response.success_count, 0,
+                response.success_count, 1,
                 "{window} {upstream_account_id:?}"
             );
             assert_eq!(
@@ -22584,10 +22652,10 @@ pub(crate) async fn summary_projection_retains_compact_fields_from_oversized_arc
                 "{window} {upstream_account_id:?}"
             );
             assert_eq!(
-                response.total_tokens, 23,
+                response.total_tokens, 34,
                 "{window} {upstream_account_id:?}"
             );
-            assert_f64_close(response.total_cost, 2.5);
+            assert_f64_close(response.total_cost, 4.0);
             if window == "1d" {
                 assert!(
                     response
