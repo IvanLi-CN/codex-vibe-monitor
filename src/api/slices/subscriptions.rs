@@ -16149,6 +16149,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hydrated_summary_projection_deduplicates_global_terminal_once_when_account_rollup_lags()
+     {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate initial summary projection");
+
+        let occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::days(3))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 1;
+        terminal.invoke_id = "hydrated-summary-account-lag-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.upstream_account_id = Some(42);
+        terminal.total_tokens = Some(17);
+        terminal.output_tokens = Some(17);
+        terminal.cost = Some(1.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, 'success', ?5, ?6, ?7, ?8, '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist historical terminal");
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS ( \
+                 SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1 \
+             ) \
+             INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             SELECT 'summary-account-lag-current-' || value, datetime('now'), 'proxy', 'running', 0, 0, '{\"upstreamAccountId\":42}', '', 'full' \
+             FROM rows",
+        )
+        .bind((state.config.list_limit_max + 1) as i64)
+        .execute(&state.pool)
+        .await
+        .expect("fill the bounded current prefix ahead of the historical terminal");
+        let terminal_at = parse_to_utc_datetime(&terminal.occurred_at)
+            .expect("parse historical terminal timestamp");
+        let bucket = align_bucket_epoch(terminal_at.timestamp(), 3_600, 0);
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert global terminal totals proof");
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly \
+             (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
+              request_count, output_tokens, cost_output, has_cost) \
+             VALUES (?1, 'proxy', '42', 'gpt-5', 'high', 1, 17, 1.25, 1)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert global terminal usage proof");
+        sqlx::query(
+            "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+             VALUES ('codex_invocations_summary_rollup_v2_live_cursor', 1, datetime('now')) \
+             ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = datetime('now')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("advance only the global coverage cursor");
+
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted historical terminal delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture historical terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("global durable proof must refresh the projection");
+        {
+            let hub = state.subscription_hub.state.lock().await;
+            assert!(
+                hub.summary_terminal_overlay.is_empty(),
+                "global proof must consume the terminal exactly once from the shared overlay"
+            );
+        }
+        state.pool.close().await;
+
+        let global = SubscriptionTopic::SummaryCurrent {
+            window: "7d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = global
+            .build_cached_payload(state.clone())
+            .await
+            .expect("global 7d Summary stays memory-only")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas.clone(),
+                }),
+            )
+            .expect("serialize global Summary without a duplicate terminal");
+        let payload: Value = serde_json::from_slice(&payload).expect("global Summary payload");
+        assert_eq!(
+            payload["totalCount"],
+            json!(state.config.list_limit_max + 2),
+            "the durable global rollup contributes once and the replay slice cannot add it again"
+        );
+
+        let account = SubscriptionTopic::SummaryCurrent {
+            window: "7d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: Some(42),
+        };
+        assert!(matches!(
+            account.build_cached_payload(state).await,
+            Err(ApiError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
