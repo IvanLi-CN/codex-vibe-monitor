@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: backend, audit contract, and Settings UI implemented; final validation in progress
+- Implementation: backend, audit contract, Settings UI, and confirmed visual evidence implemented; PR validation in progress
 - Lifecycle: active
 - Catalog note: topic anchor: API Key / routing / sticky priority handoff
 
@@ -23,11 +23,11 @@
 - `src/upstream_accounts/routing/settings_runtime.rs`、`core_schema_maintenance.rs` 与设置 API 增加默认开启的 `priorityHandoffAdmissionEnabled`，本地镜像优先于持久化诊断，旧数据库通过列迁移兼容。
 - 路由审计增加可选 `handoffAdmission` 快照，使用安全阶段与恢复计数；`web/src/lib/api/` 保持旧 payload 的归一化结果稳定。
 - `web/src/features/settings/PoolRoutingSettingsCard.tsx` 和 `Settings.tsx` 增加全局 HTTP/API Key 优先级迁移开关、保存状态和中英文文案，Storybook fixtures 已覆盖默认值。
-- 已加入状态机、代际、数据库故障隔离、审计结构和现有 routing settings 的 Rust 回归覆盖；Web 类型检查、单测、构建和 Storybook 设置故事覆盖已通过，完整视觉证据与 PR 收敛待最终门禁执行。
+- 已加入状态机、代际、数据库故障隔离、审计结构和现有 routing settings 的 Rust 回归覆盖；Web 类型检查、单测、构建和 Storybook 设置故事覆盖已通过。桌面与窄屏 Storybook 证据已由主人确认并落盘；当前剩余工作是 PR、CI 与当前 head 审查收敛。
 
 ## Remaining Gaps
 
-- 真实上游端到端的请求取消/交付不确定性仍依赖现有传输 harness；本地终态路径已按保守规则处理，最终 PR 仍需完成视觉证据与 CI 收敛。
+- 真实上游端到端的请求取消/交付不确定性仍依赖现有传输 harness；本地终态路径已按保守规则处理。完整 CI 与当前 head 审查仍需在直接 PR 上完成。
 
 ## Related Changes
 

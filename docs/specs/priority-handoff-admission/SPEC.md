@@ -184,7 +184,37 @@
 
 ## Visual Evidence
 
-实现已落在既有 Pool Routing Settings 卡片；交付前按 UI visual evidence 合同补充受控桌面与窄屏证据。
+实现已落在既有 Pool Routing Settings 卡片；视觉证据来自 Storybook mock canvas，覆盖已通过。
+
+桌面证据：
+
+- `source=storybook_canvas`
+- `story=settings-components-pool-routing-settings-card--priority-handoff-admission-disabled`
+- `requested_viewport=1280x900`
+- `viewport_strategy=storybook-viewport`
+- `capture_scope=focused priority-handoff section`
+- `margin_policy=require_margin`
+- `normalization=unchanged; outer margin already satisfied`
+- `target_program=Storybook mock canvas`
+- `PR: none`
+
+![优先级迁移准入控制桌面状态](assets/priority-handoff-desktop.png)
+
+移动证据：
+
+- `source=storybook_canvas`
+- `story=settings-components-pool-routing-settings-card--priority-handoff-admission-mobile`
+- `requested_viewport=393x852`
+- `viewport_strategy=storybook-viewport`
+- `capture_scope=focused priority-handoff section`
+- `margin_policy=require_margin`
+- `normalization=unchanged; outer margin already satisfied`
+- `target_program=Storybook mock canvas`
+- `PR: none`
+
+![优先级迁移准入控制移动状态](assets/priority-handoff-mobile.png)
+
+视觉确认：主人已确认当前截图准确反映本次改动；截图已通过不可变聊天快照展示并落盘为 Spec 资产。历史基线不存在，因此本次视觉比较记录为“需确认”，不宣称与历史版本一致。
 
 ## Related PRs
 
