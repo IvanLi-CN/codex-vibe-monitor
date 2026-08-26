@@ -636,14 +636,11 @@ mod tests {
 
     #[tokio::test]
     async fn priority_handoff_database_failure_does_not_block_local_transition() {
-        let (generation, permit) = {
-            let _guard = test_guard();
-            set_priority_handoff_admission_enabled(true);
-            let (decision, permit) = admit_priority_handoff(9_004, Some("gpt-test"));
-            let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
-                panic!("expected admission");
-            };
-            (generation, permit)
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_004, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+            panic!("expected admission");
         };
         assert!(permit.is_some());
 
@@ -677,13 +674,10 @@ mod tests {
             .expect("in-memory sqlite pool");
         complete_priority_handoff_from_attempt(&pool, Some(70_004), false, true).await;
 
-        {
-            let _guard = test_guard();
-            assert_eq!(
-                priority_handoff_admission_snapshot(9_004, Some("gpt-test")).0,
-                "coolingDown"
-            );
-        }
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_004, Some("gpt-test")).0,
+            "coolingDown"
+        );
 
         drop(permit);
     }
