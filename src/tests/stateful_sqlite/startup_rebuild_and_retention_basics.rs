@@ -2235,6 +2235,62 @@ async fn startup_backfill_pressure_defer_has_one_deadline_and_no_task_run_audit(
 }
 
 #[tokio::test]
+async fn startup_backfill_repeated_cooldown_notifications_do_not_redispatch_or_read_sqlite() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::InvocationServiceTier;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    gate.record_pressure("test_pressure", "forced_cooldown");
+    let cancel = CancellationToken::new();
+    let selected_tasks = [task];
+    let audits_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before repeated cooldown notifications");
+
+    let first = run_startup_backfill_maintenance_pass_with_gate(
+        state.clone(),
+        &cancel,
+        Some(&selected_tasks),
+        &gate,
+    )
+    .await;
+    let audits_after_first: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the first cooldown defer");
+    assert!(!first.ran_actionable_task);
+    assert!(!first.had_failure);
+    assert_eq!(audits_after_first, audits_before);
+    assert_eq!(gate.snapshot().background_skips, 1);
+
+    // A closed pool turns every repeated event path into a zero-I/O assertion. The scheduler
+    // must retain the original registration instead of reaching either the wake SQL or task read.
+    state.pool.close().await;
+    for _ in 0..3 {
+        assert_eq!(
+            wake_startup_backfill_tasks(&state.pool, &selected_tasks, "repeated_cooldown_input")
+                .await
+                .expect("a pending pressure defer must suppress input wake SQLite work"),
+            0
+        );
+        gate.notify_background_eligibility();
+        run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, &gate).await;
+    }
+    assert_eq!(
+        gate.snapshot().background_skips,
+        1,
+        "repeated notifications in one closed cooldown must not redispatch the deferred task"
+    );
+}
+
+#[tokio::test]
 async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),

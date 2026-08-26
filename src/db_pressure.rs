@@ -29,6 +29,7 @@ pub(crate) struct DbPressureGate {
     background_slots: Arc<Semaphore>,
     pressure_cooldown: Duration,
     pressure_until_epoch_ms: AtomicU64,
+    pressure_generation: AtomicU64,
     pressure_events: AtomicU64,
     background_skips: AtomicU64,
     eligibility: Arc<DbPressureEligibility>,
@@ -97,6 +98,7 @@ impl DbPressureGate {
             background_slots: Arc::new(Semaphore::new(background_slots.max(1))),
             pressure_cooldown,
             pressure_until_epoch_ms: AtomicU64::new(0),
+            pressure_generation: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
             eligibility: Arc::new(DbPressureEligibility::default()),
@@ -239,12 +241,14 @@ impl DbPressureGate {
         let cooldown_ms = duration_ms_u64(self.pressure_cooldown);
         let until_ms = now_ms.saturating_add(cooldown_ms);
         update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
+        let generation = self.pressure_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let events = self.pressure_events.fetch_add(1, Ordering::Relaxed) + 1;
         self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
         self.eligibility.notify.notify_waiters();
         warn!(
             task,
             reason,
+            generation,
             events,
             cooldown_ms,
             "database pressure detected; background database work will back off"
@@ -253,6 +257,10 @@ impl DbPressureGate {
 
     pub(crate) fn eligibility_generation(&self) -> u64 {
         self.eligibility.generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn pressure_generation(&self) -> u64 {
+        self.pressure_generation.load(Ordering::Acquire)
     }
 
     pub(crate) fn notify_background_eligibility(&self) {
@@ -358,6 +366,18 @@ mod tests {
             Some(deadline),
             "a cooldown must keep one absolute next-eligibility deadline"
         );
+    }
+
+    #[test]
+    fn pressure_generation_changes_only_when_new_pressure_is_recorded() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(60));
+        let before = gate.pressure_generation();
+
+        gate.notify_background_eligibility();
+        assert_eq!(gate.pressure_generation(), before);
+
+        gate.record_pressure("test", "forced");
+        assert_eq!(gate.pressure_generation(), before + 1);
     }
 
     #[test]
