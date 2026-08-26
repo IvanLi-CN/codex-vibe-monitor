@@ -2210,6 +2210,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let priority_handoff_enabled =
         priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime");
     let mut priority_handoff_deferred_for_sticky = false;
+    let mut sticky_handoff_deferred_admission: Option<PoolRoutingHandoffAdmission> = None;
     let mut resolved_candidates = resolved_candidates.into_iter();
     while let Some(evaluation) = resolved_candidates.next() {
         if let Some(mut account) = evaluation.resolved_account {
@@ -2255,12 +2256,14 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                     account.account_id,
                                     requested_model,
                                 );
-                            audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
-                                decision: "admitted".to_string(),
-                                phase,
-                                verification_success_count,
-                                generation,
-                            });
+                            if audit.handoff_admission.is_none() {
+                                audit.handoff_admission = Some(PoolRoutingHandoffAdmission {
+                                    decision: "admitted".to_string(),
+                                    phase,
+                                    verification_success_count,
+                                    generation,
+                                });
+                            }
                         }
                         priority_handoff_permit = Some(permit);
                     }
@@ -2273,6 +2276,24 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             PriorityHandoffAdmissionDecision::CoolingDown => "deferredCooldown",
                             _ => "deferredPermitBusy",
                         };
+                        let (phase, verification_success_count) =
+                            priority_handoff_admission_snapshot(
+                                account.account_id,
+                                requested_model,
+                            );
+                        let handoff_admission = PoolRoutingHandoffAdmission {
+                            decision: reason_code.to_string(),
+                            phase,
+                            verification_success_count,
+                            generation: priority_handoff_generation(
+                                account.account_id,
+                                requested_model,
+                            )
+                            .unwrap_or_default(),
+                        };
+                        if let Some(audit) = selection_audit.as_mut() {
+                            audit.handoff_admission = Some(handoff_admission.clone());
+                        }
                         if !selection_audit_exclusions
                             .iter()
                             .any(|candidate| candidate.account_id == account.account_id)
@@ -2287,6 +2308,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         }
                         if sticky_source_id.is_some() {
                             priority_handoff_deferred_for_sticky = true;
+                            sticky_handoff_deferred_admission = Some(handoff_admission);
                         }
                         // A sticky fallback source remains authoritative while its
                         // preferred target is verifying. Fresh assignments simply
@@ -2424,6 +2446,29 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 account.with_routing_selection_audit(
                     selection_audit.expect("resolved fresh assignment should have an audit"),
                 )
+            } else if let Some(handoff_admission) = sticky_handoff_deferred_admission {
+                let mut audit = selection_audit.unwrap_or_else(|| PoolRoutingSelectionAudit {
+                    selected_account_id: account.account_id,
+                    selected_account_name: account.display_name.clone(),
+                    eligible_candidate_count,
+                    winner_reason_code: "stickyHandoffDeferred".to_string(),
+                    compared_account_id: None,
+                    compared_account_name: None,
+                    selected_score: Some(routing_selection_score_snapshot(&evaluation.score)),
+                    compared_score: None,
+                    handoff_admission: None,
+                    excluded_candidates: Vec::new(),
+                });
+                audit.selected_account_id = account.account_id;
+                audit.selected_account_name = account.display_name.clone();
+                audit.selected_score = Some(routing_selection_score_snapshot(&evaluation.score));
+                audit.handoff_admission = Some(handoff_admission);
+                audit.excluded_candidates = selection_audit_exclusions
+                    .iter()
+                    .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+                    .cloned()
+                    .collect();
+                account.with_routing_selection_audit(audit)
             } else {
                 account
             };

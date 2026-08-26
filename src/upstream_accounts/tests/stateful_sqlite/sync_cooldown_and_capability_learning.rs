@@ -2873,6 +2873,54 @@ async fn manual_model_route_reset_fences_in_flight_failure() {
 }
 
 #[tokio::test]
+async fn manual_model_route_reset_survives_diagnostic_persistence_failure() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Reset diagnostic failure",
+        "reset-diagnostic-failure-key",
+        None,
+        Some("https://reset-diagnostic-failure.example.com/backend-api/codex"),
+    )
+    .await;
+    let model = "gpt-reset-diagnostic-failure";
+    observe_model_route_seen(&state.pool, account_id, Some(model))
+        .await
+        .expect("observe reset diagnostic model");
+    let (decision, permit) = admit_priority_handoff(account_id, Some(model));
+    assert!(matches!(
+        decision,
+        PriorityHandoffAdmissionDecision::Admitted { .. }
+    ));
+    assert_eq!(
+        permit
+            .as_ref()
+            .and_then(|permit| permit.complete_failure(true)),
+        Some(PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON)
+    );
+    assert_eq!(
+        priority_handoff_admission_snapshot(account_id, Some(model)).0,
+        "coolingDown"
+    );
+
+    sqlx::query("DROP TABLE pool_upstream_account_events")
+        .execute(&state.pool)
+        .await
+        .expect("drop diagnostic event table");
+    let reset = reset_model_route(&state.pool, account_id, model)
+        .await
+        .expect("reset should ignore diagnostic persistence failure")
+        .expect("reset model route exists");
+    assert_eq!(reset.state, MODEL_ROUTE_STATE_AVAILABLE);
+    assert_eq!(reset.priority, MODEL_ROUTE_PRIORITY_NORMAL);
+    assert_eq!(
+        priority_handoff_admission_snapshot(account_id, Some(model)),
+        ("verifying".to_string(), 0)
+    );
+    drop(permit);
+}
+
+#[tokio::test]
 async fn api_key_model_route_health_isolated_and_resettable() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
@@ -6971,6 +7019,78 @@ async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_accou
             .map(|route| route.account_id),
         Some(primary_account_id),
     );
+}
+
+#[tokio::test]
+async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let target_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fresh Assignment Handoff Target",
+        "sk-fresh-assignment-handoff-target",
+        Some("fresh-assignment-handoff"),
+        Some("https://fresh-assignment-handoff-target.example.com/backend-api/codex"),
+    )
+    .await;
+    let alternate_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fresh Assignment Handoff Alternate",
+        "sk-fresh-assignment-handoff-alternate",
+        Some("fresh-assignment-handoff"),
+        Some("https://fresh-assignment-handoff-alternate.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+        .bind(target_account_id)
+        .bind(TagPriorityTier::Primary.as_str())
+        .execute(&state.pool)
+        .await
+        .expect("set fresh assignment target priority");
+
+    let (decision, held_permit) =
+        admit_priority_handoff(target_account_id, Some("gpt-fresh-assignment-handoff"));
+    assert!(matches!(
+        decision,
+        PriorityHandoffAdmissionDecision::Admitted { .. }
+    ));
+    assert!(held_permit.is_some());
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some("gpt-fresh-assignment-handoff"),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve fresh assignment around busy handoff");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected alternate account after busy handoff, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, alternate_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::PriorityHandoff
+    );
+    let audit = account
+        .routing_selection_audit
+        .expect("fresh assignment should carry handoff audit");
+    assert_eq!(
+        audit
+            .handoff_admission
+            .expect("busy handoff decision should be audited")
+            .decision,
+        "deferredPermitBusy"
+    );
+    assert_eq!(audit.excluded_candidates[0].account_id, target_account_id);
+    drop(held_permit);
 }
 
 #[tokio::test]
