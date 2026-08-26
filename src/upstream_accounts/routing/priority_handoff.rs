@@ -6,6 +6,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 pub(crate) const PRIORITY_HANDOFF_ROUTING_SOURCE: &str = "priorityHandoff";
+pub(crate) const PRIORITY_HANDOFF_SUCCEEDED_REASON: &str = "priorityHandoffSucceeded";
+pub(crate) const PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON: &str = "priorityHandoffFailureCooldown";
+pub(crate) const PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON: &str =
+    "priorityHandoffRecoveryProgress";
 const PRIORITY_HANDOFF_VERIFICATION_SUCCESSES: u8 = 3;
 const PRIORITY_HANDOFF_FIRST_COOLDOWN_SECS: u64 = 5;
 const PRIORITY_HANDOFF_MAX_COOLDOWN_SECS: u64 = 15 * 60;
@@ -74,18 +78,18 @@ pub(crate) struct PriorityHandoffPermit {
 }
 
 impl PriorityHandoffPermit {
-    pub(crate) fn complete_success(&self) {
+    pub(crate) fn complete_success(&self) -> Option<&'static str> {
         if self.completed.swap(true, Ordering::AcqRel) {
-            return;
+            return None;
         }
-        complete_success_for_key(self.account_id, &self.model_key, self.generation);
+        complete_success_for_key(self.account_id, &self.model_key, self.generation)
     }
 
-    pub(crate) fn complete_failure(&self, cooldown: bool) {
+    pub(crate) fn complete_failure(&self, cooldown: bool) -> Option<&'static str> {
         if self.completed.swap(true, Ordering::AcqRel) {
-            return;
+            return None;
         }
-        complete_failure_for_key(self.account_id, &self.model_key, self.generation, cooldown);
+        complete_failure_for_key(self.account_id, &self.model_key, self.generation, cooldown)
     }
 }
 
@@ -235,27 +239,33 @@ pub(crate) fn priority_handoff_admission_snapshot(
     )
 }
 
+pub(crate) fn priority_handoff_client_cancellation(
+    status: &str,
+    downstream_http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+) -> bool {
+    status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+        && downstream_http_status.is_some()
+        && failure_kind.is_none()
+}
+
 pub(crate) fn complete_priority_handoff_for_request(
     account_id: i64,
     requested_model: Option<&str>,
     generation: Option<u64>,
     success: bool,
     cooldown: bool,
-) {
-    let Some(model_key) = normalize_model_key(requested_model) else {
-        return;
-    };
+) -> Option<&'static str> {
+    let model_key = normalize_model_key(requested_model)?;
     let Ok(mut state) = state().lock() else {
-        return;
+        return None;
     };
-    let Some(entry) = state.entries.get_mut(&(account_id, model_key)) else {
-        return;
-    };
+    let entry = state.entries.get_mut(&(account_id, model_key))?;
     if generation.is_some_and(|generation| generation != entry.generation) {
-        return;
+        return None;
     }
     if !entry.in_flight {
-        return;
+        return None;
     }
     entry.in_flight = false;
     if success {
@@ -270,6 +280,11 @@ pub(crate) fn complete_priority_handoff_for_request(
         } else {
             PriorityHandoffPhase::Verifying
         };
+        Some(if entry.phase == PriorityHandoffPhase::Open {
+            PRIORITY_HANDOFF_SUCCEEDED_REASON
+        } else {
+            PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON
+        })
     } else if cooldown {
         entry.failure_streak = entry.failure_streak.saturating_add(1);
         let shift = entry.failure_streak.saturating_sub(1).min(8);
@@ -279,20 +294,26 @@ pub(crate) fn complete_priority_handoff_for_request(
         entry.cooldown_until = Some(Instant::now() + Duration::from_secs(cooldown_secs));
         entry.phase = PriorityHandoffPhase::CoolingDown;
         entry.verification_successes = 0;
+        Some(PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON)
     } else {
         entry.phase = PriorityHandoffPhase::Verifying;
+        None
     }
 }
 
-fn complete_success_for_key(account_id: i64, model_key: &str, generation: u64) {
+fn complete_success_for_key(
+    account_id: i64,
+    model_key: &str,
+    generation: u64,
+) -> Option<&'static str> {
     let Ok(mut state) = state().lock() else {
-        return;
+        return None;
     };
-    let Some(entry) = state.entries.get_mut(&(account_id, model_key.to_string())) else {
-        return;
-    };
+    let entry = state
+        .entries
+        .get_mut(&(account_id, model_key.to_string()))?;
     if entry.generation != generation || !entry.in_flight {
-        return;
+        return None;
     }
     entry.in_flight = false;
     entry.failure_streak = 0;
@@ -306,22 +327,32 @@ fn complete_success_for_key(account_id: i64, model_key: &str, generation: u64) {
     } else {
         PriorityHandoffPhase::Verifying
     };
+    Some(if entry.phase == PriorityHandoffPhase::Open {
+        PRIORITY_HANDOFF_SUCCEEDED_REASON
+    } else {
+        PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON
+    })
 }
 
-fn complete_failure_for_key(account_id: i64, model_key: &str, generation: u64, cooldown: bool) {
+fn complete_failure_for_key(
+    account_id: i64,
+    model_key: &str,
+    generation: u64,
+    cooldown: bool,
+) -> Option<&'static str> {
     let Ok(mut state) = state().lock() else {
-        return;
+        return None;
     };
-    let Some(entry) = state.entries.get_mut(&(account_id, model_key.to_string())) else {
-        return;
-    };
+    let entry = state
+        .entries
+        .get_mut(&(account_id, model_key.to_string()))?;
     if entry.generation != generation || !entry.in_flight {
-        return;
+        return None;
     }
     entry.in_flight = false;
     if !cooldown {
         entry.phase = PriorityHandoffPhase::Verifying;
-        return;
+        return None;
     }
     entry.failure_streak = entry.failure_streak.saturating_add(1);
     let shift = entry.failure_streak.saturating_sub(1).min(8);
@@ -331,6 +362,7 @@ fn complete_failure_for_key(account_id: i64, model_key: &str, generation: u64, c
     entry.cooldown_until = Some(Instant::now() + Duration::from_secs(cooldown_secs));
     entry.phase = PriorityHandoffPhase::CoolingDown;
     entry.verification_successes = 0;
+    Some(PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON)
 }
 
 fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
@@ -354,18 +386,34 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     let Some(attempt_id) = attempt_id else {
         return;
     };
-    let context = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT routing_source, request_model FROM pool_upstream_request_attempts WHERE id = ?1",
+    let context = sqlx::query_as::<_, (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    )>(
+        "SELECT routing_source, request_model, downstream_http_status, status, failure_kind FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(pool)
     .await
     .ok()
     .flatten();
-    let Some((Some(source), model)) = context else {
+    let Some((Some(source), model, downstream_http_status, attempt_status, failure_kind)) = context
+    else {
         return;
     };
     if source != PRIORITY_HANDOFF_ROUTING_SOURCE {
+        return;
+    }
+    if attempt_status.as_deref() == Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        && downstream_http_status.is_some()
+        && failure_kind.is_none()
+    {
+        // A finalized successful attempt with a downstream status is the
+        // persisted shape of a pure client cancellation. It carries no
+        // evidence for the handoff state machine.
         return;
     }
     let Some(model_key) = normalize_model_key(model.as_deref()) else {
@@ -384,48 +432,30 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     let Some(account_id) = account_id else {
         return;
     };
-    if success {
-        let Ok(mut state) = state().lock() else {
-            return;
-        };
-        if let Some(entry) = state.entries.get_mut(&(account_id, model_key.clone()))
-            && entry.in_flight
-        {
-            entry.in_flight = false;
-            entry.failure_streak = 0;
-            entry.cooldown_until = None;
-            entry.verification_successes = entry
-                .verification_successes
-                .saturating_add(1)
-                .min(PRIORITY_HANDOFF_VERIFICATION_SUCCESSES);
-            entry.phase = if entry.verification_successes >= PRIORITY_HANDOFF_VERIFICATION_SUCCESSES
-            {
-                PriorityHandoffPhase::Open
-            } else {
-                PriorityHandoffPhase::Verifying
-            };
-        }
-    } else {
-        let Ok(mut state) = state().lock() else {
-            return;
-        };
-        if let Some(entry) = state.entries.get_mut(&(account_id, model_key.clone()))
-            && entry.in_flight
-        {
-            entry.in_flight = false;
-            if cooldown {
-                entry.failure_streak = entry.failure_streak.saturating_add(1);
-                let shift = entry.failure_streak.saturating_sub(1).min(8);
-                let cooldown_secs = PRIORITY_HANDOFF_FIRST_COOLDOWN_SECS
-                    .saturating_mul(1_u64 << shift)
-                    .min(PRIORITY_HANDOFF_MAX_COOLDOWN_SECS);
-                entry.cooldown_until = Some(Instant::now() + Duration::from_secs(cooldown_secs));
-                entry.phase = PriorityHandoffPhase::CoolingDown;
-                entry.verification_successes = 0;
-            } else {
-                entry.phase = PriorityHandoffPhase::Verifying;
-            }
-        }
+    let reason_code = complete_priority_handoff_for_request(
+        account_id,
+        Some(model_key.as_str()),
+        None,
+        success,
+        cooldown,
+    );
+    if let Some(reason_code) = reason_code
+        && let Err(error) = super::model_health::persist_priority_handoff_event(
+            pool,
+            account_id,
+            Some(attempt_id),
+            model_key.as_str(),
+            reason_code,
+        )
+        .await
+    {
+        warn!(
+            account_id,
+            attempt_id,
+            error = %error,
+            reason_code,
+            "failed to persist priority handoff event"
+        );
     }
 }
 
@@ -466,6 +496,26 @@ mod tests {
         assert_eq!(
             priority_handoff_admission_snapshot(9_002, Some("gpt-test")).0,
             "open"
+        );
+    }
+
+    #[test]
+    fn priority_handoff_client_cancellation_only_releases_permit() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (_, permit) = admit_priority_handoff(9_006, Some("gpt-test"));
+        assert!(permit.is_some());
+        assert!(priority_handoff_client_cancellation(
+            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            Some(StatusCode::OK),
+            None,
+        ));
+        drop(permit);
+        let (_, next) = admit_priority_handoff(9_006, Some("gpt-test"));
+        assert!(next.is_some());
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_006, Some("gpt-test")).0,
+            "verifying"
         );
     }
 

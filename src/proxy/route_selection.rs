@@ -1904,35 +1904,61 @@ pub(crate) async fn finalize_tracked_pool_attempt(
         return;
     };
     if pending_attempt_record.routing_source.as_deref() == Some(PRIORITY_HANDOFF_ROUTING_SOURCE) {
-        let success = status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
-        let cooldown = !success
-            && (http_status.is_some_and(|status| {
-                status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-            }) || matches!(
-                failure_kind,
-                Some(
-                    PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
-                        | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-                        | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
-                        | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
-                )
-            ));
-        let generation = pending_attempt_record
-            .routing_selection_audit_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<PoolRoutingSelectionAudit>(json).ok())
-            .and_then(|audit| {
-                audit
-                    .handoff_admission
-                    .map(|admission| admission.generation)
-            });
-        complete_priority_handoff_for_request(
-            pending_attempt_record.upstream_account_id,
-            pending_attempt_record.request_model.as_deref(),
-            generation,
-            success,
-            cooldown,
-        );
+        // A pure downstream close can leave a successful upstream status in the
+        // capture record. It is client cancellation, not handoff evidence, so it
+        // must only release the local permit through the owning guard.
+        let client_cancelled =
+            priority_handoff_client_cancellation(status, downstream_http_status, failure_kind);
+        if !client_cancelled {
+            let success = status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
+            let cooldown = !success
+                && (http_status.is_some_and(|status| {
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+                }) || matches!(
+                    failure_kind,
+                    Some(
+                        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                            | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                            | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+                            | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
+                    )
+                ));
+            let generation = pending_attempt_record
+                .routing_selection_audit_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<PoolRoutingSelectionAudit>(json).ok())
+                .and_then(|audit| {
+                    audit
+                        .handoff_admission
+                        .map(|admission| admission.generation)
+                });
+            if let Some(reason_code) = complete_priority_handoff_for_request(
+                pending_attempt_record.upstream_account_id,
+                pending_attempt_record.request_model.as_deref(),
+                generation,
+                success,
+                cooldown,
+            ) && let Err(error) = persist_priority_handoff_event(
+                &state.pool,
+                pending_attempt_record.upstream_account_id,
+                pending_attempt_record.attempt_id,
+                pending_attempt_record
+                    .request_model
+                    .as_deref()
+                    .unwrap_or_default(),
+                reason_code,
+            )
+            .await
+            {
+                warn!(
+                    account_id = pending_attempt_record.upstream_account_id,
+                    attempt_id = pending_attempt_record.attempt_id,
+                    error = %error,
+                    reason_code,
+                    "failed to persist priority handoff event"
+                );
+            }
+        }
     }
     let finished_at = shanghai_now_string();
     if let Err(err) = finalize_pool_upstream_request_attempt(
