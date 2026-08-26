@@ -20796,6 +20796,52 @@ async fn summary_projection_keeps_completed_unknown_failure_kinds_as_failures() 
     }
 }
 
+#[tokio::test]
+async fn summary_projection_keeps_legacy_warning_success_without_failure_kind_as_success() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'warning_success', 9, 0.09, ?4, '{}', 'none')
+        "#,
+    )
+    .bind("summary-warning-success-without-failure-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(json!({ "upstreamAccountId": 42 }).to_string())
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy warning success without a failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 9, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.09);
+    }
+}
+
 #[test]
 fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
     let failed_legacy_http_200 = InvocationHourlySourceRecord {

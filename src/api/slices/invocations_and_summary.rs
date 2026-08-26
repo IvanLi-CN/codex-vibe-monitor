@@ -267,7 +267,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
     "  ELSE ",
     "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
