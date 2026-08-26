@@ -48,6 +48,7 @@ struct StartupBackfillScheduler {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PressureDeferredTask {
     pressure_generation: u64,
+    next_eligibility: Option<DateTime<Utc>>,
     selected_for_eligibility: bool,
 }
 
@@ -116,9 +117,20 @@ impl StartupBackfillScheduler {
     }
 
     fn record_next_due(&self, task: StartupBackfillTask, due: DateTime<Utc>) {
+        if self.is_pressure_deferred(task) {
+            return;
+        }
+        self.record_next_due_unchecked(task, due);
+    }
+
+    fn record_next_due_unchecked(&self, task: StartupBackfillTask, due: DateTime<Utc>) {
         if let Ok(mut next_due) = self.next_due.lock() {
             next_due.insert(task, due);
         }
+    }
+
+    fn record_pressure_eligibility_deadline(&self, task: StartupBackfillTask, due: DateTime<Utc>) {
+        self.record_next_due_unchecked(task, due);
     }
 
     fn clear_next_due(&self, task: StartupBackfillTask) {
@@ -143,6 +155,7 @@ impl StartupBackfillScheduler {
                         task,
                         PressureDeferredTask {
                             pressure_generation,
+                            next_eligibility,
                             selected_for_eligibility: false,
                         },
                     );
@@ -151,7 +164,7 @@ impl StartupBackfillScheduler {
             })
             .unwrap_or(false);
         if let Some(next_eligibility) = next_eligibility.filter(|_| newly_registered) {
-            self.record_next_due(task, next_eligibility);
+            self.record_pressure_eligibility_deadline(task, next_eligibility);
         }
         newly_registered
     }
@@ -194,11 +207,49 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn arm_pressure_deferred_deadlines(&self, gate: &crate::db_pressure::DbPressureGate) {
+        let Some(next_eligibility) =
+            gate.pressure_cooldown_deadline_epoch_ms()
+                .and_then(|deadline_ms| {
+                    i64::try_from(deadline_ms)
+                        .ok()
+                        .and_then(DateTime::<Utc>::from_timestamp_millis)
+                })
+        else {
+            return;
+        };
+        let pressure_generation = gate.pressure_generation();
+        let tasks = self
+            .pressure_deferred_tasks
+            .lock()
+            .map(|mut tasks| {
+                tasks
+                    .iter_mut()
+                    .filter_map(|(task, entry)| {
+                        let needs_deadline = entry.pressure_generation != pressure_generation
+                            || entry.next_eligibility != Some(next_eligibility);
+                        if !needs_deadline {
+                            return None;
+                        }
+                        entry.pressure_generation = pressure_generation;
+                        entry.next_eligibility = Some(next_eligibility);
+                        entry.selected_for_eligibility = false;
+                        Some(*task)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for task in tasks {
+            self.record_pressure_eligibility_deadline(task, next_eligibility);
+        }
+    }
+
     fn take_pressure_deferred_tasks_if_eligible(
         &self,
         gate: &crate::db_pressure::DbPressureGate,
     ) -> Vec<StartupBackfillTask> {
         if gate.background_deny_reason().is_some() {
+            self.arm_pressure_deferred_deadlines(gate);
             return Vec::new();
         }
         let tasks = self
@@ -442,6 +493,7 @@ fn register_startup_backfill_pressure_defer(
     gate: &crate::db_pressure::DbPressureGate,
     reason: crate::db_pressure::DbPressureDenyReason,
 ) -> Option<DateTime<Utc>> {
+    let reason = gate.background_deny_reason().unwrap_or(reason);
     let next_eligibility = startup_backfill_pressure_eligibility_deadline(gate, reason);
     let newly_registered = STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(
         task,
@@ -2455,6 +2507,10 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 
         loop {
             let gate = crate::db_pressure::global_db_pressure_gate();
+            // Re-check before registering the next notification waiter. A permit release that
+            // raced with the previous pass has already advanced the gate generation, so this
+            // consumes its deferred task instead of treating that generation as the baseline.
+            run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, gate).await;
             let observed_pressure_eligibility = gate.eligibility_generation();
             let next_due = STARTUP_BACKFILL_SCHEDULER.next_due();
             let mut wait_for = startup_backfill_wait_duration(next_due);
@@ -2664,6 +2720,38 @@ mod startup_backfill_tests {
             scheduler.take_pressure_deferred_tasks_if_eligible(&gate),
             vec![task],
             "a gate denial after selection must leave one recoverable eligibility wake"
+        );
+    }
+
+    #[test]
+    fn pressure_cooldown_upgrades_busy_defer_and_preserves_eligibility_deadline() {
+        let scheduler = StartupBackfillScheduler::default();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+        let task = StartupBackfillTask::ReasoningEffort;
+
+        assert!(scheduler.defer_for_pressure(task, None, gate.pressure_generation()));
+        gate.record_pressure("test", "forced");
+        assert!(
+            scheduler
+                .take_pressure_deferred_tasks_if_eligible(&gate)
+                .is_empty(),
+            "a newly closed cooldown must keep the deferred task out of SQLite"
+        );
+        let expected_deadline = gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .and_then(|deadline_ms| {
+                i64::try_from(deadline_ms)
+                    .ok()
+                    .and_then(DateTime::<Utc>::from_timestamp_millis)
+            })
+            .expect("pressure cooldown has an absolute eligibility deadline");
+        assert_eq!(scheduler.next_due(), Some(expected_deadline));
+
+        scheduler.record_next_due(task, Utc::now());
+        assert_eq!(
+            scheduler.next_due(),
+            Some(expected_deadline),
+            "an older successful task result must not overwrite a pending pressure deadline"
         );
     }
 
