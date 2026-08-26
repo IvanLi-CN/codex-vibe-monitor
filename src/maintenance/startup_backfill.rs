@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future;
 
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
@@ -35,6 +36,7 @@ struct StartupBackfillScheduler {
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
+    pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     wake_count: AtomicU64,
     due_dispatch_count: AtomicU64,
@@ -116,6 +118,35 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn mark_pressure_deferred(&self, task: StartupBackfillTask) {
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
+            tasks.insert(task);
+        }
+    }
+
+    fn defer_for_pressure(&self, task: StartupBackfillTask, retry_at: DateTime<Utc>) {
+        self.mark_pressure_deferred(task);
+        self.record_next_due(task, retry_at);
+    }
+
+    fn take_pressure_deferred_tasks(&self) -> Vec<StartupBackfillTask> {
+        let tasks = self
+            .pressure_deferred_tasks
+            .lock()
+            .map(|mut tasks| std::mem::take(&mut *tasks))
+            .unwrap_or_default();
+        if let Ok(mut next_due) = self.next_due.lock() {
+            for task in &tasks {
+                next_due.remove(task);
+            }
+        }
+        StartupBackfillTask::ordered_tasks()
+            .iter()
+            .copied()
+            .filter(|task| tasks.contains(task))
+            .collect()
+    }
+
     fn record_task_result(&self, task: StartupBackfillTask, failed: bool, deferred: bool) {
         if failed {
             self.failure_count.fetch_add(1, Ordering::Relaxed);
@@ -123,6 +154,9 @@ impl StartupBackfillScheduler {
                 tasks.insert(task);
             }
             if let Ok(mut tasks) = self.deferred_tasks.lock() {
+                tasks.remove(&task);
+            }
+            if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
                 tasks.remove(&task);
             }
             return;
@@ -148,6 +182,9 @@ impl StartupBackfillScheduler {
         }
 
         if let Ok(mut tasks) = self.deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
             tasks.remove(&task);
         }
         if let Ok(mut tasks) = self.failed_tasks.lock() {
@@ -244,12 +281,150 @@ fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StartupBackfillTaskRunOutcome {
+pub(crate) struct StartupBackfillTaskRunOutcome {
     actionable: bool,
     failed: bool,
     deferred: bool,
     completed: bool,
     next_due: DateTime<Utc>,
+}
+
+#[cfg(test)]
+impl StartupBackfillTaskRunOutcome {
+    pub(crate) fn is_pressure_deferred(self) -> bool {
+        !self.actionable && !self.failed && self.deferred && self.completed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupBackfillFailureKind {
+    SqliteBusyOrLocked,
+    Operation,
+}
+
+impl StartupBackfillFailureKind {
+    fn telemetry_reason(self) -> &'static str {
+        match self {
+            Self::SqliteBusyOrLocked => "sqlite_busy_or_locked",
+            Self::Operation => "operation_error",
+        }
+    }
+}
+
+fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureKind {
+    let has_busy_message = err.chain().any(|cause| {
+        cause
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("database is busy")
+    });
+    if crate::is_sqlite_lock_error(err) || has_busy_message {
+        StartupBackfillFailureKind::SqliteBusyOrLocked
+    } else {
+        StartupBackfillFailureKind::Operation
+    }
+}
+
+fn record_startup_backfill_pressure_error(
+    gate: &crate::db_pressure::DbPressureGate,
+    err: &anyhow::Error,
+) -> bool {
+    if gate.record_error("startup_backfill", err) {
+        return true;
+    }
+    if startup_backfill_failure_kind(err) == StartupBackfillFailureKind::SqliteBusyOrLocked {
+        gate.record_pressure("startup_backfill", "sqlite_busy_or_locked");
+        return true;
+    }
+    false
+}
+
+fn startup_backfill_pressure_retry_at(
+    gate: &crate::db_pressure::DbPressureGate,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> DateTime<Utc> {
+    match reason {
+        crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .and_then(|deadline_ms| {
+                i64::try_from(deadline_ms)
+                    .ok()
+                    .and_then(DateTime::<Utc>::from_timestamp_millis)
+            })
+            .unwrap_or_else(|| {
+                let remaining_ms = i64::try_from(remaining_ms.max(1)).unwrap_or(i64::MAX);
+                Utc::now() + ChronoDuration::milliseconds(remaining_ms)
+            }),
+        crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+            Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
+        }
+    }
+}
+
+fn startup_backfill_pressure_defer_outcome(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    reason: crate::db_pressure::DbPressureDenyReason,
+) -> StartupBackfillTaskRunOutcome {
+    let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+    STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+    info!(
+        task = task.log_label(),
+        reason = %reason,
+        defer_kind = "pressure_gate",
+        defer_reason = %reason,
+        next_eligibility = %retry_at,
+        wake_reason = "pressure_defer",
+        "startup backfill task deferred before SQLite access because database pressure gate is closed"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
+fn startup_backfill_pressure_error_defer_outcome(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillTaskRunOutcome {
+    let retry_at = gate
+        .pressure_cooldown_deadline_epoch_ms()
+        .and_then(|deadline_ms| {
+            i64::try_from(deadline_ms)
+                .ok()
+                .and_then(DateTime::<Utc>::from_timestamp_millis)
+        })
+        .unwrap_or_else(|| {
+            Utc::now() + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
+        });
+    STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+    info!(
+        task = task.log_label(),
+        defer_kind = "sqlite_pressure_error",
+        defer_reason = "sqlite_busy_or_locked",
+        next_eligibility = %retry_at,
+        wake_reason = "pressure_error_defer",
+        "startup backfill task deferred after a SQLite pressure error"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
+fn startup_backfill_pressure_error_defer_outcome_if_recorded(
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    err: &anyhow::Error,
+) -> Option<StartupBackfillTaskRunOutcome> {
+    record_startup_backfill_pressure_error(gate, err)
+        .then(|| startup_backfill_pressure_error_defer_outcome(task, gate))
 }
 
 impl StartupBackfillTask {
@@ -1039,19 +1214,134 @@ fn startup_backfill_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
 
 async fn run_startup_backfill_coverage_repair_if_due(
     state: &Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
 ) -> Result<StartupBackfillTaskRunOutcome> {
-    let repair_outcome = repair_active_account_activity_v2_coverage_best_effort(
-        &state.pool,
-        state.hourly_rollup_sync_lock.as_ref(),
-        "startup backfill account-activity coverage repair",
-    )
-    .await;
+    run_startup_backfill_coverage_repair_if_due_with_repair(state, gate, || {
+        repair_active_account_activity_v2_coverage(&state.pool)
+    })
+    .await
+}
+
+pub(crate) async fn run_startup_backfill_coverage_repair_if_due_with_repair<Repair, RepairFuture>(
+    state: &Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
+    repair: Repair,
+) -> Result<StartupBackfillTaskRunOutcome>
+where
+    Repair: FnOnce() -> RepairFuture,
+    RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
+{
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+
+    // Coverage repair owns this one permit. The hourly-rollup convenience wrapper also acquires
+    // the global gate, so calling it while the startup path holds a permit would always defer in
+    // production. Keep admission before progress access, then call the underlying repair once.
+    let _permit = match gate.try_begin_background("startup_backfill_account_activity_v2_coverage") {
+        Ok(permit) => permit,
+        Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+    };
+
+    let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
+    let progress = match load_startup_backfill_progress(&state.pool, &task_name).await {
+        Ok(progress) => progress,
+        Err(err) => {
+            if let Some(outcome) =
+                startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+            {
+                return Ok(outcome);
+            }
+            return Err(err);
+        }
+    };
+    let now = Utc::now();
+    if !progress.is_due(now) {
+        debug!(
+            task = task.log_label(),
+            task_name = %progress.task_name,
+            next_run_after = progress.next_run_after.as_deref().unwrap_or("-"),
+            last_status = %progress.last_status,
+            last_started_at = progress.last_started_at.as_deref().unwrap_or("-"),
+            last_finished_at = progress.last_finished_at.as_deref().unwrap_or("-"),
+            last_scanned = progress.last_scanned,
+            last_updated = progress.last_updated,
+            "startup backfill task is not due"
+        );
+        return Ok(StartupBackfillTaskRunOutcome {
+            actionable: false,
+            failed: false,
+            deferred: false,
+            completed: false,
+            next_due: startup_backfill_progress_due(&progress),
+        });
+    }
+
+    let repair_outcome = {
+        let _guard = state.hourly_rollup_sync_lock.lock().await;
+        repair().await
+    };
+    let repair_outcome = match repair_outcome {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            warn!(
+                task = task.log_label(),
+                error = %err,
+                wake_reason = "active_window_coverage_check",
+                "startup backfill account activity v2 coverage repair failed"
+            );
+            let next_due = match defer_startup_backfill_coverage_repair(state.as_ref()).await {
+                Ok(next_due) => next_due,
+                Err(persist_err) => {
+                    // A retry-progress lock is still a pressure defer, even though the durable
+                    // retry deadline could not be written. Prefer that error so two locks close
+                    // the gate once, then leave re-dispatch to the in-memory eligibility wake.
+                    if let Some(outcome) = startup_backfill_pressure_error_defer_outcome_if_recorded(
+                        task,
+                        gate,
+                        &persist_err,
+                    ) {
+                        return Ok(outcome);
+                    }
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(persist_err);
+                }
+            };
+            if let Some(outcome) =
+                startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+            {
+                return Ok(outcome);
+            }
+            return Ok(StartupBackfillTaskRunOutcome {
+                actionable: false,
+                failed: true,
+                deferred: false,
+                completed: true,
+                next_due,
+            });
+        }
+    };
+
     match repair_outcome {
-        ActiveAccountActivityV2RepairResult::Repaired(outcome)
-            if outcome.repaired_bucket_count > 0 =>
-        {
+        outcome if outcome.repaired_bucket_count > 0 => {
             let next_due =
-                record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome).await?;
+                match record_startup_backfill_coverage_repair_progress(state.as_ref(), outcome)
+                    .await
+                {
+                    Ok(next_due) => next_due,
+                    Err(err) => {
+                        if let Some(outcome) =
+                            startup_backfill_pressure_error_defer_outcome_if_recorded(
+                                task, gate, &err,
+                            )
+                        {
+                            return Ok(outcome);
+                        }
+                        return Err(err);
+                    }
+                };
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: true,
                 failed: false,
@@ -1060,10 +1350,18 @@ async fn run_startup_backfill_coverage_repair_if_due(
                 next_due,
             })
         }
-        ActiveAccountActivityV2RepairResult::Repaired(outcome)
-            if outcome.priority_bucket_count > 0 =>
-        {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
+        outcome if outcome.priority_bucket_count > 0 => {
+            let next_due = match defer_startup_backfill_coverage_repair(state.as_ref()).await {
+                Ok(next_due) => next_due,
+                Err(err) => {
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(err);
+                }
+            };
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
@@ -1072,14 +1370,23 @@ async fn run_startup_backfill_coverage_repair_if_due(
                 next_due,
             })
         }
-        ActiveAccountActivityV2RepairResult::Repaired(_) => {
-            let task = StartupBackfillTask::AccountActivityV2Coverage;
+        _ => {
             let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-            let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+            let progress = match load_startup_backfill_progress(&state.pool, &task_name).await {
+                Ok(progress) => progress,
+                Err(err) => {
+                    if let Some(outcome) =
+                        startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                    {
+                        return Ok(outcome);
+                    }
+                    return Err(err);
+                }
+            };
             let next_retry_after = format_utc_iso(
                 Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_IDLE_INTERVAL_SECS as i64),
             );
-            save_startup_backfill_progress(
+            let save_result = save_startup_backfill_progress(
                 &state.pool,
                 &task_name,
                 StartupBackfillProgressUpdate {
@@ -1092,7 +1399,15 @@ async fn run_startup_backfill_coverage_repair_if_due(
                     suspension_reason: None,
                 },
             )
-            .await?;
+            .await;
+            if let Err(err) = save_result {
+                if let Some(outcome) =
+                    startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
+                {
+                    return Ok(outcome);
+                }
+                return Err(err);
+            }
             let next_due = parse_to_utc_datetime(&next_retry_after).unwrap_or_else(Utc::now);
             STARTUP_BACKFILL_SCHEDULER.record_next_due(task, next_due);
             debug!(
@@ -1108,26 +1423,6 @@ async fn run_startup_backfill_coverage_repair_if_due(
                 next_due,
             })
         }
-        ActiveAccountActivityV2RepairResult::Deferred => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
-            Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: true,
-                completed: true,
-                next_due,
-            })
-        }
-        ActiveAccountActivityV2RepairResult::Failed => {
-            let next_due = defer_startup_backfill_coverage_repair(state.as_ref()).await?;
-            Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: true,
-                deferred: false,
-                completed: true,
-                next_due,
-            })
-        }
     }
 }
 
@@ -1135,6 +1430,30 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
     state: Arc<AppState>,
     cancel: &CancellationToken,
     selected_tasks: Option<&[StartupBackfillTask]>,
+) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate(
+        state,
+        cancel,
+        selected_tasks,
+        crate::db_pressure::global_db_pressure_gate(),
+    )
+    .await
+}
+
+pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillMaintenancePass {
+    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, selected_tasks, gate).await
+}
+
+async fn run_startup_backfill_maintenance_pass_with_gate_inner(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
 ) -> StartupBackfillMaintenancePass {
     let mut had_failure = false;
     let mut ran_actionable_task = false;
@@ -1160,13 +1479,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
-        match run_startup_backfill_task_if_due_outcome(
-            &state,
-            *task,
-            crate::db_pressure::global_db_pressure_gate(),
-        )
-        .await
-        {
+        match run_startup_backfill_task_if_due_outcome(&state, *task, gate).await {
             Ok(outcome) => {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
                 ran_actionable_task |= outcome.actionable;
@@ -1188,8 +1501,6 @@ pub(crate) async fn run_startup_backfill_maintenance_pass(
                     Utc::now()
                         + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
                 );
-                crate::db_pressure::global_db_pressure_gate()
-                    .record_error("startup_backfill", &err);
                 warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
             }
         }
@@ -1306,8 +1617,23 @@ async fn run_startup_backfill_task_if_due_outcome(
         });
     }
 
+    if task == StartupBackfillTask::AccountActivityV2Coverage {
+        return run_startup_backfill_coverage_repair_if_due(state, gate).await;
+    }
+
+    // This admission is deliberately before progress lookup: a pressure defer must remain a
+    // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
+    let _permit = match gate.try_begin_background("startup_backfill") {
+        Ok(permit) => permit,
+        Err(reason) => return Ok(startup_backfill_pressure_defer_outcome(task, gate, reason)),
+    };
+
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
-    let progress = load_startup_backfill_progress(&state.pool, &task_name).await?;
+    let progress = load_startup_backfill_progress(&state.pool, &task_name)
+        .await
+        .inspect_err(|err| {
+            record_startup_backfill_pressure_error(gate, err);
+        })?;
     let now = Utc::now();
     if !progress.is_due(now) {
         debug!(
@@ -1330,55 +1656,11 @@ async fn run_startup_backfill_task_if_due_outcome(
         });
     }
 
-    if task == StartupBackfillTask::AccountActivityV2Coverage {
-        return run_startup_backfill_coverage_repair_if_due(state).await;
-    }
-
-    let _permit = match gate.try_begin_background("startup_backfill") {
-        Ok(permit) => permit,
-        Err(reason) => {
-            let retry_after = match reason {
-                crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms } => {
-                    Utc::now() + ChronoDuration::milliseconds(remaining_ms as i64)
-                }
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
-                    Utc::now()
-                        + ChronoDuration::seconds(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS as i64)
-                }
-            };
-            let retry_after = format_utc_iso(retry_after);
-            save_startup_backfill_progress(
-                &state.pool,
-                &task_name,
-                StartupBackfillProgressUpdate {
-                    cursor_id: progress.cursor_id,
-                    scanned: progress.last_scanned,
-                    updated: progress.last_updated,
-                    zero_update_streak: progress.zero_update_streak,
-                    next_run_after: &retry_after,
-                    status: &progress.last_status,
-                    suspension_reason: progress.suspension_reason.as_deref(),
-                },
-            )
-            .await?;
-            info!(
-                task = task.log_label(),
-                reason = %reason,
-                next_retry_after = %retry_after,
-                wake_reason = "pressure_defer",
-                "startup backfill task deferred because database pressure gate is closed"
-            );
-            return Ok(StartupBackfillTaskRunOutcome {
-                actionable: false,
-                failed: false,
-                deferred: true,
-                completed: true,
-                next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
-            });
-        }
-    };
-
-    mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id).await?;
+    mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id)
+        .await
+        .inspect_err(|err| {
+            record_startup_backfill_pressure_error(gate, err);
+        })?;
 
     let started_at = Instant::now();
     let outcome = match run_startup_backfill_task(
@@ -1419,7 +1701,10 @@ async fn run_startup_backfill_task_if_due_outcome(
                     suspension_reason: run.source_unavailable.then_some("source_unavailable"),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|err| {
+                record_startup_backfill_pressure_error(gate, err);
+            })?;
             info!(
                 task = task.log_label(),
                 task_name = %task_name,
@@ -1455,43 +1740,73 @@ async fn run_startup_backfill_task_if_due_outcome(
             }
         }
         Err(err) => {
-            let retry_after = format_utc_iso(
-                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-            );
-            save_startup_backfill_progress(
-                &state.pool,
-                &task_name,
-                StartupBackfillProgressUpdate {
-                    cursor_id: progress.cursor_id,
-                    scanned: 0,
-                    updated: 0,
-                    zero_update_streak: progress.zero_update_streak,
-                    next_run_after: &retry_after,
-                    status: STARTUP_BACKFILL_STATUS_FAILED,
-                    suspension_reason: None,
-                },
+            let next_due = match persist_startup_backfill_task_failure(
+                state, task, &task_name, &progress, started_at, &err,
             )
-            .await?;
-            warn!(
-                task = task.log_label(),
-                task_name = %task_name,
-                cursor_id = progress.cursor_id,
-                elapsed_ms = started_at.elapsed().as_millis() as u64,
-                next_run_after = %retry_after,
-                error = %err,
-                "startup backfill pass failed"
-            );
+            .await
+            {
+                Ok(next_due) => next_due,
+                Err(persist_err) => {
+                    if !record_startup_backfill_pressure_error(gate, &persist_err) {
+                        record_startup_backfill_pressure_error(gate, &err);
+                    }
+                    return Err(persist_err);
+                }
+            };
+            // Keep the permit until the failure state is durable and any relevant cooldown is
+            // visible. Releasing it first would let another background task enter SQLite.
+            record_startup_backfill_pressure_error(gate, &err);
             StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
                 deferred: false,
                 completed: true,
-                next_due: parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now),
+                next_due,
             }
         }
     };
 
     Ok(outcome)
+}
+
+pub(crate) async fn persist_startup_backfill_task_failure(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    progress: &StartupBackfillProgress,
+    started_at: Instant,
+    err: &anyhow::Error,
+) -> Result<DateTime<Utc>> {
+    let failure_kind = startup_backfill_failure_kind(err);
+    let retry_after = format_utc_iso(
+        Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+    );
+    save_startup_backfill_progress(
+        &state.pool,
+        task_name,
+        StartupBackfillProgressUpdate {
+            cursor_id: progress.cursor_id,
+            scanned: 0,
+            updated: 0,
+            zero_update_streak: progress.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_FAILED,
+            suspension_reason: None,
+        },
+    )
+    .await?;
+    warn!(
+        task = task.log_label(),
+        task_name,
+        cursor_id = progress.cursor_id,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        next_run_after = %retry_after,
+        failure_kind = failure_kind.telemetry_reason(),
+        retry_kind = "bounded_operation_backoff",
+        error = %err,
+        "startup backfill pass failed"
+    );
+    Ok(parse_to_utc_datetime(&retry_after).unwrap_or_else(Utc::now))
 }
 
 fn startup_backfill_run_is_actionable(run: &StartupBackfillRunState) -> bool {
@@ -1942,6 +2257,25 @@ pub(crate) async fn run_startup_persistent_prep_best_effort(
     }
 }
 
+pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    gate: &crate::db_pressure::DbPressureGate,
+) {
+    if cancel.is_cancelled() {
+        return;
+    }
+    let tasks = STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks();
+    if tasks.is_empty() {
+        return;
+    }
+    debug!(
+        task_count = tasks.len(),
+        "pressure eligibility changed; dispatching deferred startup backfill tasks"
+    );
+    run_startup_backfill_maintenance_pass_with_gate_inner(state, cancel, Some(&tasks), gate).await;
+}
+
 pub(crate) fn spawn_startup_backfill_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -1968,6 +2302,8 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
 
         loop {
+            let gate = crate::db_pressure::global_db_pressure_gate();
+            let observed_pressure_eligibility = gate.eligibility_generation();
             let next_due = STARTUP_BACKFILL_SCHEDULER.next_due();
             let mut wait_for = startup_backfill_wait_duration(next_due);
             if let Some(retry_at) = startup_prep_retry_at {
@@ -1985,6 +2321,13 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                     if !tasks.is_empty() {
                         run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&tasks)).await;
                     }
+                }
+                _ = gate.wait_for_eligibility_change(observed_pressure_eligibility) => {
+                    run_pressure_eligible_startup_backfill_tasks(
+                        state.clone(),
+                        &cancel,
+                        gate,
+                    ).await;
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -2048,6 +2391,125 @@ mod startup_backfill_tests {
         assert_eq!(recovered.state, "healthy");
         assert_eq!(recovered.failure_count, 1);
         assert_eq!(recovered.failed_task_count, 0);
+    }
+
+    #[test]
+    fn pressure_defer_uses_the_gate_absolute_deadline() {
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+        gate.record_pressure("test", "forced");
+        let expected_deadline = gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .expect("active pressure cooldown deadline");
+
+        let retry_at = startup_backfill_pressure_retry_at(
+            &gate,
+            crate::db_pressure::DbPressureDenyReason::PressureCooldown { remaining_ms: 1 },
+        );
+
+        assert_eq!(retry_at.timestamp_millis() as u64, expected_deadline);
+    }
+
+    #[test]
+    fn pressure_defer_schedules_one_deadline_and_dispatches_once() {
+        let scheduler = StartupBackfillScheduler::default();
+        let task = StartupBackfillTask::ReasoningEffort;
+        let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
+            .expect("valid fixed pressure deadline");
+
+        scheduler.defer_for_pressure(task, deadline);
+        assert!(
+            scheduler
+                .drain_due_tasks(deadline - ChronoDuration::milliseconds(1))
+                .is_empty()
+        );
+        let waiting = scheduler.health_snapshot();
+        assert_eq!(waiting.wake_count, 0);
+        assert_eq!(waiting.due_dispatch_count, 0);
+        assert_eq!(waiting.pressure_defer_count, 0);
+        assert_eq!(waiting.scheduled_task_count, 1);
+
+        assert_eq!(scheduler.drain_due_tasks(deadline), vec![task]);
+        scheduler.record_task_result(task, false, true);
+        assert!(scheduler.drain_due_tasks(deadline).is_empty());
+        let deferred = scheduler.health_snapshot();
+        assert_eq!(deferred.wake_count, 0);
+        assert_eq!(deferred.due_dispatch_count, 1);
+        assert_eq!(deferred.pressure_defer_count, 1);
+        assert_eq!(deferred.scheduled_task_count, 0);
+        assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[tokio::test]
+    async fn pressure_eligibility_change_dispatches_a_deferred_task_before_its_deadline() {
+        let scheduler = Arc::new(StartupBackfillScheduler::default());
+        let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+            1,
+            Duration::from_secs(30),
+        ));
+        let permit = gate
+            .try_begin_background("test-holder")
+            .expect("occupy the sole background slot");
+        let observed_eligibility = gate.eligibility_generation();
+        let task = StartupBackfillTask::ReasoningEffort;
+        let deadline = Utc::now() + ChronoDuration::minutes(5);
+
+        scheduler.defer_for_pressure(task, deadline);
+        scheduler.record_task_result(task, false, true);
+
+        assert!(
+            scheduler.drain_due_tasks(Utc::now()).is_empty(),
+            "the in-memory fallback deadline must not be due yet"
+        );
+
+        let wake_gate = gate.clone();
+        let wake_scheduler = scheduler.clone();
+        let wake = tokio::spawn(async move {
+            wake_gate
+                .wait_for_eligibility_change(observed_eligibility)
+                .await;
+            wake_scheduler.take_pressure_deferred_tasks()
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !wake.is_finished(),
+            "the task must wait for an eligibility-clear event before its fallback deadline"
+        );
+
+        drop(permit);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), wake)
+                .await
+                .expect("permit release must wake the deferred task before its deadline")
+                .expect("eligibility waiter must not panic"),
+            vec![task]
+        );
+        assert_eq!(scheduler.next_due(), None);
+    }
+
+    #[test]
+    fn sqlite_busy_and_locked_are_actual_backfill_failures() {
+        for error in [
+            anyhow::anyhow!("database is busy"),
+            anyhow::anyhow!("database table is locked"),
+        ] {
+            assert_eq!(
+                startup_backfill_failure_kind(&error),
+                StartupBackfillFailureKind::SqliteBusyOrLocked
+            );
+        }
+        assert_eq!(
+            startup_backfill_failure_kind(&anyhow::anyhow!("source unavailable")),
+            StartupBackfillFailureKind::Operation
+        );
+
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_task_result(StartupBackfillTask::ReasoningEffort, true, false);
+        let health = scheduler.health_snapshot();
+        assert_eq!(health.state, "degraded");
+        assert_eq!(health.failure_count, 1);
+        assert_eq!(health.pressure_defer_count, 0);
+        assert_eq!(health.failed_task_count, 1);
+        assert_eq!(health.deferred_task_count, 0);
     }
 
     #[test]

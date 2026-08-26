@@ -139,6 +139,12 @@ impl DbPressureGate {
         None
     }
 
+    pub(crate) fn pressure_cooldown_deadline_epoch_ms(&self) -> Option<u64> {
+        let now_ms = current_epoch_ms();
+        let deadline_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        (deadline_ms > now_ms).then_some(deadline_ms)
+    }
+
     pub(crate) fn try_begin_background(
         &self,
         _task: &'static str,
@@ -329,6 +335,29 @@ mod tests {
         ));
         assert_eq!(gate.snapshot().pressure_events, 1);
         assert_eq!(gate.snapshot().background_skips, 1);
+    }
+
+    #[test]
+    fn cooldown_deadline_stays_stable_across_denials() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(60));
+        gate.record_pressure("test", "forced");
+
+        let deadline = gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .expect("active pressure cooldown deadline");
+        assert!(matches!(
+            gate.try_begin_background("first"),
+            Err(DbPressureDenyReason::PressureCooldown { .. })
+        ));
+        assert!(matches!(
+            gate.try_begin_background("second"),
+            Err(DbPressureDenyReason::PressureCooldown { .. })
+        ));
+        assert_eq!(
+            gate.pressure_cooldown_deadline_epoch_ms(),
+            Some(deadline),
+            "a cooldown must keep one absolute next-eligibility deadline"
+        );
     }
 
     #[test]
