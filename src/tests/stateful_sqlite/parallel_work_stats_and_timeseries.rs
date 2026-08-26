@@ -20744,6 +20744,152 @@ fn resolve_failure_classification_keeps_completed_rows_with_failure_kind_as_fail
     assert!(classification.is_actionable);
 }
 
+#[tokio::test]
+async fn summary_projection_keeps_completed_unknown_failure_kinds_as_failures() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_kind, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'completed', 8, 0.08, ?4, '{}', ?5, 'none')
+        "#,
+    )
+    .bind("summary-completed-unknown-failure-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(json!({ "upstreamAccountId": 42 }).to_string())
+    .bind("unknown_future_failure_kind")
+    .execute(&state.pool)
+    .await
+    .expect("insert completed row with an unknown failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 8, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.08);
+    }
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_legacy_warning_success_without_failure_kind_as_success() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'warning_success', 9, 0.09, ?4, '{}', 'none')
+        "#,
+    )
+    .bind("summary-warning-success-without-failure-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(
+        json!({
+            "upstreamAccountId": 42,
+            "downstreamErrorMessage": "socket closed after response"
+        })
+        .to_string(),
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy warning success without a failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 9, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.09);
+    }
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_warning_success_stored_failure_kind_when_payload_kind_is_empty() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_kind, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'warning_success', 10, 0.1, ?4, '{}', ?5, 'none')
+        "#,
+    )
+    .bind("summary-warning-success-empty-payload-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(json!({ "upstreamAccountId": 42, "failureKind": "" }).to_string())
+    .bind("unknown_future_failure_kind")
+    .execute(&state.pool)
+    .await
+    .expect("insert warning success with empty payload kind and stored failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 10, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.1);
+    }
+}
+
 #[test]
 fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
     let failed_legacy_http_200 = InvocationHourlySourceRecord {
@@ -22378,6 +22524,154 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         assert_eq!(response.total_count, 50_002);
         assert_eq!(response.total_tokens, 850_040);
         assert_eq!(response.total_cost, 62_503.75);
+    }
+}
+
+pub(crate) async fn summary_projection_retains_compact_fields_from_oversized_archive_payload() {
+    const OVERSIZED_COMPACT_ADMISSION_PAYLOAD_BYTES: usize = 64 * 1024 * 1024 + 1;
+    const LARGE_CLASSIFIER_TEXT_BYTES: usize = 1024 * 1024 + 1;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+    let archived_at = format_naive(
+        (Utc::now() - ChronoDuration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "summary-compact-oversized-archive-payload",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 77_001,
+                invoke_id: "summary-compact-oversized-archive-payload",
+                occurred_at: archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 23,
+                cost: 2.5,
+                ttfb_ms: Some(120.0),
+                payload: Some(
+                    r#"{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high"}"#,
+                ),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 77_002,
+                invoke_id: "summary-compact-warning-success-archive",
+                occurred_at: archived_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "warning_success",
+                total_tokens: 11,
+                cost: 1.5,
+                ttfb_ms: Some(90.0),
+                payload: Some(
+                    r#"{"upstreamAccountId":42,"downstreamErrorMessage":"socket closed after response"}"#,
+                ),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
+    )
+    .await;
+    let archive_db_path = state
+        .config
+        .archive_dir
+        .join("summary-compact-oversized-archive-payload.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &archive_db_path)
+        .expect("inflate oversized archive fixture");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open oversized archive fixture");
+    let oversized_payload = format!(
+        r#"{{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high","requestBody":"{}"}}"#,
+        "x".repeat(OVERSIZED_COMPACT_ADMISSION_PAYLOAD_BYTES),
+    );
+    let oversized_error_message = "e".repeat(LARGE_CLASSIFIER_TEXT_BYTES);
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET payload = ?1, raw_response = ?2, error_message = ?3 \
+         WHERE id = 77001",
+    )
+    .bind(oversized_payload)
+    .bind("raw response remains non-canonical")
+    .bind(oversized_error_message)
+    .execute(&archive_pool)
+    .await
+    .expect("seed production-shaped oversized archive fields and classifier text");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress oversized archive fixture");
+    fs::remove_file(&archive_db_path).expect("remove oversized archive fixture database");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash oversized archive fixture");
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = ?1 \
+         WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(archive_sha256)
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("refresh oversized archive manifest hash");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact exact archive projection");
+    fs::remove_file(&archive_path).expect("remove hydrated archive to prove HTTP never reopens it");
+    state.pool.close().await;
+
+    for window in ["current", "1d"] {
+        for upstream_account_id in [None, Some(42)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("serve hydrated compact archive result without SQLite or archive I/O");
+            assert_eq!(response.total_count, 2, "{window} {upstream_account_id:?}");
+            assert_eq!(
+                response.success_count, 1,
+                "{window} {upstream_account_id:?}"
+            );
+            assert_eq!(
+                response.failure_count, 1,
+                "{window} {upstream_account_id:?}"
+            );
+            assert_eq!(
+                response.total_tokens, 34,
+                "{window} {upstream_account_id:?}"
+            );
+            assert_f64_close(response.total_cost, 4.0);
+            if window == "1d" {
+                assert!(
+                    response
+                        .usage_breakdown
+                        .expect("compact archive usage breakdown")
+                        .models
+                        .iter()
+                        .any(|model| {
+                            model.model == "gpt-compact"
+                                && model.reasoning_effort.as_deref() == Some("high")
+                        })
+                );
+            } else {
+                assert!(response.usage_breakdown.is_none());
+            }
+        }
     }
 }
 

@@ -267,7 +267,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    THEN LOWER(TRIM(COALESCE(failure_class, ''))) ",
     "  ELSE ",
     "    CASE ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed') ",
+    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) = '' ",
@@ -304,7 +304,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
     "        THEN 'client_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
+    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'proxy_concurrency_limit', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
@@ -317,8 +317,6 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
     "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
-    "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
@@ -328,6 +326,12 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "    END ",
     "END"
 );
+
+fn summary_projection_resolved_failure_class_sql() -> String {
+    // Summary projection rows must agree with durable rollups and runtime overlays, which use
+    // persisted normalized fields rather than unbounded raw payload diagnostics.
+    INVOCATION_RESOLVED_FAILURE_CLASS_SQL.replace("json_valid(payload)", "0")
+}
 
 fn invocation_resolved_failure_class_sql_for(invocation_ref: &str) -> String {
     // The shared expression is unqualified for its many single-table callers. This query joins
@@ -7304,8 +7308,71 @@ pub(crate) struct SummarySnapshotEntry {
 /// selection is a pure view over the same durable input and can therefore never borrow another
 /// selection's result.
 #[derive(Debug, Clone)]
+struct SummaryProjectionCompactRow {
+    upstream_account_id: Option<i64>,
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    is_in_progress: bool,
+    is_pending: bool,
+    is_success: bool,
+    failure_class: FailureClass,
+    model: Option<String>,
+    response_model: Option<String>,
+    total_tokens: i64,
+    cost: Option<f64>,
+    cost_input: Option<f64>,
+    cost_cache_write: Option<f64>,
+    cost_cache_read: Option<f64>,
+    cost_output: Option<f64>,
+    cost_reasoning: Option<f64>,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    reasoning_effort: Option<String>,
+}
+
+impl SummaryProjectionCompactRow {
+    fn from_preview(row: UpstreamAccountInvocationPreviewRow) -> Self {
+        let classification = resolve_failure_classification(
+            Some(row.status.as_str()),
+            row.error_message.as_deref(),
+            row.failure_kind.as_deref(),
+            row.failure_class.as_deref(),
+            row.is_actionable,
+        );
+        let status = normalized_runtime_text(Some(row.status.as_str()));
+        let is_success = runtime_record_is_success_for_summary_row(&row)
+            && classification.failure_class == FailureClass::None;
+        Self {
+            upstream_account_id: row.upstream_account_id,
+            id: row.id,
+            invoke_id: row.invoke_id,
+            occurred_at: row.occurred_at,
+            is_in_progress: matches!(status.as_str(), "running" | "pending"),
+            is_pending: status == "pending",
+            is_success,
+            failure_class: classification.failure_class,
+            model: row.model,
+            response_model: row.response_model,
+            total_tokens: row.total_tokens,
+            cost: row.cost,
+            cost_input: row.cost_input,
+            cost_cache_write: row.cost_cache_write,
+            cost_cache_read: row.cost_cache_read,
+            cost_output: row.cost_output,
+            cost_reasoning: row.cost_reasoning,
+            input_tokens: row.input_tokens.unwrap_or_default(),
+            output_tokens: row.output_tokens.unwrap_or_default(),
+            cache_input_tokens: row.cache_input_tokens.unwrap_or_default(),
+            reasoning_effort: row.reasoning_effort,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct SummaryProjectionRecord {
-    row: UpstreamAccountInvocationPreviewRow,
+    row: SummaryProjectionCompactRow,
     occurred_at: DateTime<Utc>,
     // Full-hour rollups cover persisted records only through their durable cursor. Archive
     // materialization has separate global and account coverage, so a global bucket never
@@ -7830,23 +7897,12 @@ impl SummaryProjection {
 
         for record in &selected {
             let row = &record.row;
-            let classification = resolve_failure_classification(
-                Some(row.status.as_str()),
-                row.error_message.as_deref(),
-                row.failure_kind.as_deref(),
-                row.failure_class.as_deref(),
-                row.is_actionable,
-            );
-            let status = normalized_runtime_text(Some(row.status.as_str()));
-            let terminal = !matches!(status.as_str(), "running" | "pending");
-            let success = runtime_record_is_success_for_summary_row(row)
-                && classification.failure_class == FailureClass::None;
-            let failure = terminal && classification.failure_class != FailureClass::None;
+            let failure = !row.is_in_progress && row.failure_class != FailureClass::None;
 
             totals.total_count += 1;
             totals.total_cost += row.cost.unwrap_or_default();
             totals.total_tokens += row.total_tokens;
-            if success {
+            if row.is_success {
                 totals.success_count += 1;
             }
             if failure {
@@ -7856,7 +7912,7 @@ impl SummaryProjection {
             }
         }
         for record in &usage_selected {
-            usage_breakdown.add_row(&record.row);
+            usage_breakdown.add_summary_projection_row(&record.row);
         }
 
         if let Some((start, end)) = full_rollup_range {
@@ -7982,28 +8038,18 @@ fn summary_projection_record_totals_with_archived_pending_terminal(
     record: &SummaryProjectionRecord,
     archived_pending_is_terminal: bool,
 ) -> StatsTotals {
-    let classification = resolve_failure_classification(
-        Some(record.row.status.as_str()),
-        record.row.error_message.as_deref(),
-        record.row.failure_kind.as_deref(),
-        record.row.failure_class.as_deref(),
-        record.row.is_actionable,
-    );
-    let status = normalized_runtime_text(Some(record.row.status.as_str()));
-    let terminal = !matches!(status.as_str(), "running" | "pending")
-        || (archived_pending_is_terminal && record.is_archive_record && status == "pending");
+    let terminal = !record.row.is_in_progress
+        || (archived_pending_is_terminal && record.is_archive_record && record.row.is_pending);
     let mut totals = StatsTotals {
         total_count: 1,
         total_tokens: record.row.total_tokens,
         total_cost: record.row.cost.unwrap_or_default(),
         ..StatsTotals::default()
     };
-    if runtime_record_is_success_for_summary_row(&record.row)
-        && classification.failure_class == FailureClass::None
-    {
+    if record.row.is_success {
         totals.success_count = 1;
     }
-    if terminal && classification.failure_class != FailureClass::None {
+    if terminal && record.row.failure_class != FailureClass::None {
         totals.failure_count = 1;
         totals.non_success_cost = record.row.cost.unwrap_or_default();
     }
@@ -8029,49 +8075,20 @@ fn summary_projection_optional_string_bytes(value: Option<&String>) -> usize {
     value.map_or(0, String::len)
 }
 
-fn summary_projection_preview_row_bytes(row: &UpstreamAccountInvocationPreviewRow) -> usize {
+fn summary_projection_preview_row_bytes(row: &SummaryProjectionCompactRow) -> usize {
     row.invoke_id.len()
         + row.occurred_at.len()
-        + row.status.len()
-        + summary_projection_optional_string_bytes(row.prompt_cache_key.as_ref())
-        + summary_projection_optional_string_bytes(row.conversation_created_at.as_ref())
-        + summary_projection_optional_string_bytes(row.live_phase.as_ref())
-        + summary_projection_optional_string_bytes(row.failure_class.as_ref())
-        + summary_projection_optional_string_bytes(row.route_mode.as_ref())
         + summary_projection_optional_string_bytes(row.model.as_ref())
-        + summary_projection_optional_string_bytes(row.request_model.as_ref())
         + summary_projection_optional_string_bytes(row.response_model.as_ref())
         + summary_projection_optional_string_bytes(row.reasoning_effort.as_ref())
-        + summary_projection_optional_string_bytes(row.source.as_ref())
-        + summary_projection_optional_string_bytes(row.error_message.as_ref())
-        + summary_projection_optional_string_bytes(row.downstream_error_message.as_ref())
-        + summary_projection_optional_string_bytes(row.failure_kind.as_ref())
-        + summary_projection_optional_string_bytes(row.proxy_display_name.as_ref())
-        + summary_projection_optional_string_bytes(row.upstream_account_name.as_ref())
-        + summary_projection_optional_string_bytes(row.upstream_account_plan_type.as_ref())
-        + summary_projection_optional_string_bytes(row.response_content_encoding.as_ref())
-        + summary_projection_optional_string_bytes(row.request_compression_algorithm.as_ref())
-        + summary_projection_optional_string_bytes(row.transport.as_ref())
-        + summary_projection_optional_string_bytes(row.requested_service_tier.as_ref())
-        + summary_projection_optional_string_bytes(row.service_tier.as_ref())
-        + summary_projection_optional_string_bytes(row.billing_service_tier.as_ref())
-        + summary_projection_optional_string_bytes(row.endpoint.as_ref())
-        + summary_projection_optional_string_bytes(row.compaction_request_kind.as_ref())
-        + summary_projection_optional_string_bytes(row.compaction_response_kind.as_ref())
-        + summary_projection_optional_string_bytes(row.image_intent.as_ref())
 }
 
 fn summary_projection_archive_row_bytes(row: &SummaryProjectionArchiveRow) -> usize {
     row.invoke_id.len()
         + row.occurred_at.len()
-        + row.source.len()
         + summary_projection_optional_string_bytes(row.model.as_ref())
         + summary_projection_optional_string_bytes(row.response_model.as_ref())
         + summary_projection_optional_string_bytes(row.reasoning_effort.as_ref())
-        + row.status.len()
-        + summary_projection_optional_string_bytes(row.error_message.as_ref())
-        + summary_projection_optional_string_bytes(row.failure_kind.as_ref())
-        + summary_projection_optional_string_bytes(row.failure_class.as_ref())
 }
 
 async fn ensure_summary_projection_archive_text_budget(
@@ -8083,26 +8100,28 @@ async fn ensure_summary_projection_archive_text_budget(
         return Ok(());
     }
     let mut text_columns = vec!["invoke_id", "occurred_at"];
-    for column in [
-        "source",
-        "model",
-        "payload",
-        "status",
-        "error_message",
-        "failure_kind",
-        "failure_class",
-    ] {
+    for column in ["model"] {
         if columns.get(column).copied().unwrap_or(false) {
             text_columns.push(column);
         }
     }
     text_columns.sort_unstable();
     text_columns.dedup();
-    let row_bytes = text_columns
+    let mut text_bytes = text_columns
         .iter()
         .map(|column| format!("length(CAST(COALESCE({column}, '') AS BLOB))"))
-        .collect::<Vec<_>>()
-        .join(" + ");
+        .collect::<Vec<_>>();
+    if columns.get("payload").copied().unwrap_or(false) {
+        text_bytes.push(
+            "length(CAST(COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseModel') END, '') AS BLOB))"
+                .to_string(),
+        );
+        text_bytes.push(
+            "length(CAST(COALESCE(CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END, '') AS BLOB))"
+                .to_string(),
+        );
+    }
+    let row_bytes = text_bytes.join(" + ");
     let mut query =
         QueryBuilder::<Sqlite>::new("SELECT COALESCE(SUM(row_bytes), 0) FROM (SELECT 512 + ");
     query
@@ -8138,13 +8157,11 @@ struct SummaryProjectionArchiveRow {
     id: i64,
     invoke_id: String,
     occurred_at: String,
-    source: String,
     model: Option<String>,
     response_model: Option<String>,
     input_tokens: i64,
     output_tokens: i64,
     cache_input_tokens: i64,
-    reasoning_tokens: i64,
     reasoning_effort: Option<String>,
     total_tokens: i64,
     cost: Option<f64>,
@@ -8153,11 +8170,106 @@ struct SummaryProjectionArchiveRow {
     cost_cache_read: Option<f64>,
     cost_output: Option<f64>,
     cost_reasoning: Option<f64>,
-    status: String,
-    error_message: Option<String>,
-    failure_kind: Option<String>,
-    failure_class: Option<String>,
+    is_in_progress: i64,
+    is_pending: i64,
+    is_success: i64,
+    failure_class: String,
     upstream_account_id: Option<i64>,
+}
+
+impl SummaryProjectionCompactRow {
+    fn from_archive(row: SummaryProjectionArchiveRow) -> Result<Self> {
+        let failure_class =
+            FailureClass::from_db_str(row.failure_class.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "summary projection archive row has invalid resolved failure class: {}",
+                    row.failure_class
+                )
+            })?;
+        Ok(Self {
+            upstream_account_id: row.upstream_account_id,
+            id: row.id,
+            invoke_id: row.invoke_id,
+            occurred_at: row.occurred_at,
+            is_in_progress: row.is_in_progress != 0,
+            is_pending: row.is_pending != 0,
+            is_success: row.is_success != 0 && failure_class == FailureClass::None,
+            failure_class,
+            model: row.model,
+            response_model: row.response_model,
+            total_tokens: row.total_tokens,
+            cost: row.cost,
+            cost_input: row.cost_input,
+            cost_cache_write: row.cost_cache_write,
+            cost_cache_read: row.cost_cache_read,
+            cost_output: row.cost_output,
+            cost_reasoning: row.cost_reasoning,
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            cache_input_tokens: row.cache_input_tokens,
+            reasoning_effort: row.reasoning_effort,
+        })
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryProjectionLiveRow {
+    upstream_account_id: Option<i64>,
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    is_in_progress: i64,
+    is_pending: i64,
+    is_success: i64,
+    failure_class: String,
+    model: Option<String>,
+    response_model: Option<String>,
+    total_tokens: i64,
+    cost: Option<f64>,
+    cost_input: Option<f64>,
+    cost_cache_write: Option<f64>,
+    cost_cache_read: Option<f64>,
+    cost_output: Option<f64>,
+    cost_reasoning: Option<f64>,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    reasoning_effort: Option<String>,
+}
+
+impl SummaryProjectionCompactRow {
+    fn from_live(row: SummaryProjectionLiveRow) -> Result<Self> {
+        let failure_class =
+            FailureClass::from_db_str(row.failure_class.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "summary projection live row has invalid resolved failure class: {}",
+                    row.failure_class
+                )
+            })?;
+        Ok(Self {
+            upstream_account_id: row.upstream_account_id,
+            id: row.id,
+            invoke_id: row.invoke_id,
+            occurred_at: row.occurred_at,
+            is_in_progress: row.is_in_progress != 0,
+            is_pending: row.is_pending != 0,
+            is_success: row.is_success != 0 && failure_class == FailureClass::None,
+            failure_class,
+            model: row.model,
+            response_model: row.response_model,
+            total_tokens: row.total_tokens,
+            cost: row.cost,
+            cost_input: row.cost_input,
+            cost_cache_write: row.cost_cache_write,
+            cost_cache_read: row.cost_cache_read,
+            cost_output: row.cost_output,
+            cost_reasoning: row.cost_reasoning,
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            cache_input_tokens: row.cache_input_tokens,
+            reasoning_effort: row.reasoning_effort,
+        })
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -9133,13 +9245,11 @@ async fn merge_summary_projection_archive_records_with_coverage(
 ) -> Result<()> {
     let mut columns = HashMap::new();
     for column in [
-        "source",
         "model",
         "payload",
         "input_tokens",
         "output_tokens",
         "cache_input_tokens",
-        "reasoning_tokens",
         "total_tokens",
         "cost",
         "cost_input",
@@ -9159,28 +9269,47 @@ async fn merge_summary_projection_archive_records_with_coverage(
         );
     }
     let has = |column| columns.get(column).copied().unwrap_or(false);
-    let payload_expression = |path: &str, cast: &str| {
+    let payload_expression = |path: &str, cast: &str, text_only: bool| {
         if has("payload") {
+            let text_condition = if text_only {
+                format!(" AND json_type(payload, '{path}') = 'text'")
+            } else {
+                String::new()
+            };
             format!(
-                "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '{path}') AS {cast}) END"
+                "CASE WHEN json_valid(payload){text_condition} THEN CAST(json_extract(payload, '{path}') AS {cast}) END"
             )
         } else {
             "NULL".to_string()
         }
     };
 
-    let response_model = payload_expression("$.responseModel", "TEXT");
-    let reasoning_effort = payload_expression("$.reasoningEffort", "TEXT");
-    let upstream_account_id = payload_expression("$.upstreamAccountId", "INTEGER");
-    let query = format!(
+    let response_model = payload_expression("$.responseModel", "TEXT", false);
+    let reasoning_effort = payload_expression("$.reasoningEffort", "TEXT", true);
+    let upstream_account_id = payload_expression("$.upstreamAccountId", "INTEGER", false);
+    let archive_status = summary_projection_archive_column("status", has("status"), "NULL");
+    let archive_error_message =
+        summary_projection_archive_column("error_message", has("error_message"), "NULL");
+    let archive_failure_kind =
+        summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL");
+    let archive_failure_class =
+        summary_projection_archive_column("failure_class", has("failure_class"), "NULL");
+    let archive_payload = "NULL";
+    let archive_status_normalized = "LOWER(TRIM(COALESCE(status, '')))";
+    let archive_is_success = format!(
+        "CASE WHEN {archive_status_normalized} IN ('success', 'completed', '{INVOCATION_STATUS_WARNING_SUCCESS}') \
+             OR ({archive_status_normalized} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '') \
+         THEN 1 ELSE 0 END"
+    );
+    let archive_source_query = format!(
         "SELECT id, invoke_id, occurred_at, \
-         COALESCE({}, '') AS source, {}, {} AS response_model, \
+         {}, {} AS response_model, \
          COALESCE({}, 0) AS input_tokens, COALESCE({}, 0) AS output_tokens, \
-         COALESCE({}, 0) AS cache_input_tokens, COALESCE({}, 0) AS reasoning_tokens, \
+         COALESCE({}, 0) AS cache_input_tokens, \
          {} AS reasoning_effort, COALESCE({}, 0) AS total_tokens, {}, {}, {}, {}, {}, {}, \
-         COALESCE({}, '') AS status, {}, {}, {}, {} AS upstream_account_id \
+         {}, {}, {}, {}, \
+         {} AS payload, {} AS upstream_account_id \
          FROM codex_invocations",
-        if has("source") { "source" } else { "NULL" },
         summary_projection_archive_column("model", has("model"), "NULL"),
         response_model,
         if has("input_tokens") {
@@ -9198,11 +9327,6 @@ async fn merge_summary_projection_archive_records_with_coverage(
         } else {
             "NULL"
         },
-        if has("reasoning_tokens") {
-            "reasoning_tokens"
-        } else {
-            "NULL"
-        },
         reasoning_effort,
         if has("total_tokens") {
             "total_tokens"
@@ -9215,11 +9339,23 @@ async fn merge_summary_projection_archive_records_with_coverage(
         summary_projection_archive_column("cost_cache_read", has("cost_cache_read"), "NULL"),
         summary_projection_archive_column("cost_output", has("cost_output"), "NULL"),
         summary_projection_archive_column("cost_reasoning", has("cost_reasoning"), "NULL"),
-        if has("status") { "status" } else { "NULL" },
-        summary_projection_archive_column("error_message", has("error_message"), "NULL"),
-        summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL"),
-        summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
+        archive_status,
+        archive_error_message,
+        archive_failure_kind,
+        archive_failure_class,
+        archive_payload,
         upstream_account_id,
+    );
+    let summary_failure_class_sql = summary_projection_resolved_failure_class_sql();
+    let query = format!(
+        "SELECT id, invoke_id, occurred_at, model, response_model, \
+         input_tokens, output_tokens, cache_input_tokens, reasoning_effort, total_tokens, \
+         cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
+         CASE WHEN {archive_status_normalized} IN ('running', 'pending') THEN 1 ELSE 0 END AS is_in_progress, \
+         CASE WHEN {archive_status_normalized} = 'pending' THEN 1 ELSE 0 END AS is_pending, \
+         {archive_is_success} AS is_success, \
+         {summary_failure_class_sql} AS failure_class, upstream_account_id \
+         FROM ({archive_source_query})",
     );
     let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
         archive_has_materialized_rollups,
@@ -9338,6 +9474,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
                 "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
             ));
         }
+        let compact_row = SummaryProjectionCompactRow::from_archive(row)?;
         let record = SummaryProjectionRecord {
             occurred_at,
             global_rollup_covered,
@@ -9348,61 +9485,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
             is_archive_record: true,
             archive_has_materialized_rollups,
             account_archive_totals_fallback_included,
-            row: UpstreamAccountInvocationPreviewRow {
-                upstream_account_id: row.upstream_account_id,
-                id: row.id,
-                invoke_id: row.invoke_id,
-                prompt_cache_key: None,
-                occurred_at: row.occurred_at,
-                conversation_created_at: None,
-                status: row.status,
-                live_phase: None,
-                failure_class: row.failure_class,
-                route_mode: None,
-                model: row.model,
-                request_model: None,
-                response_model: row.response_model,
-                total_tokens: row.total_tokens,
-                cost: row.cost,
-                cost_input: row.cost_input,
-                cost_cache_write: row.cost_cache_write,
-                cost_cache_read: row.cost_cache_read,
-                cost_output: row.cost_output,
-                cost_reasoning: row.cost_reasoning,
-                source: Some(row.source),
-                input_tokens: Some(row.input_tokens),
-                output_tokens: Some(row.output_tokens),
-                cache_input_tokens: Some(row.cache_input_tokens),
-                reasoning_tokens: Some(row.reasoning_tokens),
-                reasoning_effort: row.reasoning_effort,
-                error_message: row.error_message,
-                downstream_status_code: None,
-                downstream_error_message: None,
-                failure_kind: row.failure_kind,
-                is_actionable: None,
-                proxy_display_name: None,
-                upstream_account_name: None,
-                upstream_account_plan_type: None,
-                response_content_encoding: None,
-                request_compression_algorithm: None,
-                transport: None,
-                requested_service_tier: None,
-                service_tier: None,
-                billing_service_tier: None,
-                t_req_read_ms: None,
-                t_req_parse_ms: None,
-                t_upstream_connect_ms: None,
-                t_upstream_ttfb_ms: None,
-                first_token_ms: None,
-                t_upstream_stream_ms: None,
-                t_resp_parse_ms: None,
-                t_persist_ms: None,
-                t_total_ms: None,
-                endpoint: None,
-                compaction_request_kind: None,
-                compaction_response_kind: None,
-                image_intent: None,
-            },
+            row: compact_row,
         };
         records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
     }
@@ -10404,40 +10487,8 @@ async fn load_summary_projection_durable_account_ids(pool: &Pool<Sqlite>) -> Res
     Ok(pool_rows.into_iter().chain(rollup_rows).collect())
 }
 
-async fn restore_summary_projection_persisted_statuses(
-    connection: &mut SqliteConnection,
-    rows: &mut [UpstreamAccountInvocationPreviewRow],
-) -> Result<()> {
-    const STATUS_HYDRATION_CHUNK_SIZE: usize = 500;
-    let ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
-    let mut statuses = HashMap::<i64, Option<String>>::new();
-    for chunk in ids.chunks(STATUS_HYDRATION_CHUNK_SIZE) {
-        let mut query =
-            QueryBuilder::<Sqlite>::new("SELECT id, status FROM codex_invocations WHERE id IN (");
-        {
-            let mut separated = query.separated(", ");
-            for id in chunk {
-                separated.push_bind(*id);
-            }
-        }
-        query.push(")");
-        statuses.extend(
-            query
-                .build_query_as::<(i64, Option<String>)>()
-                .fetch_all(&mut *connection)
-                .await?,
-        );
-    }
-    for row in rows {
-        if let Some(status) = statuses.get(&row.id).and_then(|status| status.clone()) {
-            row.status = status;
-        }
-    }
-    Ok(())
-}
-
-fn summary_projection_live_record_from_preview(
-    row: UpstreamAccountInvocationPreviewRow,
+fn summary_projection_live_record_from_compact(
+    row: SummaryProjectionCompactRow,
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
@@ -10717,7 +10768,7 @@ async fn build_summary_projection_once(
     let mut records_by_invoke_id = rows
         .into_iter()
         .filter_map(|row| {
-            summary_projection_live_record_from_preview(
+            summary_projection_live_record_from_compact(
                 row,
                 rollup_live_cursor,
                 account_rollup_live_cursor,
@@ -10782,22 +10833,22 @@ async fn build_summary_projection_once(
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
     for row in recent_rows {
         let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
-        if is_new {
-            exact_record_bytes =
-                exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
-            if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-                return Err(anyhow!(
-                    "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-                ));
-            }
-        }
-        if let Some((invoke_id, record)) = summary_projection_live_record_from_preview(
+        if let Some((invoke_id, record)) = summary_projection_live_record_from_compact(
             row,
             rollup_live_cursor,
             account_rollup_live_cursor,
             &hourly_rollup_totals,
             &hourly_rollup_usage,
         ) {
+            if is_new {
+                exact_record_bytes = exact_record_bytes
+                    .saturating_add(summary_projection_preview_row_bytes(&record.row));
+                if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+                    return Err(anyhow!(
+                        "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+                    ));
+                }
+            }
             records_by_invoke_id.insert(invoke_id, record);
         }
     }
@@ -11631,6 +11682,7 @@ async fn build_summary_projection_once(
                 "summary projection runtime overlay exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
+        let row = SummaryProjectionCompactRow::from_preview(row);
         if !records_by_invoke_id.contains_key(&row.invoke_id) {
             exact_record_bytes =
                 exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
@@ -11705,10 +11757,8 @@ async fn build_summary_projection_once(
     let mut in_progress_by_account = HashMap::new();
     let mut active_in_progress_accounts = HashSet::new();
     for record in &records {
-        if matches!(
-            normalized_runtime_text(Some(record.row.status.as_str())).as_str(),
-            "running" | "pending"
-        ) && let Some(account_id) = record.row.upstream_account_id
+        if record.row.is_in_progress
+            && let Some(account_id) = record.row.upstream_account_id
         {
             active_in_progress_accounts.insert(account_id);
         }
@@ -13818,6 +13868,49 @@ impl UsageBreakdownAccumulator {
         model_entry.cache_write_tokens += cache_write_tokens;
         model_entry.cache_read_tokens += cache_read_tokens;
         model_entry.output_tokens += row.output_tokens.unwrap_or_default().max(0);
+        model_entry.add_cost_row(row.cost, costs);
+    }
+
+    fn add_summary_projection_row(&mut self, row: &SummaryProjectionCompactRow) {
+        let cache_read_tokens = row.cache_input_tokens.max(0);
+        let cache_write_tokens = row.input_tokens.max(0).saturating_sub(cache_read_tokens);
+        self.cache_write_tokens += cache_write_tokens;
+        self.cache_read_tokens += cache_read_tokens;
+        self.output_tokens += row.output_tokens.max(0);
+
+        let costs = [
+            row.cost_input,
+            row.cost_cache_write,
+            row.cost_cache_read,
+            row.cost_output,
+            row.cost_reasoning,
+        ];
+        self.add_cost_row(row.cost, costs);
+
+        let model = row
+            .response_model
+            .as_deref()
+            .or(row.model.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let reasoning_effort = row
+            .reasoning_effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let model_entry = self
+            .models
+            .entry(UsageBreakdownGroupKey {
+                model,
+                reasoning_effort,
+            })
+            .or_default();
+        model_entry.cache_write_tokens += cache_write_tokens;
+        model_entry.cache_read_tokens += cache_read_tokens;
+        model_entry.output_tokens += row.output_tokens.max(0);
         model_entry.add_cost_row(row.cost, costs);
     }
 
@@ -16618,21 +16711,17 @@ where
 async fn load_summary_projection_live_text_columns(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<&'static str>, anyhow::Error> {
-    let mut text_columns = vec!["invoke_id", "occurred_at", "status", "source", "payload"];
-    for column in [
-        "model",
-        "request_model",
-        "upstream_request_model",
-        "error_message",
-        "failure_kind",
-        "failure_class",
-        "downstream_error_message",
-    ] {
+    let mut text_columns = vec![
+        "invoke_id",
+        "occurred_at",
+        "__summary_response_model__",
+        "__summary_reasoning_effort__",
+    ];
+    for column in ["model"] {
         if crate::stats::sqlite_table_has_column(pool, "codex_invocations", column).await? {
             text_columns.push(column);
         }
     }
-    text_columns.push("__upstream_account_plan_type__");
     text_columns.sort_unstable();
     text_columns.dedup();
     Ok(text_columns)
@@ -16650,16 +16739,15 @@ async fn ensure_summary_projection_live_text_budget<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
 {
-    // Keep the scalar preflight conservative and bounded to the same newest prefix that the
-    // preview query will materialize. Payload covers JSON-derived preview fields; the optional
-    // columns cover legacy schemas where model/error text is stored outside payload.
+    // The projection persists only normalized Summary fields. Do not charge the raw payload,
+    // responses, or account-activity-only preview text to its admission budget.
     let row_bytes = text_columns
         .iter()
         .map(|column| {
-            if *column == "__upstream_account_plan_type__" {
-                format!(
-                    "length(CAST(COALESCE(({INVOCATION_UPSTREAM_ACCOUNT_PLAN_TYPE_SQL}), '') AS BLOB))"
-                )
+            if *column == "__summary_response_model__" {
+                format!("length(CAST(COALESCE(({INVOCATION_RESPONSE_MODEL_SQL}), '') AS BLOB))")
+            } else if *column == "__summary_reasoning_effort__" {
+                format!("length(CAST(COALESCE(({INVOCATION_REASONING_EFFORT_SQL}), '') AS BLOB))")
             } else {
                 format!("length(CAST(COALESCE({column}, '') AS BLOB))")
             }
@@ -16721,8 +16809,8 @@ async fn query_summary_projection_live_rows_with_budget(
     upstream_account_id: Option<Option<i64>>,
     limit: usize,
     in_progress_only: bool,
-    telemetry: UpstreamAccountActivityPreviewReadTelemetry,
-) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, anyhow::Error> {
+    _telemetry: UpstreamAccountActivityPreviewReadTelemetry,
+) -> Result<Vec<SummaryProjectionCompactRow>, anyhow::Error> {
     let text_columns = load_summary_projection_live_text_columns(pool).await?;
     let mut connection = pool.acquire().await?;
     let max_id = ensure_summary_projection_live_text_budget(
@@ -16735,22 +16823,71 @@ async fn query_summary_projection_live_rows_with_budget(
         limit,
     )
     .await?;
-    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
-        &mut *connection,
-        source_scope,
-        range,
-        upstream_account_id,
-        Some(limit),
-        max_id,
-        in_progress_only,
-        telemetry,
-    )
-    .await
-    .map_err(|error| anyhow!("summary projection live preview fetch failed: {error:?}"))?;
-    restore_summary_projection_persisted_statuses(&mut connection, &mut rows)
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let status_normalized = INVOCATION_STATUS_NORMALIZED_SQL;
+    let is_success_sql = format!(
+        "CASE WHEN {status_normalized} IN ('success', 'completed', '{INVOCATION_STATUS_WARNING_SUCCESS}') \
+             OR ({status_normalized} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '') \
+         THEN 1 ELSE 0 END"
+    );
+    let summary_failure_class_sql = summary_projection_resolved_failure_class_sql();
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, ");
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, CASE WHEN ")
+        .push(status_normalized)
+        .push(" IN ('running', 'pending') THEN 1 ELSE 0 END AS is_in_progress, CASE WHEN ")
+        .push(status_normalized)
+        .push(" = 'pending' THEN 1 ELSE 0 END AS is_pending, ")
+        .push(is_success_sql)
+        .push(" AS is_success, ")
+        .push(summary_failure_class_sql.as_str())
+        .push(" AS failure_class, model, ")
+        .push(INVOCATION_RESPONSE_MODEL_SQL)
+        .push(" AS response_model, COALESCE(total_tokens, 0) AS total_tokens, cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
+               COALESCE(input_tokens, 0) AS input_tokens, COALESCE(output_tokens, 0) AS output_tokens, \
+               COALESCE(cache_input_tokens, 0) AS cache_input_tokens, ")
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end));
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    if in_progress_only {
+        query
+            .push(" AND ")
+            .push(status_normalized)
+            .push(" IN ('running', 'pending')");
+    }
+    if let Some(upstream_account_id) = upstream_account_id {
+        query
+            .push(" AND ")
+            .push(resolved_upstream_account_id_sql.as_str());
+        match upstream_account_id {
+            Some(upstream_account_id) => {
+                query.push(" = ").push_bind(upstream_account_id);
+            }
+            None => {
+                query.push(" IS NULL");
+            }
+        }
+    }
+    if let Some(max_id) = max_id {
+        query.push(" AND id <= ").push_bind(max_id);
+    }
+    let rows = query
+        .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
+        .push_bind(limit as i64)
+        .build_query_as::<SummaryProjectionLiveRow>()
+        .fetch_all(&mut *connection)
         .await
-        .context("summary projection live status hydration failed")?;
-    Ok(rows)
+        .context("summary projection compact live row fetch failed")?;
+    rows.into_iter()
+        .map(SummaryProjectionCompactRow::from_live)
+        .collect()
 }
 
 async fn query_live_upstream_account_activity_preview_candidate_ids_per_account(
@@ -29789,35 +29926,76 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_rejects_oversized_live_payload_before_preview_fetch() {
+    async fn summary_projection_retains_compact_fields_from_oversized_live_payload_and_response() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
-        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        let oversized_payload = format!(
+            r#"{{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high","requestBody":"{}"}}"#,
+            "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1),
+        );
+        let oversized_response = "r".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('oversized-summary-live', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, ?1, '', 'full')",
+             VALUES ('oversized-summary-live', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, ?1, ?2, 'full')",
         )
         .bind(oversized_payload)
+        .bind(oversized_response)
         .execute(&state.pool)
         .await
         .expect("insert oversized live payload");
 
-        let error = hydrate_summary_snapshots(state.as_ref())
+        hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect_err("oversized live payload must fail before preview materialization");
+            .expect("compact summary fields must hydrate without retaining raw payloads");
+        state.pool.close().await;
+
+        for upstream_account_id in [None, Some(42)] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some("current".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("serve compact summary from memory without SQLite or raw archive access");
+            assert_eq!(response.total_count, 1);
+            assert_eq!(response.total_tokens, 1);
+            assert_eq!(response.total_cost, 0.1);
+            assert!(response.usage_breakdown.is_none());
+        }
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await
+        .expect("serve compact rolling usage breakdown from memory");
         assert!(
-            error
-                .to_string()
-                .contains("canonical record byte budget exceeded before preview fetch"),
-            "live byte preflight must reject oversized payloads: {error:#}"
+            response
+                .usage_breakdown
+                .expect("compact summary usage breakdown")
+                .models
+                .iter()
+                .any(|model| {
+                    model.model == "gpt-compact"
+                        && model.reasoning_effort.as_deref() == Some("high")
+                })
         );
     }
 
     #[tokio::test]
-    async fn summary_projection_rejects_oversized_account_plan_type_before_preview_fetch() {
+    async fn summary_projection_ignores_oversized_unconsumed_account_plan_text() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -29843,19 +30021,28 @@ mod request_compression_query_tests {
         .await
         .expect("insert oversized plan type live row");
 
-        let error = hydrate_summary_snapshots(state.as_ref())
+        hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect_err("oversized plan type must fail before preview materialization");
-        assert!(
-            error
-                .to_string()
-                .contains("canonical record byte budget exceeded before preview fetch"),
-            "plan type byte preflight must reject oversized text: {error:#}"
-        );
+            .expect("unconsumed account text must not consume summary admission bytes");
+        state.pool.close().await;
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(987654),
+            }),
+        )
+        .await
+        .expect("serve compact account summary without SQLite");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 1);
+        assert_eq!(response.total_cost, 0.1);
     }
 
     #[tokio::test]
-    async fn summary_projection_rejects_oversized_archive_payload_before_preview_fetch() {
+    async fn summary_projection_archive_preflight_ignores_oversized_raw_payload() {
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -29875,8 +30062,8 @@ mod request_compression_query_tests {
         let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
         sqlx::query(
             "INSERT INTO codex_invocations \
-             (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
-             VALUES (1, 'oversized-summary-archive', datetime('now', '+8 hours', '-1 minute'), 'proxy', ?1, 1, 0.1, 'success')",
+             (id, invoke_id, occurred_at, source, model, payload, total_tokens, cost, status) \
+             VALUES (1, 'oversized-summary-archive', datetime('now', '+8 hours'), 'proxy', 'gpt-budgeted', ?1, 1, 0.1, 'success')",
         )
         .bind(oversized_payload)
         .execute(&archive_pool)
@@ -29897,15 +30084,23 @@ mod request_compression_query_tests {
             start: Utc::now() - ChronoDuration::hours(2),
             end: Utc::now() + ChronoDuration::minutes(1),
         };
+        ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
+            .await
+            .expect("archive preflight must count only compact retained fields");
+        sqlx::query("UPDATE codex_invocations SET model = ?1 WHERE id = 1")
+            .bind("m".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1))
+            .execute(&archive_pool)
+            .await
+            .expect("enlarge a compact retained archive field");
         let error =
             ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
                 .await
-                .expect_err("oversized archive payload must fail before preview materialization");
+                .expect_err("archive preflight must count compact retained fields");
         assert!(
             error
                 .to_string()
-                .contains("archive byte budget exceeded before preview fetch"),
-            "archive byte preflight must reject oversized payloads: {error:#}"
+                .contains("summary projection archive byte budget exceeded"),
+            "unexpected archive preflight error: {error:#}",
         );
     }
 
@@ -30189,19 +30384,16 @@ mod request_compression_query_tests {
         records.insert(
             "live-authoritative-copy".to_string(),
             SummaryProjectionRecord {
-                row: UpstreamAccountInvocationPreviewRow {
+                row: SummaryProjectionCompactRow {
                     upstream_account_id: None,
                     id: 7,
                     invoke_id: "live-authoritative-copy".to_string(),
-                    prompt_cache_key: None,
                     occurred_at: now.to_rfc3339(),
-                    conversation_created_at: None,
-                    status: "success".to_string(),
-                    live_phase: None,
-                    failure_class: None,
-                    route_mode: None,
+                    is_in_progress: false,
+                    is_pending: false,
+                    is_success: true,
+                    failure_class: FailureClass::None,
                     model: None,
-                    request_model: None,
                     response_model: None,
                     total_tokens: 17,
                     cost: Some(1.7),
@@ -30210,39 +30402,10 @@ mod request_compression_query_tests {
                     cost_cache_read: None,
                     cost_output: None,
                     cost_reasoning: None,
-                    source: Some(SOURCE_PROXY.to_string()),
-                    input_tokens: None,
-                    output_tokens: None,
-                    cache_input_tokens: None,
-                    reasoning_tokens: None,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_input_tokens: 0,
                     reasoning_effort: None,
-                    error_message: None,
-                    downstream_status_code: None,
-                    downstream_error_message: None,
-                    failure_kind: None,
-                    is_actionable: None,
-                    proxy_display_name: None,
-                    upstream_account_name: None,
-                    upstream_account_plan_type: None,
-                    response_content_encoding: None,
-                    request_compression_algorithm: None,
-                    transport: None,
-                    requested_service_tier: None,
-                    service_tier: None,
-                    billing_service_tier: None,
-                    t_req_read_ms: None,
-                    t_req_parse_ms: None,
-                    t_upstream_connect_ms: None,
-                    t_upstream_ttfb_ms: None,
-                    first_token_ms: None,
-                    t_upstream_stream_ms: None,
-                    t_resp_parse_ms: None,
-                    t_persist_ms: None,
-                    t_total_ms: None,
-                    endpoint: None,
-                    compaction_request_kind: None,
-                    compaction_response_kind: None,
-                    image_intent: None,
                 },
                 occurred_at: now,
                 global_rollup_covered: false,
@@ -30400,8 +30563,8 @@ mod request_compression_query_tests {
         retained_live_record.row.invoke_id = "retained-live-tail".to_string();
         retained_live_record.row.total_tokens = 3;
         retained_live_record.row.cost = Some(0.2);
-        retained_live_record.row.status = "failed".to_string();
-        retained_live_record.row.failure_class = Some("service_failure".to_string());
+        retained_live_record.row.is_success = false;
+        retained_live_record.row.failure_class = FailureClass::ServiceFailure;
         retained_live_record.is_archive_record = false;
         retained_live_record.is_persisted_live_record = true;
         retained_live_record.global_rollup_covered = false;
