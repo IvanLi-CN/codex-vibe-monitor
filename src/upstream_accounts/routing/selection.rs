@@ -2210,6 +2210,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let priority_handoff_enabled =
         priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime");
     let mut priority_handoff_deferred_for_sticky = false;
+    let mut priority_handoff_deferred_any = false;
     let mut sticky_handoff_deferred_admission: Option<PoolRoutingHandoffAdmission> = None;
     let mut resolved_candidates = resolved_candidates.into_iter();
     while let Some(evaluation) = resolved_candidates.next() {
@@ -2270,6 +2271,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         | PriorityHandoffAdmissionDecision::CoolingDown),
                         None,
                     ) => {
+                        priority_handoff_deferred_any = true;
                         let reason_code = match decision {
                             PriorityHandoffAdmissionDecision::CoolingDown => "deferredCooldown",
                             _ => "deferredPermitBusy",
@@ -2433,6 +2435,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 audit.selected_account_id = account.account_id;
                 audit.selected_account_name = account.display_name.clone();
                 audit.selected_score = Some(routing_selection_score_snapshot(&evaluation.score));
+                if priority_handoff_deferred_any {
+                    audit.winner_reason_code = "priorityHandoffDeferred".to_string();
+                    audit.compared_account_id = None;
+                    audit.compared_account_name = None;
+                    audit.compared_score = None;
+                }
                 audit.excluded_candidates = selection_audit_exclusions
                     .iter()
                     .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
@@ -2449,7 +2457,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     selected_account_id: account.account_id,
                     selected_account_name: account.display_name.clone(),
                     eligible_candidate_count,
-                    winner_reason_code: "stickyHandoffDeferred".to_string(),
+                    winner_reason_code: "priorityHandoffDeferred".to_string(),
                     compared_account_id: None,
                     compared_account_name: None,
                     selected_score: Some(routing_selection_score_snapshot(&evaluation.score)),
