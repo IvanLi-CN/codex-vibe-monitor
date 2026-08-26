@@ -888,10 +888,6 @@ pub(crate) fn build_pool_routing_runtime_cache(
     state: &AppState,
     row: &PoolRoutingSettingsRow,
 ) -> Result<PoolRoutingRuntimeCache> {
-    set_priority_handoff_admission_enabled(
-        row.priority_handoff_admission_enabled
-            .is_none_or(|value| value != 0),
-    );
     let api_key = match (
         state.upstream_accounts.crypto_key.as_ref(),
         row.encrypted_api_key.as_deref(),
@@ -902,7 +898,7 @@ pub(crate) fn build_pool_routing_runtime_cache(
         _ => None,
     };
 
-    Ok(PoolRoutingRuntimeCache {
+    let cache = PoolRoutingRuntimeCache {
         generation: 0,
         invalidated: false,
         #[cfg(test)]
@@ -916,7 +912,12 @@ pub(crate) fn build_pool_routing_runtime_cache(
         model_routing: PoolModelRoutingRuntimeCache::default(),
         prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
         sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
-    })
+    };
+    set_priority_handoff_admission_enabled(
+        row.priority_handoff_admission_enabled
+            .is_none_or(|value| value != 0),
+    );
+    Ok(cache)
 }
 
 pub(crate) async fn refresh_pool_routing_runtime_cache(
