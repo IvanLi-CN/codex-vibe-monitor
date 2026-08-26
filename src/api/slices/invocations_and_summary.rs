@@ -7476,10 +7476,16 @@ pub(crate) struct SummaryProjection {
     // scoped so global rolling summaries remain available when their own compact bucket is
     // complete.
     unavailable_exact_live_account_ranges: HashMap<i64, Vec<ExactUtcRange>>,
-    // `current` has no time boundary which can be used to prove an omitted archive or resident
-    // overlay is outside the requested newest-N selection. Refuse that selection until the
-    // complete source has been admitted rather than returning a shorter successful response.
+    // A resident-current byte overflow has no ordering proof, so every global `current`
+    // selection must remain unavailable until a complete bounded source can be built.
     current_source_unavailable: bool,
+    // Archive manifests are not replayed in the resident current index. Their latest durable
+    // coverage end is enough to prove that an individual newest-N prefix is unaffected. Keep
+    // the proof separate from a resident-byte failure so `current?limit=1` is not rejected
+    // merely because a much larger legal selection would reach an archive boundary.
+    current_archive_latest_coverage_end: Option<DateTime<Utc>>,
+    current_archive_has_unknown_coverage: bool,
+    current_archive_admission_exceeded: bool,
     // Archive newest-N candidates are admitted globally. Per-account newest-N cannot borrow
     // that proof until its own archive candidates are present, because a quiet account can have
     // a newer archive row outside the global selected prefix.
@@ -7495,6 +7501,42 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    fn current_selection_cutoff(&self, limit: usize) -> Option<DateTime<Utc>> {
+        if limit == 0 {
+            return None;
+        }
+        let indexes = self.recent_indexes.get(&None)?;
+        let index = *indexes.get(limit.saturating_sub(1).min(indexes.len().saturating_sub(1)))?;
+        self.current_records
+            .get(index)
+            .map(|record| record.occurred_at)
+    }
+
+    fn current_archive_may_affect_global_current(&self, limit: usize) -> bool {
+        if limit == 0 {
+            return false;
+        }
+        if self.current_archive_has_unknown_coverage {
+            return true;
+        }
+        let Some(latest_coverage_end) = self.current_archive_latest_coverage_end else {
+            return false;
+        };
+        self.current_selection_cutoff(limit)
+            .is_none_or(|cutoff| latest_coverage_end >= cutoff)
+    }
+
+    fn unavailable_archive_may_affect_global_current(&self, limit: usize) -> bool {
+        if limit == 0 || self.unavailable_unmaterialized_archive_ranges.is_empty() {
+            return false;
+        }
+        self.current_selection_cutoff(limit).is_none_or(|cutoff| {
+            self.unavailable_unmaterialized_archive_ranges
+                .iter()
+                .any(|range| range.end >= cutoff)
+        })
+    }
+
     pub(crate) fn contains_persisted_live_terminal(
         &self,
         invoke_id: &str,
@@ -7641,6 +7683,10 @@ impl SummaryProjection {
         }
         let now = Utc::now();
         let range = summary_window_range(&window, reporting_tz, now)?;
+        let requested_current_limit = match window {
+            SummaryWindow::Current(limit) => Some(limit.max(0) as usize),
+            _ => None,
+        };
         if range.is_some_and(|(start, _)| {
             self.recent_index_overflow_at
                 .is_some_and(|overflow_at| start <= overflow_at)
@@ -7654,14 +7700,10 @@ impl SummaryProjection {
                 .unavailable_unmaterialized_archive_ranges
                 .iter()
                 .any(|unavailable| unavailable.start < end && start < unavailable.end),
-            // `current` is a bounded recent-record selection, rather than a timestamp range.
-            // Once a protected archive boundary cannot be reconstructed, its position in that
-            // selection is unknown without request-time I/O. Fail closed instead of returning a
-            // shorter in-memory list that silently omits the archive record.
-            None => {
-                matches!(window, SummaryWindow::Current(_))
-                    && !self.unavailable_unmaterialized_archive_ranges.is_empty()
-            }
+            // `current` is a newest-N selection. A retained archive gap only invalidates the
+            // selection if its coverage can reach this request's actual cutoff.
+            None => requested_current_limit
+                .is_some_and(|limit| self.unavailable_archive_may_affect_global_current(limit)),
         };
         if unavailable_archive_range_affects_query {
             return Err(ApiError::unavailable(anyhow!(
@@ -7671,6 +7713,10 @@ impl SummaryProjection {
         if range.is_none()
             && matches!(window, SummaryWindow::Current(_))
             && (self.current_source_unavailable
+                || (upstream_account_id.is_none()
+                    && requested_current_limit.is_some_and(|limit| {
+                        self.current_archive_may_affect_global_current(limit)
+                    }))
                 || (upstream_account_id.is_some() && self.current_account_source_unavailable))
         {
             return Err(ApiError::unavailable(anyhow!(
@@ -8138,9 +8184,10 @@ fn ensure_summary_projection_resident_record_bytes(
 }
 
 fn summary_projection_resident_record_budget_exceeded(error: &anyhow::Error) -> bool {
-    error
-        .to_string()
-        .contains("resident record bytes exceeded bounded budget")
+    let message = error.to_string();
+    message.contains("resident record bytes exceeded bounded budget")
+        || message.contains("canonical record byte budget exceeded before preview fetch")
+        || message.contains("archive byte budget exceeded before preview fetch")
 }
 
 fn summary_projection_archive_row_bytes(row: &SummaryProjectionArchiveRow) -> usize {
@@ -8160,6 +8207,7 @@ async fn ensure_summary_projection_archive_text_budget(
     archive_pool: &Pool<Sqlite>,
     exact_ranges: &[ExactUtcRange],
     columns: &HashMap<&str, bool>,
+    max_resident_bytes: usize,
 ) -> Result<(), anyhow::Error> {
     if exact_ranges.is_empty() {
         return Ok(());
@@ -8207,9 +8255,9 @@ async fn ensure_summary_projection_archive_text_budget(
         .build_query_scalar::<i64>()
         .fetch_one(archive_pool)
         .await?;
-    if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
+    if estimated_bytes > max_resident_bytes as i64 {
         return Err(anyhow!(
-            "summary projection archive byte budget exceeded before preview fetch ({estimated_bytes} > {SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+            "summary projection archive byte budget exceeded before preview fetch ({estimated_bytes} > {max_resident_bytes})"
         ));
     }
     Ok(())
@@ -8978,6 +9026,65 @@ fn summary_projection_merge_exact_ranges(mut ranges: Vec<ExactUtcRange>) -> Vec<
     merged
 }
 
+async fn load_summary_projection_unrepresented_current_archive_coverage(
+    pool: &Pool<Sqlite>,
+    represented_archive_paths: &HashSet<String>,
+) -> Result<(Option<DateTime<Utc>>, bool)> {
+    // A current selection can only ignore an archive after its complete bounded coverage has
+    // been materialized into the resident candidate view. Keep the exclusion bind set small;
+    // a larger fully represented set is still safe, but its SQL proof must fail closed rather
+    // than exceed SQLite's parameter budget.
+    if represented_archive_paths.len() > SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
+        return Ok((None, true));
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT MAX(coverage_end_epoch), \
+         MAX(CASE WHEN coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL THEN 1 ELSE 0 END) \
+         FROM archive_batches WHERE dataset = ",
+    );
+    query
+        .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .push(" AND status = ")
+        .push_bind(ARCHIVE_STATUS_COMPLETED);
+    if !represented_archive_paths.is_empty() {
+        query.push(" AND file_path NOT IN (");
+        let mut separated = query.separated(", ");
+        for path in represented_archive_paths {
+            separated.push_bind(path);
+        }
+        separated.push_unseparated(")");
+    }
+    let (latest_epoch, has_unknown): (Option<i64>, Option<i64>) =
+        query.build_query_as().fetch_one(pool).await?;
+    let latest_coverage_end = latest_epoch.and_then(|epoch| Utc.timestamp_opt(epoch, 0).single());
+    Ok((latest_coverage_end, has_unknown.unwrap_or_default() != 0))
+}
+
+async fn load_summary_projection_current_archive_admission(
+    pool: &Pool<Sqlite>,
+    current_start: DateTime<Utc>,
+) -> Result<Vec<crate::stats::ArchiveBatchPathRow>> {
+    // Current is ordered by recency, not archive creation order. Admit the newest bounded
+    // manifest prefix so a large backlog of old materialized batches cannot hide a current
+    // candidate that must be hydrated off-request.
+    sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
+        "SELECT file_path, month_key, coverage_start_at, coverage_end_at, \
+         historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
+         FROM archive_batches \
+         WHERE dataset = ?1 AND status = ?2 \
+           AND (coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL OR coverage_end_epoch >= ?3) \
+         ORDER BY coverage_end_epoch DESC, id DESC \
+         LIMIT ?4",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(current_start.timestamp())
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES.saturating_add(1)) as i64)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
 fn summary_projection_exact_bucket_ranges(buckets: &HashSet<i64>) -> Vec<ExactUtcRange> {
     summary_projection_merge_exact_ranges(
         buckets
@@ -9320,7 +9427,13 @@ async fn merge_summary_projection_archive_records_with_coverage(
         hourly_rollup_usage,
         known_account_ids,
     );
-    ensure_summary_projection_archive_text_budget(archive_pool, &exact_ranges, &columns).await?;
+    ensure_summary_projection_archive_text_budget(
+        archive_pool,
+        &exact_ranges,
+        &columns,
+        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(resident_current_record_bytes),
+    )
+    .await?;
     let mut bind_index = 1usize;
     let mut bounded_query = query;
     bounded_query.push_str(" WHERE ");
@@ -10558,33 +10671,6 @@ fn summary_projection_live_record_from_preview(
     ))
 }
 
-fn summary_projection_archive_may_affect_global_current(
-    archives: &[crate::stats::ArchiveBatchPathRow],
-    current_records: &HashMap<String, SummaryProjectionRecord>,
-    current_limit: usize,
-) -> bool {
-    if archives.is_empty() {
-        return false;
-    }
-    let mut current_timestamps = current_records
-        .values()
-        .map(|record| record.occurred_at)
-        .collect::<Vec<_>>();
-    current_timestamps.sort_unstable_by(|left, right| right.cmp(left));
-    let Some(cutoff) = current_timestamps
-        .get(current_limit.saturating_sub(1))
-        .copied()
-    else {
-        return true;
-    };
-    archives.iter().any(|archive| {
-        archive
-            .coverage_end_at()
-            .and_then(parse_to_utc_datetime)
-            .is_none_or(|coverage_end| coverage_end >= cutoff)
-    })
-}
-
 #[derive(Clone, Default)]
 struct PreviousSummaryProjectionAllTime {
     all_time_by_account: HashMap<Option<i64>, StatsResponse>,
@@ -10733,19 +10819,13 @@ async fn build_summary_projection_once(
             .await?
             .is_empty();
     let current_archive_admission = if has_any_completed_archive {
-        crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
-            pool,
-            None,
-            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
-        )
-        .await?
+        load_summary_projection_current_archive_admission(pool, live_start).await?
     } else {
         Vec::new()
     };
     let current_archive_admission_exceeded =
         current_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES;
     let mut current_source_unavailable = false;
-    let mut current_account_source_unavailable = current_archive_admission_exceeded;
     // All-time aggregation needs manifest-level key proof, while rolling windows only need the
     // bounded exact horizon below. An oversized, fully materialized history is validated in
     // fixed manifest pages against one immutable high-watermark; it never needs an unbounded
@@ -10827,6 +10907,7 @@ async fn build_summary_projection_once(
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
+        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "bounded_exact_horizon",
@@ -10870,7 +10951,7 @@ async fn build_summary_projection_once(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    let mut recent_rows = query_summary_projection_live_rows_with_budget(
+    let mut recent_rows = match query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -10883,13 +10964,24 @@ async fn build_summary_projection_once(
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
+        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(exact_record_bytes),
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "bounded_recent_index",
             purpose: "summary_projection_recent_index",
         },
     )
-    .await?;
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
+            // The rolling view is already exact and resident. Refuse only `current` instead of
+            // briefly materializing a second near-cap view or dropping the rolling snapshot.
+            current_source_unavailable = true;
+            Vec::new()
+        }
+        Err(error) => return Err(error),
+    };
     let mut recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
     let mut recent_index_overflow_at = if recent_index_complete {
         None
@@ -10941,13 +11033,6 @@ async fn build_summary_projection_once(
             "summary projection current index exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    current_source_unavailable |= current_archive_admission_exceeded
-        || summary_projection_archive_may_affect_global_current(
-            &current_archive_admission,
-            &current_records_by_invoke_id,
-            state.config.list_limit_max,
-        );
-    current_account_source_unavailable |= !current_archive_admission.is_empty();
     let mut known_account_ids = records_by_invoke_id
         .values()
         .filter_map(|record| record.row.upstream_account_id)
@@ -11084,6 +11169,79 @@ async fn build_summary_projection_once(
     let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
     let mut unavailable_exact_live_account_buckets = HashMap::<i64, BTreeSet<i64>>::new();
     let mut historical_global_covered_terminal_invoke_ids = HashSet::<String>::new();
+    let mut current_complete_archive_paths = HashSet::<String>::new();
+    // Only rows which can appear in a legal global or account `current` response need the
+    // rolling promotion below. The resident index keeps a larger bounded prefix so account
+    // selection can remain in-memory; treating every row in that prefix as current-visible
+    // would turn unrelated old records into a rolling exact repair and defeat normal coverage
+    // deduplication.
+    let mut current_visible_persisted_live_ids = HashSet::<String>::new();
+    let mut current_visible_candidates =
+        HashMap::<Option<i64>, Vec<&SummaryProjectionRecord>>::new();
+    for record in current_records_by_invoke_id.values() {
+        current_visible_candidates
+            .entry(None)
+            .or_default()
+            .push(record);
+        if let Some(account_id) = record.row.upstream_account_id {
+            current_visible_candidates
+                .entry(Some(account_id))
+                .or_default()
+                .push(record);
+        }
+    }
+    for candidates in current_visible_candidates.values_mut() {
+        candidates.sort_by(|left, right| {
+            right
+                .occurred_at
+                .cmp(&left.occurred_at)
+                .then_with(|| right.row.id.cmp(&left.row.id))
+        });
+        current_visible_persisted_live_ids.extend(
+            candidates
+                .iter()
+                .take(state.config.list_limit_max)
+                .filter(|record| record.is_persisted_live_record)
+                .map(|record| record.row.invoke_id.clone()),
+        );
+    }
+    // A sparse old durable row can survive in the newest-N current view while falling outside
+    // the moving rolling tail. Promote that actual current selection into the rolling canonical
+    // view before coverage is evaluated: otherwise an `all` exact repair and the SSE terminal
+    // proof can both lose a terminal that is resident but not represented by a compact bucket.
+    for record in current_records_by_invoke_id.values() {
+        if !record.is_persisted_live_record
+            || record.occurred_at >= live_start
+            || !current_visible_persisted_live_ids.contains(&record.row.invoke_id)
+            || records_by_invoke_id.contains_key(&record.row.invoke_id)
+        {
+            continue;
+        }
+        let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+        if records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+            unavailable_exact_live_buckets.insert(bucket);
+            continue;
+        }
+        let next_rolling_record_bytes =
+            exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&record.row));
+        if let Err(error) = ensure_summary_projection_resident_record_bytes(
+            next_rolling_record_bytes,
+            current_record_bytes,
+        ) {
+            if !summary_projection_resident_record_budget_exceeded(&error) {
+                return Err(error);
+            }
+            unavailable_exact_live_buckets.insert(bucket);
+            continue;
+        }
+        exact_record_bytes = next_rolling_record_bytes;
+        records_by_invoke_id.insert(record.row.invoke_id.clone(), record.clone());
+    }
+    let exact_historical_persisted_live_ids = records_by_invoke_id
+        .values()
+        .filter(|record| record.is_persisted_live_record)
+        .map(|record| record.row.invoke_id.clone())
+        .collect::<HashSet<_>>();
     let historical_live_range = ExactUtcRange {
         start: archive_start,
         end: live_start,
@@ -11095,6 +11253,8 @@ async fn build_summary_projection_once(
             rollup_live_cursor,
             account_rollup_live_cursor,
             &hourly_rollup_totals,
+            &hourly_rollup_usage,
+            &exact_historical_persisted_live_ids,
             &mut unavailable_exact_live_buckets,
             &mut unavailable_exact_live_account_buckets,
             &mut historical_global_covered_terminal_invoke_ids,
@@ -11444,20 +11604,32 @@ async fn build_summary_projection_once(
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
-        let exact_live_rows = query_summary_projection_live_rows_with_budget(
+        let exact_live_rows = match query_summary_projection_live_rows_with_budget(
             pool,
             InvocationSourceScope::All,
             range,
             None,
             remaining,
             false,
+            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(current_record_bytes),
             UpstreamAccountActivityPreviewReadTelemetry {
                 route: "summary_projection",
                 builder: "exact_replacement_bucket",
                 purpose: "summary_projection_archive_live_replacement",
             },
         )
-        .await?;
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
+                summary_projection_mark_unavailable_archive_ranges(
+                    &mut unavailable_exact_live_buckets,
+                    [range],
+                )?;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if exact_live_rows.len() >= remaining {
             // A rolling window whose partial boundary includes this dense hour cannot be exact
             // within the finite record budget. Keep the independently admitted `current` prefix
@@ -11829,6 +12001,119 @@ async fn build_summary_projection_once(
             record.usage_account_rollup_covered = false;
         }
     }
+    // A fully materialized archive in the moving exact tail can be an actual global newest-N
+    // candidate. Read that bounded file source during hydration, not from HTTP, and keep only
+    // its raw candidates in the separate current view. Unmaterialized archives remain an
+    // explicit current-source gap because their latest-N order is not proven by rollups.
+    let current_materialized_archives = current_archive_admission
+        .iter()
+        .filter(|archive| archive.has_materialized_historical_rollups())
+        .cloned()
+        .collect::<Vec<_>>();
+    let current_materialized_paths = current_materialized_archives
+        .iter()
+        .map(|archive| archive.file_path().to_string())
+        .collect::<Vec<_>>();
+    let current_materialized_sha256 =
+        load_summary_projection_archive_manifest_sha256(pool, &current_materialized_paths).await?;
+    let mut current_archive_candidate_records = HashMap::<String, SummaryProjectionRecord>::new();
+    let mut current_archive_candidate_budget = 0usize;
+    let mut current_archive_candidate_bytes = 0usize;
+    let current_persisted_live_ids = records_by_invoke_id
+        .values()
+        .filter(|record| record.is_persisted_live_record)
+        .map(|record| record.row.invoke_id.clone())
+        .collect::<HashSet<_>>();
+    for archive in &current_materialized_archives {
+        let Some(archive_range) = summary_projection_archive_overlap_range(
+            archive,
+            ExactUtcRange {
+                start: live_start,
+                end,
+            },
+        ) else {
+            continue;
+        };
+        let Some(manifest_sha256) = current_materialized_sha256.get(archive.file_path()) else {
+            current_source_unavailable = true;
+            continue;
+        };
+        let Some((archive_pool, temp_cleanup)) =
+            crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection-current")
+                .await?
+        else {
+            continue;
+        };
+        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+        let merge_result = merge_summary_projection_archive_records_with_coverage(
+            &archive_pool,
+            pool,
+            &current_persisted_live_ids,
+            &hourly_rollup_totals,
+            &hourly_rollup_usage,
+            false,
+            None,
+            None,
+            None,
+            archive_range,
+            &HashSet::new(),
+            None,
+            &known_account_ids,
+            &mut current_archive_candidate_records,
+            &mut current_archive_candidate_budget,
+            &mut current_archive_candidate_bytes,
+            exact_record_bytes.saturating_add(current_record_bytes),
+        )
+        .await;
+        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+        archive_pool.close().await;
+        drop(temp_cleanup);
+        match merge_result {
+            Ok(()) => {
+                // The current candidate read only covers the moving exact tail. Do not treat a
+                // manifest which reaches outside that tail as fully represented: a larger
+                // newest-N selection could still need one of its older rows.
+                if summary_projection_archive_is_fully_within_exact_horizon(
+                    archive,
+                    ExactUtcRange {
+                        start: live_start,
+                        end,
+                    },
+                ) {
+                    current_complete_archive_paths.insert(archive.file_path().to_string());
+                }
+            }
+            Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
+                current_source_unavailable = true;
+            }
+            Err(error) => {
+                return Err(anyhow!(
+                    "summary projection current archive hydration failed for {}: {error:?}",
+                    archive.file_path()
+                ));
+            }
+        }
+    }
+    for record in current_archive_candidate_records.into_values() {
+        let invoke_id = record.row.invoke_id.clone();
+        if current_records_by_invoke_id.contains_key(&invoke_id) {
+            continue;
+        }
+        let next_current_record_bytes =
+            current_record_bytes.saturating_add(summary_projection_preview_row_bytes(&record.row));
+        if let Err(error) = ensure_summary_projection_resident_record_bytes(
+            exact_record_bytes,
+            next_current_record_bytes,
+        ) {
+            if !summary_projection_resident_record_budget_exceeded(&error) {
+                return Err(error);
+            }
+            current_source_unavailable = true;
+            break;
+        }
+        current_record_bytes = next_current_record_bytes;
+        current_records_by_invoke_id.insert(invoke_id, record);
+    }
     let mut global_all_time_source_unavailable = all_time_global_exact_source_unavailable
         || all_time_archive_admission_exceeded
         || all_time_source_unavailable_from_archive_ranges;
@@ -12085,7 +12370,7 @@ async fn build_summary_projection_once(
         // retained boundary replacement row is older than that tail, the complete all-time map
         // is the durable proof that it is already included. Refresh its per-scope flags before
         // adding exact fallbacks so old persisted rows cannot be counted twice.
-        for record in &mut records {
+        for record in records.iter_mut().chain(current_records.iter_mut()) {
             if !record.is_persisted_live_record {
                 continue;
             }
@@ -12296,7 +12581,11 @@ async fn build_summary_projection_once(
         // markers, is replaced by its exact canonical source. Unmaterialized sibling archives
         // remain owned by the bounded delta helper above; adding their retained range records
         // here would double count the sibling after its durable overlap subtraction.
-        for record in &records {
+        let mut global_exact_record_ids = HashSet::<&str>::new();
+        for record in records.iter().chain(current_records.iter()) {
+            if !global_exact_record_ids.insert(record.row.invoke_id.as_str()) {
+                continue;
+            }
             if summary_projection_all_time_uses_global_exact_record(record, rollup_live_cursor) {
                 global_totals =
                     global_totals.add(summary_projection_all_time_record_totals(record));
@@ -12404,7 +12693,11 @@ async fn build_summary_projection_once(
         // A global materialization marker does not prove account coverage. Only canonical rows
         // not represented by the account compact aggregate contribute here, so a global-only
         // fallback does not double count an otherwise covered account bucket.
-        for record in &records {
+        let mut account_exact_record_ids = HashSet::<&str>::new();
+        for record in records.iter().chain(current_records.iter()) {
+            if !account_exact_record_ids.insert(record.row.invoke_id.as_str()) {
+                continue;
+            }
             // With no completed archives the live-table aggregate above is the complete
             // persisted history, regardless of rollup cursor lag. Only runtime overlay rows
             // are absent from that aggregate and need an exact-record contribution here.
@@ -12546,11 +12839,21 @@ async fn build_summary_projection_once(
                         .is_some_and(|buckets| buckets.contains(&bucket))
                 })
         };
+    let rolling_exact_persisted_live_invoke_ids = records
+        .iter()
+        .filter(|record| record.is_persisted_live_record)
+        .map(|record| record.row.invoke_id.as_str())
+        .collect::<HashSet<_>>();
     let mut persisted_live_terminal_invoke_ids = records
         .iter()
         .chain(current_records.iter())
         .filter(|record| {
             record.is_persisted_live_record
+                // The current index deliberately keeps a larger bounded prefix than a legal
+                // newest-N response. An old persisted row in that prefix cannot suppress an
+                // SSE terminal delta unless it is also retained in the rolling exact view; its
+                // compact coverage is added separately below after both totals and usage proof.
+                && rolling_exact_persisted_live_invoke_ids.contains(record.row.invoke_id.as_str())
                 && !persisted_live_record_has_unavailable_global_rolling_coverage(record)
         })
         .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
@@ -12636,6 +12939,16 @@ async fn build_summary_projection_once(
             )
         })
         .collect();
+    let (current_archive_latest_coverage_end, current_archive_has_unknown_coverage) =
+        load_summary_projection_unrepresented_current_archive_coverage(
+            pool,
+            &current_complete_archive_paths,
+        )
+        .await?;
+    let current_account_source_unavailable = current_archive_admission_exceeded
+        || current_archive_admission
+            .iter()
+            .any(|archive| !current_complete_archive_paths.contains(archive.file_path()));
     let projection = SummaryProjection {
         records,
         current_records,
@@ -12686,6 +12999,9 @@ async fn build_summary_projection_once(
         unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges,
         current_source_unavailable,
+        current_archive_latest_coverage_end,
+        current_archive_has_unknown_coverage,
+        current_archive_admission_exceeded,
         current_account_source_unavailable,
         in_progress_by_account,
         maintenance: Some(maintenance),
@@ -16984,6 +17300,7 @@ async fn ensure_summary_projection_live_text_budget<'e, E>(
     upstream_account_id: Option<Option<i64>>,
     in_progress_only: bool,
     limit: usize,
+    max_resident_bytes: usize,
 ) -> Result<Option<i64>, anyhow::Error>
 where
     E: sqlx::Executor<'e, Database = Sqlite>,
@@ -17044,9 +17361,9 @@ where
         .build_query_as::<(i64, Option<i64>)>()
         .fetch_one(executor)
         .await?;
-    if estimated_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES as i64 {
+    if estimated_bytes > max_resident_bytes as i64 {
         return Err(anyhow!(
-            "summary projection canonical record byte budget exceeded before preview fetch ({estimated_bytes} > {SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+            "summary projection canonical record byte budget exceeded before preview fetch ({estimated_bytes} > {max_resident_bytes})"
         ));
     }
     Ok(max_id)
@@ -17059,6 +17376,7 @@ async fn query_summary_projection_live_rows_with_budget(
     upstream_account_id: Option<Option<i64>>,
     limit: usize,
     in_progress_only: bool,
+    max_resident_bytes: usize,
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, anyhow::Error> {
     let text_columns = load_summary_projection_live_text_columns(pool).await?;
@@ -17071,6 +17389,7 @@ async fn query_summary_projection_live_rows_with_budget(
         upstream_account_id,
         in_progress_only,
         limit,
+        max_resident_bytes,
     )
     .await?;
     let mut rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
@@ -17097,6 +17416,8 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+    hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
+    exact_persisted_live_ids: &HashSet<String>,
     unavailable_global_buckets: &mut BTreeSet<i64>,
     unavailable_account_buckets: &mut HashMap<i64, BTreeSet<i64>>,
     global_covered_terminal_invoke_ids: &mut HashSet<String>,
@@ -17108,6 +17429,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
+        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "historical_terminal_coverage",
@@ -17135,9 +17457,17 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
+        if exact_persisted_live_ids.contains(&row.invoke_id) {
+            // The complete preview row is retained in the canonical projection, so both totals
+            // and model/reasoning/cost usage are exact without borrowing a compact proof.
+            global_covered_terminal_invoke_ids
+                .insert(format!("{}\0{}", row.invoke_id, row.occurred_at));
+            continue;
+        }
         let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-        let global_covered =
-            row.id <= rollup_live_cursor && hourly_rollup_totals.contains_key(&(bucket, None));
+        let global_covered = row.id <= rollup_live_cursor
+            && hourly_rollup_totals.contains_key(&(bucket, None))
+            && hourly_rollup_usage.contains_key(&(bucket, None));
         if !global_covered {
             unavailable_global_buckets.insert(bucket);
             continue;
@@ -17148,7 +17478,8 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             continue;
         };
         let account_covered = account_rollup_live_cursor.is_some_and(|cursor| row.id <= cursor)
-            && hourly_rollup_totals.contains_key(&(bucket, Some(account_id)));
+            && hourly_rollup_totals.contains_key(&(bucket, Some(account_id)))
+            && hourly_rollup_usage.contains_key(&(bucket, Some(account_id)));
         if !account_covered {
             unavailable_account_buckets
                 .entry(account_id)
@@ -27894,6 +28225,7 @@ mod attempt_response_body_query_tests {
 #[cfg(test)]
 mod request_compression_query_tests {
     use super::*;
+    use crate::tests::seed_invocation_archive_batch;
     use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
@@ -29096,6 +29428,19 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert historical persisted terminal");
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS ( \
+                 SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1 \
+             ) \
+             INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             SELECT 'summary-current-prefix-' || value, datetime('now'), 'proxy', 'running', 0, 0, '{\"upstreamAccountId\":42}', '', 'full' \
+             FROM rows",
+        )
+        .bind((state.config.list_limit_max + 1) as i64)
+        .execute(&state.pool)
+        .await
+        .expect("fill the bounded current prefix ahead of the historical terminal");
         let occurred_at: String = sqlx::query_scalar(
             "SELECT occurred_at FROM codex_invocations WHERE invoke_id = 'summary-historical-terminal-coverage'",
         )
@@ -29146,6 +29491,19 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert historical persisted terminal with global coverage");
+        sqlx::query(
+            "WITH RECURSIVE rows(value) AS ( \
+                 SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1 \
+             ) \
+             INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             SELECT 'summary-current-prefix-' || value, datetime('now'), 'proxy', 'running', 0, 0, '{\"upstreamAccountId\":42}', '', 'full' \
+             FROM rows",
+        )
+        .bind((state.config.list_limit_max + 1) as i64)
+        .execute(&state.pool)
+        .await
+        .expect("fill the bounded current prefix ahead of the covered historical terminal");
         let occurred_at: String = sqlx::query_scalar(
             "SELECT occurred_at FROM codex_invocations WHERE invoke_id = 'summary-historical-terminal-coverage'",
         )
@@ -29169,6 +29527,16 @@ mod request_compression_query_tests {
         .execute(&state.pool)
         .await
         .expect("insert complete global compact bucket");
+        sqlx::query(
+            "INSERT INTO upstream_account_usage_breakdown_hourly \
+             (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
+              request_count, output_tokens, cost_output, has_cost) \
+             VALUES (?1, 'proxy', '42', 'gpt-5', 'high', 1, 17, 1.25, 1)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert complete global usage compact bucket");
         sqlx::query(
             "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
              VALUES ('codex_invocations_summary_rollup_v2_live_cursor', 1, datetime('now')) \
@@ -29205,7 +29573,7 @@ mod request_compression_query_tests {
         )
         .await
         .expect("global compact coverage remains exact");
-        assert_eq!(global.total_count, 1);
+        assert_eq!(global.total_count, state.config.list_limit_max as i64 + 2);
         assert_eq!(global.total_tokens, 17);
 
         let account = fetch_summary(
@@ -30443,10 +30811,14 @@ mod request_compression_query_tests {
             start: Utc::now() - ChronoDuration::hours(2),
             end: Utc::now() + ChronoDuration::minutes(1),
         };
-        let error =
-            ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
-                .await
-                .expect_err("oversized archive payload must fail before preview materialization");
+        let error = ensure_summary_projection_archive_text_budget(
+            &archive_pool,
+            &[range],
+            &columns,
+            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
+        )
+        .await
+        .expect_err("oversized archive payload must fail before preview materialization");
         assert!(
             error
                 .to_string()
@@ -30794,35 +31166,120 @@ mod request_compression_query_tests {
         );
     }
 
-    #[test]
-    fn summary_projection_archive_only_newest_current_fails_closed() {
+    #[tokio::test]
+    async fn summary_projection_current_archive_cutoff_is_request_specific() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
         let now = Utc::now();
-        let archives = vec![crate::stats::ArchiveBatchPathRow::with_coverage(
-            "archive-only-newest.sqlite.gz",
-            Some((now - ChronoDuration::minutes(1)).to_rfc3339()),
-            Some((now + ChronoDuration::minutes(1)).to_rfc3339()),
-        )];
-        assert!(summary_projection_archive_may_affect_global_current(
-            &archives,
-            &HashMap::new(),
-            50,
-        ));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES \
+             ('summary-current-newest-live', ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full'), \
+             ('summary-current-older-live', ?2, 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(now))
+        .bind(db_occurred_at_lower_bound(now - ChronoDuration::hours(2)))
+        .execute(&state.pool)
+        .await
+        .expect("seed ordered resident current rows");
+        let archive_at = format_naive(
+            (now - ChronoDuration::hours(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archive_path = seed_invocation_archive_batch(
+            &state.pool,
+            &state.config,
+            "summary-current-archive-cutoff",
+            &[(
+                91_i64,
+                "summary-current-archive-boundary",
+                archive_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                1_i64,
+                0.1_f64,
+                None,
+            )],
+        )
+        .await;
+        sqlx::query(
+            "UPDATE archive_batches \
+             SET coverage_start_at = ?1, coverage_end_at = ?2 \
+             WHERE dataset = 'codex_invocations' AND file_path = ?3",
+        )
+        .bind((now - ChronoDuration::hours(1)).to_rfc3339())
+        .bind((now - ChronoDuration::minutes(59)).to_rfc3339())
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&state.pool)
+        .await
+        .expect("record current archive coverage bounds");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate resident current projection with an archived boundary");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("resident current projection");
+        assert!(
+            !projection.current_source_unavailable,
+            "small fixture must not exhaust the current resident budget"
+        );
+        assert_eq!(projection.recent_indexes[&None].len(), 2);
+        assert!(
+            !projection.current_archive_may_affect_global_current(1),
+            "archive coverage before the newest cutoff must not reject limit=1: latest={:?} cutoff={:?} exceeded={} unknown={}",
+            projection.current_archive_latest_coverage_end,
+            projection.current_selection_cutoff(1),
+            projection.current_archive_admission_exceeded,
+            projection.current_archive_has_unknown_coverage,
+        );
+        assert!(
+            projection.current_archive_may_affect_global_current(2),
+            "archive coverage reaching the second newest cutoff must reject limit=2"
+        );
+        state.pool.close().await;
 
-        let projection = SummaryProjection {
-            refreshed_at: Some(Instant::now()),
-            current_source_unavailable: true,
-            ..SummaryProjection::default()
-        };
-        let response = projection.response_for_query(
-            &SummaryQuery {
+        let Json(small) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
                 window: Some("current".to_string()),
                 limit: Some(1),
                 time_zone: Some("UTC".to_string()),
                 upstream_account_id: None,
-            },
-            100,
-        );
-        assert!(matches!(response, Err(ApiError::Unavailable(_))));
+            }),
+        )
+        .await
+        .expect("an archive below the newest one-row cutoff must not reject current");
+        assert_eq!(small.total_count, 1);
+
+        let large = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(2),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(matches!(large, Err(ApiError::Unavailable(_))));
+
+        let account = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await;
+        assert!(matches!(account, Err(ApiError::Unavailable(_))));
     }
 
     #[tokio::test]
