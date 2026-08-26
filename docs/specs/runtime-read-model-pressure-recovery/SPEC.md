@@ -41,7 +41,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - terminal invocation classification、legacy/archive overlay 与 rollup classification coverage 的 materialization 合同。
 - 全局 SQLite pressure gate 与 startup backfill 的 defer/due/wake 合同。
 - long-term legacy interval migration 的 cursor/seek、短事务、pressure/cancel 合同。
-- 三个交付 Ticket 的 checkpointed promotion 与只读生产观察证据。
+- 四个交付 Ticket 的 checkpointed promotion 与只读生产观察证据。
 
 ### Out of scope
 
