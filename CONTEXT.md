@@ -34,6 +34,25 @@ background refresh is unavailable. Its retention does not permit a stale or
 partial value to be represented as a fresh projection.
 _Avoid_: fabricated empty summary, implicit fresh cache
 
+**Canonical Invocation Classification**:
+The revisioned durable outcome fact for one terminal invocation: its failure
+class and actionable state. It is written once by terminal persistence or by a
+controlled compatibility materializer and is the only classification source for
+Summary, rollup and aggregate readers.
+_Avoid_: payload-derived reader classification, window-specific failure class
+
+**Classification Coverage**:
+Durable proof that a live or archived record range has current Canonical
+Invocation Classification. A reader with incomplete coverage is exact-unavailable
+rather than allowed to infer a result from raw payload bytes.
+_Avoid_: implicit legacy fallback, partial exactness
+
+**Archive Classification Overlay**:
+The durable identity-keyed Canonical Invocation Classification for a record in an
+immutable archive. It avoids rewriting archive files while making their outcome
+available to a background projector or rollup builder.
+_Avoid_: mutable archive, request-time archive repair
+
 **SQLite Pressure Defer**:
 A deliberate refusal of low-priority background database work before it acquires
 SQLite because the shared pressure gate is closed. It leaves durable progress
