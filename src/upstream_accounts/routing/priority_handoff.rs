@@ -486,6 +486,12 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
             return;
         };
         if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS) {
+            if attempt_status.is_some()
+                && attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+                && let Some(context) = take_priority_handoff_attempt(attempt_id)
+            {
+                release_for_key(context.account_id, &context.model_key, context.generation);
+            }
             return;
         }
         if downstream_http_status.is_some() || failure_kind.is_some() {
