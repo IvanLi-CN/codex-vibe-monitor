@@ -20744,6 +20744,58 @@ fn resolve_failure_classification_keeps_completed_rows_with_failure_kind_as_fail
     assert!(classification.is_actionable);
 }
 
+#[tokio::test]
+async fn summary_projection_keeps_completed_unknown_failure_kinds_as_failures() {
+    let state = test_state_from_config(test_config(), true).await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload,
+            raw_response, failure_class
+        )
+        VALUES (?1, ?2, ?3, 'completed', 8, 0.08, ?4, '{}', 'none')
+        "#,
+    )
+    .bind("summary-completed-unknown-failure-kind")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(
+        json!({
+            "upstreamAccountId": 42,
+            "failureKind": "unknown_future_failure_kind"
+        })
+        .to_string(),
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert completed row with an unknown failure kind");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate compact summary projection");
+    state.pool.close().await;
+
+    for upstream_account_id in [None, Some(42)] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await
+        .expect("serve summary after SQLite is closed");
+        assert_eq!(response.total_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.success_count, 0, "{upstream_account_id:?}");
+        assert_eq!(response.failure_count, 1, "{upstream_account_id:?}");
+        assert_eq!(response.total_tokens, 8, "{upstream_account_id:?}");
+        assert_f64_close(response.total_cost, 0.08);
+    }
+}
+
 #[test]
 fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
     let failed_legacy_http_200 = InvocationHourlySourceRecord {
@@ -22381,9 +22433,9 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     }
 }
 
-#[tokio::test]
-async fn summary_projection_retains_compact_fields_from_oversized_archive_payload() {
+pub(crate) async fn summary_projection_retains_compact_fields_from_oversized_archive_payload() {
     const OVERSIZED_COMPACT_ADMISSION_PAYLOAD_BYTES: usize = 64 * 1024 * 1024 + 1;
+    const LARGE_CLASSIFIER_TEXT_BYTES: usize = 1024 * 1024 + 1;
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse("http://127.0.0.1:9").expect("valid test URL");
     config.invocation_max_days = 7;
@@ -22430,12 +22482,18 @@ async fn summary_projection_retains_compact_fields_from_oversized_archive_payloa
         r#"{{"upstreamAccountId":42,"responseModel":"gpt-compact","reasoningEffort":"high","requestBody":"{}"}}"#,
         "x".repeat(OVERSIZED_COMPACT_ADMISSION_PAYLOAD_BYTES),
     );
-    sqlx::query("UPDATE codex_invocations SET payload = ?1, raw_response = ?2 WHERE id = 77001")
-        .bind(oversized_payload)
-        .bind("raw response remains non-canonical")
-        .execute(&archive_pool)
-        .await
-        .expect("seed production-shaped oversized archive fields");
+    let oversized_error_message = "e".repeat(LARGE_CLASSIFIER_TEXT_BYTES);
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET payload = ?1, raw_response = ?2, error_message = ?3 \
+         WHERE id = 77001",
+    )
+    .bind(oversized_payload)
+    .bind("raw response remains non-canonical")
+    .bind(oversized_error_message)
+    .execute(&archive_pool)
+    .await
+    .expect("seed production-shaped oversized archive fields and classifier text");
     archive_pool.close().await;
     deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
         .expect("compress oversized archive fixture");
@@ -22471,6 +22529,14 @@ async fn summary_projection_retains_compact_fields_from_oversized_archive_payloa
             .await
             .expect("serve hydrated compact archive result without SQLite or archive I/O");
             assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
+            assert_eq!(
+                response.success_count, 0,
+                "{window} {upstream_account_id:?}"
+            );
+            assert_eq!(
+                response.failure_count, 1,
+                "{window} {upstream_account_id:?}"
+            );
             assert_eq!(
                 response.total_tokens, 23,
                 "{window} {upstream_account_id:?}"

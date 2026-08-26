@@ -304,7 +304,7 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR (LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_4%' AND LOWER(TRIM(COALESCE(status, ''))) != 'http_429') ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) IN ('http_401', 'http_403') ",
     "        THEN 'client_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
+    "      WHEN LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.failureKind') AS TEXT) END, failure_kind, ''))) IN ('failed_contact_upstream', 'proxy_concurrency_limit', 'upstream_response_failed', 'upstream_stream_error', 'request_body_read_timeout', 'upstream_handshake_timeout') ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[failed_contact_upstream]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_response_failed]%' ",
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '[upstream_stream_error]%' ",
@@ -317,8 +317,6 @@ pub(crate) const INVOCATION_RESOLVED_FAILURE_CLASS_SQL: &str = concat!(
     "        OR LOWER(TRIM(COALESCE(error_message, ''))) LIKE '%upstream handshake timed out%' ",
     "        OR LOWER(TRIM(COALESCE(status, ''))) LIKE 'http_5%' ",
     "        THEN 'service_failure' ",
-    "      WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('success', 'completed', 'warning_success') ",
-    "        THEN 'none' ",
     "      WHEN LOWER(TRIM(COALESCE(status, ''))) = 'http_200' ",
     "        AND LOWER(TRIM(COALESCE(error_message, ''))) = '' ",
     "        AND LOWER(TRIM(COALESCE(CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.downstreamErrorMessage') AS TEXT) END, ''))) = '' ",
@@ -8166,37 +8164,31 @@ struct SummaryProjectionArchiveRow {
     cost_cache_read: Option<f64>,
     cost_output: Option<f64>,
     cost_reasoning: Option<f64>,
-    status: String,
-    error_message: Option<String>,
-    failure_kind: Option<String>,
-    failure_class: Option<String>,
+    is_in_progress: i64,
+    is_pending: i64,
+    is_success: i64,
+    failure_class: String,
     upstream_account_id: Option<i64>,
 }
 
 impl SummaryProjectionCompactRow {
-    fn from_archive(row: SummaryProjectionArchiveRow) -> Self {
-        let classification = resolve_failure_classification(
-            Some(row.status.as_str()),
-            row.error_message.as_deref(),
-            row.failure_kind.as_deref(),
-            row.failure_class.as_deref(),
-            None,
-        );
-        let status = normalized_runtime_text(Some(row.status.as_str()));
-        let is_success = matches!(
-            status.as_str(),
-            "success" | "completed" | INVOCATION_STATUS_WARNING_SUCCESS
-        ) || (status == "http_200"
-            && normalized_runtime_text(row.error_message.as_deref()).is_empty());
-        Self {
+    fn from_archive(row: SummaryProjectionArchiveRow) -> Result<Self> {
+        let failure_class =
+            FailureClass::from_db_str(row.failure_class.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "summary projection archive row has invalid resolved failure class: {}",
+                    row.failure_class
+                )
+            })?;
+        Ok(Self {
             upstream_account_id: row.upstream_account_id,
             id: row.id,
             invoke_id: row.invoke_id,
             occurred_at: row.occurred_at,
-            is_in_progress: matches!(status.as_str(), "running" | "pending"),
-            is_pending: status == "pending",
-            is_success: is_success && classification.failure_class == FailureClass::None,
-            failure_class: classification.failure_class,
+            is_in_progress: row.is_in_progress != 0,
+            is_pending: row.is_pending != 0,
+            is_success: row.is_success != 0 && failure_class == FailureClass::None,
+            failure_class,
             model: row.model,
             response_model: row.response_model,
             total_tokens: row.total_tokens,
@@ -8210,7 +8202,7 @@ impl SummaryProjectionCompactRow {
             output_tokens: row.output_tokens,
             cache_input_tokens: row.cache_input_tokens,
             reasoning_effort: row.reasoning_effort,
-        }
+        })
     }
 }
 
@@ -9271,26 +9263,46 @@ async fn merge_summary_projection_archive_records_with_coverage(
         );
     }
     let has = |column| columns.get(column).copied().unwrap_or(false);
-    let payload_expression = |path: &str, cast: &str| {
+    let payload_expression = |path: &str, cast: &str, text_only: bool| {
         if has("payload") {
+            let text_condition = if text_only {
+                format!(" AND json_type(payload, '{path}') = 'text'")
+            } else {
+                String::new()
+            };
             format!(
-                "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '{path}') AS {cast}) END"
+                "CASE WHEN json_valid(payload){text_condition} THEN CAST(json_extract(payload, '{path}') AS {cast}) END"
             )
         } else {
             "NULL".to_string()
         }
     };
 
-    let response_model = payload_expression("$.responseModel", "TEXT");
-    let reasoning_effort = payload_expression("$.reasoningEffort", "TEXT");
-    let upstream_account_id = payload_expression("$.upstreamAccountId", "INTEGER");
-    let query = format!(
+    let response_model = payload_expression("$.responseModel", "TEXT", false);
+    let reasoning_effort = payload_expression("$.reasoningEffort", "TEXT", true);
+    let upstream_account_id = payload_expression("$.upstreamAccountId", "INTEGER", false);
+    let archive_status = summary_projection_archive_column("status", has("status"), "NULL");
+    let archive_error_message =
+        summary_projection_archive_column("error_message", has("error_message"), "NULL");
+    let archive_failure_kind =
+        summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL");
+    let archive_failure_class =
+        summary_projection_archive_column("failure_class", has("failure_class"), "NULL");
+    let archive_payload = if has("payload") { "payload" } else { "NULL" };
+    let archive_status_normalized = "LOWER(TRIM(COALESCE(status, '')))";
+    let archive_is_success = format!(
+        "CASE WHEN {archive_status_normalized} IN ('success', 'completed', '{INVOCATION_STATUS_WARNING_SUCCESS}') \
+             OR ({archive_status_normalized} = 'http_200' AND LOWER(TRIM(COALESCE(error_message, ''))) = '') \
+         THEN 1 ELSE 0 END"
+    );
+    let archive_source_query = format!(
         "SELECT id, invoke_id, occurred_at, \
          {}, {} AS response_model, \
          COALESCE({}, 0) AS input_tokens, COALESCE({}, 0) AS output_tokens, \
          COALESCE({}, 0) AS cache_input_tokens, \
          {} AS reasoning_effort, COALESCE({}, 0) AS total_tokens, {}, {}, {}, {}, {}, {}, \
-         COALESCE({}, '') AS status, {}, {}, {}, {} AS upstream_account_id \
+         {}, {}, {}, {}, \
+         {} AS payload, {} AS upstream_account_id \
          FROM codex_invocations",
         summary_projection_archive_column("model", has("model"), "NULL"),
         response_model,
@@ -9321,11 +9333,22 @@ async fn merge_summary_projection_archive_records_with_coverage(
         summary_projection_archive_column("cost_cache_read", has("cost_cache_read"), "NULL"),
         summary_projection_archive_column("cost_output", has("cost_output"), "NULL"),
         summary_projection_archive_column("cost_reasoning", has("cost_reasoning"), "NULL"),
-        if has("status") { "status" } else { "NULL" },
-        summary_projection_archive_column("error_message", has("error_message"), "NULL"),
-        summary_projection_archive_column("failure_kind", has("failure_kind"), "NULL"),
-        summary_projection_archive_column("failure_class", has("failure_class"), "NULL"),
+        archive_status,
+        archive_error_message,
+        archive_failure_kind,
+        archive_failure_class,
+        archive_payload,
         upstream_account_id,
+    );
+    let query = format!(
+        "SELECT id, invoke_id, occurred_at, model, response_model, \
+         input_tokens, output_tokens, cache_input_tokens, reasoning_effort, total_tokens, \
+         cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
+         CASE WHEN {archive_status_normalized} IN ('running', 'pending') THEN 1 ELSE 0 END AS is_in_progress, \
+         CASE WHEN {archive_status_normalized} = 'pending' THEN 1 ELSE 0 END AS is_pending, \
+         {archive_is_success} AS is_success, \
+         {INVOCATION_RESOLVED_FAILURE_CLASS_SQL} AS failure_class, upstream_account_id \
+         FROM ({archive_source_query})",
     );
     let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
         archive_has_materialized_rollups,
@@ -9444,7 +9467,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
                 "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
             ));
         }
-        let compact_row = SummaryProjectionCompactRow::from_archive(row);
+        let compact_row = SummaryProjectionCompactRow::from_archive(row)?;
         let record = SummaryProjectionRecord {
             occurred_at,
             global_rollup_covered,
@@ -30031,8 +30054,8 @@ mod request_compression_query_tests {
         let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
         sqlx::query(
             "INSERT INTO codex_invocations \
-             (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
-             VALUES (1, 'oversized-summary-archive', datetime('now', '+8 hours', '-1 minute'), 'proxy', ?1, 1, 0.1, 'success')",
+             (id, invoke_id, occurred_at, source, model, payload, total_tokens, cost, status) \
+             VALUES (1, 'oversized-summary-archive', datetime('now', '+8 hours'), 'proxy', 'gpt-budgeted', ?1, 1, 0.1, 'success')",
         )
         .bind(oversized_payload)
         .execute(&archive_pool)
@@ -30056,6 +30079,21 @@ mod request_compression_query_tests {
         ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
             .await
             .expect("archive preflight must count only compact retained fields");
+        sqlx::query("UPDATE codex_invocations SET model = ?1 WHERE id = 1")
+            .bind("m".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1))
+            .execute(&archive_pool)
+            .await
+            .expect("enlarge a compact retained archive field");
+        let error =
+            ensure_summary_projection_archive_text_budget(&archive_pool, &[range], &columns)
+                .await
+                .expect_err("archive preflight must count compact retained fields");
+        assert!(
+            error
+                .to_string()
+                .contains("summary projection archive byte budget exceeded"),
+            "unexpected archive preflight error: {error:#}",
+        );
     }
 
     #[tokio::test]

@@ -2,6 +2,11 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn summary_projection_retains_compact_fields_from_oversized_archive_payload() {
+    crate::tests::stateful_sqlite::summary_projection_retains_compact_fields_from_oversized_archive_payload().await;
+}
+
+#[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("archive-manifest-refresh-dedupe").await;
