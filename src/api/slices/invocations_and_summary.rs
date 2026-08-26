@@ -7371,6 +7371,10 @@ fn summary_projection_manifest_admission_retry_is_due(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SummaryProjection {
     records: Vec<SummaryProjectionRecord>,
+    // `current` is a newest-N selection rather than a time range. Keep its bounded prefix
+    // separate from the rolling/archive repair records so a large historical prefix cannot make
+    // two individually-admitted read-model inputs exceed one shared record budget.
+    current_records: Vec<SummaryProjectionRecord>,
     // A Summary SSE base can safely omit a terminal overlay only after the durable record is
     // known to be in this exact projection revision. Keep the bounded identity set alongside
     // the canonical live records so reconnects never infer that coverage from a global cursor.
@@ -7423,9 +7427,9 @@ pub(crate) struct SummaryProjection {
     // its index. If the scan overflowed and fewer entries are retained, serving a shorter list
     // would silently omit older invocations, so that selection uses unavailable instead.
     recent_index_complete: bool,
-    // The first row omitted by the globally ordered recent index. Every older row is likewise
-    // absent from `records`, so a rolling range that reaches this boundary cannot prove its
-    // live/rollup partition is complete without request-time I/O.
+    // The first row omitted by the globally ordered `current` index. A rolling range that reaches
+    // this boundary cannot prove its live/rollup partition is complete without request-time I/O,
+    // even though its separate boundary-record view may retain selected older rows.
     recent_index_overflow_at: Option<DateTime<Utc>>,
     // `all` has no reporting-timezone boundary.  Hydration therefore folds the legacy
     // archive/rollup coverage rules into a canonical aggregate per account once, instead of
@@ -7465,6 +7469,9 @@ pub(crate) struct SummaryProjection {
     // than publishing an undercount or turning a selection-level unavailability into an HTTP
     // builder failure.
     unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
+    // An oversized persisted-live boundary affects only ranges that intersect that exact hour.
+    // The independent `current` prefix remains exact and must stay available.
+    unavailable_exact_live_ranges: Vec<ExactUtcRange>,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
     // Keep that reconciled view alongside the immutable history projection.
@@ -7649,6 +7656,15 @@ impl SummaryProjection {
                 "summary projection archive source is unavailable for the requested range"
             )));
         }
+        if range.is_some_and(|(start, end)| {
+            self.unavailable_exact_live_ranges
+                .iter()
+                .any(|unavailable| unavailable.start < end && start < unavailable.end)
+        }) {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary projection persisted-live source is unavailable for the requested range"
+            )));
+        }
         if self
             .freshness
             .rolling_at(self.refreshed_at)
@@ -7696,22 +7712,31 @@ impl SummaryProjection {
                 )));
             }
         }
-        let candidate_indexes = match range {
-            None if matches!(window, SummaryWindow::Current(_)) => std::borrow::Cow::Borrowed(
-                self.recent_indexes
-                    .get(&upstream_account_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
+        let (candidate_indexes, candidate_records) = match range {
+            None if matches!(window, SummaryWindow::Current(_)) => (
+                std::borrow::Cow::Borrowed(
+                    self.recent_indexes
+                        .get(&upstream_account_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                ),
+                self.current_records.as_slice(),
             ),
-            None => std::borrow::Cow::Owned((0..self.records.len()).collect::<Vec<_>>()),
+            None => (
+                std::borrow::Cow::Owned((0..self.records.len()).collect::<Vec<_>>()),
+                self.records.as_slice(),
+            ),
             Some((start, end)) => {
                 let first_bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
                 let last_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
-                std::borrow::Cow::Owned(
-                    self.hourly_buckets
-                        .range(first_bucket..=last_bucket)
-                        .flat_map(|(_, indexes)| indexes.iter().copied())
-                        .collect(),
+                (
+                    std::borrow::Cow::Owned(
+                        self.hourly_buckets
+                            .range(first_bucket..=last_bucket)
+                            .flat_map(|(_, indexes)| indexes.iter().copied())
+                            .collect(),
+                    ),
+                    self.records.as_slice(),
                 )
             }
         };
@@ -7744,7 +7769,7 @@ impl SummaryProjection {
             .iter()
             .copied()
             .take(current_limit)
-            .map(|index| &self.records[index])
+            .map(|index| &candidate_records[index])
             .filter(|record| {
                 upstream_account_id
                     .is_none_or(|account_id| record.row.upstream_account_id == Some(account_id))
@@ -7777,7 +7802,7 @@ impl SummaryProjection {
             .iter()
             .copied()
             .take(current_limit)
-            .map(|index| &self.records[index])
+            .map(|index| &candidate_records[index])
             .filter(|record| {
                 upstream_account_id
                     .is_none_or(|account_id| record.row.upstream_account_id == Some(account_id))
@@ -10766,7 +10791,7 @@ async fn build_summary_projection_once(
         },
     )
     .await?;
-    let recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
+    let mut recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
     let mut recent_index_overflow_at = if recent_index_complete {
         None
     } else {
@@ -10780,17 +10805,9 @@ async fn build_summary_projection_once(
         )
     };
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
+    let mut current_records_by_invoke_id = HashMap::<String, SummaryProjectionRecord>::new();
+    let mut current_record_bytes = 0_usize;
     for row in recent_rows {
-        let is_new = !records_by_invoke_id.contains_key(&row.invoke_id);
-        if is_new {
-            exact_record_bytes =
-                exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
-            if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-                return Err(anyhow!(
-                    "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-                ));
-            }
-        }
         if let Some((invoke_id, record)) = summary_projection_live_record_from_preview(
             row,
             rollup_live_cursor,
@@ -10798,12 +10815,25 @@ async fn build_summary_projection_once(
             &hourly_rollup_totals,
             &hourly_rollup_usage,
         ) {
-            records_by_invoke_id.insert(invoke_id, record);
+            let replacement_bytes = summary_projection_preview_row_bytes(&record.row);
+            let replaced_bytes = current_records_by_invoke_id
+                .get(&invoke_id)
+                .map(|previous| summary_projection_preview_row_bytes(&previous.row))
+                .unwrap_or_default();
+            current_record_bytes = current_record_bytes
+                .saturating_sub(replaced_bytes)
+                .saturating_add(replacement_bytes);
+            if current_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+                return Err(anyhow!(
+                    "summary projection current record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+                ));
+            }
+            current_records_by_invoke_id.insert(invoke_id, record);
         }
     }
-    if records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if current_records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
         return Err(anyhow!(
-            "summary projection recent index exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+            "summary projection current index exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
     let mut known_account_ids = records_by_invoke_id
@@ -10811,6 +10841,12 @@ async fn build_summary_projection_once(
         .filter_map(|record| record.row.upstream_account_id)
         .filter(|account_id| *account_id > 0)
         .collect::<HashSet<_>>();
+    known_account_ids.extend(
+        current_records_by_invoke_id
+            .values()
+            .filter_map(|record| record.row.upstream_account_id)
+            .filter(|account_id| *account_id > 0),
+    );
     known_account_ids.extend(
         all_time_archive_account_ids_by_file
             .values()
@@ -10933,6 +10969,7 @@ async fn build_summary_projection_once(
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
     let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
+    let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
     // Rolling boundary ranges may need raw records even when an all-time compact rollup is
     // complete. Keep that narrower unavailability separate from all-time source proof.
     let mut all_time_source_unavailable_from_archive_ranges = false;
@@ -11290,21 +11327,15 @@ async fn build_summary_projection_once(
             },
         )
         .await?;
-        let new_exact_live_rows = exact_live_rows
-            .iter()
-            .filter(|row| !records_by_invoke_id.contains_key(&row.invoke_id))
-            .count();
-        if new_exact_live_rows >= remaining {
-            // This exact bucket cannot be reconstructed within the remaining resident record
-            // budget. Keep the projection publishable, but extend the rolling unavailable cutoff
-            // through the bucket so requests touching the omitted live history fail closed
-            // instead of returning a truncated total.
-            let bucket_end = range.end;
-            recent_index_overflow_at = Some(
-                recent_index_overflow_at
-                    .map(|existing| existing.max(bucket_end))
-                    .unwrap_or(bucket_end),
-            );
+        if exact_live_rows.len() >= remaining {
+            // A rolling window whose partial boundary includes this dense hour cannot be exact
+            // within the finite record budget. Keep the independently admitted `current` prefix
+            // and unaffected ranges available, while making only this range explicitly
+            // unavailable instead of aborting the complete read-model build.
+            summary_projection_mark_unavailable_archive_ranges(
+                &mut unavailable_exact_live_buckets,
+                [range],
+            )?;
             continue;
         }
         for row in exact_live_rows {
@@ -11642,37 +11673,53 @@ async fn build_summary_projection_once(
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
-        if !records_by_invoke_id.contains_key(&row.invoke_id)
+        let is_new_rolling_record = !records_by_invoke_id.contains_key(&row.invoke_id);
+        if is_new_rolling_record
             && records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS
         {
             return Err(anyhow!(
                 "summary projection runtime overlay exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
-        if !records_by_invoke_id.contains_key(&row.invoke_id) {
-            exact_record_bytes =
-                exact_record_bytes.saturating_add(summary_projection_preview_row_bytes(&row));
-            if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
-                return Err(anyhow!(
-                    "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
-                ));
-            }
+        let record = SummaryProjectionRecord {
+            row,
+            occurred_at,
+            global_rollup_covered: false,
+            account_rollup_covered: false,
+            usage_global_rollup_covered: false,
+            usage_account_rollup_covered: false,
+            is_persisted_live_record: false,
+            is_archive_record: false,
+            archive_has_materialized_rollups: false,
+            account_archive_totals_fallback_included: false,
+        };
+        let replacement_bytes = summary_projection_preview_row_bytes(&record.row);
+        let replaced_rolling_bytes = records_by_invoke_id
+            .get(&record.row.invoke_id)
+            .map(|previous| summary_projection_preview_row_bytes(&previous.row))
+            .unwrap_or_default();
+        exact_record_bytes = exact_record_bytes
+            .saturating_sub(replaced_rolling_bytes)
+            .saturating_add(replacement_bytes);
+        if exact_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+            return Err(anyhow!(
+                "summary projection canonical record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+            ));
         }
-        records_by_invoke_id.insert(
-            row.invoke_id.clone(),
-            SummaryProjectionRecord {
-                row,
-                occurred_at,
-                global_rollup_covered: false,
-                account_rollup_covered: false,
-                usage_global_rollup_covered: false,
-                usage_account_rollup_covered: false,
-                is_persisted_live_record: false,
-                is_archive_record: false,
-                archive_has_materialized_rollups: false,
-                account_archive_totals_fallback_included: false,
-            },
-        );
+        records_by_invoke_id.insert(record.row.invoke_id.clone(), record.clone());
+        let replaced_bytes = current_records_by_invoke_id
+            .get(&record.row.invoke_id)
+            .map(|previous| summary_projection_preview_row_bytes(&previous.row))
+            .unwrap_or_default();
+        current_record_bytes = current_record_bytes
+            .saturating_sub(replaced_bytes)
+            .saturating_add(replacement_bytes);
+        if current_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+            return Err(anyhow!(
+                "summary projection current record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+            ));
+        }
+        current_records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
     }
 
     let maintenance = load_stats_maintenance_response(state)
@@ -11684,6 +11731,20 @@ async fn build_summary_projection_once(
             .cmp(&right.occurred_at)
             .then_with(|| left.row.id.cmp(&right.row.id))
     });
+    let mut current_records = current_records_by_invoke_id
+        .into_values()
+        .collect::<Vec<_>>();
+    current_records.sort_by(|left, right| {
+        left.occurred_at
+            .cmp(&right.occurred_at)
+            .then_with(|| left.row.id.cmp(&right.row.id))
+    });
+    if current_records.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        let first_retained = current_records.len() - SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
+        recent_index_complete = false;
+        recent_index_overflow_at = Some(current_records[first_retained - 1].occurred_at);
+        current_records.drain(..first_retained);
+    }
     let mut hourly_buckets = BTreeMap::<i64, Vec<usize>>::new();
     for (index, record) in records.iter().enumerate() {
         hourly_buckets
@@ -11693,8 +11754,8 @@ async fn build_summary_projection_once(
     }
     let recent_limit = state.config.list_limit_max;
     let mut recent_indexes = HashMap::<Option<i64>, Vec<usize>>::new();
-    for index in (0..records.len()).rev() {
-        let account_id = records[index].row.upstream_account_id;
+    for index in (0..current_records.len()).rev() {
+        let account_id = current_records[index].row.upstream_account_id;
         for key in std::iter::once(None).chain(account_id.map(Some)) {
             let index_entries = recent_indexes.entry(key).or_default();
             if index_entries.len() < recent_limit {
@@ -11713,6 +11774,12 @@ async fn build_summary_projection_once(
             .filter_map(|record| record.row.upstream_account_id)
             .filter(|account_id| *account_id > 0)
             .collect::<HashSet<_>>(),
+    );
+    account_ids.extend(
+        current_records
+            .iter()
+            .filter_map(|record| record.row.upstream_account_id)
+            .filter(|account_id| *account_id > 0),
     );
     account_ids.extend(load_summary_projection_durable_account_ids(pool).await?);
     if account_ids.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
@@ -11758,6 +11825,12 @@ async fn build_summary_projection_once(
         .filter_map(|record| record.row.upstream_account_id)
         .filter(|account_id| *account_id > 0)
         .collect::<HashSet<_>>();
+    account_ids_with_projection_data.extend(
+        current_records
+            .iter()
+            .filter_map(|record| record.row.upstream_account_id)
+            .filter(|account_id| *account_id > 0),
+    );
     account_ids_with_projection_data.extend(
         hourly_rollup_totals
             .keys()
@@ -12258,6 +12331,7 @@ async fn build_summary_projection_once(
         all_time_account_refreshed_at.values().copied().min();
     let persisted_live_terminal_invoke_ids = records
         .iter()
+        .chain(current_records.iter())
         .filter(|record| record.is_persisted_live_record)
         .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
         .collect();
@@ -12279,6 +12353,7 @@ async fn build_summary_projection_once(
         if all_time_was_fully_rebuilt && all_time_terminal_coverage_complete {
             records
                 .iter()
+                .chain(current_records.iter())
                 .filter(|record| record.is_persisted_live_record)
                 .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
                 .collect()
@@ -12294,13 +12369,16 @@ async fn build_summary_projection_once(
             .map(|account_id| (*account_id, durable_terminal_sequence_watermark))
             .collect::<HashMap<_, _>>();
         let mut account_identities = HashMap::<i64, HashSet<String>>::new();
-        for record in records.iter().filter(|record| {
-            record.is_persisted_live_record
-                && record
-                    .row
-                    .upstream_account_id
-                    .is_some_and(|account_id| rebuilt_all_time_account_ids.contains(&account_id))
-        }) {
+        for record in records
+            .iter()
+            .chain(current_records.iter())
+            .filter(|record| {
+                record.is_persisted_live_record
+                    && record.row.upstream_account_id.is_some_and(|account_id| {
+                        rebuilt_all_time_account_ids.contains(&account_id)
+                    })
+            })
+        {
             let Some(account_id) = record.row.upstream_account_id else {
                 continue;
             };
@@ -12321,8 +12399,11 @@ async fn build_summary_projection_once(
     };
     let unavailable_unmaterialized_archive_ranges =
         summary_projection_unavailable_bucket_ranges(unavailable_unmaterialized_archive_buckets);
+    let unavailable_exact_live_ranges =
+        summary_projection_unavailable_bucket_ranges(unavailable_exact_live_buckets);
     let projection = SummaryProjection {
         records,
+        current_records,
         persisted_live_terminal_invoke_ids,
         all_time_terminal_coverage_complete,
         all_time_terminal_sequence_watermark,
@@ -12367,6 +12448,7 @@ async fn build_summary_projection_once(
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
         unavailable_unmaterialized_archive_ranges,
+        unavailable_exact_live_ranges,
         in_progress_by_account,
         maintenance: Some(maintenance),
         refreshed_at,
