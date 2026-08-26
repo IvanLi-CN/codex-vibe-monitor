@@ -2222,7 +2222,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let mut priority_handoff_permit = None;
             let should_gate_priority_handoff = priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && (sticky_fallback_handoff_enabled || sticky_source_id.is_none())
+                && sticky_fallback_handoff_enabled
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
             if !priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
