@@ -90,3 +90,92 @@ _Avoid_: Release 正文, 手工覆盖审计, 公开变更说明
 **PR 发布评论**:
 附在源 PR 上的版本交付追溯记录；它独立于 GitHub Release 页面。
 _Avoid_: Release 正文, 发布说明
+## Routing Affinity
+
+**优先级迁移（Priority Handoff）**:
+An automatic, non-forced attempt to move one sticky conversation from its current eligible `Fallback` upstream to a higher-priority eligible upstream. The source binding remains authoritative until the target attempt succeeds.
+_Avoid_: 故障切换, 强制绑定, 立即换号
+
+**HTTP 优先级迁移范围（HTTP Handoff Scope）**:
+The transport boundary in which the handoff admission gate applies: HTTP pool requests only. WebSocket routing, retry, and session-completion behavior remain unchanged.
+_Avoid_: WebSocket 同步改造, 跨传输隐式复用, 长会话迁移锁
+
+**延期优先级迁移（Deferred Priority Handoff）**:
+A priority handoff whose selected highest-ranked target is not admitted for the current request; the request continues on its eligible source upstream rather than migrating to a lower-ranked target, and is never held awaiting the transfer.
+_Avoid_: 请求排队, 等待迁移, 阻塞对话
+
+**对话模型路由（Conversation-Model Route）**:
+The exact pair of a sticky conversation and its requested model. It is the unit of an automatic priority handoff; another model in the same conversation is independent.
+_Avoid_: 整个对话换号, 账号级迁移
+
+**闸门模型键（Handoff Gate Model Key）**:
+The target account paired with the same normalized requested-model key used by current model-route health. Model mapping occurs after candidate selection and does not create an independent gate key or alias aggregation.
+_Avoid_: 映射后模型键, 别名合并闸门, 账号全局闸门
+
+**迁移准入闸门（Handoff Admission Gate）**:
+The automatic admission control for a target API Key account-model during recovery. It governs priority handoffs and fresh assignments, while an operator-forced binding remains outside the gate; non-API-Key targets retain their existing routing behavior.
+_Avoid_: 请求队列, 人工绑定拦截, 全账号类型改造, 全局模型锁
+
+**优先级吸引周期（Priority Attraction Epoch）**:
+The period beginning when a target becomes a higher-priority eligible choice through recovery, a priority change, or becoming newly eligible. Automatic handoffs and fresh assignments enter through the handoff gate until its stability policy opens the target.
+_Avoid_: 永久串行, 仅故障恢复, 账号全局周期
+
+**恢复验证期（Recovery Verification Phase）**:
+The serialized portion of a priority attraction epoch after a model-route cooldown expires or an operator resets health. It requires three consecutive complete terminal successes from gate-admitted automatic priority handoffs or fresh assignments before ordinary priority admission resumes; a failed admitted attempt immediately returns the exact target account-model pair to its model-route cooldown. A route already rebound by a successful handoff continues directly on its new sticky target; the gate controls new target admission rather than all target traffic.
+_Avoid_: 一次成功即全面开放, 固定等待时长, 无限制恢复流量
+
+**机会式优先级迁移（Opportunistic Priority Handoff）**:
+A handoff whose next candidate is the next eligible real request, not a durable FIFO list of conversations.
+_Avoid_: 严格迁移队列, 后台迁移任务
+
+**迁移确认（Handoff Confirmation）**:
+A complete terminal success from the target request. It commits that target as the conversation-model route's new sticky upstream and releases the handoff permit; partial output or elapsed time does not change the binding.
+_Avoid_: 首字节成功, 请求已发出, 目标已选中, 时间阈值
+
+**单次迁移尝试（Single-Attempt Handoff）**:
+The one target-upstream request made under a handoff permit. It never enters automatic retry.
+_Avoid_: 同账号重试, 429 重试, 自动故障切换
+
+**迁移许可（Handoff Permit）**:
+The process-local exclusive permission held by one single-attempt handoff while an automatic migration is being evaluated. Optional database coordination is secondary and never blocks acquiring or releasing it; client cancellation releases the permit without changing the source binding or recording a target failure.
+_Avoid_: HTTP 请求锁, 必需数据库锁, 持有至超时, 取消即失败, 全局上游锁
+
+**迁移失败冷却（Handoff Failure Cooldown）**:
+The immediate model-route cooldown entered by an exact target API Key account-model pair after a terminal failed priority handoff. It uses the ordinary model-route failure streak and cooldown ladder from its first failure; later failed handoffs escalate it and a complete terminal success resets it. The pair is ineligible wherever ordinary model health excludes a cooling route, while the source binding remains authoritative.
+_Avoid_: 只降权, 对话级冷却, 账号全局冷却, 非 API Key 扩展, 独立冷却序列, 立即重试
+
+**临时模型级迁移失败（Temporary Model-Scoped Handoff Failure）**:
+A terminal priority-handoff failure in the existing temporary account-model failure classes, including retryable upstream overload and transport-path failures. It enters handoff failure cooldown; client cancellation and caller validation errors do not, while model-specific and account-scoped hard failures retain their ordinary health behavior.
+_Avoid_: 所有非成功, 客户端取消, 调用方错误, 账号级硬错误
+
+**安全回放（Safe Source Replay）**:
+One replay of a failed single-attempt handoff to its still-authoritative source upstream, permitted only when the system can establish that the target did not receive the request.
+_Avoid_: 无条件重试, 跨账号重试, 失败后必定回源
+
+**并发回源（Concurrent Source Continuation）**:
+The behavior for another request of a conversation-model route while its priority handoff is in flight. The later request continues immediately on the authoritative source and does not wait for or join the target attempt.
+_Avoid_: 对话请求排队, 等待迁移, 并发迁移
+
+**易失迁移许可（Ephemeral Handoff Permit）**:
+A handoff permit whose lifetime is confined to the current process. Process restart discards it rather than recovering it from persistent storage, and new priority movement starts recovery verification before unrestricted admission resumes.
+_Avoid_: 持久锁, 启动恢复锁, 重启即全面开放, 数据库依赖许可
+
+**受控人工重开（Controlled Manual Re-entry）**:
+An operator health reset that clears model-route cooldown but starts recovery verification rather than immediately restoring unrestricted priority admission.
+_Avoid_: 重置即全量开放, 必须等待自动故障切换
+
+**新分配绕行（Fresh Assignment Bypass）**:
+Selecting another healthy eligible upstream for a new conversation while a preferred target's handoff gate is occupied. If no alternative exists, the request terminates without waiting for the permit.
+_Avoid_: 等待迁移, 绕过闸门, 并发恢复
+
+**故障切换（Fault Failover）**:
+The existing recovery path for a request whose assigned upstream has actually failed. It is not a priority handoff and does not enter the priority-handoff gate, but continues to observe ordinary account-model health eligibility.
+_Avoid_: 优先级迁移, 等待迁移许可, 原上游可用时的迁移
+
+**无阻断迁移审计（Non-Blocking Handoff Audit）**:
+Best-effort diagnostic records on the existing routing-audit path. They use safe structured reason codes and recovery progress for handoff admission, deferral, verification, and cooldown; a persistence failure never changes routing, permit acquisition, or release.
+_Avoid_: 审计数据库锁, 诊断失败即拒绝请求, 原始上游错误泄露
+
+**全局本地镜像迁移开关（Globally Mirrored Handoff Switch）**:
+One operator-controlled global setting exposed through the existing settings surface and enabled by default. Persistent storage holds the desired configuration, while routing reads a process-local runtime mirror; a database outage cannot block active request routing, permit transitions, or the last known switch state. Disabling restores the pre-gate routing behavior; re-enabling starts a new local verification generation without cancelling an in-flight request.
+_Avoid_: 热路径查数据库, 数据库不可用即停流, 按账号模型开关, WebSocket 开关
