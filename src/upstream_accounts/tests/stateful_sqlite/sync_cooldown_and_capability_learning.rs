@@ -7085,11 +7085,34 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
     assert_eq!(
         audit
             .handoff_admission
+            .as_ref()
             .expect("busy handoff decision should be audited")
             .decision,
         "admitted"
     );
     assert_eq!(audit.excluded_candidates[0].account_id, target_account_id);
+    let admitted_generation = audit
+        .handoff_admission
+        .as_ref()
+        .expect("alternate handoff should carry admission generation")
+        .generation;
+    assert_eq!(
+        complete_priority_handoff_for_request(
+            alternate_account_id,
+            Some("gpt-fresh-assignment-handoff"),
+            Some(admitted_generation),
+            true,
+            false,
+        ),
+        Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
+    );
+    assert_eq!(
+        priority_handoff_admission_snapshot(
+            alternate_account_id,
+            Some("gpt-fresh-assignment-handoff")
+        ),
+        ("verifying".to_string(), 1)
+    );
     drop(held_permit);
 }
 
