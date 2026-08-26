@@ -7,5 +7,7 @@
 - Coverage repair applies that same permit-scoped lock classification to its repair outcome and all following progress reads and writes, preserving one pressure record and the normal non-lock scheduler failure path.
 - A retry-progress lock following a repair lock is one failed coverage attempt, so the persistence-error-first fallback records one pressure event while preserving the original-error fallback for non-pressure persistence failures.
 - Coverage repair now returns every permit-scoped SQLite pressure error to the maintenance loop as a deferred outcome, preserving the in-memory pressure deadline and eligibility wake while suppressing task-run audit and generic retry writes; ordinary coverage errors remain visible as failed audited retries.
+- Production observation established two remaining recovery boundaries: canonical Summary admission must not count unneeded raw payload bytes, and repeated wake sources must not redispatch a task that already owns the active pressure deadline.
+- The recovery contract also explicitly covers hourly rollup and P2 batch-writer contention so low-priority lock retry cannot create terminal writer staleness under sustained traffic.
 - The Initiative keeps long-term migration incremental and low priority, preserving durable cursor recovery and P1 writer priority.
 - Checkpoint publication is intentionally separate from deployment; production observation is read-only and begins only after owner confirmation of the exact deployed release.
