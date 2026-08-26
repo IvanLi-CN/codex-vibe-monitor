@@ -190,6 +190,12 @@ pub(crate) async fn update_pool_routing_settings(
                 "pool routing settings update",
             )
             .await;
+            if let Some(enabled) = payload.priority_handoff_admission_enabled {
+                // The priority gate is a process-local routing authority. Apply a
+                // successful settings write directly even when an unrelated cache
+                // refresh (for example, an optional credential reload) is unavailable.
+                set_priority_handoff_admission_enabled(enabled);
+            }
         }
     }
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
