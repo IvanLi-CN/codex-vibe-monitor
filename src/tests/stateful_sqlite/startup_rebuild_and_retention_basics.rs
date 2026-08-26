@@ -2624,7 +2624,7 @@ async fn startup_backfill_busy_failure_persists_failed_state_and_bounded_retry()
 }
 
 #[tokio::test]
-async fn startup_backfill_busy_failure_closes_pressure_gate_before_the_next_task_reads_sqlite() {
+async fn startup_backfill_busy_failure_defers_without_an_audit_before_the_next_task_reads_sqlite() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
     )
@@ -2685,32 +2685,20 @@ async fn startup_backfill_busy_failure_closes_pressure_gate_before_the_next_task
         &gate,
     )
     .await;
-    state
-        .sqlite_batch_writer
-        .flush_now(&state.pool)
-        .await
-        .expect("flush injected busy failure task audit");
-
     let task_runs_after: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
     )
     .fetch_one(&state.pool)
     .await
     .expect("count task runs after injected busy failure");
-    let task_run_status: String = sqlx::query_scalar(
-        "SELECT status FROM system_task_runs WHERE task_kind = 'startup_backfill' ORDER BY started_at DESC LIMIT 1",
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load injected busy failure task audit");
-    let failed_progress = load_startup_backfill_progress(&state.pool, first_tasks[0].name())
+    let unchanged_progress = load_startup_backfill_progress(&state.pool, first_tasks[0].name())
         .await
-        .expect("load persisted busy failure progress");
+        .expect("load untouched busy-deferred progress");
     assert!(!first.ran_actionable_task);
-    assert!(first.had_failure);
-    assert_eq!(task_runs_after, task_runs_before + 1);
-    assert_eq!(task_run_status, "failed");
-    assert_eq!(failed_progress.last_status, STARTUP_BACKFILL_STATUS_FAILED);
+    assert!(!first.had_failure);
+    assert_eq!(task_runs_after, task_runs_before);
+    assert!(unchanged_progress.is_due(Utc::now()));
+    assert_eq!(gate.snapshot().pressure_events, 1);
     assert!(
         gate.pressure_cooldown_deadline_epoch_ms().is_some(),
         "the durable busy failure must close the gate before its permit is released"
