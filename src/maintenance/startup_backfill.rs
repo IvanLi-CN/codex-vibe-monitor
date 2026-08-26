@@ -149,12 +149,13 @@ impl StartupBackfillScheduler {
                             && entry.next_eligibility == Some(due)
                     })
                     .and_then(|_| {
-                        self.next_due.lock().ok().map(|mut next_due| {
-                            next_due.insert(task, due);
-                        })
+                        self.next_due
+                            .lock()
+                            .ok()
+                            .map(|mut next_due| next_due.insert(task, due) != Some(due))
                     })
             })
-            .is_some();
+            .unwrap_or(false);
         if !recorded {
             return;
         }
@@ -2830,6 +2831,45 @@ mod startup_backfill_tests {
         assert_eq!(deferred.pressure_defer_count, 1);
         assert_eq!(deferred.scheduled_task_count, 0);
         assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[test]
+    fn pressure_generation_rearm_does_not_repeat_an_existing_deadline_wake() {
+        let scheduler = StartupBackfillScheduler::default();
+        let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+        let task = StartupBackfillTask::ReasoningEffort;
+
+        gate.record_pressure("test", "forced");
+        let deadline = gate
+            .pressure_cooldown_deadline_epoch_ms()
+            .and_then(|deadline_ms| {
+                i64::try_from(deadline_ms)
+                    .ok()
+                    .and_then(DateTime::<Utc>::from_timestamp_millis)
+            })
+            .expect("pressure cooldown has an absolute eligibility deadline");
+
+        // Model a defer that observed the newly published cooldown just before its generation
+        // incremented. Re-arming must retain the deadline under the new generation without a
+        // second scheduler notification for the same future wake.
+        assert!(scheduler.defer_for_pressure(task, Some(deadline), 0));
+        assert_eq!(scheduler.generation(), 1);
+
+        scheduler.arm_pressure_deferred_deadlines(&gate);
+
+        assert_eq!(
+            scheduler.generation(),
+            1,
+            "the same pressure deadline must not produce a duplicate supervisor wake"
+        );
+        assert_eq!(scheduler.next_due(), Some(deadline));
+        assert_eq!(
+            scheduler
+                .pressure_deferred_entry(task)
+                .expect("the deferred task should remain registered")
+                .pressure_generation,
+            gate.pressure_generation()
+        );
     }
 
     #[test]
