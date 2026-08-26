@@ -2728,6 +2728,17 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         .expect("reload pool routing settings after admission update");
     assert!(!reloaded.priority_handoff_admission_enabled);
 
+    sqlx::query(
+        "UPDATE pool_routing_settings SET priority_handoff_admission_enabled = 1 WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("simulate stale persisted admission setting");
+    let Json(local_mirror) = get_pool_routing_settings(State(state.clone()))
+        .await
+        .expect("read local admission mirror after stale persistence");
+    assert!(!local_mirror.priority_handoff_admission_enabled);
+
     let _ = update_pool_routing_settings(
         State(state.clone()),
         HeaderMap::new(),

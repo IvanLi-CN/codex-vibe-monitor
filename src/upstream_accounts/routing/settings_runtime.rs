@@ -782,10 +782,6 @@ pub(crate) fn build_pool_routing_settings_response(
     let request_compression = resolve_pool_request_compression_settings_from_row(row);
     let (available_models, available_models_invalid) =
         parse_string_array_json_with_invalid(row.available_models_json.as_deref());
-    let effective_priority_handoff_admission_enabled = row
-        .priority_handoff_admission_enabled
-        .is_none_or(|value| value != 0);
-    set_priority_handoff_admission_enabled(effective_priority_handoff_admission_enabled);
     PoolRoutingSettingsResponse {
         writes_enabled: true,
         api_key_configured: row

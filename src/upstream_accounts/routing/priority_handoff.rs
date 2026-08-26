@@ -535,8 +535,14 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
                 warn!(
                     attempt_id,
                     error = %error,
-                    "failed to load priority handoff attempt terminal status; deferring completion"
+                    "failed to load priority handoff attempt terminal status; releasing local permit"
                 );
+                if let Some(context) = take_priority_handoff_attempt(attempt_id) {
+                    // A database read failure cannot prove terminal success. Release the
+                    // local permit so the source remains available without fabricating
+                    // recovery evidence; the next real request can verify the target again.
+                    release_for_key(context.account_id, &context.model_key, context.generation);
+                }
                 return;
             }
         };
@@ -1130,7 +1136,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priority_handoff_success_db_read_failure_defers_without_releasing_permit() {
+    async fn priority_handoff_success_db_read_failure_releases_without_fabricating_success() {
         let _guard = test_guard();
         set_priority_handoff_admission_enabled(true);
         let (decision, permit) = admit_priority_handoff(9_014, Some("gpt-test"));
@@ -1143,7 +1149,19 @@ mod tests {
             .await
             .expect("in-memory sqlite pool");
         let audit_json = serde_json::json!({
-            "handoffAdmission": { "generation": generation }
+            "selectedAccountId": 9_014,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+            },
+            "excludedCandidates": [],
         })
         .to_string();
         remember_priority_handoff_attempt(
@@ -1155,14 +1173,17 @@ mod tests {
 
         complete_priority_handoff_from_attempt(&pool, Some(70_014), true, false).await;
 
-        let (busy, no_permit) = admit_priority_handoff(9_014, Some("gpt-test"));
-        assert_eq!(busy, PriorityHandoffAdmissionDecision::PermitBusy);
-        assert!(no_permit.is_none());
+        let (next_decision, next_permit) = admit_priority_handoff(9_014, Some("gpt-test"));
+        assert!(matches!(
+            next_decision,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        assert!(next_permit.is_some());
         assert_eq!(
-            permit.as_ref().and_then(|permit| permit.complete_success()),
-            Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
+            priority_handoff_admission_snapshot(9_014, Some("gpt-test")),
+            ("verifying".to_string(), 0)
         );
-        forget_priority_handoff_attempt(Some(70_014));
+        drop(next_permit);
         drop(permit);
     }
 }
