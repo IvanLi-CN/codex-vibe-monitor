@@ -192,6 +192,33 @@ pub(crate) fn set_priority_handoff_admission_enabled(enabled: bool) {
     }
 }
 
+pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model: &str) {
+    let Some(model_key) = normalize_model_key(Some(requested_model)) else {
+        return;
+    };
+    let Ok(mut state) = state().lock() else {
+        return;
+    };
+    let generation = state.generation;
+    let entry = state
+        .entries
+        .entry((account_id, model_key))
+        .or_insert_with(|| PriorityHandoffEntry {
+            generation,
+            phase: PriorityHandoffPhase::Verifying,
+            verification_successes: 0,
+            failure_streak: 0,
+            cooldown_until: None,
+            in_flight: false,
+        });
+    entry.generation = generation;
+    entry.phase = PriorityHandoffPhase::Verifying;
+    entry.verification_successes = 0;
+    entry.failure_streak = 0;
+    entry.cooldown_until = None;
+    entry.in_flight = false;
+}
+
 pub(crate) fn admit_priority_handoff(
     account_id: i64,
     requested_model: Option<&str>,
@@ -697,6 +724,30 @@ mod tests {
             priority_handoff_admission_snapshot(9_003, Some("gpt-test")).0,
             "coolingDown"
         );
+        drop(permit);
+    }
+
+    #[test]
+    fn priority_handoff_manual_reset_restarts_verification() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        for _ in 0..3 {
+            let (_, permit) = admit_priority_handoff(9_012, Some("gpt-test"));
+            permit.expect("permit").complete_success();
+        }
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_012, Some("gpt-test")),
+            ("open".to_string(), 3)
+        );
+
+        reset_priority_handoff_for_model(9_012, "gpt-test");
+
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_012, Some("gpt-test")),
+            ("verifying".to_string(), 0)
+        );
+        let (_, permit) = admit_priority_handoff(9_012, Some("gpt-test"));
+        assert!(permit.is_some());
         drop(permit);
     }
 

@@ -3414,8 +3414,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 )
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
-                let has_upstream_413_retry_budget =
-                    status == StatusCode::PAYLOAD_TOO_LARGE && !retried_upstream_413_for_account;
+                let has_upstream_413_retry_budget = pool_upstream_413_retry_allowed(
+                    status,
+                    priority_handoff_attempt,
+                    retried_upstream_413_for_account,
+                );
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
                     && group_upstream_429_retry_count < group_upstream_429_max_retries;
                 let upstream_request_id_header = response
@@ -4738,6 +4741,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
     }
 }
 
+fn pool_upstream_413_retry_allowed(
+    status: StatusCode,
+    priority_handoff_attempt: bool,
+    retried_upstream_413_for_account: bool,
+) -> bool {
+    status == StatusCode::PAYLOAD_TOO_LARGE
+        && !priority_handoff_attempt
+        && !retried_upstream_413_for_account
+}
+
 #[cfg(test)]
 mod request_compression_tests {
     use super::*;
@@ -4806,5 +4819,24 @@ mod request_compression_tests {
             resolve_terminal_request_compression_algorithm(None, Some("zstd".to_string())),
             Some("zstd".to_string())
         );
+    }
+
+    #[test]
+    fn priority_handoff_disables_upstream_413_retry_budget() {
+        assert!(!pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            true,
+            false,
+        ));
+        assert!(pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+            false,
+        ));
+        assert!(!pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+            true,
+        ));
     }
 }
