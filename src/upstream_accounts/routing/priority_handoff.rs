@@ -832,9 +832,10 @@ mod tests {
         .await
         .expect("create attempt table");
         sqlx::query(
-            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, NULL, NULL, NULL)",
+            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, ?2, NULL, NULL)",
         )
         .bind(70_009_i64)
+        .bind(None::<&str>)
         .execute(&pool)
         .await
         .expect("insert unknown terminal attempt");
@@ -871,6 +872,92 @@ mod tests {
         assert!(next.is_some());
         drop(permit);
         drop(next);
+
+        let (pending_decision, pending_permit) = admit_priority_handoff(9_010, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted {
+            generation: pending_generation,
+        } = pending_decision
+        else {
+            panic!("expected pending admission");
+        };
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, ?2, NULL, NULL)",
+        )
+        .bind(70_010_i64)
+        .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+        .execute(&pool)
+        .await
+        .expect("insert pending attempt");
+        let pending_audit_json = serde_json::json!({
+            "selectedAccountId": 9_010,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": pending_generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_010),
+            9_010,
+            Some("gpt-test"),
+            Some(pending_audit_json.as_str()),
+        );
+        complete_priority_handoff_from_attempt(&pool, Some(70_010), true, false).await;
+        let (_, blocked) = admit_priority_handoff(9_010, Some("gpt-test"));
+        assert!(blocked.is_none());
+        complete_priority_handoff_from_attempt(&pool, Some(70_010), false, false).await;
+        drop(pending_permit);
+
+        let (explicit_decision, explicit_permit) = admit_priority_handoff(9_011, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted {
+            generation: explicit_generation,
+        } = explicit_decision
+        else {
+            panic!("expected explicit unknown admission");
+        };
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, ?2, NULL, NULL)",
+        )
+        .bind(70_011_i64)
+        .bind("aborted")
+        .execute(&pool)
+        .await
+        .expect("insert explicit unknown attempt");
+        let explicit_audit_json = serde_json::json!({
+            "selectedAccountId": 9_011,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": explicit_generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_011),
+            9_011,
+            Some("gpt-test"),
+            Some(explicit_audit_json.as_str()),
+        );
+        complete_priority_handoff_from_attempt(&pool, Some(70_011), true, false).await;
+        let (_, explicit_next) = admit_priority_handoff(9_011, Some("gpt-test"));
+        assert!(explicit_next.is_some());
+        drop(explicit_permit);
+        drop(explicit_next);
     }
 
     #[test]
