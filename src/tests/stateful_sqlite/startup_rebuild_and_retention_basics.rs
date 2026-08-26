@@ -33,12 +33,12 @@ async fn assert_startup_backfill_busy_error_closes_gate_before_next_task(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
 ) {
-    let err = run_startup_backfill_task_if_due_with_gate(state, task, gate)
+    let deferred = run_startup_backfill_task_if_due_with_gate(state, task, gate)
         .await
-        .expect_err("injected SQLite lock should fail the startup backfill task");
+        .expect("injected SQLite lock should defer the startup backfill task");
     assert!(
-        crate::is_sqlite_lock_error(&err),
-        "expected an actual SQLite BUSY/LOCKED error: {err:#}"
+        !deferred,
+        "a classified SQLite BUSY/LOCKED outcome must become a scheduler-only defer"
     );
     assert_eq!(
         gate.snapshot().pressure_events,

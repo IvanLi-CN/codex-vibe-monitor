@@ -319,7 +319,7 @@ impl StartupBackfillScheduler {
                     .iter_mut()
                     .filter_map(|(task, entry)| {
                         let needs_deadline = entry.pressure_generation != pressure_generation
-                            || entry.next_eligibility != Some(next_eligibility);
+                            || entry.next_eligibility.is_none();
                         if !needs_deadline {
                             return None;
                         }

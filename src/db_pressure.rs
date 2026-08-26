@@ -77,6 +77,7 @@ struct DbBackgroundAdmission {
     permit: Option<OwnedSemaphorePermit>,
     eligibility: Arc<DbPressureEligibility>,
     owner: Option<DbBackgroundAdmissionOwner>,
+    operation: &'static str,
     active_admissions: Arc<Mutex<HashMap<DbBackgroundAdmissionOwner, Weak<DbBackgroundAdmission>>>>,
 }
 
@@ -181,7 +182,7 @@ impl DbPressureGate {
 
     pub(crate) fn try_begin_background(
         &self,
-        _task: &'static str,
+        task: &'static str,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         #[cfg(test)]
         if self.bypass_for_test_global {
@@ -197,7 +198,7 @@ impl DbPressureGate {
             });
         }
 
-        if let Some(admission) = self.reenter_current_task() {
+        if let Some(admission) = self.reenter_current_task(task) {
             return Ok(admission);
         }
 
@@ -209,7 +210,7 @@ impl DbPressureGate {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
                 DbPressureDenyReason::BackgroundBusy
             })?;
-        let admission = self.new_admission(permit);
+        let admission = self.new_admission(permit, task);
 
         // A pressure event can race with the pre-acquisition cooldown check. Re-check while
         // retaining the slot so a just-closed gate cannot admit another SQLite operation.
@@ -228,7 +229,7 @@ impl DbPressureGate {
 
     pub(crate) async fn begin_background_with_busy_wait(
         &self,
-        _task: &'static str,
+        task: &'static str,
         max_wait: Duration,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         #[cfg(test)]
@@ -247,12 +248,12 @@ impl DbPressureGate {
                 });
             }
 
-            if let Some(admission) = self.reenter_current_task() {
+            if let Some(admission) = self.reenter_current_task(task) {
                 return Ok(admission);
             }
 
             if let Ok(permit) = self.background_slots.clone().try_acquire_owned() {
-                let admission = self.new_admission(permit);
+                let admission = self.new_admission(permit, task);
                 let now_ms = current_epoch_ms();
                 let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
                 if pressure_until_ms > now_ms {
@@ -275,25 +276,38 @@ impl DbPressureGate {
         }
     }
 
-    fn reenter_current_task(&self) -> Option<DbBackgroundPermit> {
+    fn reenter_current_task(
+        &self,
+        requested_operation: &'static str,
+    ) -> Option<DbBackgroundPermit> {
         let owner = current_background_admission_owner()?;
         let admission = self
             .active_admissions
             .lock()
             .ok()
             .and_then(|admissions| admissions.get(&owner).and_then(Weak::upgrade));
-        admission.map(|admission| DbBackgroundPermit {
-            admission: Some(admission),
-            started_at: Instant::now(),
-        })
+        admission
+            .filter(|admission| {
+                matches!(owner, DbBackgroundAdmissionOwner::TokioTask(_))
+                    || runtime_root_reentry_is_allowed(admission.operation, requested_operation)
+            })
+            .map(|admission| DbBackgroundPermit {
+                admission: Some(admission),
+                started_at: Instant::now(),
+            })
     }
 
-    fn new_admission(&self, permit: OwnedSemaphorePermit) -> DbBackgroundPermit {
+    fn new_admission(
+        &self,
+        permit: OwnedSemaphorePermit,
+        operation: &'static str,
+    ) -> DbBackgroundPermit {
         let owner = current_background_admission_owner();
         let admission = Arc::new(DbBackgroundAdmission {
             permit: Some(permit),
             eligibility: self.eligibility.clone(),
             owner,
+            operation,
             active_admissions: self.active_admissions.clone(),
         });
         if let Some(owner) = owner
@@ -418,6 +432,17 @@ fn current_background_admission_owner() -> Option<DbBackgroundAdmissionOwner> {
         })
 }
 
+fn runtime_root_reentry_is_allowed(
+    held_operation: &'static str,
+    requested_operation: &'static str,
+) -> bool {
+    // A root `Runtime::block_on` future has no Tokio task ID. Retention's archive wake is the
+    // only supported root-future nesting: it holds an admission, then wakes startup backfill.
+    // Other root-future calls must preserve ordinary background single-flight semantics.
+    held_operation == "archive_backfill_wake"
+        && requested_operation == "startup_backfill_input_wake"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,17 +514,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_reenters_work_held_by_a_runtime_root_future() {
+    async fn gate_runtime_root_reenters_only_retention_archive_wake() {
         let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
         let outer = gate
-            .try_begin_background("outer")
+            .try_begin_background("archive_backfill_wake")
             .expect("root future outer background permit");
+        assert_eq!(
+            gate.try_begin_background("unrelated_root_work")
+                .unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy,
+            "a root future must preserve ordinary single-flight behavior outside retention wake"
+        );
         let nested = gate
-            .try_begin_background("nested")
-            .expect("root future may reuse its held background permit");
+            .try_begin_background("startup_backfill_input_wake")
+            .expect("retention's root-future archive wake may reuse its held admission");
 
         let other_gate = gate.clone();
-        let other = tokio::spawn(async move { other_gate.try_begin_background("other") });
+        let other =
+            tokio::spawn(
+                async move { other_gate.try_begin_background("startup_backfill_input_wake") },
+            );
         assert_eq!(
             other
                 .await
