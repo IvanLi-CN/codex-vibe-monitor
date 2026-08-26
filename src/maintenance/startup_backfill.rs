@@ -1229,7 +1229,7 @@ async fn wake_startup_backfill_tasks_with_pricing_catalog_and_gate(
             }
             _ => task.name().to_string(),
         };
-        let outcome = sqlx::query(
+        let outcome = match sqlx::query(
             r#"
             INSERT INTO startup_backfill_progress (
                 task_name,
@@ -1264,7 +1264,17 @@ async fn wake_startup_backfill_tasks_with_pricing_catalog_and_gate(
                 task.name(),
                 task_name
             )
-        })?;
+        }) {
+            Ok(outcome) => outcome,
+            Err(err) => {
+                if startup_backfill_pressure_error_defer_outcome_if_recorded(*task, gate, &err)
+                    .is_some()
+                {
+                    continue;
+                }
+                return Err(err);
+            }
+        };
         woken += outcome.rows_affected();
         STARTUP_BACKFILL_SCHEDULER.wake(*task);
     }
@@ -1423,8 +1433,20 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     pool: &Pool<Sqlite>,
     wake_reason: &'static str,
 ) -> Result<u64> {
+    wake_startup_backfill_coverage_repair_with_gate(
+        pool,
+        wake_reason,
+        crate::db_pressure::global_db_pressure_gate(),
+    )
+    .await
+}
+
+pub(crate) async fn wake_startup_backfill_coverage_repair_with_gate(
+    pool: &Pool<Sqlite>,
+    wake_reason: &'static str,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> Result<u64> {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
-    let gate = crate::db_pressure::global_db_pressure_gate();
     if STARTUP_BACKFILL_SCHEDULER.is_pressure_deferred(task) {
         return Ok(0);
     }
@@ -1439,7 +1461,16 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
         return Ok(0);
     }
     let task_name = task.name();
-    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    let progress = match load_startup_backfill_progress(pool, task_name).await {
+        Ok(progress) => progress,
+        Err(err) => {
+            if startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err).is_some()
+            {
+                return Ok(0);
+            }
+            return Err(err);
+        }
+    };
     let deadline_preserved = !progress.is_due(Utc::now())
         && (progress.zero_update_streak > 0 || progress.last_status == STARTUP_BACKFILL_STATUS_OK);
     if deadline_preserved {
@@ -1454,7 +1485,7 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
         return Ok(progress.wake_generation);
     }
 
-    sqlx::query(
+    let wake_result = sqlx::query(
         r#"
         INSERT INTO startup_backfill_progress (
             task_name,
@@ -1488,9 +1519,25 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     .bind(task_name)
     .bind(STARTUP_BACKFILL_STATUS_IDLE)
     .execute(pool)
-    .await?;
+    .await;
+    if let Err(err) = wake_result {
+        let err = anyhow::Error::from(err);
+        if startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err).is_some() {
+            return Ok(0);
+        }
+        return Err(err);
+    }
 
-    let progress = load_startup_backfill_progress(pool, task_name).await?;
+    let progress = match load_startup_backfill_progress(pool, task_name).await {
+        Ok(progress) => progress,
+        Err(err) => {
+            if startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err).is_some()
+            {
+                return Ok(0);
+            }
+            return Err(err);
+        }
+    };
     STARTUP_BACKFILL_SCHEDULER.wake(task);
     info!(
         task = task.log_label(),

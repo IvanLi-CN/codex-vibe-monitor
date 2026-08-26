@@ -2394,6 +2394,62 @@ async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
 }
 
 #[tokio::test]
+async fn startup_backfill_input_wake_sqlite_busy_closes_gate_and_defers() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::FailureClassification;
+    let task_name = task.name();
+    let trigger = format!(
+        r#"
+        CREATE TRIGGER startup_backfill_input_wake_busy
+        BEFORE INSERT ON startup_backfill_progress
+        WHEN NEW.task_name = '{task_name}'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#
+    );
+    sqlx::query(&trigger)
+        .execute(&state.pool)
+        .await
+        .expect("inject a SQLite lock into the input wake progress write");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before the input wake lock");
+
+    assert_eq!(
+        wake_startup_backfill_tasks_with_gate(
+            &state.pool,
+            &[task],
+            "input_wake_sqlite_busy",
+            &gate,
+        )
+        .await
+        .expect("a SQLite lock in the wake write should defer without surfacing an error"),
+        0
+    );
+    assert_eq!(gate.snapshot().pressure_events, 1);
+    assert!(
+        gate.pressure_cooldown_deadline_epoch_ms().is_some(),
+        "the lock must close the gate while the wake admission is still held"
+    );
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the input wake lock");
+    assert_eq!(task_runs_after, task_runs_before);
+}
+
+#[tokio::test]
 async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
@@ -3333,6 +3389,58 @@ async fn startup_coverage_gate_denial_skips_sqlite_progress_and_task_run_audit()
         .send(())
         .expect("holder should be waiting for release");
     holder.await.expect("holder should not panic");
+}
+
+#[tokio::test]
+async fn startup_coverage_wake_sqlite_busy_closes_gate_and_defers() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER startup_coverage_wake_busy
+        BEFORE INSERT ON startup_backfill_progress
+        WHEN NEW.task_name = 'account_activity_v2_coverage_repair_v1'
+        BEGIN
+            SELECT RAISE(ABORT, 'database table is locked');
+        END
+        "#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("inject a SQLite lock into the coverage wake progress write");
+
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let task_runs_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs before the coverage wake lock");
+
+    assert_eq!(
+        crate::wake_startup_backfill_coverage_repair_with_gate(
+            &state.pool,
+            "coverage_wake_sqlite_busy",
+            &gate,
+        )
+        .await
+        .expect("a SQLite lock in the coverage wake should defer without surfacing an error"),
+        0
+    );
+    assert_eq!(gate.snapshot().pressure_events, 1);
+    assert!(
+        gate.pressure_cooldown_deadline_epoch_ms().is_some(),
+        "the lock must close the gate while the coverage wake admission is still held"
+    );
+    let task_runs_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM system_task_runs WHERE task_kind = 'startup_backfill'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count task runs after the coverage wake lock");
+    assert_eq!(task_runs_after, task_runs_before);
 }
 
 #[tokio::test]
