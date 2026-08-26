@@ -23,6 +23,7 @@ enum PriorityHandoffPhase {
 
 #[derive(Debug)]
 struct PriorityHandoffEntry {
+    epoch: u64,
     generation: u64,
     phase: PriorityHandoffPhase,
     verification_successes: u8,
@@ -35,6 +36,7 @@ struct PriorityHandoffEntry {
 struct PriorityHandoffState {
     enabled: bool,
     generation: u64,
+    next_generation: u64,
     entries: HashMap<(i64, String), PriorityHandoffEntry>,
 }
 
@@ -50,9 +52,18 @@ impl PriorityHandoffState {
         Self {
             enabled: true,
             generation: 1,
+            next_generation: 1,
             entries: HashMap::new(),
         }
     }
+}
+
+fn allocate_generation(state: &mut PriorityHandoffState) -> u64 {
+    state.next_generation = state
+        .next_generation
+        .max(state.generation)
+        .saturating_add(1);
+    state.next_generation
 }
 
 fn state() -> &'static Mutex<PriorityHandoffState> {
@@ -176,12 +187,13 @@ pub(crate) fn set_priority_handoff_admission_enabled(enabled: bool) {
         return;
     }
     state.enabled = enabled;
-    state.generation = state.generation.saturating_add(1);
+    state.generation = allocate_generation(&mut state);
+    let generation = state.generation;
     for entry in state.entries.values_mut() {
         entry.in_flight = false;
+        entry.epoch = generation;
     }
     if enabled {
-        let generation = state.generation;
         for entry in state.entries.values_mut() {
             entry.phase = PriorityHandoffPhase::Verifying;
             entry.verification_successes = 0;
@@ -199,11 +211,13 @@ pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model:
     let Ok(mut state) = state().lock() else {
         return;
     };
-    let generation = state.generation;
+    let generation = allocate_generation(&mut state);
+    let epoch = state.generation;
     let entry = state
         .entries
         .entry((account_id, model_key))
         .or_insert_with(|| PriorityHandoffEntry {
+            epoch,
             generation,
             phase: PriorityHandoffPhase::Verifying,
             verification_successes: 0,
@@ -212,6 +226,7 @@ pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model:
             in_flight: false,
         });
     entry.generation = generation;
+    entry.epoch = epoch;
     entry.phase = PriorityHandoffPhase::Verifying;
     entry.verification_successes = 0;
     entry.failure_streak = 0;
@@ -240,6 +255,7 @@ pub(crate) fn admit_priority_handoff(
         .entries
         .entry((account_id, model_key.clone()))
         .or_insert_with(|| PriorityHandoffEntry {
+            epoch: generation,
             generation,
             phase: PriorityHandoffPhase::Verifying,
             verification_successes: 0,
@@ -247,7 +263,8 @@ pub(crate) fn admit_priority_handoff(
             cooldown_until: None,
             in_flight: false,
         });
-    if entry.generation != generation {
+    if entry.epoch != generation {
+        entry.epoch = generation;
         entry.generation = generation;
         entry.phase = PriorityHandoffPhase::Verifying;
         entry.verification_successes = 0;
@@ -296,6 +313,7 @@ pub(crate) fn priority_handoff_admission_snapshot(
         .entries
         .entry((account_id, model_key))
         .or_insert_with(|| PriorityHandoffEntry {
+            epoch: generation,
             generation,
             phase: PriorityHandoffPhase::Verifying,
             verification_successes: 0,
@@ -303,7 +321,8 @@ pub(crate) fn priority_handoff_admission_snapshot(
             cooldown_until: None,
             in_flight: false,
         });
-    if entry.generation != generation {
+    if entry.epoch != generation {
+        entry.epoch = generation;
         entry.generation = generation;
         entry.phase = PriorityHandoffPhase::Verifying;
         entry.verification_successes = 0;
@@ -749,6 +768,26 @@ mod tests {
         let (_, permit) = admit_priority_handoff(9_012, Some("gpt-test"));
         assert!(permit.is_some());
         drop(permit);
+    }
+
+    #[test]
+    fn priority_handoff_manual_reset_fences_in_flight_permit() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (_, old_permit) = admit_priority_handoff(9_013, Some("gpt-test"));
+        let old_permit = old_permit.expect("old permit");
+
+        reset_priority_handoff_for_model(9_013, "gpt-test");
+
+        let (_, new_permit) = admit_priority_handoff(9_013, Some("gpt-test"));
+        let new_permit = new_permit.expect("new permit");
+        assert!(old_permit.complete_success().is_none());
+        let (_, blocked) = admit_priority_handoff(9_013, Some("gpt-test"));
+        assert!(blocked.is_none());
+        drop(old_permit);
+        let (_, still_blocked) = admit_priority_handoff(9_013, Some("gpt-test"));
+        assert!(still_blocked.is_none());
+        drop(new_permit);
     }
 
     #[tokio::test]
