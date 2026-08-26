@@ -809,6 +809,70 @@ mod tests {
         drop(permit);
     }
 
+    #[tokio::test]
+    async fn priority_handoff_unknown_terminal_status_releases_attempt() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_009, Some("gpt-test"));
+        assert!(matches!(
+            decision,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        assert!(permit.is_some());
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        sqlx::query(
+            "CREATE TABLE pool_upstream_request_attempts (id INTEGER PRIMARY KEY, status TEXT, downstream_http_status INTEGER, failure_kind TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create attempt table");
+        sqlx::query(
+            "INSERT INTO pool_upstream_request_attempts (id, status, downstream_http_status, failure_kind) VALUES (?1, NULL, NULL, NULL)",
+        )
+        .bind(70_009_i64)
+        .execute(&pool)
+        .await
+        .expect("insert unknown terminal attempt");
+        let generation = match decision {
+            PriorityHandoffAdmissionDecision::Admitted { generation } => generation,
+            _ => unreachable!(),
+        };
+        let audit_json = serde_json::json!({
+            "selectedAccountId": 9_009,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            Some(70_009),
+            9_009,
+            Some("gpt-test"),
+            Some(audit_json.as_str()),
+        );
+
+        complete_priority_handoff_from_attempt(&pool, Some(70_009), true, false).await;
+
+        let (_, next) = admit_priority_handoff(9_009, Some("gpt-test"));
+        assert!(next.is_some());
+        drop(permit);
+        drop(next);
+    }
+
     #[test]
     fn priority_handoff_generation_ignores_old_completion() {
         let _guard = test_guard();
