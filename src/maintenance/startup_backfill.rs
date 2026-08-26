@@ -170,6 +170,28 @@ impl StartupBackfillScheduler {
         }
     }
 
+    fn clear_pressure_eligibility_deadline(
+        &self,
+        task: StartupBackfillTask,
+        pressure_generation: u64,
+    ) {
+        // A stale busy defer must not erase a cooldown deadline installed by a newer pressure
+        // generation after this task released the scheduler state lock.
+        let _cleared = self.pressure_deferred_tasks.lock().ok().and_then(|tasks| {
+            tasks
+                .get(&task)
+                .filter(|entry| {
+                    entry.pressure_generation == pressure_generation
+                        && entry.next_eligibility.is_none()
+                })
+                .and_then(|_| {
+                    self.next_due.lock().ok().map(|mut next_due| {
+                        next_due.remove(&task);
+                    })
+                })
+        });
+    }
+
     fn defer_for_pressure(
         &self,
         task: StartupBackfillTask,
@@ -202,7 +224,7 @@ impl StartupBackfillScheduler {
                     next_eligibility,
                 );
             } else {
-                self.clear_next_due(task);
+                self.clear_pressure_eligibility_deadline(task, pressure_generation);
             }
             if let Ok(mut tasks) = self.woken_tasks.lock() {
                 tasks.remove(&task);
@@ -2761,6 +2783,24 @@ mod startup_backfill_tests {
         assert_eq!(deferred.pressure_defer_count, 1);
         assert_eq!(deferred.scheduled_task_count, 0);
         assert_eq!(deferred.deferred_task_count, 1);
+    }
+
+    #[test]
+    fn stale_busy_defer_cannot_clear_a_newer_pressure_deadline() {
+        let scheduler = StartupBackfillScheduler::default();
+        let task = StartupBackfillTask::ReasoningEffort;
+        let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
+            .expect("valid fixed pressure deadline");
+
+        assert!(scheduler.defer_for_pressure(task, None, 41));
+        assert!(scheduler.defer_for_pressure(task, Some(deadline), 42));
+
+        scheduler.clear_pressure_eligibility_deadline(task, 41);
+        assert_eq!(
+            scheduler.next_due(),
+            Some(deadline),
+            "a stale busy defer must not remove a newer pressure generation deadline"
+        );
     }
 
     #[tokio::test]

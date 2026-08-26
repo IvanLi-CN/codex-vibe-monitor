@@ -2302,10 +2302,27 @@ async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
     )
     .await;
     let task = StartupBackfillTask::PoolAttemptPublicIdLive;
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
-    let _held = gate
-        .try_begin_background("test_input_wake_busy")
-        .expect("occupy the sole background slot");
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder_gate = gate.clone();
+    let holder = tokio::spawn(async move {
+        let _held = holder_gate
+            .try_begin_background("test_input_wake_busy")
+            .expect("occupy the sole background slot from another task");
+        held_tx
+            .send(())
+            .expect("test should await the competing background admission");
+        release_rx
+            .await
+            .expect("test should release the competing background admission");
+    });
+    held_rx
+        .await
+        .expect("holder should acquire the competing background slot");
 
     state.pool.close().await;
     assert_eq!(
@@ -2313,7 +2330,7 @@ async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
             &state.pool,
             &[task],
             "input_wake_busy_admission",
-            &gate,
+            gate.as_ref(),
         )
         .await
         .expect("busy admission must defer without SQLite access"),
@@ -2324,6 +2341,10 @@ async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
         1,
         "the input wake must be denied by the gate before its progress write"
     );
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
 }
 
 #[tokio::test]
@@ -2357,18 +2378,38 @@ async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     .await
     .expect("count task runs before pressure eligibility wake");
 
-    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
-    let held = gate
-        .try_begin_background("test_pressure_eligibility_busy")
-        .expect("occupy the background slot");
-    let first = run_startup_backfill_task_if_due_with_gate(&state, task, &gate)
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(60),
+    ));
+    let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let holder_gate = gate.clone();
+    let holder = tokio::spawn(async move {
+        let _held = holder_gate
+            .try_begin_background("test_pressure_eligibility_busy")
+            .expect("occupy the background slot from another task");
+        held_tx
+            .send(())
+            .expect("test should await the competing background admission");
+        release_rx
+            .await
+            .expect("test should release the competing background admission");
+    });
+    held_rx
+        .await
+        .expect("holder should acquire the competing background slot");
+    let first = run_startup_backfill_task_if_due_with_gate(&state, task, gate.as_ref())
         .await
         .expect("background-busy admission should be a scheduler-only defer");
     assert!(!first);
     assert_eq!(gate.snapshot().background_skips, 1);
 
     let observed_eligibility = gate.eligibility_generation();
-    drop(held);
+    release_tx
+        .send(())
+        .expect("holder should be waiting for release");
+    holder.await.expect("holder should not panic");
     tokio::time::timeout(
         Duration::from_secs(1),
         gate.wait_for_eligibility_change(observed_eligibility),

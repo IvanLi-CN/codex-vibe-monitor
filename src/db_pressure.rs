@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
+    thread::ThreadId,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -37,7 +38,7 @@ pub(crate) struct DbPressureGate {
     pressure_events: AtomicU64,
     background_skips: AtomicU64,
     eligibility: Arc<DbPressureEligibility>,
-    active_task_admissions: Arc<Mutex<HashMap<TaskId, Weak<DbBackgroundAdmission>>>>,
+    active_admissions: Arc<Mutex<HashMap<DbBackgroundAdmissionOwner, Weak<DbBackgroundAdmission>>>>,
     #[cfg(test)]
     bypass_for_test_global: bool,
 }
@@ -65,21 +66,27 @@ impl fmt::Display for DbPressureDenyReason {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DbBackgroundAdmissionOwner {
+    TokioTask(TaskId),
+    RuntimeRoot(ThreadId),
+}
+
 #[derive(Debug)]
 struct DbBackgroundAdmission {
     permit: Option<OwnedSemaphorePermit>,
     eligibility: Arc<DbPressureEligibility>,
-    task_id: Option<TaskId>,
-    active_task_admissions: Arc<Mutex<HashMap<TaskId, Weak<DbBackgroundAdmission>>>>,
+    owner: Option<DbBackgroundAdmissionOwner>,
+    active_admissions: Arc<Mutex<HashMap<DbBackgroundAdmissionOwner, Weak<DbBackgroundAdmission>>>>,
 }
 
 impl Drop for DbBackgroundAdmission {
     fn drop(&mut self) {
         self.permit.take();
-        if let Some(task_id) = self.task_id
-            && let Ok(mut admissions) = self.active_task_admissions.lock()
+        if let Some(owner) = self.owner
+            && let Ok(mut admissions) = self.active_admissions.lock()
         {
-            admissions.remove(&task_id);
+            admissions.remove(&owner);
         }
         self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
         self.eligibility.notify.notify_waiters();
@@ -126,7 +133,7 @@ impl DbPressureGate {
             pressure_events: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
             eligibility: Arc::new(DbPressureEligibility::default()),
-            active_task_admissions: Arc::new(Mutex::new(HashMap::new())),
+            active_admissions: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             bypass_for_test_global: false,
         }
@@ -181,10 +188,6 @@ impl DbPressureGate {
             return Ok(DbBackgroundPermit::bypassed());
         }
 
-        if let Some(admission) = self.reenter_current_task() {
-            return Ok(admission);
-        }
-
         let now_ms = current_epoch_ms();
         let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
         if pressure_until_ms > now_ms {
@@ -192,6 +195,10 @@ impl DbPressureGate {
             return Err(DbPressureDenyReason::PressureCooldown {
                 remaining_ms: pressure_until_ms.saturating_sub(now_ms),
             });
+        }
+
+        if let Some(admission) = self.reenter_current_task() {
+            return Ok(admission);
         }
 
         let permit = self
@@ -229,10 +236,6 @@ impl DbPressureGate {
             return Ok(DbBackgroundPermit::bypassed());
         }
 
-        if let Some(admission) = self.reenter_current_task() {
-            return Ok(admission);
-        }
-
         let started_at = Instant::now();
         loop {
             let now_ms = current_epoch_ms();
@@ -242,6 +245,10 @@ impl DbPressureGate {
                 return Err(DbPressureDenyReason::PressureCooldown {
                     remaining_ms: pressure_until_ms.saturating_sub(now_ms),
                 });
+            }
+
+            if let Some(admission) = self.reenter_current_task() {
+                return Ok(admission);
             }
 
             if let Ok(permit) = self.background_slots.clone().try_acquire_owned() {
@@ -269,12 +276,12 @@ impl DbPressureGate {
     }
 
     fn reenter_current_task(&self) -> Option<DbBackgroundPermit> {
-        let task_id = tokio::task::try_id()?;
+        let owner = current_background_admission_owner()?;
         let admission = self
-            .active_task_admissions
+            .active_admissions
             .lock()
             .ok()
-            .and_then(|admissions| admissions.get(&task_id).and_then(Weak::upgrade));
+            .and_then(|admissions| admissions.get(&owner).and_then(Weak::upgrade));
         admission.map(|admission| DbBackgroundPermit {
             admission: Some(admission),
             started_at: Instant::now(),
@@ -282,17 +289,17 @@ impl DbPressureGate {
     }
 
     fn new_admission(&self, permit: OwnedSemaphorePermit) -> DbBackgroundPermit {
-        let task_id = tokio::task::try_id();
+        let owner = current_background_admission_owner();
         let admission = Arc::new(DbBackgroundAdmission {
             permit: Some(permit),
             eligibility: self.eligibility.clone(),
-            task_id,
-            active_task_admissions: self.active_task_admissions.clone(),
+            owner,
+            active_admissions: self.active_admissions.clone(),
         });
-        if let Some(task_id) = task_id
-            && let Ok(mut admissions) = self.active_task_admissions.lock()
+        if let Some(owner) = owner
+            && let Ok(mut admissions) = self.active_admissions.lock()
         {
-            admissions.insert(task_id, Arc::downgrade(&admission));
+            admissions.insert(owner, Arc::downgrade(&admission));
         }
         DbBackgroundPermit {
             admission: Some(admission),
@@ -398,6 +405,19 @@ fn current_epoch_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+fn current_background_admission_owner() -> Option<DbBackgroundAdmissionOwner> {
+    tokio::task::try_id()
+        .map(DbBackgroundAdmissionOwner::TokioTask)
+        .or_else(|| {
+            // Tokio's root future has no task ID, but it remains on the thread driving
+            // `Runtime::block_on`. Restrict this fallback to an entered Tokio runtime so plain
+            // synchronous callers retain normal single-flight behavior.
+            tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|_| DbBackgroundAdmissionOwner::RuntimeRoot(std::thread::current().id()))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,6 +489,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gate_reenters_work_held_by_a_runtime_root_future() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let outer = gate
+            .try_begin_background("outer")
+            .expect("root future outer background permit");
+        let nested = gate
+            .try_begin_background("nested")
+            .expect("root future may reuse its held background permit");
+
+        let other_gate = gate.clone();
+        let other = tokio::spawn(async move { other_gate.try_begin_background("other") });
+        assert_eq!(
+            other
+                .await
+                .expect("other task should not panic")
+                .unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy
+        );
+
+        drop(outer);
+        drop(nested);
+        assert!(gate.try_begin_background("after_nested").is_ok());
+    }
+
+    #[tokio::test]
     async fn gate_reenters_work_held_by_the_same_task_without_releasing_the_slot() {
         let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
         let (nested_ready_tx, nested_ready_rx) = tokio::sync::oneshot::channel();
@@ -536,6 +581,40 @@ mod tests {
             .expect("worker should be waiting to release nested permit");
         worker.await.expect("worker should not panic");
         assert!(gate.try_begin_background("after_nested").is_ok());
+    }
+
+    #[tokio::test]
+    async fn gate_reentrant_work_observes_a_later_pressure_cooldown() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(60)));
+        let (outer_ready_tx, outer_ready_rx) = tokio::sync::oneshot::channel();
+        let (begin_nested_tx, begin_nested_rx) = tokio::sync::oneshot::channel();
+        let worker_gate = gate.clone();
+        let worker = tokio::spawn(async move {
+            let _outer = worker_gate
+                .try_begin_background("outer")
+                .expect("outer background permit");
+            outer_ready_tx
+                .send(())
+                .expect("test should await outer admission");
+            begin_nested_rx
+                .await
+                .expect("test should request nested admission");
+            worker_gate
+                .try_begin_background("nested_after_pressure")
+                .expect_err("a later pressure cooldown must deny nested SQLite work")
+        });
+
+        outer_ready_rx
+            .await
+            .expect("worker should acquire outer admission");
+        gate.record_pressure("test", "forced");
+        begin_nested_tx
+            .send(())
+            .expect("worker should be waiting to begin nested work");
+        assert!(matches!(
+            worker.await.expect("worker should not panic"),
+            DbPressureDenyReason::PressureCooldown { remaining_ms } if remaining_ms > 0
+        ));
     }
 
     #[tokio::test]
