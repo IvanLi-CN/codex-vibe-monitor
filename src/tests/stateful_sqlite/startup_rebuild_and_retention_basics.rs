@@ -2296,6 +2296,37 @@ async fn startup_backfill_repeated_cooldown_notifications_do_not_redispatch_or_r
 }
 
 #[tokio::test]
+async fn startup_backfill_input_wake_busy_admission_avoids_sqlite() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::PoolAttemptPublicIdLive;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
+    let _held = gate
+        .try_begin_background("test_input_wake_busy")
+        .expect("occupy the sole background slot");
+
+    state.pool.close().await;
+    assert_eq!(
+        wake_startup_backfill_tasks_with_gate(
+            &state.pool,
+            &[task],
+            "input_wake_busy_admission",
+            &gate,
+        )
+        .await
+        .expect("busy admission must defer without SQLite access"),
+        0
+    );
+    assert_eq!(
+        gate.snapshot().background_skips,
+        1,
+        "the input wake must be denied by the gate before its progress write"
+    );
+}
+
+#[tokio::test]
 async fn pressure_eligibility_wake_rechecks_durable_backfill_deadline() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),

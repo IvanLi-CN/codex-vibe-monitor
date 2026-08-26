@@ -177,12 +177,25 @@ impl DbPressureGate {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
                 DbPressureDenyReason::BackgroundBusy
             })?;
-
-        Ok(DbBackgroundPermit {
+        let admission = DbBackgroundPermit {
             _permit: Some(permit),
             started_at: Instant::now(),
             eligibility: Some(self.eligibility.clone()),
-        })
+        };
+
+        // A pressure event can race with the pre-acquisition cooldown check. Re-check while
+        // retaining the slot so a just-closed gate cannot admit another SQLite operation.
+        let now_ms = current_epoch_ms();
+        let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        if pressure_until_ms > now_ms {
+            drop(admission);
+            self.background_skips.fetch_add(1, Ordering::Relaxed);
+            return Err(DbPressureDenyReason::PressureCooldown {
+                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
+            });
+        }
+
+        Ok(admission)
     }
 
     pub(crate) async fn begin_background_with_busy_wait(
