@@ -6,6 +6,7 @@
 
 - Lifecycle: active canonical-classification recovery initiative.
 - Implementation: existing `failure_class` compatibility writers and backfill are not yet sufficient to make every read model consume one revisioned durable classification fact. Canonical terminal materialization, immutable-archive overlay coverage and shared Summary/rollup consumer migration are the first delivery boundary.
+- Summary admission foundation keeps the bounded newest-N `current` view separate from rolling exact-boundary records, while enforcing one resident preview-byte budget and a monotonic omission boundary across runtime overlays. This restores honest high-cardinality admission without claiming canonical classification materialization is complete.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
 ## Delivery Boundaries
