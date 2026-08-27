@@ -11,8 +11,10 @@ pub(crate) const PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON: &str = "priorityHando
 pub(crate) const PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON: &str =
     "priorityHandoffRecoveryProgress";
 const PRIORITY_HANDOFF_VERIFICATION_SUCCESSES: u8 = 3;
-const PRIORITY_HANDOFF_FIRST_COOLDOWN_SECS: u64 = 5;
-const PRIORITY_HANDOFF_MAX_COOLDOWN_SECS: u64 = 15 * 60;
+const PRIORITY_HANDOFF_FIRST_COOLDOWN_SECS: u64 =
+    super::model_health::MODEL_ROUTE_COOLDOWN_BASE_SECS as u64;
+const PRIORITY_HANDOFF_MAX_COOLDOWN_SECS: u64 =
+    super::model_health::MODEL_ROUTE_COOLDOWN_MAX_SECS as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PriorityHandoffPhase {

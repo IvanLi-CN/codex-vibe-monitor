@@ -2223,6 +2223,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut priority_handoff_deferred_for_sticky = false;
     let mut priority_handoff_deferred_any = false;
     let mut sticky_handoff_deferred_admission: Option<PoolRoutingHandoffAdmission> = None;
+    let priority_handoff_model_available =
+        requested_model.is_some_and(|model| !model.trim().is_empty());
     let fresh_assignment_handoff_enabled =
         sticky_source_id.is_none() && excluded_ids.is_empty() && binding_constraint.is_none();
     let fresh_assignment_priority_attraction = fresh_assignment_handoff_enabled
@@ -2239,12 +2241,31 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 continue;
             }
             let mut priority_handoff_permit = None;
+            let should_preserve_sticky_without_model = priority_handoff_enabled
+                && sticky_fallback_handoff_enabled
+                && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && !priority_handoff_model_available
+                && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
             let should_gate_priority_handoff = priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && priority_handoff_model_available
                 && (sticky_fallback_handoff_enabled
                     || fresh_assignment_priority_attraction
                     || priority_handoff_deferred_any)
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
+            if should_preserve_sticky_without_model {
+                if !selection_audit_exclusions
+                    .iter()
+                    .any(|candidate| candidate.account_id == account.account_id)
+                {
+                    selection_audit_exclusions.push(PoolRoutingSelectionAuditExcludedCandidate {
+                        account_id: account.account_id,
+                        account_name: account.display_name.clone(),
+                        reason_code: "priorityHandoffModelUnavailable".to_string(),
+                    });
+                }
+                continue;
+            }
             if !priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment
