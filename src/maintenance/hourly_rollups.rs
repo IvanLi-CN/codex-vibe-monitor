@@ -10,17 +10,6 @@ const LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
 ];
-const LEGACY_MATERIALIZED_INVOCATION_ARCHIVE_REPLAY_TARGETS: [&str; 9] = [
-    HOURLY_ROLLUP_TARGET_INVOCATIONS,
-    HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
-    HOURLY_ROLLUP_TARGET_PROXY_PERF,
-    HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
-    HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
-    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
-    HOURLY_ROLLUP_TARGET_STICKY_KEYS,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HourlyRollupRefreshScope {
@@ -139,22 +128,6 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     file_path: &str,
 ) -> Result<()> {
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
-        mark_hourly_rollup_archive_replayed_tx(
-            tx,
-            target,
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            file_path,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn mark_materialized_legacy_invocation_archive_replayed_tx(
-    tx: &mut SqliteConnection,
-    file_path: &str,
-) -> Result<()> {
-    for target in LEGACY_MATERIALIZED_INVOCATION_ARCHIVE_REPLAY_TARGETS {
         mark_hourly_rollup_archive_replayed_tx(
             tx,
             target,
@@ -380,7 +353,7 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
           AND status = ?2
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
-          AND coverage_end_at > ?3
+          AND coverage_end_at >= ?3
           AND coverage_start_at < ?4
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
@@ -558,6 +531,30 @@ async fn invocation_archive_has_stale_replay_marker_tx(
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''
           AND replay.archive_sha256 <> batches.sha256
+        LIMIT 1
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
+}
+
+async fn invocation_archive_has_unverified_replay_marker_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND (
+                archive_sha256 IS NULL
+                OR TRIM(archive_sha256) = ''
+          )
         LIMIT 1
         "#,
     )
@@ -929,31 +926,46 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
 ) -> Result<Option<Vec<String>>> {
     let mut reopened_file_paths = vec![file_path.to_string()];
     if let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at) {
-        let bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
+        let mut bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
             None,
             Some(coverage_start_at),
             Some(coverage_end_at),
         )?;
-        let overlapping_archives =
-            load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
-                tx,
-                &bucket_start_epochs,
-            )
-            .await?;
-        if overlapping_archives.iter().any(|archive| {
-            archive
-                .sha256
-                .as_deref()
-                .is_none_or(|sha256| sha256.trim().is_empty())
-        }) {
-            return Ok(None);
-        }
-        reopened_file_paths = overlapping_archives
-            .into_iter()
-            .map(|archive| archive.file_path)
-            .collect();
-        if !reopened_file_paths.iter().any(|path| path == file_path) {
-            reopened_file_paths.push(file_path.to_string());
+        let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
+
+        // Rebuild the entire overlap closure before clearing. A peer can extend into later
+        // buckets that overlap another peer, so a single query would leave stale rows that a
+        // subsequent additive replay can count twice.
+        loop {
+            let overlapping_archives =
+                load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+                    tx,
+                    &bucket_start_epochs,
+                )
+                .await?;
+            let mut expanded = false;
+            for overlapping_archive in overlapping_archives {
+                if overlapping_archive
+                    .sha256
+                    .as_deref()
+                    .is_none_or(|sha256| sha256.trim().is_empty())
+                {
+                    return Ok(None);
+                }
+                if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
+                    continue;
+                }
+                reopened_file_paths.push(overlapping_archive.file_path);
+                bucket_start_epochs.extend(crate::stats::archive_bucket_start_epochs_from_bounds(
+                    None,
+                    Some(&overlapping_archive.coverage_start_at),
+                    Some(&overlapping_archive.coverage_end_at),
+                )?);
+                expanded = true;
+            }
+            if !expanded {
+                break;
+            }
         }
         clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
         let mut bucket_start_epochs = bucket_start_epochs.into_iter().collect::<Vec<_>>();
@@ -998,6 +1010,11 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
             // upgraded from a valid manifest or rebuilt with known coverage.
             continue;
         }
+        if invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &file_path).await? {
+            // A legacy NULL/blank marker has no source identity. Do not turn it into proof for
+            // the current manifest or replay over rows whose provenance is unknown.
+            continue;
+        }
         let has_stale_replay_marker =
             invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &file_path).await?;
         let breakdown_replayed = hourly_rollup_archive_replayed_tx(
@@ -1021,12 +1038,6 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
             )
             .await?
         } else {
-            // Retention can mark an archive as materialized after projecting its live rows
-            // without recording one proof row per established target. Once a valid manifest
-            // appears, restore those established proofs before reopening the newer breakdown
-            // target so replay does not add their already-retained contributions again.
-            mark_materialized_legacy_invocation_archive_replayed_tx(tx.as_mut(), &file_path)
-                .await?;
             reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                 tx.as_mut(),
                 &file_path,
@@ -1862,6 +1873,13 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A completed archive with no immutable manifest identity is intentionally
             // unverified. Do not clear state or additively replay it until it becomes
             // verifiable or a caller can perform a proven full rebuild.
+            summary.blocked_batches += 1;
+            continue;
+        }
+        if invocation_archive_has_unverified_replay_marker_tx(tx, &archive_file.file_path).await? {
+            // A nullable or blank marker is not evidence that this archive's contributions are
+            // represented by the current manifest. Keep it quarantined until an explicit,
+            // proven rebuild can replace the unknown state.
             summary.blocked_batches += 1;
             continue;
         }

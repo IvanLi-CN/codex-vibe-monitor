@@ -3889,6 +3889,169 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_rebuilds_transitive_boundary_overlap_closure() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("breakdown-transitive-boundary-closure").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(7, 0, 0)
+    .expect("valid archived hour");
+    let transitive_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(10)))
+            .expect("valid transitive overlap timestamp"),
+    );
+    let boundary_start_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::hours(1))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(30)))
+            .expect("valid boundary archive start timestamp"),
+    );
+    let boundary_end_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::hours(2))
+            .expect("valid boundary archive end timestamp"),
+    );
+    let stale_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::hours(2))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(10)))
+            .expect("valid stale archive timestamp"),
+    );
+
+    let stale_archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "breakdown-closure-stale-root",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "breakdown-closure-stale-root",
+            occurred_at: stale_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "breakdown-closure-boundary-peer",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1,
+                invoke_id: "breakdown-closure-boundary-peer-start",
+                occurred_at: boundary_start_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2,
+                invoke_id: "breakdown-closure-boundary-peer-end",
+                occurred_at: boundary_end_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
+    )
+    .await;
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "breakdown-closure-transitive-peer",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "breakdown-closure-transitive-peer",
+            occurred_at: transitive_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize the overlap closure archives");
+    assert_eq!(initial.materialized_invocation_batches, 3);
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture initial usage breakdown total");
+    assert_eq!(before, 4);
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(stale_archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("remove only the stale root usage breakdown marker");
+
+    assert_eq!(
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("reopen the full transitive overlap closure"),
+        3
+    );
+    let rebuilt = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("replay the full transitive overlap closure");
+    assert_eq!(rebuilt.materialized_invocation_batches, 3);
+    let after: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load usage breakdown total after closure replay");
+    assert_eq!(after, before);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_repair_quarantines_unverified_legacy_archive_without_replaying_rollups() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("startup-repair-quarantines-unverified-legacy").await;
@@ -3981,69 +4144,11 @@ async fn startup_repair_quarantines_unverified_legacy_archive_without_replaying_
     .expect("load archive materialization state after quarantine");
     assert!(materialized_at.is_some());
 
-    sqlx::query(
-        "UPDATE archive_batches SET sha256 = 'recovered-archive-sha' WHERE dataset = 'codex_invocations' AND file_path = ?1",
-    )
-    .bind(&archive_path)
-    .execute(&pool)
-    .await
-    .expect("publish a later completed manifest proof");
-    crate::schema::backfill_legacy_hourly_rollup_archive_replay_hashes(&pool)
-        .await
-        .expect("upgrade legacy replay markers after manifest recovery");
-    assert_eq!(
-        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
-            .await
-            .expect("startup repair must accept the recovered manifest proof"),
-        1
-    );
-    for target in [
-        HOURLY_ROLLUP_TARGET_INVOCATIONS,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
-    ] {
-        let replay_sha: Option<String> = sqlx::query_scalar(
-            r#"
-            SELECT archive_sha256
-            FROM hourly_rollup_archive_replay
-            WHERE target = ?1
-              AND dataset = 'codex_invocations'
-              AND file_path = ?2
-            "#,
-        )
-        .bind(target)
-        .bind(&archive_path)
-        .fetch_optional(&pool)
-        .await
-        .expect("load recovered replay marker");
-        assert_eq!(
-            replay_sha.as_deref(),
-            Some("recovered-archive-sha"),
-            "valid manifest recovery must restore exact proof for {target}"
-        );
-    }
-    let recovered = materialize_historical_rollups(&pool, &config, false)
-        .await
-        .expect("materializer must replay only after manifest recovery");
-    assert_eq!(recovered.materialized_invocation_batches, 1);
-    let after_recovery = sqlx::query_as::<_, (i64, i64, i64)>(
-        r#"
-        SELECT
-            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
-            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
-            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
-        "#,
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load rollup totals after manifest recovery");
-    assert_eq!(after_recovery, (before.0, before.1, 1));
-
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollups() {
+async fn legacy_replay_markers_do_not_upgrade_from_sha_a_to_sha_b() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("legacy-replay-marker-upgrade").await;
     let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
@@ -4058,10 +4163,10 @@ async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollu
     let archive_path = seed_invocation_archive_batch_with_details(
         &pool,
         &config,
-        "legacy-replay-marker-upgrade",
+        "legacy-replay-marker-a-to-b",
         &[SeedInvocationArchiveBatchRow {
             id: 1,
-            invoke_id: "legacy-replay-marker-upgrade",
+            invoke_id: "legacy-replay-marker-a-to-b",
             occurred_at: occurred_at.as_str(),
             source: SOURCE_PROXY,
             status: "success",
@@ -4069,7 +4174,7 @@ async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollu
             cost: 0.12,
             ttfb_ms: Some(120.0),
             payload: Some(
-                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"legacy-replay-marker-upgrade"}"#,
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"legacy-replay-marker-a-to-b"}"#,
             ),
             detail_level: DETAIL_LEVEL_FULL,
             error_message: None,
@@ -4110,19 +4215,29 @@ async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollu
     .bind(&archive_file_path)
     .execute(&pool)
     .await
-    .expect("seed legacy replay markers");
-
-    crate::schema::backfill_legacy_hourly_rollup_archive_replay_hashes(&pool)
-        .await
-        .expect("upgrade legacy replay markers");
-    let manifest_sha256: String = sqlx::query_scalar(
-        "SELECT sha256 FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    .expect("seed legacy null replay markers");
+    sqlx::query(
+        r#"
+        UPDATE hourly_rollup_archive_replay
+        SET archive_sha256 = ''
+        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed legacy blank replay marker");
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = 'replacement-archive-sha-b' WHERE dataset = ?1 AND file_path = ?2",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_file_path)
-    .fetch_one(&pool)
+    .execute(&pool)
     .await
-    .expect("load completed archive manifest SHA");
+    .expect("publish replacement manifest SHA B");
+
     for target in [
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -4136,16 +4251,43 @@ async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollu
         .bind(&archive_file_path)
         .fetch_one(&pool)
         .await
-        .expect("load upgraded replay marker");
-        assert_eq!(replay_sha256.as_deref(), Some(manifest_sha256.as_str()));
+        .expect("load quarantined replay marker");
+        let expected = if target == HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN {
+            Some("")
+        } else {
+            None
+        };
+        assert_eq!(replay_sha256.as_deref(), expected);
     }
 
     assert_eq!(
         repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
             .await
-            .expect("legacy marker upgrade must not reopen the archive"),
+            .expect("legacy marker quarantine must not reopen the archive"),
         0
     );
+    let mut tx = pool.begin().await.expect("begin legacy proof check");
+    assert!(
+        !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file_path,
+        )
+        .await
+        .expect("legacy NULL marker must fail closed"),
+    );
+    assert!(
+        !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file_path,
+        )
+        .await
+        .expect("legacy blank marker must fail closed"),
+    );
+    tx.commit().await.expect("commit legacy proof check");
     let after = sqlx::query_as::<_, (i64, i64, i64)>(
         r#"
         SELECT
