@@ -2819,6 +2819,16 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
     expect(cluster.getAttribute("aria-label")).toContain("gpt-5.6-sol");
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getAttribute("aria-label"),
+    ).toEqual(expect.stringContaining("gpt-5.6-sol"));
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getAttribute("aria-label"),
+    ).toEqual(expect.stringContaining("Fast"));
     expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
     expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain("w-5");
     expect(cluster.querySelector('[data-model-context-part="model"]')?.className).not.toContain(

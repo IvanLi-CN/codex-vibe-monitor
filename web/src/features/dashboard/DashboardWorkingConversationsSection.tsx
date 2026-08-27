@@ -2472,7 +2472,7 @@ function InvocationSlot({
   const shouldGroupModelContext =
     !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
   const modelContextTitle =
-    viewModel.reasoningEffortValue === FALLBACK_CELL
+    shouldGroupModelContext && viewModel.reasoningEffortValue === FALLBACK_CELL
       ? viewModel.modelValue
       : `${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`;
   const displayConversationSequenceId =
@@ -2499,7 +2499,21 @@ function InvocationSlot({
       ),
     };
   }, [invocation.record, localeTag]);
-  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
+  const fastAccessibleLabel =
+    viewModel.fastIndicatorState === "effective"
+      ? t("table.model.fastPriorityAria")
+      : viewModel.fastIndicatorState === "requested_only"
+        ? t("table.model.fastRequestedOnlyAria")
+        : null;
+  const invocationActionLabel = [
+    t("dashboard.workingConversations.openInvocation"),
+    label,
+    displayConversationSequenceId,
+    ...(shouldGroupModelContext ? [modelContextTitle, fastAccessibleLabel] : []),
+    invocation.record.invokeId,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const handleOpenInvocation = useCallback(() => {
     if (interactionsDisabled) return;
