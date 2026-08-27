@@ -970,6 +970,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const markerRect = marker.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
         const fastPartRect = fastPart.getBoundingClientRect();
+        const clusterRect = cluster.getBoundingClientRect();
         const modelIconRect = modelIcon?.getBoundingClientRect();
         const fastIconRect = fastIcon?.getBoundingClientRect();
         const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
@@ -1002,6 +1003,13 @@ test.describe("Dashboard working conversations responsive layout", () => {
             count + Number(!part || !expectedDirectParts.has(part) || hasBorder || hasVisiblePseudo)
           );
         }, 0);
+        const partsWithinCluster = [modelRect, markerRect, effortTextRect, fastPartRect].every(
+          (partRect) =>
+            partRect.left >= clusterRect.left - 1 &&
+            partRect.right <= clusterRect.right + 1 &&
+            partRect.top >= clusterRect.top - 1 &&
+            partRect.bottom <= clusterRect.bottom + 1,
+        );
         return {
           modelWidth: modelRect.width,
           modelToMarkerGap: markerRect.left - modelRect.right,
@@ -1009,6 +1017,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           effortToFastGap: fastPartRect.left - effortTextRect.right,
           modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
           fastIconCenterDelta: fastIconRect ? centerDelta(fastIconRect, fastPartRect) : null,
+          partsWithinCluster,
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
@@ -1058,6 +1067,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.every((context) => context.markerCount === 1)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
     expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.partsWithinCluster)).toBe(true);
     expect(
       layout.groupedContexts.every(
         (context) =>
