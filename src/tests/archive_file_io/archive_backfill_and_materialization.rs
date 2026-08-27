@@ -4869,7 +4869,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&blank_manifest_path)
+    .bind(blank_manifest_path)
     .execute(&pool)
     .await
     .expect("seed blank legacy replay marker");
@@ -4879,7 +4879,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
             tx.as_mut(),
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &blank_manifest_path,
+            blank_manifest_path,
         )
         .await
         .expect("blank manifest marker read must fail closed")
@@ -4889,7 +4889,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
             tx.as_mut(),
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &blank_manifest_path,
+            blank_manifest_path,
         )
         .await
         .is_err(),
@@ -4906,7 +4906,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
         "#,
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&null_manifest_path)
+    .bind(null_manifest_path)
     .execute(&pool)
     .await
     .expect("publish recovered invocation manifest SHA");
@@ -4927,7 +4927,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&null_manifest_path)
+    .bind(null_manifest_path)
     .fetch_one(&pool)
     .await
     .expect("load repaired account replay marker");
