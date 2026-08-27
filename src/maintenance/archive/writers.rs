@@ -941,8 +941,16 @@ pub(crate) async fn upsert_archive_batch_manifest(
             cleanup_state = excluded.cleanup_state,
             cleanup_source_safe_start_date = NULL,
             superseded_by = excluded.superseded_by,
-            coverage_start_at = excluded.coverage_start_at,
-            coverage_end_at = excluded.coverage_end_at,
+            coverage_start_at = CASE
+                WHEN archive_batches.coverage_start_at IS NULL THEN excluded.coverage_start_at
+                WHEN excluded.coverage_start_at IS NULL THEN archive_batches.coverage_start_at
+                ELSE MIN(archive_batches.coverage_start_at, excluded.coverage_start_at)
+            END,
+            coverage_end_at = CASE
+                WHEN archive_batches.coverage_end_at IS NULL THEN excluded.coverage_end_at
+                WHEN excluded.coverage_end_at IS NULL THEN archive_batches.coverage_end_at
+                ELSE MAX(archive_batches.coverage_end_at, excluded.coverage_end_at)
+            END,
             archive_expires_at = excluded.archive_expires_at,
             created_at = datetime('now')
         "#,

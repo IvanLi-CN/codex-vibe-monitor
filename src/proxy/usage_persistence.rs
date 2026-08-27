@@ -2736,6 +2736,8 @@ pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
         WHERE batches.dataset = ?2
           AND batches.status = 'completed'
           AND batches.file_path = ?3
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
         ON CONFLICT(target, dataset, file_path) DO UPDATE SET
             archive_sha256 = excluded.archive_sha256,
             replayed_at = excluded.replayed_at
@@ -2766,6 +2768,8 @@ pub(crate) async fn hourly_rollup_archive_replayed_tx(
                 ON batches.dataset = replay.dataset
                AND batches.file_path = replay.file_path
                AND batches.status = 'completed'
+               AND batches.sha256 IS NOT NULL
+               AND TRIM(batches.sha256) <> ''
                AND batches.sha256 = replay.archive_sha256
             WHERE replay.target = ?1
               AND replay.dataset = ?2
