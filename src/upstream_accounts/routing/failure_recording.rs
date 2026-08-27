@@ -923,6 +923,23 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         .await;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
+    let classification = classify_pool_account_http_failure(account_kind, status, error_message);
+    let priority_handoff_cooldown = account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && (route_http_failure_is_retryable_responses_overload(status, error_message)
+            || status == StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error()
+            || matches!(
+                classification.disposition,
+                UpstreamAccountFailureDisposition::RateLimited
+                    | UpstreamAccountFailureDisposition::Retryable
+            ));
+    // The local admission state must transition before any optional SQLite
+    // capability/health write so a database outage cannot suppress cooldown.
+    defer_priority_handoff_failure_for_attempt_or_invoke(
+        attempt_id,
+        invoke_id,
+        priority_handoff_cooldown,
+    );
     if requirements.response_endpoint
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
@@ -1031,15 +1048,6 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     } else {
         false
     };
-    let classification = classify_pool_account_http_failure(account_kind, status, error_message);
-    let priority_handoff_cooldown = account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-        && (status == StatusCode::TOO_MANY_REQUESTS
-            || status.is_server_error()
-            || matches!(
-                classification.disposition,
-                UpstreamAccountFailureDisposition::RateLimited
-                    | UpstreamAccountFailureDisposition::Retryable
-            ));
     complete_priority_handoff_from_attempt_or_invoke(
         pool,
         attempt_id,

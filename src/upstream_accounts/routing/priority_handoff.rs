@@ -154,6 +154,20 @@ pub(crate) fn take_priority_handoff_attempt(
         .and_then(|mut contexts| contexts.remove(&attempt_id))
 }
 
+fn priority_handoff_attempt_context(attempt_id: i64) -> Option<PriorityHandoffAttemptContext> {
+    attempt_contexts()
+        .lock()
+        .ok()
+        .and_then(|contexts| contexts.get(&attempt_id).cloned())
+}
+
+fn priority_handoff_invoke_context(invoke_id: &str) -> Option<PriorityHandoffAttemptContext> {
+    invoke_attempt_contexts()
+        .lock()
+        .ok()
+        .and_then(|contexts| contexts.get(invoke_id).cloned())
+}
+
 fn take_priority_handoff_attempt_for_invoke(
     invoke_id: &str,
 ) -> Option<PriorityHandoffAttemptContext> {
@@ -604,6 +618,29 @@ pub(crate) fn defer_priority_handoff_failure_for_key(
     true
 }
 
+pub(crate) fn defer_priority_handoff_failure_for_attempt_or_invoke(
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    cooldown: bool,
+) -> bool {
+    let context = attempt_id
+        .and_then(priority_handoff_attempt_context)
+        .or_else(|| {
+            invoke_id
+                .filter(|value| !value.is_empty())
+                .and_then(priority_handoff_invoke_context)
+        });
+    let Some(context) = context else {
+        return false;
+    };
+    defer_priority_handoff_failure_for_key(
+        context.account_id,
+        context.model_key.as_str(),
+        context.generation,
+        cooldown,
+    )
+}
+
 pub(crate) fn release_priority_handoff_for_key(account_id: i64, model_key: &str, generation: u64) {
     let Ok(mut state) = state().lock() else {
         return;
@@ -666,7 +703,11 @@ async fn complete_priority_handoff_from_attempt_inner(
                     // A database read failure cannot prove terminal success. Release the
                     // local permit so the source remains available without fabricating
                     // recovery evidence; the next real request can verify the target again.
-                    release_priority_handoff_for_key(context.account_id, &context.model_key, context.generation);
+                    release_priority_handoff_for_key(
+                        context.account_id,
+                        &context.model_key,
+                        context.generation,
+                    );
                 }
                 return;
             }
