@@ -47,6 +47,26 @@ It follows the operation's bounded error backoff and is distinct from a pressure
 defer.
 _Avoid_: pressure defer, successful no-op
 
+**Summary Canonical Record**:
+The compact, normalized invocation representation retained by Summary Projection.
+It contains only fields needed to construct the existing `StatsResponse`; raw
+payloads and raw responses are durable source material, not canonical read-model
+bytes.
+_Avoid_: raw payload cache, preview payload admission
+
+**Pressure Wake Epoch**:
+The in-memory generation that makes a deferred background task eligible for one
+new selection attempt after its deadline or a genuine pressure-clear transition.
+Repeated notifications while the same cooldown is active do not form more wake
+work.
+_Avoid_: per-notification retry, cooldown polling
+
+**P2 Writer Admission**:
+The low-priority scheduling boundary for hourly rollup and batch finalization
+work. It preserves its recoverable backlog and yields to terminal P1 durability
+when SQLite is under pressure.
+_Avoid_: terminal retry lane, fixed short lock retry
+
 ## Dashboard 上游账号活动
 
 **统计卡片**:
