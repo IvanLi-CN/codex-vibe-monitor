@@ -1903,61 +1903,31 @@ pub(crate) async fn finalize_tracked_pool_attempt(
     let Some(pending_attempt_record) = pending_attempt_record else {
         return;
     };
-    if pending_attempt_record.routing_source.as_deref() == Some(PRIORITY_HANDOFF_ROUTING_SOURCE) {
-        // A pure downstream close can leave a successful upstream status in the
-        // capture record. It is client cancellation, not handoff evidence, so it
-        // must only release the local permit through the owning guard.
-        let client_cancelled =
-            priority_handoff_client_cancellation(status, downstream_http_status, failure_kind);
-        if !client_cancelled {
-            let success = status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
-            let cooldown = !success
-                && (http_status.is_some_and(|status| {
-                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-                }) || matches!(
-                    failure_kind,
-                    Some(
-                        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
-                            | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-                            | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
-                            | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
-                    )
-                ));
-            let generation = priority_handoff_generation_from_audit_json(
-                pending_attempt_record
-                    .routing_selection_audit_json
-                    .as_deref(),
-            );
-            if let Some(generation) = generation {
-                if success {
-                    // Route-success recording owns the verification credit. If it
-                    // fails, only release the in-flight permit; the source sticky
-                    // binding was not durably migrated and must be retried later.
-                    if let Some(model_key) = pending_attempt_record.request_model.as_deref()
-                        && !model_key.trim().is_empty()
-                    {
-                        release_priority_handoff_for_key(
-                            pending_attempt_record.upstream_account_id,
-                            model_key,
-                            generation,
-                        );
-                    }
-                } else {
-                    defer_priority_handoff_failure_for_key(
-                        pending_attempt_record.upstream_account_id,
-                        pending_attempt_record
-                            .request_model
-                            .as_deref()
-                            .unwrap_or_default(),
-                        generation,
-                        cooldown,
-                    );
-                }
-            }
-        }
-        forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
-        forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
-    }
+    let priority_handoff =
+        pending_attempt_record.routing_source.as_deref() == Some(PRIORITY_HANDOFF_ROUTING_SOURCE);
+    let priority_handoff_client_cancelled = priority_handoff
+        && priority_handoff_client_cancellation(status, downstream_http_status, failure_kind);
+    let priority_handoff_success =
+        priority_handoff && status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS;
+    let priority_handoff_cooldown = !priority_handoff_success
+        && (http_status.is_some_and(|status| {
+            status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+        }) || matches!(
+            failure_kind,
+            Some(
+                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                    | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                    | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+                    | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
+            )
+        ));
+    let priority_handoff_generation = priority_handoff.then(|| {
+        priority_handoff_generation_from_audit_json(
+            pending_attempt_record
+                .routing_selection_audit_json
+                .as_deref(),
+        )
+    });
     let finished_at = shanghai_now_string();
     if let Err(err) = finalize_pool_upstream_request_attempt(
         &state.pool,
@@ -1994,6 +1964,53 @@ pub(crate) async fn finalize_tracked_pool_attempt(
             error = %err,
             "failed to broadcast tracked pool attempt snapshot"
         );
+    }
+    if priority_handoff {
+        // A pure downstream close can leave a successful upstream status in the
+        // capture record. It is client cancellation, not handoff evidence, so it
+        // must only release the local permit through the owning guard.
+        if priority_handoff_client_cancelled {
+            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+        } else if let Some(Some(generation)) = priority_handoff_generation {
+            if priority_handoff_success {
+                // The attempt row is finalized before success completion, so a
+                // complete sticky write can advance verification. If either
+                // persistence step failed, completion releases without credit.
+                complete_priority_handoff_from_attempt_or_invoke(
+                    &state.pool,
+                    pending_attempt_record.attempt_id,
+                    Some(&pending_attempt_record.invoke_id),
+                    true,
+                    false,
+                )
+                .await;
+                if let Some(model_key) = pending_attempt_record.request_model.as_deref()
+                    && !model_key.trim().is_empty()
+                {
+                    release_priority_handoff_for_key(
+                        pending_attempt_record.upstream_account_id,
+                        model_key,
+                        generation,
+                    );
+                }
+            } else {
+                defer_priority_handoff_failure_for_key(
+                    pending_attempt_record.upstream_account_id,
+                    pending_attempt_record
+                        .request_model
+                        .as_deref()
+                        .unwrap_or_default(),
+                    generation,
+                    priority_handoff_cooldown,
+                );
+            }
+            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+        } else {
+            forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+            forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+        }
     }
 }
 

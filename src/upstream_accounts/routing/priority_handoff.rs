@@ -685,11 +685,38 @@ async fn complete_priority_handoff_from_attempt_inner(
             if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
                 && let Some(context) = take_priority_handoff_attempt(attempt_id)
             {
-                release_priority_handoff_for_key(
-                    context.account_id,
-                    &context.model_key,
-                    context.generation,
-                );
+                if defer_failure {
+                    let reason_code = complete_failure_for_key(
+                        context.account_id,
+                        &context.model_key,
+                        context.generation,
+                        cooldown,
+                    );
+                    if let Some(reason_code) = reason_code
+                        && let Err(error) = super::model_health::persist_priority_handoff_event(
+                            pool,
+                            context.account_id,
+                            Some(attempt_id),
+                            context.model_key.as_str(),
+                            reason_code,
+                        )
+                        .await
+                    {
+                        warn!(
+                            account_id = context.account_id,
+                            attempt_id,
+                            error = %error,
+                            reason_code,
+                            "failed to persist priority handoff event"
+                        );
+                    }
+                } else {
+                    release_priority_handoff_for_key(
+                        context.account_id,
+                        &context.model_key,
+                        context.generation,
+                    );
+                }
             }
             return;
         }

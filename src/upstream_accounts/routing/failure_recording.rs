@@ -192,7 +192,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<bool> {
-    let outcome = record_pool_route_success_inner(
+    let outcome = match record_pool_route_success_inner(
         &state.pool,
         account_id,
         request_started_at_utc,
@@ -202,7 +202,17 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         attempt_id,
         sticky_affinity_generation,
     )
-    .await?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            forget_priority_handoff_attempt(attempt_id);
+            if let Some(invoke_id) = invoke_id {
+                forget_priority_handoff_attempt_for_invoke(invoke_id);
+            }
+            return Err(error);
+        }
+    };
     complete_priority_handoff_from_attempt_or_invoke(
         &state.pool,
         attempt_id,
@@ -252,7 +262,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    record_pool_route_success_inner(
+    match record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,
@@ -263,7 +273,16 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
         sticky_affinity_generation,
     )
     .await
-    .map(|_| ())?;
+    {
+        Ok(_) => {}
+        Err(error) => {
+            forget_priority_handoff_attempt(attempt_id);
+            if let Some(invoke_id) = invoke_id {
+                forget_priority_handoff_attempt_for_invoke(invoke_id);
+            }
+            return Err(error);
+        }
+    }
     complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
         .await;
     Ok(())
@@ -501,7 +520,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    let _ = record_pool_route_success_inner(
+    match record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,
@@ -511,7 +530,17 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         attempt_id,
         sticky_affinity_generation,
     )
-    .await?;
+    .await
+    {
+        Ok(_) => {}
+        Err(error) => {
+            forget_priority_handoff_attempt(attempt_id);
+            if let Some(invoke_id) = invoke_id {
+                forget_priority_handoff_attempt_for_invoke(invoke_id);
+            }
+            return Err(error);
+        }
+    }
     complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
         .await;
     record_pool_route_success_capability_observations(
@@ -537,7 +566,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<bool> {
-    let outcome = record_pool_route_success_inner(
+    let outcome = match record_pool_route_success_inner(
         &state.pool,
         account_id,
         request_started_at_utc,
@@ -547,7 +576,17 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         attempt_id,
         sticky_affinity_generation,
     )
-    .await?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            forget_priority_handoff_attempt(attempt_id);
+            if let Some(invoke_id) = invoke_id {
+                forget_priority_handoff_attempt_for_invoke(invoke_id);
+            }
+            return Err(error);
+        }
+    };
     complete_priority_handoff_from_attempt_or_invoke(
         &state.pool,
         attempt_id,
