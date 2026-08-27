@@ -10981,45 +10981,9 @@ impl SubscriptionTopic {
                         ));
                     }
 
-                    // This branch is reachable only before startup hydration has published the
-                    // first projection. Once a last-good projection exists, a Summary topic is
-                    // strictly memory-backed and never re-enters the legacy SQL builder.
-                    let source_scope = resolve_default_source_scope(&state.pool).await?;
-                    let SummaryTopicTerminalConsistentBase {
-                        mut response,
-                        pending_terminal_deltas,
-                        terminal_sequence,
-                    } = build_summary_topic_terminal_consistent_base(state.as_ref(), &query)
-                        .await?;
-                    let mut replayed_terminal_sequence = 0;
-                    apply_dashboard_terminal_slice_to_summary_response(
-                        &mut response,
-                        &mut replayed_terminal_sequence,
-                        &summary_window,
-                        reporting_tz,
-                        source_scope,
-                        *upstream_account_id,
-                        &DashboardTerminalProjectionSlice {
-                            revision: 0,
-                            deltas: pending_terminal_deltas,
-                        },
-                    );
-                    let range_start =
-                        summary_window_range(&summary_window, reporting_tz, Utc::now())?
-                            .map(|(start, _)| start);
-                    return Ok(BuiltSubscriptionTopicPayload::Dashboard(
-                        DashboardTopicMaterializer::Summary {
-                            base: Arc::new(StdMutex::new(DashboardSummaryMaterializerState::new(
-                                response,
-                                terminal_sequence,
-                                range_start,
-                            ))),
-                            window: summary_window,
-                            reporting_tz,
-                            source_scope,
-                            upstream_account_id: *upstream_account_id,
-                        },
-                    ));
+                    return Err(ApiError::unavailable(anyhow!(
+                        "summary projection has not completed hydration"
+                    )));
                 }
                 Self::TimeseriesOpenWindow {
                     range,
@@ -15977,6 +15941,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cold_summary_topic_materialization_is_unavailable_without_sqlite() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "1d".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+
+        state.pool.close().await;
+
+        assert!(matches!(
+            summary.build_cached_payload(state).await,
+            Err(ApiError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn hydrated_summary_topic_replays_acked_terminal_until_projection_catches_up() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -17123,6 +17108,23 @@ mod tests {
         let delta = outcome
             .terminal_delta
             .expect("accepted persisted terminal delta");
+        state
+            .proxy_runtime_invocations
+            .record_dashboard_terminal_delta(delta);
+        let capture = state
+            .proxy_runtime_invocations
+            .capture_terminal_slice()
+            .expect("capture persisted terminal overlay");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: capture.revision,
+                deltas: capture.deltas.clone(),
+            })
+            .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh summary projection with the durable terminal");
 
         let payload = summary
             .build_cached_payload(state.clone())
@@ -17132,8 +17134,8 @@ mod tests {
                 None,
                 None,
                 Some(&DashboardTerminalProjectionSlice {
-                    revision: 1,
-                    deltas: vec![delta],
+                    revision: capture.revision,
+                    deltas: capture.deltas,
                 }),
             )
             .expect("serialize folded summary base");

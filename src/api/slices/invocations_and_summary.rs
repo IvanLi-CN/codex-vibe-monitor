@@ -9952,10 +9952,10 @@ async fn refresh_summary_snapshots_with_deadline(
     {
         // A background failure must never replace a complete revision with a partial one.  The
         // existing revision remains the exact last-good response until its own freshness budget
-        // expires; startup still records the affected selection as unavailable below.
+        // expires; startup still records an affected range as unavailable below.
         return Err(anyhow!(
             "summary projection archive source is unavailable for {} bounded range(s)",
-            projection.unavailable_unmaterialized_archive_ranges.len()
+            projection.unavailable_unmaterialized_archive_ranges.len(),
         ));
     }
     state
@@ -11723,10 +11723,18 @@ async fn build_summary_projection_once(
             after_id = Some(next_after_id);
         }
     }
-    let exact_bucket_requirements = exact_archive_buckets
+    let mut exact_bucket_requirements = exact_archive_buckets
         .difference(&protected_boundary_buckets)
         .copied()
         .collect::<HashSet<_>>();
+    // A protected boundary normally makes only a partial-hour selection unavailable when its
+    // raw archive is unreadable. Missing compact replay or rollup coverage is different: every
+    // selection touching that bucket lacks an exact durable source, so it must remain strict
+    // even if the same bucket is also a supported calendar/timezone boundary.
+    exact_bucket_requirements.extend(exact_global_total_rollup_buckets.iter().copied());
+    exact_bucket_requirements.extend(exact_account_total_rollup_buckets.iter().copied());
+    exact_bucket_requirements.extend(exact_global_usage_rollup_buckets.iter().copied());
+    exact_bucket_requirements.extend(exact_account_usage_rollup_buckets.iter().copied());
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
         .into_iter()
         .filter_map(|range| {
@@ -12202,6 +12210,11 @@ async fn build_summary_projection_once(
     let current_materialized_sha256 =
         load_summary_projection_archive_manifest_sha256(pool, &current_materialized_paths).await?;
     let mut current_archive_candidate_records = HashMap::<String, SummaryProjectionRecord>::new();
+    // A current-only archive candidate can fall just outside the bounded resident prefix. That
+    // pruning cannot make a rolling/calendar range inexact when its compact totals and usage
+    // dimensions have already replayed independently. Keep that proof distinct from current-N
+    // admission, whose cutoff remains governed by the retained prefix.
+    let mut current_archive_compact_rollup_proven_ids = HashSet::<String>::new();
     let mut current_archive_candidate_budget = 0usize;
     let mut current_archive_candidate_bytes = 0usize;
     let current_persisted_live_ids = records_by_invoke_id
@@ -12229,6 +12242,10 @@ async fn build_summary_projection_once(
         else {
             continue;
         };
+        let candidate_ids_before_archive = current_archive_candidate_records
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
         require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
         let merge_result = merge_summary_projection_archive_records_with_coverage(
             &archive_pool,
@@ -12255,6 +12272,31 @@ async fn build_summary_projection_once(
         drop(temp_cleanup);
         match merge_result {
             Ok(()) => {
+                let replay_coverage = summary_projection_effective_replay_coverage(
+                    archive,
+                    archive_replay_coverage
+                        .get(archive.file_path())
+                        .copied()
+                        .unwrap_or_default(),
+                );
+                if replay_coverage.supports_unavailable_archive() {
+                    for (invoke_id, record) in &current_archive_candidate_records {
+                        if candidate_ids_before_archive.contains(invoke_id) {
+                            continue;
+                        }
+                        let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+                        let global_proven = hourly_rollup_totals.contains_key(&(bucket, None))
+                            && hourly_rollup_usage.contains_key(&(bucket, None));
+                        let account_proven =
+                            record.row.upstream_account_id.is_none_or(|account_id| {
+                                hourly_rollup_totals.contains_key(&(bucket, Some(account_id)))
+                                    && hourly_rollup_usage.contains_key(&(bucket, Some(account_id)))
+                            });
+                        if global_proven && account_proven {
+                            current_archive_compact_rollup_proven_ids.insert(invoke_id.clone());
+                        }
+                    }
+                }
                 // The current candidate read only covers the moving exact tail. Do not treat a
                 // manifest which reaches outside that tail as fully represented: a larger
                 // newest-N selection could still need one of its older rows.
@@ -12400,15 +12442,23 @@ async fn build_summary_projection_once(
     if current_records.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
         let first_retained = current_records.len() - SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
         recent_index_complete = false;
-        let newly_pruned_at = current_records[first_retained - 1].occurred_at;
+        let newly_pruned_at = current_records[..first_retained]
+            .iter()
+            .filter(|record| {
+                !current_archive_compact_rollup_proven_ids.contains(&record.row.invoke_id)
+            })
+            .map(|record| record.occurred_at)
+            .max();
         // A runtime overlay can be older than an already omitted durable row. Keep the newest
         // omitted timestamp so every range that could include either unretained source remains
         // unavailable instead of letting the older overlay relax the durable proof boundary.
-        recent_index_overflow_at = Some(
-            recent_index_overflow_at
-                .map(|existing| existing.max(newly_pruned_at))
-                .unwrap_or(newly_pruned_at),
-        );
+        if let Some(newly_pruned_at) = newly_pruned_at {
+            recent_index_overflow_at = Some(
+                recent_index_overflow_at
+                    .map(|existing| existing.max(newly_pruned_at))
+                    .unwrap_or(newly_pruned_at),
+            );
+        }
         current_records.drain(..first_retained);
     }
     let mut hourly_buckets = BTreeMap::<i64, Vec<usize>>::new();
@@ -30387,11 +30437,7 @@ mod request_compression_query_tests {
             .single()
             .expect("valid archive coverage start")
             .to_rfc3339();
-        let coverage_end = Utc
-            .timestamp_opt(bucket.saturating_add(3_600), 0)
-            .single()
-            .expect("valid archive coverage end")
-            .to_rfc3339();
+        let coverage_end = coverage_start.clone();
         sqlx::query(
             "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
              VALUES (?1, 'proxy', 3, 2, 1, 91, 4.5, 1.5)",
