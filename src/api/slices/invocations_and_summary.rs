@@ -7547,7 +7547,7 @@ impl SummaryProjection {
         self.current_selection_cutoff(limit).is_none_or(|cutoff| {
             self.unavailable_unmaterialized_archive_current_ranges
                 .iter()
-                .any(|range| range.end >= cutoff)
+                .any(|range| range.end > cutoff)
         })
     }
 
@@ -10233,12 +10233,26 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                     WHERE replay.target = ?1 \
                       AND replay.dataset = 'codex_invocations' \
                       AND replay.file_path = batches.file_path \
+                      AND ( \
+                           replay.archive_sha256 = batches.sha256 \
+                           OR ( \
+                               replay.archive_sha256 IS NULL \
+                               AND batches.historical_rollups_materialized_at IS NOT NULL \
+                           ) \
+                      ) \
                 ) AS needs_global_archive_scan, \
                 (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?2 \
                       AND replay.dataset = 'codex_invocations' \
                       AND replay.file_path = batches.file_path \
+                      AND ( \
+                           replay.archive_sha256 = batches.sha256 \
+                           OR ( \
+                               replay.archive_sha256 IS NULL \
+                               AND batches.historical_rollups_materialized_at IS NOT NULL \
+                           ) \
+                      ) \
                 )) AS needs_account_archive_scan, \
                 batches.historical_rollups_materialized_at IS NULL AS is_unmaterialized \
          FROM archive_batches AS batches \
@@ -10250,15 +10264,29 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                    WHERE replay.target = ?1 \
                      AND replay.dataset = 'codex_invocations' \
                      AND replay.file_path = batches.file_path \
+                     AND ( \
+                          replay.archive_sha256 = batches.sha256 \
+                          OR ( \
+                              replay.archive_sha256 IS NULL \
+                              AND batches.historical_rollups_materialized_at IS NOT NULL \
+                          ) \
+                     ) \
                ) \
                OR ( \
                    batches.historical_rollups_materialized_at IS NULL \
                    AND NOT EXISTS ( \
-                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
-                       WHERE replay.target = ?2 \
-                         AND replay.dataset = 'codex_invocations' \
-                         AND replay.file_path = batches.file_path \
-                   ) \
+                   SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                   WHERE replay.target = ?2 \
+                     AND replay.dataset = 'codex_invocations' \
+                     AND replay.file_path = batches.file_path \
+                     AND ( \
+                          replay.archive_sha256 = batches.sha256 \
+                          OR ( \
+                              replay.archive_sha256 IS NULL \
+                              AND batches.historical_rollups_materialized_at IS NOT NULL \
+                          ) \
+                     ) \
+               ) \
                ) \
            ) \
          ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC \
@@ -30582,7 +30610,7 @@ mod request_compression_query_tests {
             .expect("valid archive coverage start")
             .to_rfc3339();
         let coverage_end = Utc
-            .timestamp_opt(bucket.saturating_add(3_600), 0)
+            .timestamp_opt(bucket.saturating_add(3_599), 0)
             .single()
             .expect("valid archive coverage end")
             .to_rfc3339();
@@ -30746,6 +30774,94 @@ mod request_compression_query_tests {
         )
         .await;
         assert!(matches!(account, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_all_time_replays_unmaterialized_archive_when_replay_sha_is_stale() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let archived_at = format_naive(
+            (Utc::now() - ChronoDuration::days(180))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let archive_path = seed_invocation_archive_batch_with_details(
+            &state.pool,
+            &state.config,
+            "summary-all-time-stale-replay-sha",
+            &[SeedInvocationArchiveBatchRow {
+                id: 9_001,
+                invoke_id: "summary-all-time-stale-replay-sha",
+                occurred_at: &archived_at,
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 17,
+                cost: 1.7,
+                ttfb_ms: None,
+                payload: Some(r#"{"upstreamAccountId":42}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            }],
+        )
+        .await;
+        let archive_path = archive_path.to_string_lossy().to_string();
+        let archive_batch_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+        )
+        .bind(&archive_path)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load unmaterialized archive manifest");
+        sqlx::query(
+            "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) \
+             VALUES (?1, 42, ?2)",
+        )
+        .bind(archive_batch_id)
+        .bind(&archived_at)
+        .execute(&state.pool)
+        .await
+        .expect("record archived account activity");
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', ?2, 'stale-replaced-archive-sha')",
+            )
+            .bind(target)
+            .bind(&archive_path)
+            .execute(&state.pool)
+            .await
+            .expect("seed stale replay marker for replaced archive");
+        }
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("stale replay markers must admit exact all-time raw fallback");
+        state.pool.close().await;
+
+        for upstream_account_id in [None, Some(42)] {
+            let Json(summary) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some("all".to_string()),
+                    limit: None,
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id,
+                }),
+            )
+            .await
+            .expect("closed-pool all-time Summary must use the hydrated raw fallback");
+            assert_eq!(summary.total_count, 1, "scope {upstream_account_id:?}");
+            assert_eq!(summary.total_tokens, 17, "scope {upstream_account_id:?}");
+            assert_eq!(summary.total_cost, 1.7, "scope {upstream_account_id:?}");
+        }
     }
 
     #[tokio::test]
@@ -31614,6 +31730,71 @@ mod request_compression_query_tests {
         )
         .await
         .expect("closed SQLite current request must use the in-memory exact cutoff proof");
+        assert_eq!(summary.total_count, 1);
+        assert_eq!(summary.total_tokens, 1);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_ignores_unreadable_archive_ending_at_cutoff() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let current_hour = Utc
+            .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+            .single()
+            .expect("valid current hour");
+        let selected_current = current_hour + ChronoDuration::minutes(20);
+        let archive_start = selected_current - ChronoDuration::minutes(10);
+        // Manifest coverage is inclusive, so this becomes the exact half-open endpoint used by
+        // the resident-current proof.
+        let archive_end_inclusive = selected_current - ChronoDuration::seconds(1);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-current-after-adjacent-unreadable-archive', ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(selected_current))
+        .execute(&state.pool)
+        .await
+        .expect("seed selected current record at the half-open archive endpoint");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', '/definitely/missing/summary-current-adjacent.sqlite.gz', \
+                     'summary-current-adjacent', 1, 'completed', ?1, ?2, datetime('now'))",
+        )
+        .bind(db_occurred_at_lower_bound(archive_start))
+        .bind(db_occurred_at_lower_bound(archive_end_inclusive))
+        .execute(&state.pool)
+        .await
+        .expect("seed unreadable archive adjacent to the selected current cutoff");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate current projection with adjacent unreadable archive metadata");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert!(
+            !projection.unavailable_archive_may_affect_global_current(1),
+            "a half-open archive ending at the cutoff cannot affect the selected rank"
+        );
+        state.pool.close().await;
+
+        let Json(summary) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("closed-pool current request must use the half-open cutoff proof");
         assert_eq!(summary.total_count, 1);
         assert_eq!(summary.total_tokens, 1);
     }

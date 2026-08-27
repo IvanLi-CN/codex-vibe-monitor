@@ -3235,6 +3235,46 @@ impl SubscriptionHub {
         upstream_account_id: Option<i64>,
     ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let state = self.state.lock().await;
+        Self::summary_projection_terminal_overlay_from_state(
+            &state,
+            projection,
+            all_time,
+            upstream_account_id,
+        )
+    }
+
+    async fn summary_projection_with_terminal_overlay(
+        &self,
+        all_time: bool,
+        upstream_account_id: Option<i64>,
+    ) -> Result<
+        Option<(
+            Arc<SummaryProjection>,
+            Vec<DashboardActivityTerminalDelta>,
+            HashSet<u64>,
+        )>,
+        ApiError,
+    > {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.clone() else {
+            return Ok(None);
+        };
+        let (overlay, initial_slice_suppressions) =
+            Self::summary_projection_terminal_overlay_from_state(
+                &state,
+                projection.as_ref(),
+                all_time,
+                upstream_account_id,
+            )?;
+        Ok(Some((projection, overlay, initial_slice_suppressions)))
+    }
+
+    fn summary_projection_terminal_overlay_from_state(
+        state: &SubscriptionHubState,
+        projection: &SummaryProjection,
+        all_time: bool,
+        upstream_account_id: Option<i64>,
+    ) -> Result<(Vec<DashboardActivityTerminalDelta>, HashSet<u64>), ApiError> {
         let overflowed = if all_time {
             if let Some(account_id) = upstream_account_id {
                 state
@@ -10932,22 +10972,25 @@ impl SubscriptionTopic {
                     let summary_window =
                         parse_summary_window(&query, state.config.list_limit_max as i64)?;
                     let reporting_tz = parse_reporting_tz(Some(time_zone))?;
-                    let projection = state.subscription_hub.summary_projection().await;
-                    if let Some(projection) = projection {
+                    let projection_with_overlay = state
+                        .subscription_hub
+                        .summary_projection_with_terminal_overlay(
+                            matches!(&summary_window, SummaryWindow::All),
+                            *upstream_account_id,
+                        )
+                        .await?;
+                    if let Some((
+                        projection,
+                        pending_terminal_deltas,
+                        initial_terminal_slice_suppressions,
+                    )) = projection_with_overlay
+                    {
                         let mut response = projection
                             .response_for_query(&query, state.config.list_limit_max as i64)?;
                         // The immutable SummaryProjection represents one durable baseline. A
                         // terminal remains in the hub-owned overlay until that exact projection
                         // contains its durable identity, including after SQLite ACK but before a
                         // background projection swap. This stays entirely in memory.
-                        let (pending_terminal_deltas, initial_terminal_slice_suppressions) = state
-                            .subscription_hub
-                            .summary_projection_terminal_overlay(
-                                projection.as_ref(),
-                                matches!(&summary_window, SummaryWindow::All),
-                                *upstream_account_id,
-                            )
-                            .await?;
                         let mut replayed_terminal_sequence = 0;
                         apply_dashboard_terminal_slice_to_summary_response(
                             &mut response,
@@ -12962,6 +13005,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before Dashboard subscription setup");
         let topic = SubscriptionTopic::DashboardActivityCurrent {
             range: "today".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -13267,6 +13313,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before Dashboard topology setup");
         state
             .proxy_runtime_invocations
             .bind_dashboard_network_speed_cache(state.dashboard_network_speed_cache.clone())
@@ -15453,6 +15502,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before closing SQLite");
         let activity = SubscriptionTopic::DashboardActivityCurrent {
             range: "today".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -15777,6 +15829,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before materializer construction");
         let activity = SubscriptionTopic::DashboardActivityCurrent {
             range: "today".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -16044,6 +16099,114 @@ mod tests {
         assert_eq!(payload["totalCount"], json!(1));
         assert_eq!(payload["totalTokens"], json!(42));
         assert_eq!(payload["totalCost"], json!(0.25));
+    }
+
+    #[tokio::test]
+    async fn summary_current_snapshot_keeps_overlay_across_projection_refresh_swap() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish initial Summary projection");
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut terminal = dashboard_runtime_topology_live_record(&occurred_at);
+        terminal.id = 842_101;
+        terminal.invoke_id = "summary-current-refresh-swap-terminal".to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(42);
+        terminal.output_tokens = Some(16);
+        terminal.cost = Some(0.25);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost,
+                payload, raw_response
+            ) VALUES (?1, ?2, ?3, ?4, 'success', ?5, ?6, ?7, ?8, '{}')
+            "#,
+        )
+        .bind(terminal.id)
+        .bind(terminal.invoke_id.as_str())
+        .bind(terminal.occurred_at.as_str())
+        .bind(terminal.source.as_str())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": terminal.upstream_account_id }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal after the initial projection");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("accept persisted terminal delta");
+        state
+            .subscription_hub
+            .materialize_dashboard_terminal_slice(DashboardTerminalProjectionSlice {
+                revision: 1,
+                deltas: vec![delta],
+            })
+            .await;
+
+        // This is the former split-read interleaving: capture the old projection and its overlay,
+        // then let refresh publish the new projection that consumes and clears that overlay.
+        let (projection, pending_terminal_deltas, initial_terminal_slice_suppressions) = state
+            .subscription_hub
+            .summary_projection_with_terminal_overlay(false, None)
+            .await
+            .expect("capture coherent Summary snapshot")
+            .expect("initial Summary projection is available");
+        assert_eq!(pending_terminal_deltas.len(), 1);
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh projection with the durable terminal");
+        assert!(
+            state
+                .subscription_hub
+                .state
+                .lock()
+                .await
+                .summary_terminal_overlay
+                .is_empty(),
+            "the refreshed projection must consume the prior terminal overlay"
+        );
+        state.pool.close().await;
+
+        let query = SummaryQuery {
+            window: Some("today".to_string()),
+            limit: None,
+            time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+            upstream_account_id: None,
+        };
+        let mut response = projection
+            .response_for_query(&query, state.config.list_limit_max as i64)
+            .expect("old projection remains a valid immutable base");
+        let summary_window = parse_summary_window(&query, state.config.list_limit_max as i64)
+            .expect("parse Summary window");
+        let mut replayed_terminal_sequence = 0;
+        apply_dashboard_terminal_slice_to_summary_response(
+            &mut response,
+            &mut replayed_terminal_sequence,
+            &summary_window,
+            Shanghai,
+            InvocationSourceScope::All,
+            None,
+            &DashboardTerminalProjectionSlice {
+                revision: 0,
+                deltas: pending_terminal_deltas,
+            },
+        );
+        let materializer = DashboardSummaryMaterializerState::from_summary_projection(
+            response,
+            initial_terminal_slice_suppressions,
+            None,
+        );
+        assert_eq!(materializer.response.total_count, 1);
+        assert_eq!(materializer.response.total_tokens, 42);
+        assert_eq!(materializer.response.total_cost, 0.25);
     }
 
     #[tokio::test]
@@ -16480,6 +16643,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before closing SQLite");
         let summary = SubscriptionTopic::SummaryCurrent {
             window: "1d".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -16657,6 +16823,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before failure isolation");
         let summary = SubscriptionTopic::SummaryCurrent {
             window: "1d".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -16675,7 +16844,7 @@ mod tests {
             .expect("prepare moving summary base");
         let summary_key = summary.cache_key().expect("summary topic key");
         {
-            let guard = state.subscription_hub.state.lock().await;
+            let mut guard = state.subscription_hub.state.lock().await;
             let DashboardTopicMaterializer::Summary { base, .. } = guard.topics[&summary_key]
                 .dashboard_materializer
                 .as_ref()
@@ -16686,6 +16855,9 @@ mod tests {
             base.lock()
                 .expect("summary materializer state lock")
                 .range_start = Some(Utc::now() - ChronoDuration::days(2));
+            // A runtime projection can be unavailable while a previously delivered frame is
+            // still retained. Reconciliation must preserve that frame when it cannot rebuild.
+            guard.summary_projection = None;
         }
         state.pool.close().await;
 
@@ -16728,6 +16900,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before runtime reconciliation");
         let activity = SubscriptionTopic::DashboardActivityCurrent {
             range: "today".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
@@ -16822,6 +16997,9 @@ mod tests {
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate Summary baseline before reconnect reconciliation");
         let summary = SubscriptionTopic::SummaryCurrent {
             window: "1d".to_string(),
             time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),

@@ -56,12 +56,14 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 #### Exact Summary Projection
 
 - 对已验证的合法 Summary query，HTTP handler 与 `SummaryCurrent` SSE topic materializer 只能读取内存 Projection；SQL 与文件访问计数必须为零。首次 hydration 尚未发布 Projection 时，两者必须返回现有 `unavailable` 语义，不得用 legacy builder 回源 SQLite。
+- `SummaryCurrent` 将 immutable Projection 与 terminal overlay 组合为一个响应时，必须从同一 hub-state snapshot 取得两者；refresh 不得让旧 Projection 与已经清除的旧 overlay 组合，从而漏掉已接受 terminal。
 - Projection 必须返回完整且精确的既有 `StatsResponse`，包括 totals、usage、model、reasoning、cost 与 account scope 语义；不得把部分 aggregate、空 totals 或临时近似当作正常响应。
 - 历史全小时由 durable rollup 服务；任一 window 的未完整覆盖边界、live tail、account-lag 与 archive overlap 必须由精确记录补齐，并且 source partition 合并不得遗漏或重复。
 - 最近索引超过固定预算时，Projection 必须保留首个省略 live 行的时间边界；任何覆盖该边界或更早时间的 rolling/calendar 全局或 account 请求必须 `unavailable`，不得以截断索引或请求期回源返回 totals；边界之后、完整保留的窗口继续从内存精确响应。
 - `current` 的 newest-N 视图可以与 rolling/archive 的精确边界视图分开索引，但两者实际持有的 preview 行字符串必须共同受同一常驻字节上限约束；超过上限时不得以第二份副本扩大内存预算。
 - `current` 只能在每个请求 scope 的 newest-N 候选来源均已被有界 admission 证明时返回成功；一个可能进入该前缀、但未被常驻 Projection 收录的 archive 记录必须使对应 global 或 account `current` 请求 `unavailable`，不得返回较短的 200。确认早于 selected cutoff 的 archive 不得阻断不受影响的 global `current`。
 - archive 的不可读或未回放证明必须为 `current` 保留精确 manifest 时间端点；小时 bucket 扩展只用于 rolling/calendar 的 aggregate gap，不得把同小时但早于 selected cutoff 的 archive 放大为 `current` 不可用。materialized archive 的 partial raw boundary gap 只替换受影响的精确边界，不能否定已完整覆盖的 durable rollup interior；replay coverage 必须匹配当前 manifest identity，除非受控兼容标记明确定义为 materialized coverage。
+- raw all-time fallback 的 global 与 account replay proof 必须同时匹配当前 archive SHA；同一路径的 stale SHA marker 不是 coverage proof，不能抑制该 archive 的精确 raw replay。half-open manifest range 的 `end == current` selected cutoff 表示 archive 在选中前缀之前结束，不能阻断 global `current`。
 - 所有具有有限 manifest coverage 的 raw replay 与 compact-rollup proof 都必须把 inclusive final-row timestamp 归一为同一 exclusive range；`coverage_start_at == coverage_end_at` 的单行 manifest 仍是有界 source，不能退化为无 coverage 的 legacy manifest。raw current-candidate admission 的 record-budget 溢出只能使受影响 selection 或 range `unavailable`，不得中止可由完整 durable rollup 服务的其他 Projection snapshot。
 - 共享常驻字节预算无法同时容纳某个 rolling/archive 精确边界与独立 newest-N 视图时，必须回退该精确边界为范围局部 `unavailable`；已经完整证明的 `current` 和不相交的合法窗口继续从内存精确响应。
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
@@ -142,6 +144,9 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 ## 验收标准（Acceptance Criteria）
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
+- Given 同一路径的 unmaterialized archive 被替换且 global/account replay marker 保留旧 SHA，When hydration 构建 all-time Projection，Then 两个 scope 都回放当前 archive 的精确 raw 数据，后续 HTTP 读取在关闭 SQLite 后仍不执行 SQL 或文件 I/O。
+- Given refresh 在 SummaryCurrent 读取期间发布新 Projection 并清除已被其包含的 terminal overlay，When 旧 Projection 仍被选作该帧基线，Then 该帧保留对应 overlay；任一帧不得遗漏已接受 terminal。
+- Given 不可读 archive 的 exclusive coverage end 恰等于 global current 的 selected cutoff，When 请求该 current rank，Then archive 不阻断该响应，且响应继续只读内存 Projection。
 - Given 一个 legacy terminal invocation 的 payload diagnostics 与现有 `failure_class` 不一致，When canonical materializer 完成，Then terminal row、archive overlay、hourly rollup、all-time aggregate 和 Summary 对该 invocation 使用同一 revisioned classification；在 completion 前，覆盖它的 Summary range 是 diagnosed unavailable 而非 partial 或 payload-derived response。
 - Given 当前 terminal write，When durable transaction commits，Then canonical classification revision 与 terminal outcome 原子可见；后续 projection 不读取 raw payload 仍与 full aggregate 完全一致。
 - Given 低 retention 且 31 天外的高基数 rollup 超出 admission，When Summary Projection hydrate，Then 合法 30d 仍精确、可用且仅从内存读取。
