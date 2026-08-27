@@ -121,8 +121,6 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 ![Unified usage details on desktop](./assets/usage-breakdown-desktop.jpg)
 
-PR: include
-
 - source_type: storybook_canvas
 - target_program: mock-only
 - capture_scope: story canvas
@@ -135,8 +133,6 @@ PR: include
 - evidence_note: Verifies the shared six-column table maps cache write to input plus cache-write cost, output to output plus reasoning cost, shows Tokens and amount in every applicable cell, places total after output, uses normal-weight body values with the same primary foreground for cache hit rate and Token values, and anchors cache hit rate in the first line with a blank second-line slot.
 
 ![Unified usage details at 390px](./assets/usage-breakdown-mobile390.jpg)
-
-PR: include
 
 - source_type: storybook_canvas
 - target_program: mock-only
