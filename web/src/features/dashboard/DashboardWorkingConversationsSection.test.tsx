@@ -2884,7 +2884,12 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(marker?.className).toContain("bg-error");
   });
 
-  it("omits missing grouped reasoning while keeping model and FAST semantics", () => {
+  it.each([
+    { label: "null", reasoningEffort: null },
+    { label: "blank", reasoningEffort: " " },
+  ])("omits $label grouped reasoning while keeping model and FAST semantics", ({
+    reasoningEffort,
+  }) => {
     renderSection(
       createResponse([
         createConversation("pck-gpt56-missing-context", [
@@ -2896,7 +2901,7 @@ describe("DashboardWorkingConversationsSection", () => {
             model: "gpt-5.6-sol",
             requestModel: "gpt-5.6-sol",
             responseModel: "gpt-5.6-sol",
-            reasoningEffort: null,
+            reasoningEffort,
             requestedServiceTier: "priority",
             serviceTier: "priority",
           }),
