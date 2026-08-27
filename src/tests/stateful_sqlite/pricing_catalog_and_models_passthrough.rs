@@ -2642,7 +2642,12 @@ fn classify_compact_support_observation_is_conservative() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let mut config = test_config();
     config.request_timeout = Duration::from_secs(61);
     config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);

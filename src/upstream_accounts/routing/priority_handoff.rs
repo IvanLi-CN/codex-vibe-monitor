@@ -75,6 +75,15 @@ fn state() -> &'static Mutex<PriorityHandoffState> {
     STATE.get_or_init(|| Mutex::new(PriorityHandoffState::new()))
 }
 
+#[cfg(test)]
+pub(crate) fn priority_handoff_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("priority handoff test lock")
+}
+
 fn attempt_contexts() -> &'static Mutex<HashMap<i64, PriorityHandoffAttemptContext>> {
     static ATTEMPT_CONTEXTS: OnceLock<Mutex<HashMap<i64, PriorityHandoffAttemptContext>>> =
         OnceLock::new();
@@ -92,7 +101,7 @@ fn normalize_model_key(model: Option<&str>) -> Option<String> {
     model
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
+        .map(str::to_string)
 }
 
 pub(crate) fn priority_handoff_generation_from_audit_json(audit_json: Option<&str>) -> Option<u64> {
@@ -867,11 +876,7 @@ mod tests {
     use super::*;
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("priority handoff test lock")
+        priority_handoff_test_guard()
     }
 
     #[test]

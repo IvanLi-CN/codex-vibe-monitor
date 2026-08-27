@@ -2873,7 +2873,12 @@ async fn manual_model_route_reset_fences_in_flight_failure() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn manual_model_route_reset_survives_diagnostic_persistence_failure() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -6938,7 +6943,12 @@ async fn resolver_prefers_primary_priority_before_normal_and_fallback() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_account() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let fallback_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -7041,7 +7051,12 @@ async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_accou
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let target_account_id = insert_test_pool_api_key_account_with_options(
         &state,
@@ -7136,7 +7151,12 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn resolver_admits_first_untracked_priority_fresh_assignment() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let target_account_id = insert_test_pool_api_key_account_with_options(
         &state,
