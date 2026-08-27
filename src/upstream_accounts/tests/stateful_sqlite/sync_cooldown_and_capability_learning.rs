@@ -7001,6 +7001,25 @@ async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_accou
         Some(fallback_account_id),
     );
 
+    let no_model_resolution = resolve_pool_account_for_request_with_binding_constraint_and_model(
+        &state,
+        Some(sticky_key),
+        None,
+        &[],
+        &HashSet::new(),
+        None,
+    )
+    .await
+    .expect("resolve fallback sticky without model");
+    let PoolAccountResolution::Resolved(no_model_account) = no_model_resolution else {
+        panic!("expected fallback sticky source without a request model");
+    };
+    assert_eq!(no_model_account.account_id, fallback_account_id);
+    assert_eq!(
+        no_model_account.routing_source,
+        PoolRoutingSelectionSource::StickyReuse
+    );
+
     record_pool_route_success_with_affinity_generation(
         &state.pool,
         account.account_id,
