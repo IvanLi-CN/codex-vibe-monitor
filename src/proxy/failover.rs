@@ -1967,8 +1967,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             }
             PoolResolvedAuth::Oauth { .. } => None,
         };
-        let priority_handoff_admitted =
-            account.routing_source == PoolRoutingSelectionSource::PriorityHandoff;
+        let priority_handoff_admitted = priority_handoff_is_single_attempt(&account);
         let same_account_attempt_budget = if priority_handoff_admitted {
             1
         } else {
