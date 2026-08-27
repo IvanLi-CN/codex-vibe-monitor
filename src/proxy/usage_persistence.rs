@@ -908,6 +908,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
     if routing_source == Some(PoolRoutingSelectionSource::PriorityHandoff) {
         remember_priority_handoff_attempt(
             attempt_id,
+            Some(trace.invoke_id.as_str()),
             upstream_account_id,
             trace.request_model.as_deref(),
             routing_selection_audit_json.as_deref(),

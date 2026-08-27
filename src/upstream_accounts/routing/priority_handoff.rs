@@ -30,6 +30,8 @@ struct PriorityHandoffEntry {
     failure_streak: u32,
     cooldown_until: Option<Instant>,
     in_flight: bool,
+    in_flight_generation: Option<u64>,
+    pending_failure_cooldown: bool,
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +79,13 @@ fn attempt_contexts() -> &'static Mutex<HashMap<i64, PriorityHandoffAttemptConte
     ATTEMPT_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn invoke_attempt_contexts() -> &'static Mutex<HashMap<String, PriorityHandoffAttemptContext>> {
+    static INVOKE_ATTEMPT_CONTEXTS: OnceLock<
+        Mutex<HashMap<String, PriorityHandoffAttemptContext>>,
+    > = OnceLock::new();
+    INVOKE_ATTEMPT_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn normalize_model_key(model: Option<&str>) -> Option<String> {
     model
         .map(str::trim)
@@ -96,26 +105,32 @@ pub(crate) fn priority_handoff_generation_from_audit_json(audit_json: Option<&st
 
 pub(crate) fn remember_priority_handoff_attempt(
     attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
     account_id: i64,
     requested_model: Option<&str>,
     audit_json: Option<&str>,
 ) {
-    let (Some(attempt_id), Some(model_key), Some(generation)) = (
-        attempt_id,
+    let (Some(model_key), Some(generation)) = (
         normalize_model_key(requested_model),
         priority_handoff_generation_from_audit_json(audit_json),
     ) else {
         return;
     };
-    if let Ok(mut contexts) = attempt_contexts().lock() {
-        contexts.insert(
-            attempt_id,
-            PriorityHandoffAttemptContext {
-                account_id,
-                model_key,
-                generation,
-            },
-        );
+    let context = PriorityHandoffAttemptContext {
+        account_id,
+        model_key,
+        generation,
+    };
+    if let Some(attempt_id) = attempt_id
+        && let Ok(mut contexts) = attempt_contexts().lock()
+    {
+        contexts.insert(attempt_id, context.clone());
+    }
+    if attempt_id.is_none()
+        && let Some(invoke_id) = invoke_id.filter(|value| !value.is_empty())
+        && let Ok(mut contexts) = invoke_attempt_contexts().lock()
+    {
+        contexts.insert(invoke_id.to_string(), context);
     }
 }
 
@@ -128,10 +143,23 @@ pub(crate) fn take_priority_handoff_attempt(
         .and_then(|mut contexts| contexts.remove(&attempt_id))
 }
 
+fn take_priority_handoff_attempt_for_invoke(
+    invoke_id: &str,
+) -> Option<PriorityHandoffAttemptContext> {
+    invoke_attempt_contexts()
+        .lock()
+        .ok()
+        .and_then(|mut contexts| contexts.remove(invoke_id))
+}
+
 pub(crate) fn forget_priority_handoff_attempt(attempt_id: Option<i64>) {
     if let Some(attempt_id) = attempt_id {
         let _ = take_priority_handoff_attempt(attempt_id);
     }
+}
+
+pub(crate) fn forget_priority_handoff_attempt_for_invoke(invoke_id: &str) {
+    let _ = take_priority_handoff_attempt_for_invoke(invoke_id);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +227,6 @@ pub(crate) fn set_priority_handoff_admission_enabled(enabled: bool) {
     state.generation = allocate_generation(&mut state);
     let generation = state.generation;
     for entry in state.entries.values_mut() {
-        entry.in_flight = false;
         entry.epoch = generation;
     }
     if enabled {
@@ -209,6 +236,7 @@ pub(crate) fn set_priority_handoff_admission_enabled(enabled: bool) {
             entry.failure_streak = 0;
             entry.cooldown_until = None;
             entry.generation = generation;
+            entry.pending_failure_cooldown = false;
         }
     }
 }
@@ -233,6 +261,8 @@ pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model:
             failure_streak: 0,
             cooldown_until: None,
             in_flight: false,
+            in_flight_generation: None,
+            pending_failure_cooldown: false,
         });
     entry.generation = generation;
     entry.epoch = epoch;
@@ -240,7 +270,7 @@ pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model:
     entry.verification_successes = 0;
     entry.failure_streak = 0;
     entry.cooldown_until = None;
-    entry.in_flight = false;
+    entry.pending_failure_cooldown = false;
 }
 
 pub(crate) fn admit_priority_handoff(
@@ -275,6 +305,8 @@ pub(crate) fn admit_priority_handoff(
             failure_streak: 0,
             cooldown_until: None,
             in_flight: false,
+            in_flight_generation: None,
+            pending_failure_cooldown: false,
         });
     if entry.epoch != global_generation {
         entry.epoch = global_generation;
@@ -284,6 +316,8 @@ pub(crate) fn admit_priority_handoff(
         entry.failure_streak = 0;
         entry.cooldown_until = None;
         entry.in_flight = false;
+        entry.in_flight_generation = None;
+        entry.pending_failure_cooldown = false;
     }
     if entry.in_flight {
         return (PriorityHandoffAdmissionDecision::PermitBusy, None);
@@ -301,6 +335,7 @@ pub(crate) fn admit_priority_handoff(
     }
     entry.in_flight = true;
     entry.generation = admission_generation;
+    entry.in_flight_generation = Some(admission_generation);
     let generation = admission_generation;
     (
         PriorityHandoffAdmissionDecision::Admitted { generation },
@@ -336,6 +371,8 @@ pub(crate) fn priority_handoff_admission_snapshot(
             failure_streak: 0,
             cooldown_until: None,
             in_flight: false,
+            in_flight_generation: None,
+            pending_failure_cooldown: false,
         });
     if entry.epoch != generation {
         entry.epoch = generation;
@@ -345,6 +382,8 @@ pub(crate) fn priority_handoff_admission_snapshot(
         entry.failure_streak = 0;
         entry.cooldown_until = None;
         entry.in_flight = false;
+        entry.in_flight_generation = None;
+        entry.pending_failure_cooldown = false;
     }
     if entry
         .cooldown_until
@@ -401,12 +440,19 @@ pub(crate) fn complete_priority_handoff_for_request(
     };
     let entry = state.entries.get_mut(&(account_id, model_key))?;
     if generation.is_some_and(|generation| generation != entry.generation) {
+        if generation == entry.in_flight_generation {
+            entry.in_flight = false;
+            entry.in_flight_generation = None;
+            entry.pending_failure_cooldown = false;
+        }
         return None;
     }
     if !entry.in_flight {
         return None;
     }
     entry.in_flight = false;
+    entry.in_flight_generation = None;
+    entry.pending_failure_cooldown = false;
     if success {
         entry.failure_streak = 0;
         entry.cooldown_until = None;
@@ -451,10 +497,20 @@ fn complete_success_for_key(
     let entry = state
         .entries
         .get_mut(&(account_id, model_key.to_string()))?;
-    if entry.generation != generation || !entry.in_flight {
+    if !entry.in_flight {
+        return None;
+    }
+    if entry.generation != generation {
+        if entry.in_flight_generation == Some(generation) {
+            entry.in_flight = false;
+            entry.in_flight_generation = None;
+            entry.pending_failure_cooldown = false;
+        }
         return None;
     }
     entry.in_flight = false;
+    entry.in_flight_generation = None;
+    entry.pending_failure_cooldown = false;
     entry.failure_streak = 0;
     entry.cooldown_until = None;
     entry.verification_successes = entry
@@ -485,14 +541,28 @@ fn complete_failure_for_key(
     let entry = state
         .entries
         .get_mut(&(account_id, model_key.to_string()))?;
-    if entry.generation != generation || !entry.in_flight {
+    if !entry.in_flight {
+        return None;
+    }
+    if entry.generation != generation {
+        if entry.in_flight_generation == Some(generation) {
+            entry.in_flight = false;
+            entry.in_flight_generation = None;
+            entry.pending_failure_cooldown = false;
+        }
         return None;
     }
     entry.in_flight = false;
+    entry.in_flight_generation = None;
+    entry.pending_failure_cooldown = false;
     if !cooldown {
         entry.phase = PriorityHandoffPhase::Verifying;
         return None;
     }
+    Some(apply_failure_cooldown(entry))
+}
+
+fn apply_failure_cooldown(entry: &mut PriorityHandoffEntry) -> &'static str {
     entry.failure_streak = entry.failure_streak.saturating_add(1);
     let shift = entry.failure_streak.saturating_sub(1).min(8);
     let cooldown_secs = PRIORITY_HANDOFF_FIRST_COOLDOWN_SECS
@@ -501,7 +571,26 @@ fn complete_failure_for_key(
     entry.cooldown_until = Some(Instant::now() + Duration::from_secs(cooldown_secs));
     entry.phase = PriorityHandoffPhase::CoolingDown;
     entry.verification_successes = 0;
-    Some(PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON)
+    PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON
+}
+
+pub(crate) fn defer_priority_handoff_failure_for_key(
+    account_id: i64,
+    model_key: &str,
+    generation: u64,
+    cooldown: bool,
+) -> bool {
+    let Ok(mut state) = state().lock() else {
+        return false;
+    };
+    let Some(entry) = state.entries.get_mut(&(account_id, model_key.to_string())) else {
+        return false;
+    };
+    if entry.generation != generation || !entry.in_flight {
+        return false;
+    }
+    entry.pending_failure_cooldown |= cooldown;
+    true
 }
 
 fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
@@ -511,8 +600,13 @@ fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
     let Some(entry) = state.entries.get_mut(&(account_id, model_key.to_string())) else {
         return;
     };
-    if entry.generation == generation {
+    if entry.in_flight_generation == Some(generation) {
         entry.in_flight = false;
+        entry.in_flight_generation = None;
+        if entry.pending_failure_cooldown {
+            let _ = apply_failure_cooldown(entry);
+            entry.pending_failure_cooldown = false;
+        }
     }
 }
 
@@ -521,6 +615,16 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     attempt_id: Option<i64>,
     success: bool,
     cooldown: bool,
+) {
+    complete_priority_handoff_from_attempt_inner(pool, attempt_id, success, cooldown, false).await;
+}
+
+async fn complete_priority_handoff_from_attempt_inner(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    success: bool,
+    cooldown: bool,
+    defer_failure: bool,
 ) {
     let Some(attempt_id) = attempt_id else {
         return;
@@ -578,30 +682,64 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
         }
     }
     if let Some(context) = take_priority_handoff_attempt(attempt_id) {
-        let reason_code = complete_priority_handoff_for_request(
-            context.account_id,
-            Some(context.model_key.as_str()),
-            Some(context.generation),
-            success,
-            cooldown,
-        );
-        if let Some(reason_code) = reason_code
-            && let Err(error) = super::model_health::persist_priority_handoff_event(
-                pool,
+        if success {
+            let reason_code = complete_priority_handoff_for_request(
                 context.account_id,
-                Some(attempt_id),
-                context.model_key.as_str(),
-                reason_code,
-            )
-            .await
-        {
-            warn!(
-                account_id = context.account_id,
-                attempt_id,
-                error = %error,
-                reason_code,
-                "failed to persist priority handoff event"
+                Some(context.model_key.as_str()),
+                Some(context.generation),
+                true,
+                false,
             );
+            if let Some(reason_code) = reason_code
+                && let Err(error) = super::model_health::persist_priority_handoff_event(
+                    pool,
+                    context.account_id,
+                    Some(attempt_id),
+                    context.model_key.as_str(),
+                    reason_code,
+                )
+                .await
+            {
+                warn!(
+                    account_id = context.account_id,
+                    attempt_id,
+                    error = %error,
+                    reason_code,
+                    "failed to persist priority handoff event"
+                );
+            }
+        } else if defer_failure {
+            defer_priority_handoff_failure_for_key(
+                context.account_id,
+                context.model_key.as_str(),
+                context.generation,
+                cooldown,
+            );
+        } else {
+            let reason_code = complete_failure_for_key(
+                context.account_id,
+                &context.model_key,
+                context.generation,
+                cooldown,
+            );
+            if let Some(reason_code) = reason_code
+                && let Err(error) = super::model_health::persist_priority_handoff_event(
+                    pool,
+                    context.account_id,
+                    Some(attempt_id),
+                    context.model_key.as_str(),
+                    reason_code,
+                )
+                .await
+            {
+                warn!(
+                    account_id = context.account_id,
+                    attempt_id,
+                    error = %error,
+                    reason_code,
+                    "failed to persist priority handoff event"
+                );
+            }
         }
         return;
     }
@@ -656,29 +794,64 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     else {
         return;
     };
-    let reason_code = complete_priority_handoff_for_request(
-        account_id,
-        Some(model_key.as_str()),
-        Some(generation),
-        false,
-        cooldown,
-    );
-    if let Some(reason_code) = reason_code
-        && let Err(error) = super::model_health::persist_priority_handoff_event(
+    defer_priority_handoff_failure_for_key(account_id, model_key.as_str(), generation, cooldown);
+}
+
+pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    success: bool,
+    cooldown: bool,
+) {
+    if let Some(attempt_id) = attempt_id {
+        complete_priority_handoff_from_attempt_inner(
             pool,
-            account_id,
             Some(attempt_id),
-            model_key.as_str(),
-            reason_code,
+            success,
+            cooldown,
+            true,
         )
-        .await
-    {
-        warn!(
-            account_id,
-            attempt_id,
-            error = %error,
-            reason_code,
-            "failed to persist priority handoff event"
+        .await;
+        return;
+    }
+    let Some(invoke_id) = invoke_id.filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let Some(context) = take_priority_handoff_attempt_for_invoke(invoke_id) else {
+        return;
+    };
+    if success {
+        let reason_code = complete_priority_handoff_for_request(
+            context.account_id,
+            Some(context.model_key.as_str()),
+            Some(context.generation),
+            true,
+            false,
+        );
+        if let Some(reason_code) = reason_code
+            && let Err(error) = super::model_health::persist_priority_handoff_event(
+                pool,
+                context.account_id,
+                None,
+                context.model_key.as_str(),
+                reason_code,
+            )
+            .await
+        {
+            warn!(
+                account_id = context.account_id,
+                error = %error,
+                reason_code,
+                "failed to persist priority handoff event"
+            );
+        }
+    } else {
+        defer_priority_handoff_failure_for_key(
+            context.account_id,
+            context.model_key.as_str(),
+            context.generation,
+            cooldown,
         );
     }
 }
@@ -821,14 +994,16 @@ mod tests {
 
         reset_priority_handoff_for_model(9_013, "gpt-test");
 
-        let (_, new_permit) = admit_priority_handoff(9_013, Some("gpt-test"));
-        let new_permit = new_permit.expect("new permit");
+        let (blocked_decision, new_permit) = admit_priority_handoff(9_013, Some("gpt-test"));
+        assert_eq!(
+            blocked_decision,
+            PriorityHandoffAdmissionDecision::PermitBusy
+        );
+        assert!(new_permit.is_none());
         assert!(old_permit.complete_success().is_none());
-        let (_, blocked) = admit_priority_handoff(9_013, Some("gpt-test"));
-        assert!(blocked.is_none());
         drop(old_permit);
-        let (_, still_blocked) = admit_priority_handoff(9_013, Some("gpt-test"));
-        assert!(still_blocked.is_none());
+        let (_, new_permit) = admit_priority_handoff(9_013, Some("gpt-test"));
+        let new_permit = new_permit.expect("post-reset permit");
         assert_eq!(
             new_permit.complete_success(),
             Some(PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON)
@@ -868,6 +1043,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_004),
+            None,
             9_004,
             Some("gpt-test"),
             Some(audit_json.as_str()),
@@ -886,6 +1062,57 @@ mod tests {
         );
 
         drop(permit);
+    }
+
+    #[tokio::test]
+    async fn priority_handoff_missing_attempt_id_keeps_local_failure_transition() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_015, Some("gpt-test"));
+        let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+            panic!("expected admission");
+        };
+        let audit_json = serde_json::json!({
+            "selectedAccountId": 9_015,
+            "selectedAccountName": "test",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "priorityHandoff",
+            "comparedAccountId": null,
+            "comparedAccountName": null,
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+            },
+            "excludedCandidates": [],
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            None,
+            Some("invoke-without-persisted-attempt"),
+            9_015,
+            Some("gpt-test"),
+            Some(audit_json.as_str()),
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite pool");
+        complete_priority_handoff_from_attempt_or_invoke(
+            &pool,
+            None,
+            Some("invoke-without-persisted-attempt"),
+            false,
+            true,
+        )
+        .await;
+        drop(permit);
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_015, Some("gpt-test")).0,
+            "coolingDown"
+        );
     }
 
     #[tokio::test]
@@ -935,6 +1162,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_008),
+            None,
             9_008,
             Some("gpt-test"),
             Some(audit_json.as_str()),
@@ -1001,6 +1229,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_009),
+            None,
             9_009,
             Some("gpt-test"),
             Some(audit_json.as_str()),
@@ -1046,6 +1275,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_010),
+            None,
             9_010,
             Some("gpt-test"),
             Some(pending_audit_json.as_str()),
@@ -1089,6 +1319,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_011),
+            None,
             9_011,
             Some("gpt-test"),
             Some(explicit_audit_json.as_str()),
@@ -1176,6 +1407,7 @@ mod tests {
         .to_string();
         remember_priority_handoff_attempt(
             Some(70_014),
+            None,
             9_014,
             Some("gpt-test"),
             Some(audit_json.as_str()),

@@ -203,7 +203,14 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         sticky_affinity_generation,
     )
     .await?;
-    complete_priority_handoff_from_attempt(&state.pool, attempt_id, true, false).await;
+    complete_priority_handoff_from_attempt_or_invoke(
+        &state.pool,
+        attempt_id,
+        invoke_id,
+        true,
+        false,
+    )
+    .await;
     if outcome.sticky_mutation.writes_conversation_operation() {
         if let Some(sticky_key) = sticky_key {
             invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
@@ -257,7 +264,8 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
     )
     .await
     .map(|_| ())?;
-    complete_priority_handoff_from_attempt(pool, attempt_id, true, false).await;
+    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
+        .await;
     Ok(())
 }
 
@@ -504,7 +512,8 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    complete_priority_handoff_from_attempt(pool, attempt_id, true, false).await;
+    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
+        .await;
     record_pool_route_success_capability_observations(
         pool,
         account_id,
@@ -539,7 +548,14 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         sticky_affinity_generation,
     )
     .await?;
-    complete_priority_handoff_from_attempt(&state.pool, attempt_id, true, false).await;
+    complete_priority_handoff_from_attempt_or_invoke(
+        &state.pool,
+        attempt_id,
+        invoke_id,
+        true,
+        false,
+    )
+    .await;
     record_pool_route_success_capability_observations(
         &state.pool,
         account_id,
@@ -935,7 +951,10 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     }
     if route_http_failure_is_retryable_responses_overload(status, error_message) {
         if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-            complete_priority_handoff_from_attempt(pool, attempt_id, false, true).await;
+            complete_priority_handoff_from_attempt_or_invoke(
+                pool, attempt_id, invoke_id, false, true,
+            )
+            .await;
             record_api_key_temporary_model_failure_or_diagnostic(
                 pool,
                 account_id,
@@ -982,8 +1001,14 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 UpstreamAccountFailureDisposition::RateLimited
                     | UpstreamAccountFailureDisposition::Retryable
             ));
-    complete_priority_handoff_from_attempt(pool, attempt_id, false, priority_handoff_cooldown)
-        .await;
+    complete_priority_handoff_from_attempt_or_invoke(
+        pool,
+        attempt_id,
+        invoke_id,
+        false,
+        priority_handoff_cooldown,
+    )
+    .await;
     let api_key_temporary_http_failure = account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && classification.disposition != UpstreamAccountFailureDisposition::HardUnavailable
         && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
@@ -1211,7 +1236,8 @@ async fn record_pool_route_retryable_overload_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt(pool, attempt_id, false, true).await;
+    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
+        .await;
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
@@ -1311,7 +1337,8 @@ async fn record_pool_route_transport_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt(pool, attempt_id, false, true).await;
+    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
+        .await;
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1379,7 +1406,8 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt(pool, attempt_id, false, true).await;
+    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
+        .await;
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
