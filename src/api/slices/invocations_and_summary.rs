@@ -8807,7 +8807,7 @@ fn summary_projection_archive_is_fully_within_exact_horizon(
     let Some(start) = archive.coverage_start_at().and_then(parse_to_utc_datetime) else {
         return false;
     };
-    let Some(end) = archive.coverage_end_at().and_then(parse_to_utc_datetime) else {
+    let Some(end) = summary_projection_archive_coverage_end_exclusive(archive) else {
         return false;
     };
     start >= exact_horizon.start && end <= exact_horizon.end
@@ -8852,8 +8852,19 @@ fn summary_projection_archive_coverage_range(
     let start = archive
         .coverage_start_at()
         .and_then(parse_to_utc_datetime)?;
-    let end = archive.coverage_end_at().and_then(parse_to_utc_datetime)?;
+    let end = summary_projection_archive_coverage_end_exclusive(archive)?;
     (start < end).then_some(ExactUtcRange { start, end })
+}
+
+fn summary_projection_archive_raw_admission_exceeded(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    summary_projection_resident_record_budget_exceeded(error)
+        // The shared archive reader names this bounded admission error after its
+        // raw/unmaterialized mode. Materialized archives use the same reader for exact rolling
+        // repairs and newest-N candidates, where it must make only that selection unavailable.
+        || message.contains("unmaterialized archive exact-record budget")
+        || (message.contains("exact-record budget")
+            && message.contains("unmaterialized archive data"))
 }
 
 fn summary_projection_all_time_materialized_scope_coverage(
@@ -11975,7 +11986,7 @@ async fn build_summary_projection_once(
         archive_pool.close().await;
         drop(temp_cleanup);
         if let Err(error) = merge_result {
-            if !summary_projection_resident_record_budget_exceeded(&error) {
+            if !summary_projection_archive_raw_admission_exceeded(&error) {
                 return Err(anyhow!(
                     "summary projection archive hydration failed for {}: {error:?}",
                     archive.file_path()
@@ -12133,7 +12144,7 @@ async fn build_summary_projection_once(
                 archive_pool.close().await;
                 drop(temp_cleanup);
                 if let Err(error) = merge_result {
-                    if !summary_projection_resident_record_budget_exceeded(&error) {
+                    if !summary_projection_archive_raw_admission_exceeded(&error) {
                         return Err(anyhow!(
                             "summary projection paged boundary archive hydration failed for {}: {error:?}",
                             archive.file_path()
@@ -12257,7 +12268,7 @@ async fn build_summary_projection_once(
                     current_complete_archive_paths.insert(archive.file_path().to_string());
                 }
             }
-            Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
+            Err(error) if summary_projection_archive_raw_admission_exceeded(&error) => {
                 current_source_unavailable = true;
             }
             Err(error) => {
