@@ -55,7 +55,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 #### Exact Summary Projection
 
-- 对已验证的合法 Summary query，HTTP handler 只能读取内存 Projection；SQL 与文件访问计数必须为零。
+- 对已验证的合法 Summary query，HTTP handler 与 `SummaryCurrent` SSE topic materializer 只能读取内存 Projection；SQL 与文件访问计数必须为零。首次 hydration 尚未发布 Projection 时，两者必须返回现有 `unavailable` 语义，不得用 legacy builder 回源 SQLite。
 - Projection 必须返回完整且精确的既有 `StatsResponse`，包括 totals、usage、model、reasoning、cost 与 account scope 语义；不得把部分 aggregate、空 totals 或临时近似当作正常响应。
 - 历史全小时由 durable rollup 服务；任一 window 的未完整覆盖边界、live tail、account-lag 与 archive overlap 必须由精确记录补齐，并且 source partition 合并不得遗漏或重复。
 - 最近索引超过固定预算时，Projection 必须保留首个省略 live 行的时间边界；任何覆盖该边界或更早时间的 rolling/calendar 全局或 account 请求必须 `unavailable`，不得以截断索引或请求期回源返回 totals；边界之后、完整保留的窗口继续从内存精确响应。
@@ -65,6 +65,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 所有具有有限 manifest coverage 的 raw replay 与 compact-rollup proof 都必须把 inclusive final-row timestamp 归一为同一 exclusive range；`coverage_start_at == coverage_end_at` 的单行 manifest 仍是有界 source，不能退化为无 coverage 的 legacy manifest。raw current-candidate admission 的 record-budget 溢出只能使受影响 selection 或 range `unavailable`，不得中止可由完整 durable rollup 服务的其他 Projection snapshot。
 - 共享常驻字节预算无法同时容纳某个 rolling/archive 精确边界与独立 newest-N 视图时，必须回退该精确边界为范围局部 `unavailable`；已经完整证明的 `current` 和不相交的合法窗口继续从内存精确响应。
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
+- 仅为 `current` newest-N 候选而读取的 archive record 若在 current-index admission 中被裁剪，且该 record 已由相同 global/account totals 与 usage compact rollup 完整证明，则其裁剪不得写入 rolling/calendar 的遗漏时间边界；没有该完整 scope proof 的裁剪仍必须 fail closed。
 - archive manifest 或历史容量超过固定内存 admission 预算时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
@@ -110,7 +111,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ### Core flows
 
-1. Summary 请求先校验 query，再从内存 Projection 选择精确 snapshot；它从不启动 hydrate 或打开 archive。
+1. Summary HTTP 请求和 `SummaryCurrent` SSE topic 先校验 query，再从内存 Projection 选择精确 snapshot；它们从不启动 hydrate、打开 archive 或回源 SQLite。首次没有精确 snapshot 时返回 `unavailable`。
 2. Terminal writer 在持久化 terminal outcome 的同一事务中保存 canonical classification。legacy/immutable archive materializer 在后台补齐 revisioned classification coverage，并重新建立受影响的 rollup coverage。
 3. Projection worker 在后台将 rollup 的完整 interiors 与精确 boundary/tail 组合成新的 immutable snapshot；它只消费 canonical classifications，失败保持 last-good 与明确 freshness 状态。
 4. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。Account Activity V2 coverage repair 在同一 permit 内完成这个 due 检查与 repair，避免嵌套获取 global gate。
