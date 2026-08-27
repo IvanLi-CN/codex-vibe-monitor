@@ -3621,8 +3621,8 @@ export const CurrentAndPrevious: Story = {
 
 export const GPT56ModelContextCluster: Story = {
   tags: ["test"],
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
   parameters: {
-    viewport: { defaultViewport: "desktop1660" },
     docs: {
       description: {
         story:
@@ -3681,8 +3681,8 @@ const gpt56ModelContextWithoutReasoningResponse = createResponse([
 
 export const GPT56ModelContextMobile393: Story = {
   tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   parameters: {
-    viewport: { defaultViewport: "mobile393" },
     docs: {
       description: {
         story:
@@ -3720,8 +3720,8 @@ export const GPT56ModelContextMobile393: Story = {
 
 export const GPT56ModelContextWithoutReasoning: Story = {
   tags: ["test"],
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
   parameters: {
-    viewport: { defaultViewport: "desktop1660" },
     docs: {
       description: {
         story:
