@@ -796,26 +796,51 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const modelRect = modelPart.getBoundingClientRect();
         const markerRect = marker.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
+        const fastPartRect = fastPart?.getBoundingClientRect();
+        const modelIconRect = modelIcon?.getBoundingClientRect();
+        const fastIconRect = fastIcon?.getBoundingClientRect();
+        const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
+          Math.max(
+            Math.abs(
+              iconRect.left + iconRect.width / 2 - (containerRect.left + containerRect.width / 2),
+            ),
+            Math.abs(
+              iconRect.top + iconRect.height / 2 - (containerRect.top + containerRect.height / 2),
+            ),
+          );
+        const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
+          const part = child.getAttribute("data-model-context-part");
+          const style = getComputedStyle(child);
+          const hasBorder =
+            Number.parseFloat(style.borderLeftWidth) > 0 ||
+            Number.parseFloat(style.borderRightWidth) > 0;
+          const hasVisiblePseudo = ["::before", "::after"].some((pseudo) => {
+            const pseudoStyle = getComputedStyle(child, pseudo);
+            const content = pseudoStyle.content.trim();
+            return (
+              content !== "none" &&
+              content !== '""' &&
+              (Number.parseFloat(pseudoStyle.width) > 0 ||
+                Number.parseFloat(pseudoStyle.height) > 0)
+            );
+          });
+          return (
+            count + Number(!part || !expectedDirectParts.has(part) || hasBorder || hasVisiblePseudo)
+          );
+        }, 0);
         return {
           modelWidth: modelRect.width,
           modelToMarkerGap: markerRect.left - modelRect.right,
           markerToEffortGap: effortTextRect.left - markerRect.right,
-          effortToFastGap: fastPart
-            ? fastPart.getBoundingClientRect().left - effortTextRect.right
-            : null,
-          iconCenterDelta:
-            modelIcon && fastIcon
-              ? Math.abs(
-                  modelIcon.getBoundingClientRect().top +
-                    modelIcon.getBoundingClientRect().height / 2 -
-                    (fastIcon.getBoundingClientRect().top +
-                      fastIcon.getBoundingClientRect().height / 2),
-                )
-              : null,
+          effortToFastGap: fastPartRect ? fastPartRect.left - effortTextRect.right : null,
+          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          fastIconCenterDelta:
+            fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
-          internalDividerCount: cluster.querySelectorAll('[class~="w-px"]').length,
+          internalDividerCount,
         };
       });
 
@@ -844,7 +869,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedGeometry.every((geometry) => geometry.modelWidth === 20)).toBe(true);
     expect(
       layout.groupedGeometry.every(
-        (geometry) => (geometry.iconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+        (geometry) =>
+          (geometry.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
+          (geometry.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
       ),
     ).toBe(true);
     expect(
@@ -943,24 +970,49 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const markerRect = marker.getBoundingClientRect();
         const effortTextRect = effortText.getBoundingClientRect();
         const fastPartRect = fastPart.getBoundingClientRect();
+        const modelIconRect = modelIcon?.getBoundingClientRect();
+        const fastIconRect = fastIcon?.getBoundingClientRect();
+        const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
+          Math.max(
+            Math.abs(
+              iconRect.left + iconRect.width / 2 - (containerRect.left + containerRect.width / 2),
+            ),
+            Math.abs(
+              iconRect.top + iconRect.height / 2 - (containerRect.top + containerRect.height / 2),
+            ),
+          );
+        const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
+          const part = child.getAttribute("data-model-context-part");
+          const style = getComputedStyle(child);
+          const hasBorder =
+            Number.parseFloat(style.borderLeftWidth) > 0 ||
+            Number.parseFloat(style.borderRightWidth) > 0;
+          const hasVisiblePseudo = ["::before", "::after"].some((pseudo) => {
+            const pseudoStyle = getComputedStyle(child, pseudo);
+            const content = pseudoStyle.content.trim();
+            return (
+              content !== "none" &&
+              content !== '""' &&
+              (Number.parseFloat(pseudoStyle.width) > 0 ||
+                Number.parseFloat(pseudoStyle.height) > 0)
+            );
+          });
+          return (
+            count + Number(!part || !expectedDirectParts.has(part) || hasBorder || hasVisiblePseudo)
+          );
+        }, 0);
         return {
           modelWidth: modelRect.width,
           modelToMarkerGap: markerRect.left - modelRect.right,
           markerToEffortGap: effortTextRect.left - markerRect.right,
           effortToFastGap: fastPartRect.left - effortTextRect.right,
-          iconCenterDelta:
-            modelIcon && fastIcon
-              ? Math.abs(
-                  modelIcon.getBoundingClientRect().top +
-                    modelIcon.getBoundingClientRect().height / 2 -
-                    (fastIcon.getBoundingClientRect().top +
-                      fastIcon.getBoundingClientRect().height / 2),
-                )
-              : null,
+          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          fastIconCenterDelta: fastIconRect ? centerDelta(fastIconRect, fastPartRect) : null,
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
-          internalDividerCount: cluster.querySelectorAll('[class~="w-px"]').length,
+          internalDividerCount,
           effortText: effortText.textContent,
         };
       });
@@ -1008,7 +1060,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
     expect(
       layout.groupedContexts.every(
-        (context) => (context.iconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+        (context) =>
+          (context.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
+          (context.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
       ),
     ).toBe(true);
     expect(

@@ -2841,6 +2841,9 @@ describe("DashboardWorkingConversationsSection", () => {
       )?.textContent,
     ).toContain("high");
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      Array.from(cluster.children).map((child) => child.getAttribute("data-model-context-part")),
+    ).toEqual(["model", "reasoning-effort", "fast"]);
     expect(cluster.querySelectorAll('[class~="w-px"]')).toHaveLength(0);
   });
 
