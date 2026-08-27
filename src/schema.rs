@@ -3403,6 +3403,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             target TEXT NOT NULL,
             dataset TEXT NOT NULL,
             file_path TEXT NOT NULL,
+            archive_sha256 TEXT,
             replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (target, dataset, file_path)
         )
@@ -3411,6 +3412,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_replay table existence")?;
+
+    // SQLite leaves an existing table untouched for CREATE TABLE IF NOT EXISTS. Upgrade the
+    // pre-identity replay table before any startup backfill reads or writes archive_sha256.
+    let hourly_rollup_archive_replay_columns =
+        load_sqlite_table_columns(pool, "hourly_rollup_archive_replay").await?;
+    if !hourly_rollup_archive_replay_columns.contains("archive_sha256") {
+        sqlx::query("ALTER TABLE hourly_rollup_archive_replay ADD COLUMN archive_sha256 TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add hourly rollup archive replay identity column")?;
+    }
 
     sqlx::query(
         r#"

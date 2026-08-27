@@ -846,6 +846,83 @@ async fn ensure_schema_creates_sticky_affinity_generation_and_routing_source_sto
 }
 
 #[tokio::test]
+async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_backfill() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("seed current schema before recreating the legacy replay table");
+
+    sqlx::query("DROP TABLE hourly_rollup_archive_replay")
+        .execute(&pool)
+        .await
+        .expect("drop current replay table");
+    sqlx::query(
+        r#"
+        CREATE TABLE hourly_rollup_archive_replay (
+            target TEXT NOT NULL,
+            dataset TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (target, dataset, file_path)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("recreate the pre-identity replay table");
+
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status) \
+         VALUES ('codex_invocations', '2026-08', 'legacy-replay.sqlite.gz', 'legacy-replay-sha', 1, 'completed')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed completed manifest for legacy replay");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) \
+         VALUES ('invocation_hourly', 'codex_invocations', 'legacy-replay.sqlite.gz')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy replay marker without identity");
+
+    ensure_schema(&pool)
+        .await
+        .expect("first startup migrates the legacy replay table before backfill");
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('hourly_rollup_archive_replay')")
+            .fetch_all(&pool)
+            .await
+            .expect("inspect migrated replay columns");
+    assert!(columns.iter().any(|column| column == "archive_sha256"));
+    let first_start_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE target = 'invocation_hourly' AND dataset = 'codex_invocations' \
+           AND file_path = 'legacy-replay.sqlite.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled replay identity after first startup");
+    assert_eq!(first_start_sha.as_deref(), Some("legacy-replay-sha"));
+
+    ensure_schema(&pool)
+        .await
+        .expect("second startup keeps the migrated replay table usable");
+    let second_start_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE target = 'invocation_hourly' AND dataset = 'codex_invocations' \
+           AND file_path = 'legacy-replay.sqlite.gz'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load replay identity after second startup");
+    assert_eq!(second_start_sha.as_deref(), Some("legacy-replay-sha"));
+}
+
+#[tokio::test]
 async fn list_invocations_projects_payload_context_fields() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

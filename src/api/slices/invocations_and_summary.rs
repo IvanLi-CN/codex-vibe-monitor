@@ -8889,10 +8889,10 @@ fn summary_projection_all_time_materialized_scope_coverage(
                 .unwrap_or_default(),
         );
         let Some(range) = summary_projection_archive_coverage_range(archive) else {
-            // Legacy manifests lack a finite durable coverage range. Their materialization flag
-            // remains the established proof for the global compact baseline. Account coverage
-            // cannot be inferred without a bounded manifest, so retain that legacy response
-            // only when its independent account replay and completion markers exist.
+            // Legacy manifests lack a finite durable coverage range. Materialization alone does
+            // not prove the compact aggregate was derived from this immutable archive, so every
+            // scope still requires an identity-matching replay marker.
+            global_covered &= replay.overall;
             accounts_covered &= replay.account_stats
                 && archive_account_manifest_refreshed_paths.contains(archive.file_path());
             continue;
@@ -8968,17 +8968,9 @@ fn summary_projection_archive_has_coverage_bounds(
 }
 
 fn summary_projection_effective_replay_coverage(
-    archive: &crate::stats::ArchiveBatchPathRow,
-    mut coverage: SummaryProjectionArchiveReplayCoverage,
+    _archive: &crate::stats::ArchiveBatchPathRow,
+    coverage: SummaryProjectionArchiveReplayCoverage,
 ) -> SummaryProjectionArchiveReplayCoverage {
-    // Older archive manifests predate bounded coverage timestamps. Their materialization flag
-    // is the established proof for the compact global invocation rollup; do not replace that
-    // aggregate with an unscoped raw scan. Account and usage markers remain independent.
-    if archive.has_materialized_historical_rollups()
-        && !summary_projection_archive_has_coverage_bounds(archive)
-    {
-        coverage.overall = true;
-    }
     coverage
 }
 
@@ -10237,26 +10229,18 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                     WHERE replay.target = ?1 \
                       AND replay.dataset = 'codex_invocations' \
                       AND replay.file_path = batches.file_path \
-                      AND ( \
-                           replay.archive_sha256 = batches.sha256 \
-                           OR ( \
-                               replay.archive_sha256 IS NULL \
-                               AND batches.historical_rollups_materialized_at IS NOT NULL \
-                           ) \
-                      ) \
+                      AND batches.sha256 IS NOT NULL \
+                      AND TRIM(batches.sha256) <> '' \
+                      AND replay.archive_sha256 = batches.sha256 \
                 ) AS needs_global_archive_scan, \
                 (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?2 \
                       AND replay.dataset = 'codex_invocations' \
                       AND replay.file_path = batches.file_path \
-                      AND ( \
-                           replay.archive_sha256 = batches.sha256 \
-                           OR ( \
-                               replay.archive_sha256 IS NULL \
-                               AND batches.historical_rollups_materialized_at IS NOT NULL \
-                           ) \
-                      ) \
+                      AND batches.sha256 IS NOT NULL \
+                      AND TRIM(batches.sha256) <> '' \
+                      AND replay.archive_sha256 = batches.sha256 \
                 )) AS needs_account_archive_scan, \
                 batches.historical_rollups_materialized_at IS NULL AS is_unmaterialized \
          FROM archive_batches AS batches \
@@ -10268,13 +10252,9 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                    WHERE replay.target = ?1 \
                      AND replay.dataset = 'codex_invocations' \
                      AND replay.file_path = batches.file_path \
-                     AND ( \
-                          replay.archive_sha256 = batches.sha256 \
-                          OR ( \
-                              replay.archive_sha256 IS NULL \
-                              AND batches.historical_rollups_materialized_at IS NOT NULL \
-                          ) \
-                     ) \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND replay.archive_sha256 = batches.sha256 \
                ) \
                OR ( \
                    batches.historical_rollups_materialized_at IS NULL \
@@ -10283,13 +10263,9 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                    WHERE replay.target = ?2 \
                      AND replay.dataset = 'codex_invocations' \
                      AND replay.file_path = batches.file_path \
-                     AND ( \
-                          replay.archive_sha256 = batches.sha256 \
-                          OR ( \
-                              replay.archive_sha256 IS NULL \
-                              AND batches.historical_rollups_materialized_at IS NOT NULL \
-                          ) \
-                     ) \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND replay.archive_sha256 = batches.sha256 \
                ) \
                ) \
            ) \
@@ -10431,13 +10407,9 @@ async fn load_summary_projection_archive_replay_coverage(
                ON batches.dataset = replay.dataset \
               AND batches.file_path = replay.file_path \
               AND batches.status = 'completed' \
-              AND ( \
-                   batches.sha256 = replay.archive_sha256 \
-                   OR ( \
-                       replay.archive_sha256 IS NULL \
-                       AND batches.historical_rollups_materialized_at IS NOT NULL \
-                   ) \
-              ) \
+              AND batches.sha256 IS NOT NULL \
+              AND TRIM(batches.sha256) <> '' \
+              AND batches.sha256 = replay.archive_sha256 \
              WHERE replay.dataset = 'codex_invocations' AND replay.target IN (",
         );
         query
@@ -28594,7 +28566,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_replay_coverage_requires_current_manifest_sha() {
+    async fn summary_projection_replay_coverage_requires_a_nonempty_matching_manifest_sha() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -28606,7 +28578,7 @@ mod request_compression_query_tests {
                  dataset TEXT NOT NULL, \
                  status TEXT NOT NULL, \
                  file_path TEXT NOT NULL, \
-                 sha256 TEXT NOT NULL, \
+                 sha256 TEXT, \
                  historical_rollups_materialized_at TEXT \
              )",
         )
@@ -28691,7 +28663,7 @@ mod request_compression_query_tests {
         )
         .execute(&pool)
         .await
-        .expect("mark legacy archive manifest materialized");
+        .expect("mark archive manifest materialized");
         sqlx::query(
             "UPDATE hourly_rollup_archive_replay SET archive_sha256 = NULL \
              WHERE dataset = 'codex_invocations' AND file_path = 'replacement.sqlite.gz'",
@@ -28699,20 +28671,45 @@ mod request_compression_query_tests {
         .execute(&pool)
         .await
         .expect("restore legacy replay markers without a manifest hash");
-        let legacy_coverage = load_summary_projection_archive_replay_coverage(
+        let identityless_coverage = load_summary_projection_archive_replay_coverage(
             &pool,
             &["replacement.sqlite.gz".to_string()],
         )
         .await
-        .expect("read materialized legacy replay coverage");
+        .expect("read identityless replay coverage");
         assert!(
-            legacy_coverage
+            !identityless_coverage
                 .get("replacement.sqlite.gz")
                 .copied()
                 .unwrap_or_default()
                 .supports_unavailable_archive(),
-            "only materialized legacy markers without a hash remain compatible"
+            "materialization must not make an identityless replay marker exact"
         );
+
+        for manifest_sha256 in [None, Some("")] {
+            sqlx::query(
+                "UPDATE archive_batches SET sha256 = ?1 \
+                 WHERE file_path = 'replacement.sqlite.gz'",
+            )
+            .bind(manifest_sha256)
+            .execute(&pool)
+            .await
+            .expect("remove immutable manifest identity");
+            let manifestless_coverage = load_summary_projection_archive_replay_coverage(
+                &pool,
+                &["replacement.sqlite.gz".to_string()],
+            )
+            .await
+            .expect("read replay coverage without a manifest identity");
+            assert!(
+                !manifestless_coverage
+                    .get("replacement.sqlite.gz")
+                    .copied()
+                    .unwrap_or_default()
+                    .supports_unavailable_archive(),
+                "a null or blank manifest identity must not make a materialized archive exact"
+            );
+        }
     }
 
     #[test]
@@ -30819,17 +30816,17 @@ mod request_compression_query_tests {
         assert_eq!(complete_manifest_account.total_count, 0);
 
         sqlx::query(
-            "DELETE FROM hourly_rollup_archive_replay \
+            "UPDATE hourly_rollup_archive_replay SET archive_sha256 = NULL \
              WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
         )
         .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
         .bind(archive_path)
         .execute(&state.pool)
         .await
-        .expect("remove global replay completion proof");
+        .expect("remove global replay marker identity");
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("refresh preserves exact global all-time last-good");
+            .expect("identityless replay refresh preserves exact global all-time last-good");
 
         let Json(last_good) = fetch_summary(
             State(state.clone()),
