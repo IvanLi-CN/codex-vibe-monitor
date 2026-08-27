@@ -7469,6 +7469,14 @@ pub(crate) struct SummaryProjection {
     // than publishing an undercount or turning a selection-level unavailability into an HTTP
     // builder failure.
     unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
+    // A materialized compact bucket can answer a whole-hour query while an unreadable archive is
+    // still required for a partial boundary within that bucket. Keep this narrower condition
+    // separate from a durable-coverage gap which makes every overlapping range unavailable.
+    unavailable_boundary_archive_ranges: Vec<ExactUtcRange>,
+    // Rolling selections conservatively round an unavailable archive contribution to its hour,
+    // but newest-N admission can prove safety against the manifest's exact endpoint. Keep that
+    // narrower proof separate so an older archive in the same hour does not reject `current`.
+    unavailable_unmaterialized_archive_current_ranges: Vec<ExactUtcRange>,
     // An oversized persisted-live boundary affects only ranges that intersect that exact hour.
     // The independent `current` prefix remains exact and must stay available.
     unavailable_exact_live_ranges: Vec<ExactUtcRange>,
@@ -7529,14 +7537,34 @@ impl SummaryProjection {
     }
 
     fn unavailable_archive_may_affect_global_current(&self, limit: usize) -> bool {
-        if limit == 0 || self.unavailable_unmaterialized_archive_ranges.is_empty() {
+        if limit == 0
+            || self
+                .unavailable_unmaterialized_archive_current_ranges
+                .is_empty()
+        {
             return false;
         }
         self.current_selection_cutoff(limit).is_none_or(|cutoff| {
-            self.unavailable_unmaterialized_archive_ranges
+            self.unavailable_unmaterialized_archive_current_ranges
                 .iter()
                 .any(|range| range.end >= cutoff)
         })
+    }
+
+    fn unavailable_boundary_archive_may_affect_range(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> bool {
+        summary_projection_partial_rollup_ranges(start, end)
+            .into_iter()
+            .any(|partial| {
+                self.unavailable_boundary_archive_ranges
+                    .iter()
+                    .any(|unavailable| {
+                        unavailable.start < partial.end && partial.start < unavailable.end
+                    })
+            })
     }
 
     pub(crate) fn contains_persisted_live_terminal(
@@ -7698,10 +7726,12 @@ impl SummaryProjection {
             )));
         }
         let unavailable_archive_range_affects_query = match range {
-            Some((start, end)) => self
-                .unavailable_unmaterialized_archive_ranges
-                .iter()
-                .any(|unavailable| unavailable.start < end && start < unavailable.end),
+            Some((start, end)) => {
+                self.unavailable_unmaterialized_archive_ranges
+                    .iter()
+                    .any(|unavailable| unavailable.start < end && start < unavailable.end)
+                    || self.unavailable_boundary_archive_may_affect_range(start, end)
+            }
             // `current` is a newest-N selection. A retained archive gap only invalidates the
             // selection if its coverage can reach this request's actual cutoff.
             None => requested_current_limit
@@ -9229,6 +9259,81 @@ fn summary_projection_unavailable_bucket_ranges(buckets: BTreeSet<i64>) -> Vec<E
     ranges
 }
 
+fn summary_projection_partial_rollup_ranges(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Vec<ExactUtcRange> {
+    if start >= end {
+        return Vec::new();
+    }
+    let first_full_hour = Utc
+        .timestamp_opt(ceil_hour_epoch(start.timestamp()), 0)
+        .single()
+        .expect("valid summary partial range start");
+    let last_full_hour = Utc
+        .timestamp_opt(align_bucket_epoch(end.timestamp(), 3_600, 0), 0)
+        .single()
+        .expect("valid summary partial range end");
+    let mut partial_ranges = Vec::new();
+    if start < first_full_hour {
+        partial_ranges.push(ExactUtcRange {
+            start,
+            end: end.min(first_full_hour),
+        });
+    }
+    if first_full_hour <= last_full_hour && last_full_hour < end {
+        partial_ranges.push(ExactUtcRange {
+            start: last_full_hour,
+            end,
+        });
+    }
+    partial_ranges
+}
+
+fn summary_projection_mark_unavailable_archive_ranges_by_requirement(
+    unavailable_ranges: &mut BTreeSet<i64>,
+    unavailable_boundary_ranges: &mut Vec<ExactUtcRange>,
+    archive_has_materialized_rollups: bool,
+    exact_ranges: &[ExactUtcRange],
+    exact_bucket_requirements: &HashSet<i64>,
+) -> Result<()> {
+    if !archive_has_materialized_rollups {
+        return summary_projection_mark_unavailable_archive_ranges(
+            unavailable_ranges,
+            exact_ranges.iter().copied(),
+        );
+    }
+
+    let mut strict_ranges = Vec::new();
+    let mut boundary_ranges = Vec::new();
+    for range in exact_ranges {
+        let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+        let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+        while bucket <= last_bucket {
+            let bucket_start = Utc
+                .timestamp_opt(bucket, 0)
+                .single()
+                .expect("valid summary archive bucket start");
+            let bucket_end = bucket_start + ChronoDuration::hours(1);
+            let segment = ExactUtcRange {
+                start: range.start.max(bucket_start),
+                end: range.end.min(bucket_end),
+            };
+            if segment.start < segment.end {
+                if exact_bucket_requirements.contains(&bucket) {
+                    strict_ranges.push(segment);
+                } else {
+                    boundary_ranges.push(segment);
+                }
+            }
+            bucket = bucket.saturating_add(3_600);
+        }
+    }
+    summary_projection_mark_unavailable_archive_ranges(unavailable_ranges, strict_ranges)?;
+    unavailable_boundary_ranges.extend(boundary_ranges);
+    Ok(())
+}
+
 fn summary_projection_mark_exact_replacement_buckets(
     archive_has_materialized_rollups: bool,
     replay_coverage: SummaryProjectionArchiveReplayCoverage,
@@ -10245,7 +10350,13 @@ async fn load_summary_projection_archive_replay_coverage(
                ON batches.dataset = replay.dataset \
               AND batches.file_path = replay.file_path \
               AND batches.status = 'completed' \
-              AND batches.sha256 = replay.archive_sha256 \
+              AND ( \
+                   batches.sha256 = replay.archive_sha256 \
+                   OR ( \
+                       replay.archive_sha256 IS NULL \
+                       AND batches.historical_rollups_materialized_at IS NOT NULL \
+                   ) \
+              ) \
              WHERE replay.dataset = 'codex_invocations' AND replay.target IN (",
         );
         query
@@ -11191,6 +11302,8 @@ async fn build_summary_projection_once(
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
     let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
+    let mut unavailable_boundary_archive_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_unmaterialized_archive_current_ranges = Vec::<ExactUtcRange>::new();
     let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
     let mut unavailable_exact_live_account_buckets = HashMap::<i64, BTreeSet<i64>>::new();
     let mut historical_global_covered_terminal_invoke_ids = HashSet::<String>::new();
@@ -11374,11 +11487,9 @@ async fn build_summary_projection_once(
                 // global total could conceal missing account or usage/model detail.
                 continue;
             }
-            all_time_source_unavailable_from_archive_ranges = true;
-            summary_projection_mark_unavailable_archive_ranges(
-                &mut unavailable_unmaterialized_archive_buckets,
-                [archive_range],
-            )?;
+            if !archive.has_materialized_historical_rollups() {
+                all_time_source_unavailable_from_archive_ranges = true;
+            }
             continue;
         };
         require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
@@ -11454,16 +11565,22 @@ async fn build_summary_projection_once(
                 .copied()
                 .unwrap_or_default(),
         );
-        summary_projection_mark_exact_replacement_buckets(
-            archive.has_materialized_historical_rollups(),
-            replay_coverage,
-            archive_range,
-            &protected_boundary_buckets,
-            &mut exact_global_total_rollup_buckets,
-            &mut exact_account_total_rollup_buckets,
-            &mut exact_global_usage_rollup_buckets,
-            &mut exact_account_usage_rollup_buckets,
-        )?;
+        // A point-like legacy manifest has no finite coverage interval. All-time scope coverage
+        // deliberately treats its materialization flag as the established global compact proof;
+        // do not reinterpret the inclusive endpoint used by rolling archive reads as a one-second
+        // replacement range and suppress that same durable aggregate.
+        if summary_projection_archive_coverage_range(archive).is_some() {
+            summary_projection_mark_exact_replacement_buckets(
+                archive.has_materialized_historical_rollups(),
+                replay_coverage,
+                archive_range,
+                &protected_boundary_buckets,
+                &mut exact_global_total_rollup_buckets,
+                &mut exact_account_total_rollup_buckets,
+                &mut exact_global_usage_rollup_buckets,
+                &mut exact_account_usage_rollup_buckets,
+            )?;
+        }
     }
     // When one archive has incomplete replay, every archive and persisted live row in its
     // compact bucket must be available as an exact replacement source. A fully replayed sibling
@@ -11595,6 +11712,10 @@ async fn build_summary_projection_once(
             after_id = Some(next_after_id);
         }
     }
+    let exact_bucket_requirements = exact_archive_buckets
+        .difference(&protected_boundary_buckets)
+        .copied()
+        .collect::<HashSet<_>>();
     let exact_live_ranges = summary_projection_exact_bucket_ranges(&exact_archive_buckets)
         .into_iter()
         .filter_map(|range| {
@@ -11782,30 +11903,42 @@ async fn build_summary_projection_once(
             && verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?
                 == SummaryProjectionArchiveFileIdentity::Unavailable
         {
-            if !replay_coverage.supports_unavailable_archive() {
+            if !archive.has_materialized_historical_rollups()
+                && !replay_coverage.supports_unavailable_archive()
+            {
                 all_time_source_unavailable_from_archive_ranges = true;
             }
-            summary_projection_mark_unavailable_archive_ranges(
+            summary_projection_mark_unavailable_archive_ranges_by_requirement(
                 &mut unavailable_unmaterialized_archive_buckets,
-                exact_ranges,
+                &mut unavailable_boundary_archive_ranges,
+                archive.has_materialized_historical_rollups(),
+                &exact_ranges,
+                &exact_bucket_requirements,
             )?;
+            unavailable_unmaterialized_archive_current_ranges.push(archive_range);
             continue;
         }
         let Some((archive_pool, temp_cleanup)) =
             crate::stats::open_invocation_archive_batch_pool(&archive, "summary-projection")
                 .await?
         else {
-            if !replay_coverage.supports_unavailable_archive() {
+            if !archive.has_materialized_historical_rollups()
+                && !replay_coverage.supports_unavailable_archive()
+            {
                 all_time_source_unavailable_from_archive_ranges = true;
             }
             // Complete replay can replace a full compact hour, but it cannot reconstruct this
             // request-visible partial hour or its usage/model detail. The raw archive is an
             // exact source for every range in `exact_ranges`; without it, retain unavailable
             // rather than allowing the memory-only reducer to omit that contribution.
-            summary_projection_mark_unavailable_archive_ranges(
+            summary_projection_mark_unavailable_archive_ranges_by_requirement(
                 &mut unavailable_unmaterialized_archive_buckets,
-                exact_ranges,
+                &mut unavailable_boundary_archive_ranges,
+                archive.has_materialized_historical_rollups(),
+                &exact_ranges,
+                &exact_bucket_requirements,
             )?;
+            unavailable_unmaterialized_archive_current_ranges.push(archive_range);
             continue;
         };
         require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
@@ -11845,10 +11978,14 @@ async fn build_summary_projection_once(
             records_by_invoke_id = records_before_archive;
             exact_record_budget = exact_record_budget_before_archive;
             exact_record_bytes = exact_record_bytes_before_archive;
-            summary_projection_mark_unavailable_archive_ranges(
+            summary_projection_mark_unavailable_archive_ranges_by_requirement(
                 &mut unavailable_unmaterialized_archive_buckets,
-                exact_ranges,
+                &mut unavailable_boundary_archive_ranges,
+                archive.has_materialized_historical_rollups(),
+                &exact_ranges,
+                &exact_bucket_requirements,
             )?;
+            unavailable_unmaterialized_archive_current_ranges.push(archive_range);
         }
     }
     if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
@@ -11932,10 +12069,14 @@ async fn build_summary_projection_once(
                     && verify_summary_projection_archive_file_sha256(&archive, manifest_sha256)?
                         == SummaryProjectionArchiveFileIdentity::Unavailable
                 {
-                    summary_projection_mark_unavailable_archive_ranges(
+                    summary_projection_mark_unavailable_archive_ranges_by_requirement(
                         &mut unavailable_unmaterialized_archive_buckets,
-                        exact_ranges,
+                        &mut unavailable_boundary_archive_ranges,
+                        true,
+                        &exact_ranges,
+                        &exact_bucket_requirements,
                     )?;
+                    unavailable_unmaterialized_archive_current_ranges.push(archive_range);
                     continue;
                 }
                 let Some((archive_pool, temp_cleanup)) =
@@ -11948,10 +12089,14 @@ async fn build_summary_projection_once(
                     // The page is durable enough to use compact rollups for full hours, but the
                     // planned exact ranges still need raw partial-hour records. Mark the range
                     // unavailable so HTTP cannot publish an undercount from the compact source.
-                    summary_projection_mark_unavailable_archive_ranges(
+                    summary_projection_mark_unavailable_archive_ranges_by_requirement(
                         &mut unavailable_unmaterialized_archive_buckets,
-                        exact_ranges,
+                        &mut unavailable_boundary_archive_ranges,
+                        true,
+                        &exact_ranges,
+                        &exact_bucket_requirements,
                     )?;
+                    unavailable_unmaterialized_archive_current_ranges.push(archive_range);
                     continue;
                 };
                 require_summary_projection_archive_file_sha256(&archive, manifest_sha256)?;
@@ -11991,10 +12136,14 @@ async fn build_summary_projection_once(
                     records_by_invoke_id = records_before_archive;
                     exact_record_budget = exact_record_budget_before_archive;
                     exact_record_bytes = exact_record_bytes_before_archive;
-                    summary_projection_mark_unavailable_archive_ranges(
+                    summary_projection_mark_unavailable_archive_ranges_by_requirement(
                         &mut unavailable_unmaterialized_archive_buckets,
-                        exact_ranges,
+                        &mut unavailable_boundary_archive_ranges,
+                        true,
+                        &exact_ranges,
+                        &exact_bucket_requirements,
                     )?;
+                    unavailable_unmaterialized_archive_current_ranges.push(archive_range);
                 }
             }
             let Some(next_after_id) = page.next_after_id else {
@@ -12947,6 +13096,10 @@ async fn build_summary_projection_once(
     };
     let unavailable_unmaterialized_archive_ranges =
         summary_projection_unavailable_bucket_ranges(unavailable_unmaterialized_archive_buckets);
+    let unavailable_boundary_archive_ranges =
+        summary_projection_merge_exact_ranges(unavailable_boundary_archive_ranges);
+    let unavailable_unmaterialized_archive_current_ranges =
+        summary_projection_merge_exact_ranges(unavailable_unmaterialized_archive_current_ranges);
     let unavailable_exact_live_ranges =
         summary_projection_unavailable_bucket_ranges(unavailable_exact_live_buckets);
     let unavailable_exact_live_account_ranges = unavailable_exact_live_account_buckets
@@ -13017,6 +13170,8 @@ async fn build_summary_projection_once(
         archive_account_ids_by_file,
         archive_coverage_ranges_by_file: archive_actual_coverage_ranges,
         unavailable_unmaterialized_archive_ranges,
+        unavailable_boundary_archive_ranges,
+        unavailable_unmaterialized_archive_current_ranges,
         unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges,
         current_source_unavailable,
@@ -28310,7 +28465,8 @@ mod request_compression_query_tests {
                  dataset TEXT NOT NULL, \
                  status TEXT NOT NULL, \
                  file_path TEXT NOT NULL, \
-                 sha256 TEXT NOT NULL \
+                 sha256 TEXT NOT NULL, \
+                 historical_rollups_materialized_at TEXT \
              )",
         )
         .execute(&pool)
@@ -28321,7 +28477,7 @@ mod request_compression_query_tests {
                  target TEXT NOT NULL, \
                  dataset TEXT NOT NULL, \
                  file_path TEXT NOT NULL, \
-                 archive_sha256 TEXT NOT NULL \
+                 archive_sha256 TEXT \
              )",
         )
         .execute(&pool)
@@ -28386,6 +28542,35 @@ mod request_compression_query_tests {
                 .unwrap_or_default()
                 .supports_unavailable_archive(),
             "current replay proof must cover every compact response dimension"
+        );
+
+        sqlx::query(
+            "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+             WHERE file_path = 'replacement.sqlite.gz'",
+        )
+        .execute(&pool)
+        .await
+        .expect("mark legacy archive manifest materialized");
+        sqlx::query(
+            "UPDATE hourly_rollup_archive_replay SET archive_sha256 = NULL \
+             WHERE dataset = 'codex_invocations' AND file_path = 'replacement.sqlite.gz'",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore legacy replay markers without a manifest hash");
+        let legacy_coverage = load_summary_projection_archive_replay_coverage(
+            &pool,
+            &["replacement.sqlite.gz".to_string()],
+        )
+        .await
+        .expect("read materialized legacy replay coverage");
+        assert!(
+            legacy_coverage
+                .get("replacement.sqlite.gz")
+                .copied()
+                .unwrap_or_default()
+                .supports_unavailable_archive(),
+            "only materialized legacy markers without a hash remain compatible"
         );
     }
 
@@ -31304,6 +31489,70 @@ mod request_compression_query_tests {
         )
         .await;
         assert!(matches!(account, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_uses_exact_unreadable_archive_endpoint_before_cutoff() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let current_hour = Utc
+            .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
+            .single()
+            .expect("valid current hour");
+        let archive_start = current_hour - ChronoDuration::hours(1) + ChronoDuration::minutes(10);
+        let archive_end = current_hour - ChronoDuration::hours(1) + ChronoDuration::minutes(20);
+        let selected_current =
+            current_hour - ChronoDuration::hours(1) + ChronoDuration::minutes(50);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-current-after-unreadable-archive', ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(selected_current))
+        .execute(&state.pool)
+        .await
+        .expect("seed selected current record after unreadable archive endpoint");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', '/definitely/missing/summary-current-same-hour.sqlite.gz', \
+                     'summary-current-same-hour', 1, 'completed', ?1, ?2, datetime('now'))",
+        )
+        .bind(db_occurred_at_lower_bound(archive_start))
+        .bind(db_occurred_at_lower_bound(archive_end))
+        .execute(&state.pool)
+        .await
+        .expect("seed unreadable archive before selected current cutoff in the same hour");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with same-hour unreadable archive metadata");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert!(
+            !projection.unavailable_archive_may_affect_global_current(1),
+            "the precise archive endpoint must remain below the selected current cutoff"
+        );
+        state.pool.close().await;
+
+        let Json(summary) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("closed SQLite current request must use the in-memory exact cutoff proof");
+        assert_eq!(summary.total_count, 1);
+        assert_eq!(summary.total_tokens, 1);
     }
 
     #[tokio::test]
