@@ -31744,7 +31744,9 @@ mod request_compression_query_tests {
             .timestamp_opt(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0), 0)
             .single()
             .expect("valid current hour");
-        let selected_current = current_hour + ChronoDuration::minutes(20);
+        // Keep the selected row before hydration's `Utc::now()` upper bound so this endpoint
+        // proof does not depend on which minute of the current hour the test starts.
+        let selected_current = current_hour - ChronoDuration::minutes(20);
         let archive_start = selected_current - ChronoDuration::minutes(10);
         // Manifest coverage is inclusive, so this becomes the exact half-open endpoint used by
         // the resident-current proof.
@@ -31781,6 +31783,10 @@ mod request_compression_query_tests {
         assert!(
             !projection.unavailable_archive_may_affect_global_current(1),
             "a half-open archive ending at the cutoff cannot affect the selected rank"
+        );
+        assert!(
+            !projection.current_archive_may_affect_global_current(1),
+            "an unrepresented archive whose exclusive end equals the cutoff cannot reject current"
         );
         state.pool.close().await;
 
