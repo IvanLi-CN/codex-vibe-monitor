@@ -3153,8 +3153,18 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized_a
     .expect("load forward-proxy archive path");
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+        FROM archive_batches AS batches
+        WHERE batches.dataset = ?2
+          AND batches.status = 'completed'
+          AND batches.file_path = ?3
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
@@ -3692,8 +3702,18 @@ async fn bootstrap_hourly_rollups_repairs_legacy_account_replay_markers_when_bre
 
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+        FROM archive_batches AS batches
+        WHERE batches.dataset = ?2
+          AND batches.status = 'completed'
+          AND batches.file_path = ?3
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
@@ -3741,6 +3761,346 @@ async fn bootstrap_hourly_rollups_repairs_legacy_account_replay_markers_when_bre
     .await
     .expect("count repaired legacy account replay markers");
     assert_eq!(account_target_markers, 4);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_sha() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-stale-replay-sha").await;
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("breakdown-repair-stale-replay-sha.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (?1, '2026-01', ?2, 'archive-sha-a', 1, ?3, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("seed materialized archive manifest at SHA A");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        VALUES (?1, ?2, ?3, 'archive-sha-a', datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("seed matching usage breakdown replay marker");
+
+    let untouched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("matching marker must preserve materialized archive state");
+    assert_eq!(untouched, 0);
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = 'archive-sha-b'
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("replace completed archive manifest at the same path with SHA B");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("stale marker must reopen the replacement archive");
+    assert_eq!(touched, 1);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT historical_rollups_materialized_at
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load reopened replacement archive state");
+    assert!(materialized_at.is_none());
+
+    let replay_marker_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count stale usage breakdown replay markers");
+    assert_eq!(replay_marker_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_replay_reprocesses_an_unmaterialized_archive_with_a_stale_replay_sha() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("breakdown-replay-stale-replay-sha").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "breakdown-replay-stale-replay-sha",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "breakdown-replay-stale-replay-sha",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+        FROM archive_batches AS batches
+        WHERE batches.dataset = ?2
+          AND batches.status = 'completed'
+          AND batches.file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed replay marker for original archive SHA");
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = 'replacement-archive-sha'
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("publish replacement archive manifest SHA");
+
+    let pending = load_invocation_archive_files_missing_rollup_target(
+        &pool,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    )
+    .await
+    .expect("list replacement archive as pending usage breakdown replay");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].file_path, archive_file_path);
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin replacement archive replay");
+    let summary = replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(1),
+        None,
+        0,
+    )
+    .await
+    .expect("replay replacement archive after stale marker detection");
+    tx.commit()
+        .await
+        .expect("commit replacement archive replay");
+    assert_eq!(summary.materialized_batches, 1);
+
+    let replay_sha256: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT archive_sha256
+        FROM hourly_rollup_archive_replay
+        WHERE target = ?1
+          AND dataset = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load replacement usage breakdown replay marker");
+    assert_eq!(replay_sha256.as_deref(), Some("replacement-archive-sha"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-replay-manifest-identity").await;
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("breakdown-replay-manifest-identity.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        VALUES (?1, ?2, ?3, 'archive-sha-a', datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("seed replay marker without a manifest");
+
+    let mut tx = pool.begin().await.expect("begin missing-manifest check");
+    assert!(
+        !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_path,
+        )
+        .await
+        .expect("check marker without manifest"),
+        "a marker without a completed manifest must fail closed"
+    );
+    tx.commit().await.expect("commit missing-manifest check");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            created_at
+        )
+        VALUES (?1, '2026-01', ?2, 'archive-sha-a', 1, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("seed matching completed archive manifest");
+
+    let mut tx = pool.begin().await.expect("begin matching-manifest check");
+    assert!(
+        hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_path,
+        )
+        .await
+        .expect("check matching marker"),
+        "a marker matching the completed manifest must remain accepted"
+    );
+    tx.commit().await.expect("commit matching-manifest check");
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET status = 'writing'
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("make manifest incomplete");
+
+    let mut tx = pool.begin().await.expect("begin incomplete-manifest check");
+    assert!(
+        !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_path,
+        )
+        .await
+        .expect("check marker against incomplete manifest"),
+        "a marker without a completed manifest must fail closed"
+    );
+    tx.commit().await.expect("commit incomplete-manifest check");
 
     cleanup_temp_test_dir(&temp_dir);
 }

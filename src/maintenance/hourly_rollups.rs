@@ -795,6 +795,7 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
                 WHERE replay.target = ?2
                   AND replay.dataset = batches.dataset
                   AND replay.file_path = batches.file_path
+                  AND replay.archive_sha256 = batches.sha256
           )
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,

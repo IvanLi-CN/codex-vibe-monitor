@@ -2758,17 +2758,27 @@ pub(crate) async fn hourly_rollup_archive_replayed_tx(
     dataset: &str,
     file_path: &str,
 ) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3 LIMIT 1",
-        )
-        .bind(target)
-        .bind(dataset)
-        .bind(file_path)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some(),
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT 1
+            FROM hourly_rollup_archive_replay AS replay
+            INNER JOIN archive_batches AS batches
+                ON batches.dataset = replay.dataset
+               AND batches.file_path = replay.file_path
+               AND batches.status = 'completed'
+               AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = ?2
+              AND replay.file_path = ?3
+            LIMIT 1
+            "#,
     )
+    .bind(target)
+    .bind(dataset)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
 }
 
 pub(crate) fn normalized_oauth_account_id(value: Option<&str>) -> Option<&str> {
