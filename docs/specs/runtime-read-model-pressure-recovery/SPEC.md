@@ -61,6 +61,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 最近索引超过固定预算时，Projection 必须保留首个省略 live 行的时间边界；任何覆盖该边界或更早时间的 rolling/calendar 全局或 account 请求必须 `unavailable`，不得以截断索引或请求期回源返回 totals；边界之后、完整保留的窗口继续从内存精确响应。
 - `current` 的 newest-N 视图可以与 rolling/archive 的精确边界视图分开索引，但两者实际持有的 preview 行字符串必须共同受同一常驻字节上限约束；超过上限时不得以第二份副本扩大内存预算。
 - `current` 只能在每个请求 scope 的 newest-N 候选来源均已被有界 admission 证明时返回成功；一个可能进入该前缀、但未被常驻 Projection 收录的 archive 记录必须使对应 global 或 account `current` 请求 `unavailable`，不得返回较短的 200。确认早于 selected cutoff 的 archive 不得阻断不受影响的 global `current`。
+- archive 的不可读或未回放证明必须为 `current` 保留精确 manifest 时间端点；小时 bucket 扩展只用于 rolling/calendar 的 aggregate gap，不得把同小时但早于 selected cutoff 的 archive 放大为 `current` 不可用。materialized archive 的 partial raw boundary gap 只替换受影响的精确边界，不能否定已完整覆盖的 durable rollup interior；replay coverage 必须匹配当前 manifest identity，除非受控兼容标记明确定义为 materialized coverage。
 - 共享常驻字节预算无法同时容纳某个 rolling/archive 精确边界与独立 newest-N 视图时，必须回退该精确边界为范围局部 `unavailable`；已经完整证明的 `current` 和不相交的合法窗口继续从内存精确响应。
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
 - archive manifest 或历史容量超过固定内存 admission 预算时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
