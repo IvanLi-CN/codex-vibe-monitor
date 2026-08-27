@@ -3620,6 +3620,7 @@ export const CurrentAndPrevious: Story = {
 };
 
 export const GPT56ModelContextCluster: Story = {
+  tags: ["test"],
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {
@@ -3679,6 +3680,7 @@ const gpt56ModelContextWithoutReasoningResponse = createResponse([
 ]);
 
 export const GPT56ModelContextMobile393: Story = {
+  tags: ["test"],
   parameters: {
     viewport: { defaultViewport: "mobile393" },
     docs: {
@@ -3717,6 +3719,7 @@ export const GPT56ModelContextMobile393: Story = {
 };
 
 export const GPT56ModelContextWithoutReasoning: Story = {
+  tags: ["test"],
   parameters: {
     viewport: { defaultViewport: "desktop1660" },
     docs: {

@@ -783,6 +783,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
         const fastIcon = cluster.querySelector<SVGElement>(
           '[data-testid="invocation-fast-icon"] svg',
         );
+        const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
         const marker = cluster.querySelector<HTMLElement>(
           '[data-model-context-part="reasoning-effort-marker"]',
         );
@@ -799,6 +800,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
           modelWidth: modelRect.width,
           modelToMarkerGap: markerRect.left - modelRect.right,
           markerToEffortGap: effortTextRect.left - markerRect.right,
+          effortToFastGap: fastPart
+            ? fastPart.getBoundingClientRect().left - effortTextRect.right
+            : null,
           iconCenterDelta:
             modelIcon && fastIcon
               ? Math.abs(
@@ -843,8 +847,23 @@ test.describe("Dashboard working conversations responsive layout", () => {
         (geometry) => (geometry.iconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
       ),
     ).toBe(true);
-    expect(layout.groupedGeometry.every((geometry) => geometry.modelToMarkerGap <= 4)).toBe(true);
-    expect(layout.groupedGeometry.every((geometry) => geometry.markerToEffortGap <= 4)).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) => geometry.modelToMarkerGap >= 3 && geometry.modelToMarkerGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) => geometry.markerToEffortGap >= 3 && geometry.markerToEffortGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) =>
+          (geometry.effortToFastGap ?? Number.POSITIVE_INFINITY) >= 3 &&
+          (geometry.effortToFastGap ?? Number.NEGATIVE_INFINITY) <= 5,
+      ),
+    ).toBe(true);
     expect(layout.groupedGeometry.every((geometry) => geometry.markerCount === 1)).toBe(true);
     expect(layout.groupedGeometry.every((geometry) => geometry.internalDividerCount === 0)).toBe(
       true,
