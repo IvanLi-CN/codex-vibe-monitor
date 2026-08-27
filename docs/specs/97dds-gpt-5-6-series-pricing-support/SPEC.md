@@ -179,6 +179,8 @@ PR: include
 - state: date-suffixed GPT-5.6 alias and unsupported model fallback
 - evidence_note: Verifies a date-suffixed GPT-5.6 model inherits the Sol icon and an unsupported model remains visible as its original text.
 
+PR: include
+
 ![GPT-5.6 invocation context cluster, dark theme](./assets/gpt56-invocation-context-dark-storybook.png)
 
 - source_type: storybook_canvas
@@ -193,6 +195,8 @@ PR: include
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
 - state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-dark` theme
 - evidence_note: Owner-approved component capture. The component keeps its own low-contrast boundary, one error-tone reasoning marker, 4px sibling spacing, and centered model/FAST icons without an additional presentation frame or excess whitespace.
+
+PR: include
 
 ![GPT-5.6 invocation context cluster, light theme](./assets/gpt56-invocation-context-light-storybook.png)
 
