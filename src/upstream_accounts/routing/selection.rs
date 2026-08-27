@@ -405,17 +405,6 @@ pub(crate) fn compare_pool_routing_candidate_scores(
         })
 }
 
-fn fresh_assignment_is_priority_attraction(
-    winner: &LivePoolCandidateEvaluation,
-    candidates: &[LivePoolCandidateEvaluation],
-) -> bool {
-    let winner_rank = winner.score.routing_priority_rank;
-    winner_rank == TagPriorityTier::Primary.routing_rank()
-        || candidates
-            .iter()
-            .any(|candidate| candidate.score.routing_priority_rank > winner_rank)
-}
-
 pub(crate) fn compare_reset_proximity_for_rotation_candidates(
     lhs_enabled: bool,
     lhs_reset: Option<i64>,
@@ -2223,12 +2212,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut priority_handoff_deferred_for_sticky = false;
     let mut priority_handoff_deferred_any = false;
     let mut sticky_handoff_deferred_admission: Option<PoolRoutingHandoffAdmission> = None;
-    let fresh_assignment_handoff_enabled =
-        sticky_source_id.is_none() && excluded_ids.is_empty() && binding_constraint.is_none();
-    let fresh_assignment_priority_attraction = fresh_assignment_handoff_enabled
-        && resolved_candidates.first().is_some_and(|winner| {
-            fresh_assignment_is_priority_attraction(winner, &resolved_candidates)
-        });
     let mut resolved_candidates = resolved_candidates.into_iter();
     while let Some(evaluation) = resolved_candidates.next() {
         if let Some(mut account) = evaluation.resolved_account {
@@ -2241,9 +2224,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let mut priority_handoff_permit = None;
             let should_gate_priority_handoff = priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
-                && (sticky_fallback_handoff_enabled
-                    || fresh_assignment_priority_attraction
-                    || priority_handoff_deferred_any)
+                && (sticky_fallback_handoff_enabled || priority_handoff_deferred_any)
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
             if !priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
