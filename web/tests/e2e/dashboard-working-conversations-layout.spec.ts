@@ -921,12 +921,49 @@ test.describe("Dashboard working conversations responsive layout", () => {
       );
       const groupedContexts = Array.from(
         document.querySelectorAll<HTMLElement>('[data-model-context-grouped="true"]'),
-      ).map((cluster) => ({
-        markerCount: cluster.querySelectorAll('[data-model-context-part="reasoning-effort-marker"]')
-          .length,
-        effortText: cluster.querySelector('[data-model-context-part="reasoning-effort-text"]')
-          ?.textContent,
-      }));
+      ).map((cluster) => {
+        const modelPart = cluster.querySelector<HTMLElement>('[data-model-context-part="model"]');
+        const modelIcon = cluster.querySelector<SVGElement>(
+          '[data-model-context-part="model"] svg',
+        );
+        const fastIcon = cluster.querySelector<SVGElement>(
+          '[data-testid="invocation-fast-icon"] svg',
+        );
+        const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
+        const marker = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-marker"]',
+        );
+        const effortText = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-text"]',
+        );
+        if (!modelPart || !marker || !effortText || !fastPart) {
+          throw new Error("missing mobile grouped model context geometry anchors");
+        }
+        const modelRect = modelPart.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        const effortTextRect = effortText.getBoundingClientRect();
+        const fastPartRect = fastPart.getBoundingClientRect();
+        return {
+          modelWidth: modelRect.width,
+          modelToMarkerGap: markerRect.left - modelRect.right,
+          markerToEffortGap: effortTextRect.left - markerRect.right,
+          effortToFastGap: fastPartRect.left - effortTextRect.right,
+          iconCenterDelta:
+            modelIcon && fastIcon
+              ? Math.abs(
+                  modelIcon.getBoundingClientRect().top +
+                    modelIcon.getBoundingClientRect().height / 2 -
+                    (fastIcon.getBoundingClientRect().top +
+                      fastIcon.getBoundingClientRect().height / 2),
+                )
+              : null,
+          markerCount: cluster.querySelectorAll(
+            '[data-model-context-part="reasoning-effort-marker"]',
+          ).length,
+          internalDividerCount: cluster.querySelectorAll('[class~="w-px"]').length,
+          effortText: effortText.textContent,
+        };
+      });
       return {
         rootOverflow: root.scrollWidth - root.clientWidth,
         cards: cards.length,
@@ -968,6 +1005,30 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.length).toBeGreaterThan(0);
     expect(layout.groupedContexts.every((context) => context.markerCount === 1)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => (context.iconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.modelToMarkerGap >= 3 && context.modelToMarkerGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.markerToEffortGap >= 3 && context.markerToEffortGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.effortToFastGap >= 3 && context.effortToFastGap <= 5,
+      ),
+    ).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.internalDividerCount === 0)).toBe(
+      true,
+    );
   });
 
   test("keeps static missing-history slots at the shared baseline on desktop and mobile", async ({
