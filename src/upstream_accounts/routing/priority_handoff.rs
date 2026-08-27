@@ -368,6 +368,16 @@ pub(crate) fn priority_handoff_generation(
     })
 }
 
+pub(crate) fn priority_handoff_is_tracked(account_id: i64, requested_model: Option<&str>) -> bool {
+    let Some(model_key) = normalize_model_key(requested_model) else {
+        return false;
+    };
+    state()
+        .lock()
+        .ok()
+        .is_some_and(|state| state.entries.contains_key(&(account_id, model_key)))
+}
+
 pub(crate) fn priority_handoff_client_cancellation(
     status: &str,
     downstream_http_status: Option<StatusCode>,
