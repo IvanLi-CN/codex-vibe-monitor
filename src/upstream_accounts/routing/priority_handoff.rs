@@ -149,9 +149,18 @@ pub(crate) struct PriorityHandoffPermit {
     model_key: String,
     generation: u64,
     completed: AtomicBool,
+    sticky_migration: AtomicBool,
 }
 
 impl PriorityHandoffPermit {
+    pub(crate) fn mark_sticky_migration(&self) {
+        self.sticky_migration.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_sticky_migration(&self) -> bool {
+        self.sticky_migration.load(Ordering::Acquire)
+    }
+
     pub(crate) fn complete_success(&self) -> Option<&'static str> {
         if self.completed.swap(true, Ordering::AcqRel) {
             return None;
@@ -300,6 +309,7 @@ pub(crate) fn admit_priority_handoff(
             model_key,
             generation,
             completed: AtomicBool::new(false),
+            sticky_migration: AtomicBool::new(false),
         })),
     )
 }

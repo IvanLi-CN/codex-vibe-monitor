@@ -3245,7 +3245,12 @@ async fn continue_or_retry_pool_live_request_inner(
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    if initial_account.routing_source == PoolRoutingSelectionSource::PriorityHandoff {
+    if initial_account.routing_source == PoolRoutingSelectionSource::PriorityHandoff
+        && initial_account
+            .priority_handoff_permit
+            .as_ref()
+            .is_some_and(|permit| permit.is_sticky_migration())
+    {
         // A live-first priority handoff is a single, delivery-sensitive attempt.
         // Do not replay its body into the same or another account after any failure.
         replay_cancel.cancel();

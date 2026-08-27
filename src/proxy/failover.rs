@@ -1087,7 +1087,7 @@ fn take_priority_handoff_terminal_error(
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> Option<PoolUpstreamError> {
-    if account.routing_source != PoolRoutingSelectionSource::PriorityHandoff {
+    if !priority_handoff_is_single_attempt(account) {
         return None;
     }
     let mut error = last_error.take()?;
@@ -1097,6 +1097,14 @@ fn take_priority_handoff_terminal_error(
         Some(error.failure_kind.to_string()),
     );
     Some(error)
+}
+
+fn priority_handoff_is_single_attempt(account: &PoolResolvedAccount) -> bool {
+    account.routing_source == PoolRoutingSelectionSource::PriorityHandoff
+        && account
+            .priority_handoff_permit
+            .as_ref()
+            .is_some_and(|permit| permit.is_sticky_migration())
 }
 
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
@@ -1959,9 +1967,9 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             }
             PoolResolvedAuth::Oauth { .. } => None,
         };
-        let priority_handoff_attempt =
+        let priority_handoff_admitted =
             account.routing_source == PoolRoutingSelectionSource::PriorityHandoff;
-        let same_account_attempt_budget = if priority_handoff_attempt {
+        let same_account_attempt_budget = if priority_handoff_admitted {
             1
         } else {
             pool_same_account_attempt_budget(
@@ -1971,7 +1979,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 initial_same_account_attempts,
             )
         };
-        let overload_same_account_attempt_budget = if priority_handoff_attempt {
+        let overload_same_account_attempt_budget = if priority_handoff_admitted {
             0
         } else {
             pool_overload_same_account_attempt_budget(
@@ -1981,7 +1989,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 same_account_attempt_budget,
             )
         };
-        let group_upstream_429_max_retries = if priority_handoff_attempt {
+        let group_upstream_429_max_retries = if priority_handoff_admitted {
             0
         } else {
             account.effective_upstream_429_max_retries()
@@ -3416,7 +3424,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
                 let has_upstream_413_retry_budget = pool_upstream_413_retry_allowed(
                     status,
-                    priority_handoff_attempt,
+                    priority_handoff_admitted,
                     retried_upstream_413_for_account,
                 );
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
@@ -4743,11 +4751,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
 
 fn pool_upstream_413_retry_allowed(
     status: StatusCode,
-    priority_handoff_attempt: bool,
+    priority_handoff_admitted: bool,
     retried_upstream_413_for_account: bool,
 ) -> bool {
     status == StatusCode::PAYLOAD_TOO_LARGE
-        && !priority_handoff_attempt
+        && !priority_handoff_admitted
         && !retried_upstream_413_for_account
 }
 
