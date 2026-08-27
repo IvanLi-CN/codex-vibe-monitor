@@ -783,6 +783,7 @@ async fn pool_route_retries_upstream_413_once_on_same_account_then_succeeds() {
 
 #[test]
 fn priority_handoff_does_not_retry_upstream_413() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     run_routing_future_with_large_stack(async {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_sequential_failure_responses_upstream(vec![

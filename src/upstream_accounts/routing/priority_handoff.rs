@@ -218,7 +218,7 @@ impl PriorityHandoffPermit {
 impl Drop for PriorityHandoffPermit {
     fn drop(&mut self) {
         if !self.completed.load(Ordering::Acquire) {
-            release_for_key(self.account_id, &self.model_key, self.generation);
+            release_priority_handoff_for_key(self.account_id, &self.model_key, self.generation);
         }
     }
 }
@@ -604,7 +604,7 @@ pub(crate) fn defer_priority_handoff_failure_for_key(
     true
 }
 
-fn release_for_key(account_id: i64, model_key: &str, generation: u64) {
+pub(crate) fn release_priority_handoff_for_key(account_id: i64, model_key: &str, generation: u64) {
     let Ok(mut state) = state().lock() else {
         return;
     };
@@ -666,14 +666,18 @@ async fn complete_priority_handoff_from_attempt_inner(
                     // A database read failure cannot prove terminal success. Release the
                     // local permit so the source remains available without fabricating
                     // recovery evidence; the next real request can verify the target again.
-                    release_for_key(context.account_id, &context.model_key, context.generation);
+                    release_priority_handoff_for_key(context.account_id, &context.model_key, context.generation);
                 }
                 return;
             }
         };
         let Some((attempt_status, downstream_http_status, failure_kind)) = finalized else {
             if let Some(context) = take_priority_handoff_attempt(attempt_id) {
-                release_for_key(context.account_id, &context.model_key, context.generation);
+                release_priority_handoff_for_key(
+                    context.account_id,
+                    &context.model_key,
+                    context.generation,
+                );
             }
             return;
         };
@@ -681,13 +685,21 @@ async fn complete_priority_handoff_from_attempt_inner(
             if attempt_status.as_deref() != Some(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
                 && let Some(context) = take_priority_handoff_attempt(attempt_id)
             {
-                release_for_key(context.account_id, &context.model_key, context.generation);
+                release_priority_handoff_for_key(
+                    context.account_id,
+                    &context.model_key,
+                    context.generation,
+                );
             }
             return;
         }
         if downstream_http_status.is_some() || failure_kind.is_some() {
             if let Some(context) = take_priority_handoff_attempt(attempt_id) {
-                release_for_key(context.account_id, &context.model_key, context.generation);
+                release_priority_handoff_for_key(
+                    context.account_id,
+                    &context.model_key,
+                    context.generation,
+                );
             }
             return;
         }

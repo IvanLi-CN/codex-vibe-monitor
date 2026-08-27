@@ -1930,30 +1930,16 @@ pub(crate) async fn finalize_tracked_pool_attempt(
             );
             if let Some(generation) = generation {
                 if success {
-                    if let Some(reason_code) = complete_priority_handoff_for_request(
-                        pending_attempt_record.upstream_account_id,
-                        pending_attempt_record.request_model.as_deref(),
-                        Some(generation),
-                        true,
-                        false,
-                    ) && let Err(error) = persist_priority_handoff_event(
-                        &state.pool,
-                        pending_attempt_record.upstream_account_id,
-                        pending_attempt_record.attempt_id,
-                        pending_attempt_record
-                            .request_model
-                            .as_deref()
-                            .unwrap_or_default(),
-                        reason_code,
-                    )
-                    .await
+                    // Route-success recording owns the verification credit. If it
+                    // fails, only release the in-flight permit; the source sticky
+                    // binding was not durably migrated and must be retried later.
+                    if let Some(model_key) = pending_attempt_record.request_model.as_deref()
+                        && !model_key.trim().is_empty()
                     {
-                        warn!(
-                            account_id = pending_attempt_record.upstream_account_id,
-                            attempt_id = pending_attempt_record.attempt_id,
-                            error = %error,
-                            reason_code,
-                            "failed to persist priority handoff event"
+                        release_priority_handoff_for_key(
+                            pending_attempt_record.upstream_account_id,
+                            model_key,
+                            generation,
                         );
                     }
                 } else {
@@ -4889,26 +4875,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                                 upstream_status.as_u16()
                                             )
                                         });
-                                    finalize_tracked_pool_attempt(
-                                        state.as_ref(),
-                                        pending_pool_attempt_record.as_ref(),
-                                        if pool_route_success {
-                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-                                        } else {
-                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
-                                        },
-                                        Some(upstream_status),
-                                        None,
-                                        None,
-                                        None,
-                                        route_http_failure_message.as_deref(),
-                                        Some(t_upstream_connect_ms),
-                                        Some(t_upstream_ttfb_ms),
-                                        Some(0.0),
-                                        upstream_request_id.as_deref(),
-                                        "via-pool live-first empty response",
-                                    )
-                                    .await;
                                     complete_deferred_pool_early_phase_cleanup_guard(
                                         &mut deferred_pool_early_phase_cleanup_guard,
                                     );
@@ -4971,6 +4937,26 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
                                     }
                                     }
+                                    finalize_tracked_pool_attempt(
+                                        state.as_ref(),
+                                        pending_pool_attempt_record.as_ref(),
+                                        if pool_route_success {
+                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                                        } else {
+                                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+                                        },
+                                        Some(upstream_status),
+                                        None,
+                                        None,
+                                        None,
+                                        route_http_failure_message.as_deref(),
+                                        Some(t_upstream_connect_ms),
+                                        Some(t_upstream_ttfb_ms),
+                                        Some(0.0),
+                                        upstream_request_id.as_deref(),
+                                        "via-pool live-first empty response",
+                                    )
+                                    .await;
                                     return response_builder.body(Body::empty()).map_err(|err| {
                                         plain_proxy_error(
                                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -5631,26 +5617,6 @@ pub(crate) fn proxy_openai_v1_via_pool(
             let pool_route_success = pool_route_response_status_is_success(upstream_status);
             let route_http_failure_message = (!pool_route_success)
                 .then(|| format!("pool upstream responded with {}", upstream_status.as_u16()));
-            finalize_tracked_pool_attempt(
-                state.as_ref(),
-                pending_pool_attempt_record.as_ref(),
-                if pool_route_success {
-                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
-                } else {
-                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
-                },
-                Some(upstream_status),
-                None,
-                None,
-                None,
-                route_http_failure_message.as_deref(),
-                Some(t_upstream_connect_ms),
-                Some(t_upstream_ttfb_ms),
-                Some(0.0),
-                upstream_request_id.as_deref(),
-                "via-pool failover empty response",
-            )
-            .await;
             complete_deferred_pool_early_phase_cleanup_guard(
                 &mut deferred_pool_early_phase_cleanup_guard,
             );
@@ -5747,6 +5713,26 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool route HTTP failure");
                 }
             }
+            finalize_tracked_pool_attempt(
+                state.as_ref(),
+                pending_pool_attempt_record.as_ref(),
+                if pool_route_success {
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+                } else {
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+                },
+                Some(upstream_status),
+                None,
+                None,
+                None,
+                route_http_failure_message.as_deref(),
+                Some(t_upstream_connect_ms),
+                Some(t_upstream_ttfb_ms),
+                Some(0.0),
+                upstream_request_id.as_deref(),
+                "via-pool failover empty response",
+            )
+            .await;
             return response_builder.body(Body::empty()).map_err(|err| {
                 plain_proxy_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
