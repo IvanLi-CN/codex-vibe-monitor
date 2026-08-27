@@ -8,6 +8,10 @@
 
 该问题不能继续通过逐条慢 SQL 或延长 TTL 收口。高频数据面必须明确区分 ingress、projection、delivery、persistence/reconcile 五层，并在类型和测试层禁止反向依赖。
 
+## Related ADRs
+
+- None
+
 ## Goals
 
 - 建立 `RuntimeProjectionHub`，统一接收 runtime upsert/remove、phase、network、account metadata 与 terminal delta，并为 Dashboard 当前态提供健康内存快照。
@@ -23,6 +27,8 @@
 `GET /api/stats/summary` 的真值是 `SummaryProjection`，不是按 URL 参数保存的一组 SQL 结果。HTTP listener 成功建立后立即发布 `/health` readiness；Summary 与 System Status 的 durable hydration 在其后后台运行，不能因 SQLite/archive 的锁、压力、失败或延迟阻塞 listener。HTTP 只解析和规范化参数，并从 projection 精确派生原有 `StatsResponse`；首份快照尚不可用时保持既有 unavailable，已有快照的刷新失败只保留 freshness 边界内的 last-good。公开 rolling duration 合同上限为 30 天（`60d`、`12mo` 等超限输入在访问 projection/SQLite 前返回既有 400）。48 小时以内保留任意分钟/小时精度；超过 48 小时的 rolling duration 必须使用整日粒度，以保证部分小时边界有限且可在后台预取；不满足粒度的输入返回既有 400，绝不隐式截断。任何受支持的 `window`、`timeZone`、`upstreamAccountId` 与 `limit` 组合不得借用另一组合的结果，也不得在 HTTP 内查询 SQLite、检查路径或扫描文件。
 
 projection 按账号（含全局合并）、UTC 时间桶和 recent invocation 顺序保留以下可组合输入：成功/失败/非成功计数与成本、token 和 usage/model/reasoning 细目、延迟样本与直方图、archive/rollup coverage、活动 runtime phase/等待计数、terminal overlay，以及 maintenance 的 last-good 快照。calendar 和 previous-day 选择在请求内由 canonical timezone 将内存 UTC bucket 切为精确区间；rolling window、all-time 和 current-limit 分别从 bucket、累计聚合和 bounded recent index 派生。recent index 的后台输入按 occurred-at 有界读取；当溢出输入不能证明某账号的 requested-N 完整时，该选择采用既有 unavailable 契约，绝不返回缩短或零值结果。raw fallback 的 exact bucket 集限制为 4096 个；超限时后台 hydration 不发布部分 projection，而保留 exact last-good 或采用 unavailable 契约。48 条限制仅约束可选的已序列化 response LRU，不能限制 projection 对可证明选择的精确性。
+
+All-time account coverage requires an independent completion proof for each archive account manifest: observing a bounded account-ID set alone is not sufficient, because an interrupted materialization may omit an archived account. A completed manifest, matching account totals, and matching totals-and-usage replay proofs are all required before publishing a fresh account aggregate; otherwise that account keeps exact last-good or returns the existing unavailable response. Historical replay markers bind the target to the completed archive manifest SHA, so a replayed structured usage-breakdown target does not reopen read-side archive fallback while a replaced archive cannot inherit stale proof.
 
 持久写入完成和 typed runtime mutation 都发出合并触发信号；后台维护器以单飞锁、250ms 内存调度相位、mutation 专用 250ms debounce、10 秒最小重建间隔和 4 秒 runtime deadline 重读持久化基线。调度相位、hub 协调余量与 runtime build deadline 必须严格落在 15 秒 freshness 预算内；listener ready 后的首次 Summary hydration 有独立的 30 秒有限 deadline，以允许有界历史基线完成，System Status 仍受 4 秒 deadline。两者均受应用 shutdown cancellation 与有界压力退避控制，但绝不作为 readiness 前置条件。live exact tail 保留 48 小时，历史归档只保留已支持 rolling/calendar 窗口所需的边界小时，完整小时由有界 rollup 与 account coverage 派生。每个成功 projection revision 记录单调时钟；HTTP 只返回精确 revision 年龄不超过 15 秒的 response。`all` 聚合拥有独立的成功刷新时钟，普通窗口刷新不能延长它的年龄。刷新失败时，同一选择的 last-good 只在该 15 秒边界内可用；超过边界，端点采用既有 unavailable 契约，绝不返回过期、空值或跨选择数据。System Status 的 durable refresh 在每一轮 60 秒 TTL 前启动，并以同一周期和 4 秒 deadline 保持 last-good 服务窗口。
 

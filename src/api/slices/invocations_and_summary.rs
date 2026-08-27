@@ -8870,6 +8870,7 @@ fn summary_projection_archive_raw_admission_exceeded(error: &anyhow::Error) -> b
 fn summary_projection_all_time_materialized_scope_coverage(
     archives: &[crate::stats::ArchiveBatchPathRow],
     replay_coverage: &HashMap<String, SummaryProjectionArchiveReplayCoverage>,
+    archive_account_manifest_refreshed_paths: &HashSet<String>,
     archive_account_ids_by_file: &HashMap<String, HashSet<i64>>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
 ) -> Result<(bool, bool)> {
@@ -8891,8 +8892,9 @@ fn summary_projection_all_time_materialized_scope_coverage(
             // Legacy manifests lack a finite durable coverage range. Their materialization flag
             // remains the established proof for the global compact baseline. Account coverage
             // cannot be inferred without a bounded manifest, so retain that legacy response
-            // only when its independent account replay marker exists.
-            accounts_covered &= replay.account_stats;
+            // only when its independent account replay and completion markers exist.
+            accounts_covered &= replay.account_stats
+                && archive_account_manifest_refreshed_paths.contains(archive.file_path());
             continue;
         };
         if summary_projection_exact_range_fits_bucket_budget(range).is_err() {
@@ -8900,11 +8902,14 @@ fn summary_projection_all_time_materialized_scope_coverage(
         }
         // A missing manifest cannot prove that the archive contains no account-scoped rows.
         // Serving its global compact aggregate to an account request would silently omit those
-        // rows when the account rollup is absent, so preserve last-good/unavailable instead.
+        // rows when the account rollup is absent. The refresh marker additionally proves this
+        // otherwise bounded list was completed, rather than an interrupted prefix.
         let account_ids = archive_account_ids_by_file.get(archive.file_path());
         if account_ids.is_none() {
             accounts_covered = false;
         }
+        accounts_covered &= replay.account_stats
+            && archive_account_manifest_refreshed_paths.contains(archive.file_path());
         let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
         let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
         while bucket <= last_bucket {
@@ -8913,10 +8918,9 @@ fn summary_projection_all_time_materialized_scope_coverage(
             // exact archive source outside the bounded raw horizon.
             global_covered &= replay.overall && hourly_rollup_totals.contains_key(&(bucket, None));
             if let Some(account_ids) = account_ids.filter(|account_ids| !account_ids.is_empty()) {
-                accounts_covered &= replay.account_stats
-                    && account_ids.iter().all(|account_id| {
-                        hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
-                    });
+                accounts_covered &= account_ids.iter().all(|account_id| {
+                    hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
+                });
             }
             if !global_covered && !accounts_covered {
                 return Ok((false, false));
@@ -10373,6 +10377,44 @@ async fn load_summary_projection_archive_manifest_accounts(
     Ok(accounts)
 }
 
+async fn load_summary_projection_archive_manifest_refreshed_paths(
+    pool: &Pool<Sqlite>,
+    archive_paths: &[String],
+) -> Result<HashSet<String>> {
+    if archive_paths.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut refreshed_paths = HashSet::new();
+    for archive_paths in archive_paths.chunks(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE)
+    {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            r#"
+            SELECT file_path
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+              AND status = 'completed'
+              AND upstream_activity_manifest_refreshed_at IS NOT NULL
+              AND file_path IN (
+            "#,
+        );
+        {
+            let mut separated = query.separated(", ");
+            for path in archive_paths {
+                separated.push_bind(path);
+            }
+        }
+        let rows = query
+            .push(")")
+            .build_query_scalar::<String>()
+            .fetch_all(pool)
+            .await
+            .context("summary projection archive account manifest completion hydration failed")?;
+        refreshed_paths.extend(rows);
+    }
+    Ok(refreshed_paths)
+}
+
 async fn load_summary_projection_archive_replay_coverage(
     pool: &Pool<Sqlite>,
     archive_paths: &[String],
@@ -11038,6 +11080,7 @@ async fn build_summary_projection_once(
     let all_time_archive_replay_coverage =
         load_summary_projection_archive_replay_coverage(pool, &all_time_archive_paths).await?;
     let mut all_time_archive_account_ids_by_file = HashMap::<String, HashSet<i64>>::new();
+    let mut all_time_archive_account_manifest_refreshed_paths = HashSet::new();
     let all_time_account_manifest_admission_attempted = all_time_was_fully_rebuilt
         && summary_projection_manifest_admission_retry_is_due(
             previous_all_time_account_manifest_admission_blocked_at,
@@ -11049,15 +11092,17 @@ async fn build_summary_projection_once(
     if all_time_account_manifest_admission_attempted
         && all_time_manifest_high_watermark_id.is_none()
     {
-        match load_summary_projection_archive_manifest_accounts(pool, &all_time_archive_paths).await
+        match load_summary_projection_archive_manifest_account_sets(pool, &all_time_archive_paths)
+            .await
         {
             Ok(accounts) => {
-                for (file_path, account_id) in accounts {
-                    all_time_archive_account_ids_by_file
-                        .entry(file_path)
-                        .or_default()
-                        .insert(account_id);
-                }
+                all_time_archive_account_ids_by_file = accounts;
+                all_time_archive_account_manifest_refreshed_paths =
+                    load_summary_projection_archive_manifest_refreshed_paths(
+                        pool,
+                        &all_time_archive_paths,
+                    )
+                    .await?;
             }
             Err(error)
                 if error.to_string().starts_with(
@@ -12667,6 +12712,7 @@ async fn build_summary_projection_once(
                 summary_projection_all_time_materialized_scope_coverage(
                     &all_time_archives,
                     &all_time_archive_replay_coverage,
+                    &all_time_archive_account_manifest_refreshed_paths,
                     &all_time_archive_account_ids_by_file,
                     &all_time_rollup_totals,
                 )?;
@@ -30625,6 +30671,25 @@ mod request_compression_query_tests {
         .await
         .expect("insert durable global rollup");
         sqlx::query(
+            "INSERT INTO upstream_account_stats_hourly \
+             (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, 'proxy', 42, 3, 2, 1, 91, 4.5, 1.5)",
+        )
+        .bind(bucket)
+        .execute(&state.pool)
+        .await
+        .expect("insert observed archive account rollup");
+        let created_at = format_utc_iso(Utc::now());
+        sqlx::query(
+            "INSERT INTO pool_upstream_accounts \
+             (id, kind, provider, display_name, status, enabled, created_at, updated_at) \
+             VALUES (43, 'api_key_codex', 'codex', 'missing manifest account', 'active', 1, ?1, ?1)",
+        )
+        .bind(&created_at)
+        .execute(&state.pool)
+        .await
+        .expect("register account omitted by the interrupted archive manifest");
+        sqlx::query(
             "INSERT INTO archive_batches \
              (dataset, month_key, file_path, sha256, row_count, status, \
               coverage_start_at, coverage_end_at, historical_rollups_materialized_at, created_at) \
@@ -30710,6 +30775,48 @@ mod request_compression_query_tests {
         .expect("global compact coverage remains exact");
         assert_eq!(global.total_count, 3);
         assert_eq!(global.total_tokens, 91);
+
+        // The archive manifest lists only account 42. Until its refresh marker is committed,
+        // account 43 could still be present in the archive and therefore cannot receive a
+        // freshly rebuilt zero-valued all-time summary.
+        let incomplete_manifest_account = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(43),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            incomplete_manifest_account,
+            Err(ApiError::Unavailable(_))
+        ));
+
+        sqlx::query(
+            "UPDATE archive_batches SET upstream_activity_manifest_refreshed_at = datetime('now') \
+             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+        )
+        .bind(archive_path)
+        .execute(&state.pool)
+        .await
+        .expect("complete archive account manifest");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate all-time projection after account manifest completion");
+        let Json(complete_manifest_account) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(43),
+            }),
+        )
+        .await
+        .expect("completed archive manifest proves the zero-valued account scope");
+        assert_eq!(complete_manifest_account.total_count, 0);
 
         sqlx::query(
             "DELETE FROM hourly_rollup_archive_replay \

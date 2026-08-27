@@ -2247,6 +2247,27 @@ async fn materialize_historical_rollups_replays_breakdown_for_pruned_detail_arch
     .await
     .expect("load usage breakdown replay marker for pruned archive");
     assert_eq!(breakdown_replay_markers, 1);
+    let replayed_archive_sha256: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1 AND target = ?2",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("load usage breakdown replay identity");
+    let manifest_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load replayed archive manifest identity");
+    assert_eq!(
+        replayed_archive_sha256.as_deref(),
+        Some(manifest_sha256.as_str())
+    );
 
     let missing_breakdown_archives =
         crate::stats::load_invocation_archives_missing_effective_rollup_target(
