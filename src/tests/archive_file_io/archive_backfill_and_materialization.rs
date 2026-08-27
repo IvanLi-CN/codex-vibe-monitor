@@ -3889,6 +3889,135 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
 }
 
 #[tokio::test]
+async fn startup_repair_quarantines_unverified_legacy_archive_without_replaying_rollups() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("startup-repair-quarantines-unverified-legacy").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "startup-repair-quarantines-unverified-legacy",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old invocation before legacy marker quarantine");
+    assert_eq!(retention.invocation_rows_archived, 1);
+
+    let archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archived invocation path");
+    let before = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture materialized rollup totals before legacy marker quarantine");
+    assert_eq!(before, (1, 1, 0));
+
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_replay SET archive_sha256 = NULL WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("restore legacy null replay markers");
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = '   ' WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("remove the completed archive manifest proof");
+
+    for _ in 0..2 {
+        bootstrap_hourly_rollups(&pool)
+            .await
+            .expect("startup repair must quarantine the unverified legacy archive");
+        let summary = materialize_historical_rollups(&pool, &config, false)
+            .await
+            .expect("materializer must leave an unverified legacy archive quarantined");
+        assert_eq!(summary.materialized_invocation_batches, 0);
+    }
+
+    let after_quarantine = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load rollup totals after legacy marker quarantine");
+    assert_eq!(after_quarantine, before);
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load archive materialization state after quarantine");
+    assert!(materialized_at.is_some());
+
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = 'recovered-archive-sha' WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("publish a later completed manifest proof");
+    crate::schema::backfill_legacy_hourly_rollup_archive_replay_hashes(&pool)
+        .await
+        .expect("upgrade legacy replay markers after manifest recovery");
+    assert_eq!(
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("startup repair must accept the recovered manifest proof"),
+        1
+    );
+    let recovered = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materializer must replay only after manifest recovery");
+    assert_eq!(recovered.materialized_invocation_batches, 1);
+    let after_recovery = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load rollup totals after manifest recovery");
+    assert_eq!(after_recovery, (before.0, before.1, 1));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollups() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("legacy-replay-marker-upgrade").await;
@@ -4158,7 +4287,241 @@ async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() 
 }
 
 #[tokio::test]
-async fn usage_breakdown_replay_reprocesses_an_unmaterialized_archive_with_a_stale_replay_sha() {
+async fn partial_materialization_rebuilds_stale_sha_before_any_additive_replay() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("partial-materialization-stale-sha").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "partial-materialization-stale-sha",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "partial-materialization-stale-sha",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"partial-materialization-stale-sha"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize original archive");
+    assert_eq!(initial.materialized_invocation_batches, 1);
+    let before = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture original rollup totals");
+    assert_eq!(before, (1, 1, 1));
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = 'replacement-archive-sha',
+            historical_rollups_materialized_at = NULL
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("publish replacement manifest while preserving stale target markers");
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("leave a partially materialized replacement archive");
+
+    let rebuilt = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("rebuild stale partial archive before replay");
+    assert_eq!(rebuilt.materialized_invocation_batches, 1);
+    let after = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load rollup totals after stale partial rebuild");
+    assert_eq!(after, before);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn stale_archive_rebuild_clears_full_coverage_of_reopened_overlaps() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("stale-replay-sha-overlap-coverage").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let first_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid first archived occurred_at"),
+    );
+    let overlap_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(20))
+            .expect("valid overlapping archived occurred_at"),
+    );
+    let extended_occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::hours(2))
+            .and_then(|value| value.checked_add_signed(ChronoDuration::minutes(20)))
+            .expect("valid extended archived occurred_at"),
+    );
+    let first_archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "stale-replay-sha-overlap-first",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "stale-replay-sha-overlap-first",
+            occurred_at: first_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "stale-replay-sha-overlap-extended",
+        &[
+            SeedInvocationArchiveBatchRow {
+                id: 1,
+                invoke_id: "stale-replay-sha-overlap-extended-overlap",
+                occurred_at: overlap_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+            SeedInvocationArchiveBatchRow {
+                id: 2,
+                invoke_id: "stale-replay-sha-overlap-extended-tail",
+                occurred_at: extended_occurred_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 12,
+                cost: 0.12,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            },
+        ],
+    )
+    .await;
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize overlapping archives");
+    assert_eq!(initial.materialized_invocation_batches, 2);
+    let before: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&pool)
+            .await
+            .expect("capture original overlapping rollup total");
+    assert_eq!(before, 3);
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = 'replacement-archive-sha',
+            historical_rollups_materialized_at = NULL
+        WHERE dataset = ?1
+          AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("replace the short archive manifest");
+
+    let first_replay = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("reopen stale archive and its overlapping peer");
+    assert_eq!(first_replay.materialized_invocation_batches, 1);
+    let second_replay = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("replay the reopened extended overlap archive");
+    assert_eq!(second_replay.materialized_invocation_batches, 1);
+    let after: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&pool)
+            .await
+            .expect("load overlapping rollup total after rebuild");
+    assert_eq!(after, before);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_replay_quarantines_a_stale_archive_without_coverage_bounds() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("breakdown-replay-stale-replay-sha").await;
     let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
@@ -4194,6 +4557,14 @@ async fn usage_breakdown_replay_reprocesses_an_unmaterialized_archive_with_a_sta
     .await;
     let archive_file_path = archive_path.to_string_lossy().to_string();
 
+    let original_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load original archive SHA");
     sqlx::query(
         r#"
         INSERT INTO hourly_rollup_archive_replay (
@@ -4251,11 +4622,12 @@ async fn usage_breakdown_replay_reprocesses_an_unmaterialized_archive_with_a_sta
         0,
     )
     .await
-    .expect("replay replacement archive after stale marker detection");
+    .expect("quarantine replacement archive with unknown coverage");
     tx.commit()
         .await
         .expect("commit replacement archive replay");
-    assert_eq!(summary.materialized_batches, 1);
+    assert_eq!(summary.materialized_batches, 0);
+    assert_eq!(summary.blocked_batches, 1);
 
     let replay_sha256: Option<String> = sqlx::query_scalar(
         r#"
@@ -4271,8 +4643,8 @@ async fn usage_breakdown_replay_reprocesses_an_unmaterialized_archive_with_a_sta
     .bind(&archive_file_path)
     .fetch_one(&pool)
     .await
-    .expect("load replacement usage breakdown replay marker");
-    assert_eq!(replay_sha256.as_deref(), Some("replacement-archive-sha"));
+    .expect("load quarantined usage breakdown replay marker");
+    assert_eq!(replay_sha256.as_deref(), Some(original_sha.as_str()));
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -5919,6 +6291,352 @@ async fn pool_node_health_hourly_backfill_waits_for_cache_replay_and_refreshes_f
         1,
         "a stale hourly replay marker must reopen the archive"
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn node_health_cache_replacement_discards_removed_archive_attempts_before_marking_sha_b() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("node-health-cache-replacement").await;
+    let archive_path = temp_dir.join("node-health-cache-replacement.sqlite.gz");
+    let archive_db_path = temp_dir.join("node-health-cache-replacement.sqlite");
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+    let binding_key = "node-health-cache-replacement";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(10)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+
+    fs::File::create(&archive_db_path).expect("create replacement archive sqlite");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open replacement archive sqlite");
+    let create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create replacement archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            proxy_binding_key_snapshot,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            finished_at,
+            status,
+            first_byte_latency_ms,
+            created_at
+        )
+        VALUES (1, 'node-health-cache-replacement-keep', ?1, '/v1/responses', 'pool', ?2, 0, 0, 0, ?1, ?3, 120.0, ?1)
+        "#,
+    )
+    .bind(&occurred_at)
+    .bind(binding_key)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+    .execute(&archive_pool)
+    .await
+    .expect("write surviving replacement archive attempt");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress replacement archive");
+    let replacement_sha = sha256_hex_file(&archive_path).expect("hash replacement archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES ('pool_upstream_request_attempts', ?1, ?2, ?3, 1, ?4, ?5, ?5, datetime('now'))
+        "#,
+    )
+    .bind(&occurred_at[..7])
+    .bind(&archive_file_path)
+    .bind(&replacement_sha)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("publish replacement archive manifest");
+
+    for (archived_row_id, is_success) in [(1_i64, 1_i64), (2_i64, 0_i64)] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_node_health_archive (
+                archive_file_path,
+                archived_row_id,
+                occurred_at,
+                proxy_binding_key_snapshot,
+                is_success,
+                latency_ms
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+            "#,
+        )
+        .bind(&archive_file_path)
+        .bind(archived_row_id)
+        .bind(&occurred_at)
+        .bind(binding_key)
+        .bind(is_success)
+        .execute(&pool)
+        .await
+        .expect("seed stale node health cache row");
+    }
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (
+                target,
+                dataset,
+                file_path,
+                archive_sha256,
+                replayed_at
+            )
+            VALUES (?1, 'pool_upstream_request_attempts', ?2, 'archive-sha-a', datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(&archive_file_path)
+        .execute(&pool)
+        .await
+        .expect("seed stale node health replay marker");
+    }
+
+    let cache_summary = backfill_pool_upstream_node_health_archives(&pool, None, None)
+        .await
+        .expect("replace stale node health cache from archive SHA B");
+    assert_eq!(cache_summary.materialized_batches, 1);
+    assert_eq!(cache_summary.pending_batches, 0);
+    let cached = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(is_success), 0),
+            COALESCE(SUM(CASE WHEN is_success = 0 THEN 1 ELSE 0 END), 0)
+        FROM pool_upstream_node_health_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load replaced node health cache rows");
+    assert_eq!(cached, (1, 1, 0));
+
+    let hourly_summary = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+        .await
+        .expect("rebuild node health hourly rows from replaced cache");
+    assert_eq!(hourly_summary.materialized_batches, 1);
+    assert_eq!(hourly_summary.pending_batches, 0);
+    let hourly = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT COALESCE(SUM(success_count), 0), COALESCE(SUM(failure_count), 0)
+        FROM pool_upstream_node_health_hourly_archive
+        WHERE archive_file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load node health hourly rows after cache replacement");
+    assert_eq!(hourly, (1, 0));
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+    ] {
+        let marked_sha: String = sqlx::query_scalar(
+            "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = 'pool_upstream_request_attempts' AND file_path = ?2",
+        )
+        .bind(target)
+        .bind(&archive_file_path)
+        .fetch_one(&pool)
+        .await
+        .expect("load replacement replay marker");
+        assert_eq!(marked_sha, replacement_sha);
+    }
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn node_health_archives_with_blank_manifest_sha_stay_quarantined() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("node-health-blank-manifest-quarantine").await;
+    let archive_file_path = temp_dir
+        .join("node-health-blank-manifest-quarantine.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let binding_key = "node-health-blank-manifest-quarantine";
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::days(45))
+            .with_timezone(&Shanghai)
+            .naive_local()
+            .with_minute(10)
+            .expect("set minute")
+            .with_second(0)
+            .expect("set second"),
+    );
+    let month_key = archive_month_key_from_day_key(&occurred_at[..10])
+        .expect("derive archive month key from occurred_at");
+    let bucket_start_epoch = align_bucket_epoch(
+        parse_shanghai_local_naive(&occurred_at)
+            .expect("parse shanghai occurred_at")
+            .and_local_timezone(Shanghai)
+            .single()
+            .expect("localize shanghai occurred_at")
+            .with_timezone(&Utc)
+            .timestamp(),
+        3600,
+        0,
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES ('pool_upstream_request_attempts', ?1, ?2, '', 1, ?3, ?4, ?4, datetime('now'))
+        "#,
+    )
+    .bind(&month_key)
+    .bind(&archive_file_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert blank-manifest pool upstream archive batch");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts' AND file_path = ?1",
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load blank-manifest archive batch id");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_archive (
+            archive_file_path,
+            archived_row_id,
+            occurred_at,
+            proxy_binding_key_snapshot,
+            is_success,
+            latency_ms
+        )
+        VALUES (?1, 1, ?2, ?3, 0, NULL)
+        "#,
+    )
+    .bind(&archive_file_path)
+    .bind(&occurred_at)
+    .bind(binding_key)
+    .execute(&pool)
+    .await
+    .expect("seed node health cache protected by blank manifest");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_node_health_hourly_archive (
+            archive_identity,
+            archive_batch_id,
+            archive_file_path,
+            proxy_binding_key_snapshot,
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, 0, 1)
+        "#,
+    )
+    .bind(pool_upstream_node_health_archive_identity_for_batch_id(
+        archive_batch_id,
+    ))
+    .bind(archive_batch_id)
+    .bind(&archive_file_path)
+    .bind(binding_key)
+    .bind(bucket_start_epoch)
+    .execute(&pool)
+    .await
+    .expect("seed node health hourly cache protected by blank manifest");
+    for target in [
+        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'pool_upstream_request_attempts', ?2, '')",
+        )
+        .bind(target)
+        .bind(&archive_file_path)
+        .execute(&pool)
+        .await
+        .expect("seed blank node health replay marker");
+    }
+
+    for _ in 0..2 {
+        let cache = backfill_pool_upstream_node_health_archives(&pool, None, None)
+            .await
+            .expect("blank-manifest cache archive must remain quarantined");
+        assert_eq!(cache.materialized_batches, 0);
+        assert_eq!(cache.pending_batches, 1);
+        let hourly = backfill_pool_upstream_node_health_hourly_archives(&pool, None, None)
+            .await
+            .expect("blank-manifest hourly archive must remain quarantined");
+        assert_eq!(hourly.materialized_batches, 0);
+        assert_eq!(hourly.pending_batches, 1);
+    }
+
+    let cached: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(is_success), 0) FROM pool_upstream_node_health_archive WHERE archive_file_path = ?1",
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load quarantined node health cache");
+    assert_eq!(cached, (1, 0));
+    let hourly: (i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*), COALESCE(SUM(success_count), 0), COALESCE(SUM(failure_count), 0) FROM pool_upstream_node_health_hourly_archive WHERE archive_file_path = ?1",
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load quarantined node health hourly cache");
+    assert_eq!(hourly, (1, 0, 1));
+    let replay_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'pool_upstream_request_attempts' AND file_path = ?1 AND archive_sha256 = ''",
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count blank replay markers left quarantined");
+    assert_eq!(replay_marker_count, 2);
 
     cleanup_temp_test_dir(&temp_dir);
 }

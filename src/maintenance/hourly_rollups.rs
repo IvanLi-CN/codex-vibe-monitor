@@ -296,10 +296,18 @@ async fn clear_invocation_rollup_rows_for_bucket_epochs_tx(
     Ok(())
 }
 
+#[derive(sqlx::FromRow)]
+struct InvocationArchiveCoverageRow {
+    file_path: String,
+    sha256: Option<String>,
+    coverage_start_at: String,
+    coverage_end_at: String,
+}
+
 async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
     tx: &mut SqliteConnection,
     bucket_start_epochs: &HashSet<i64>,
-) -> Result<Vec<String>> {
+) -> Result<Vec<InvocationArchiveCoverageRow>> {
     if bucket_start_epochs.is_empty() {
         return Ok(Vec::new());
     }
@@ -327,9 +335,9 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
     let overlap_end =
         crate::stats::format_naive(overlap_end.with_timezone(&Shanghai).naive_local());
 
-    sqlx::query_scalar(
+    sqlx::query_as(
         r#"
-        SELECT file_path
+        SELECT file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
@@ -347,6 +355,30 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
     .fetch_all(&mut *tx)
     .await
     .map_err(Into::into)
+}
+
+async fn archive_batch_has_completed_manifest_sha_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    file_path: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND status = 'completed'
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+        LIMIT 1
+        "#,
+    )
+    .bind(dataset)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
 }
 
 async fn reset_invocation_archive_usage_breakdown_backfill_state_tx(
@@ -417,6 +449,60 @@ async fn invocation_archive_has_stale_replay_marker_tx(
     .is_some())
 }
 
+async fn pool_upstream_node_health_archive_has_stale_replay_marker_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM hourly_rollup_archive_replay AS replay
+        INNER JOIN archive_batches AS batches
+            ON batches.dataset = replay.dataset
+           AND batches.file_path = replay.file_path
+           AND batches.status = 'completed'
+        WHERE replay.target = ?1
+          AND replay.dataset = 'pool_upstream_request_attempts'
+          AND replay.file_path = ?2
+          AND replay.archive_sha256 IS NOT NULL
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
+          AND replay.archive_sha256 <> batches.sha256
+        LIMIT 1
+        "#,
+    )
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
+}
+
+async fn reset_replaced_pool_upstream_node_health_archive_state_tx(
+    tx: &mut SqliteConnection,
+    archive_batch_id: i64,
+    file_path: &str,
+) -> Result<()> {
+    delete_pool_upstream_node_health_archive_rows_for_file_tx(tx, file_path).await?;
+    delete_pool_upstream_node_health_hourly_archive_rows_for_batch_tx(tx, archive_batch_id).await?;
+    delete_hourly_rollup_archive_progress_tx(tx, "pool_upstream_request_attempts", file_path)
+        .await?;
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+          AND target IN (?2, ?3)
+        "#,
+    )
+    .bind(file_path)
+    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
+    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 async fn reset_invocation_archive_replay_state_tx(
     tx: &mut SqliteConnection,
     file_paths: &[String],
@@ -466,19 +552,48 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
     else {
         return Ok(None);
     };
-    let bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
+    let mut bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
         None,
         Some(coverage_start_at),
         Some(coverage_end_at),
     )?;
-    let mut reopened_file_paths =
-        load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
-            tx,
-            &bucket_start_epochs,
-        )
-        .await?;
-    if !reopened_file_paths.iter().any(|path| path == file_path) {
-        reopened_file_paths.push(file_path.to_string());
+    let mut reopened_file_paths = vec![file_path.to_string()];
+    let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
+
+    // Resetting an overlapping archive requires clearing its entire coverage before it can be
+    // replayed. Keep expanding the overlap set until every reopened archive is represented.
+    loop {
+        let overlapping_archives =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+                tx,
+                &bucket_start_epochs,
+            )
+            .await?;
+        let mut expanded = false;
+        for overlapping_archive in overlapping_archives {
+            if overlapping_archive
+                .sha256
+                .as_deref()
+                .is_none_or(|sha256| sha256.trim().is_empty())
+            {
+                // An unverifiable overlap cannot be replayed after its rows are cleared.
+                // Leave the complete closure quarantined rather than partially rebuilding it.
+                return Ok(None);
+            }
+            if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
+                continue;
+            }
+            reopened_file_paths.push(overlapping_archive.file_path);
+            bucket_start_epochs.extend(crate::stats::archive_bucket_start_epochs_from_bounds(
+                None,
+                Some(&overlapping_archive.coverage_start_at),
+                Some(&overlapping_archive.coverage_end_at),
+            )?);
+            expanded = true;
+        }
+        if !expanded {
+            break;
+        }
     }
     clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
     reset_invocation_archive_replay_state_tx(tx, &reopened_file_paths).await?;
@@ -490,7 +605,7 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     file_path: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
-) -> Result<Vec<String>> {
+) -> Result<Option<Vec<String>>> {
     let mut reopened_file_paths = vec![file_path.to_string()];
     if let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at) {
         let bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
@@ -498,12 +613,24 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
             Some(coverage_start_at),
             Some(coverage_end_at),
         )?;
-        reopened_file_paths =
+        let overlapping_archives =
             load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
                 tx,
                 &bucket_start_epochs,
             )
             .await?;
+        if overlapping_archives.iter().any(|archive| {
+            archive
+                .sha256
+                .as_deref()
+                .is_none_or(|sha256| sha256.trim().is_empty())
+        }) {
+            return Ok(None);
+        }
+        reopened_file_paths = overlapping_archives
+            .into_iter()
+            .map(|archive| archive.file_path)
+            .collect();
         if !reopened_file_paths.iter().any(|path| path == file_path) {
             reopened_file_paths.push(file_path.to_string());
         }
@@ -522,7 +649,7 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     for reopen_file_path in &reopened_file_paths {
         reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopen_file_path).await?;
     }
-    Ok(reopened_file_paths)
+    Ok(Some(reopened_file_paths))
 }
 
 pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state(
@@ -536,6 +663,18 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
 
     for (file_path, coverage_start_at, coverage_end_at) in archive_rows {
         if reopened_file_paths.contains(&file_path) {
+            continue;
+        }
+        if !archive_batch_has_completed_manifest_sha_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &file_path,
+        )
+        .await?
+        {
+            // A legacy replay marker cannot prove its source without a completed manifest SHA.
+            // Preserve the completed materialization as quarantine evidence until it can be
+            // upgraded from a valid manifest or rebuilt with known coverage.
             continue;
         }
         let has_stale_replay_marker =
@@ -553,17 +692,13 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
         let reopened = if has_stale_replay_marker {
             // A non-null mismatch means the archive may have changed. Rebuild every affected
             // target before permitting additive replay, rather than replaying over old rows.
-            let Some(reopened) = reopen_replaced_materialized_invocation_archive_tx(
+            reopen_replaced_materialized_invocation_archive_tx(
                 tx.as_mut(),
                 &file_path,
                 coverage_start_at.as_deref(),
                 coverage_end_at.as_deref(),
             )
             .await?
-            else {
-                continue;
-            };
-            reopened
         } else {
             reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                 tx.as_mut(),
@@ -572,6 +707,9 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
                 coverage_end_at.as_deref(),
             )
             .await?
+        };
+        let Some(reopened) = reopened else {
+            continue;
         };
         for reopened_file_path in reopened {
             if reopened_file_paths.insert(reopened_file_path) {
@@ -864,6 +1002,8 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
         r#"
                   AND replay.dataset = batches.dataset
                   AND replay.file_path = batches.file_path
+                  AND batches.sha256 IS NOT NULL
+                  AND TRIM(batches.sha256) <> ''
                   AND replay.archive_sha256 = batches.sha256
           )
         "#,
@@ -922,6 +1062,8 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
         r#"
                   AND replay.dataset = batches.dataset
                   AND replay.file_path = batches.file_path
+                  AND batches.sha256 IS NOT NULL
+                  AND TRIM(batches.sha256) <> ''
                   AND replay.archive_sha256 = batches.sha256
           )
         ORDER BY month_key ASC, created_at ASC, id ASC
@@ -1383,6 +1525,35 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             break;
         }
         summary.scanned_batches += 1;
+        if !archive_batch_has_completed_manifest_sha_tx(
+            tx,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            // A completed archive with no immutable manifest identity is intentionally
+            // unverified. Do not clear state or additively replay it until it becomes
+            // verifiable or a caller can perform a proven full rebuild.
+            summary.blocked_batches += 1;
+            continue;
+        }
+        if invocation_archive_has_stale_replay_marker_tx(tx, &archive_file.file_path).await? {
+            // A non-null A -> B mismatch means some prior contribution may remain even when
+            // this batch is only partially materialized. Reset the full overlap closure before
+            // inspecting pending targets so no additive replay can double count old rows.
+            let Some(_) = reopen_replaced_materialized_invocation_archive_tx(
+                tx,
+                &archive_file.file_path,
+                archive_file.coverage_start_at.as_deref(),
+                archive_file.coverage_end_at.as_deref(),
+            )
+            .await?
+            else {
+                summary.blocked_batches += 1;
+                continue;
+            };
+        }
         let mut pending_targets = Vec::new();
         let mut blocked_targets = Vec::new();
         for target in [
@@ -2048,6 +2219,18 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
     let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
     for archive_file in archive_files {
         let mut tx = pool.begin().await?;
+        if !archive_batch_has_completed_manifest_sha_tx(
+            tx.as_mut(),
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            // Keep a source without immutable manifest proof pending and untouched. Marking it
+            // replayed would only create repeated work while still failing strict readers.
+            tx.commit().await?;
+            continue;
+        }
         if hourly_rollup_archive_replayed_tx(
             tx.as_mut(),
             POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
@@ -2058,6 +2241,21 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
         {
             tx.commit().await?;
             continue;
+        }
+        if pool_upstream_node_health_archive_has_stale_replay_marker_tx(
+            tx.as_mut(),
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            // The archive may have removed rows that were previously eligible for the cache.
+            // Replace both cache layers from the new source before accepting SHA B.
+            reset_replaced_pool_upstream_node_health_archive_state_tx(
+                tx.as_mut(),
+                archive_file.id,
+                &archive_file.file_path,
+            )
+            .await?;
         }
 
         if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
@@ -2200,6 +2398,16 @@ pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives_for_files
 
         summary.scanned_batches += 1;
         let mut tx = pool.begin().await?;
+        if !archive_batch_has_completed_manifest_sha_tx(
+            tx.as_mut(),
+            "pool_upstream_request_attempts",
+            &archive_file.file_path,
+        )
+        .await?
+        {
+            tx.commit().await?;
+            continue;
+        }
         if hourly_rollup_archive_replayed_tx(
             tx.as_mut(),
             POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
