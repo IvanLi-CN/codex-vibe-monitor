@@ -6040,6 +6040,7 @@ mod retention_breakdown_materialization_tests {
                 dataset TEXT NOT NULL,
                 month_key TEXT,
                 file_path TEXT NOT NULL UNIQUE,
+                sha256 TEXT,
                 status TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
@@ -6057,6 +6058,7 @@ mod retention_breakdown_materialization_tests {
                 target TEXT NOT NULL,
                 dataset TEXT NOT NULL,
                 file_path TEXT NOT NULL,
+                archive_sha256 TEXT,
                 replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (target, dataset, file_path)
             )

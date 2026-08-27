@@ -247,6 +247,55 @@ async fn clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
     Ok(())
 }
 
+async fn clear_invocation_rollup_rows_for_bucket_epochs_tx(
+    tx: &mut SqliteConnection,
+    bucket_start_epochs: &HashSet<i64>,
+) -> Result<()> {
+    let mut bucket_start_epochs = bucket_start_epochs.iter().copied().collect::<Vec<_>>();
+    bucket_start_epochs.sort_unstable();
+    bucket_start_epochs.dedup();
+
+    for table in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+    ] {
+        delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &bucket_start_epochs).await?;
+    }
+    delete_rollup_rows_for_bucket_epochs_with_size_tx(
+        tx,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+        &bucket_start_epochs,
+        60,
+    )
+    .await?;
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "DELETE FROM hourly_rollup_materialized_buckets WHERE bucket_start_epoch IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for bucket_start_epoch in &bucket_start_epochs {
+            separated.push_bind(*bucket_start_epoch);
+        }
+    }
+    query.push(")");
+    query.build().execute(&mut *tx).await?;
+
+    let retained_live_rows =
+        load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
+    upsert_invocation_hourly_rollups_tx(tx, &retained_live_rows, &INVOCATION_HOURLY_ROLLUP_TARGETS)
+        .await?;
+    rebuild_parallel_work_rollups_for_hours_tx(tx, &bucket_start_epochs).await?;
+    Ok(())
+}
+
 async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
     tx: &mut SqliteConnection,
     bucket_start_epochs: &HashSet<i64>,
@@ -340,6 +389,102 @@ async fn reset_invocation_archive_usage_breakdown_backfill_state_tx(
     Ok(())
 }
 
+async fn invocation_archive_has_stale_replay_marker_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM hourly_rollup_archive_replay AS replay
+        INNER JOIN archive_batches AS batches
+            ON batches.dataset = replay.dataset
+           AND batches.file_path = replay.file_path
+           AND batches.status = 'completed'
+        WHERE replay.dataset = ?1
+          AND replay.file_path = ?2
+          AND replay.archive_sha256 IS NOT NULL
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
+          AND replay.archive_sha256 <> batches.sha256
+        LIMIT 1
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
+}
+
+async fn reset_invocation_archive_replay_state_tx(
+    tx: &mut SqliteConnection,
+    file_paths: &[String],
+) -> Result<()> {
+    for file_path in file_paths {
+        sqlx::query(
+            r#"
+            DELETE FROM hourly_rollup_archive_replay
+            WHERE dataset = ?1 AND file_path = ?2
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(file_path)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            DELETE FROM hourly_rollup_archive_progress
+            WHERE file_path = ?1
+            "#,
+        )
+        .bind(file_path)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"
+            UPDATE archive_batches
+            SET historical_rollups_materialized_at = NULL
+            WHERE dataset = ?1 AND file_path = ?2
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(file_path)
+        .execute(&mut *tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn reopen_replaced_materialized_invocation_archive_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+) -> Result<Option<Vec<String>>> {
+    let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
+    else {
+        return Ok(None);
+    };
+    let bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
+        None,
+        Some(coverage_start_at),
+        Some(coverage_end_at),
+    )?;
+    let mut reopened_file_paths =
+        load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+            tx,
+            &bucket_start_epochs,
+        )
+        .await?;
+    if !reopened_file_paths.iter().any(|path| path == file_path) {
+        reopened_file_paths.push(file_path.to_string());
+    }
+    clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
+    reset_invocation_archive_replay_state_tx(tx, &reopened_file_paths).await?;
+    Ok(Some(reopened_file_paths))
+}
+
 async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
@@ -393,6 +538,8 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
         if reopened_file_paths.contains(&file_path) {
             continue;
         }
+        let has_stale_replay_marker =
+            invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &file_path).await?;
         let breakdown_replayed = hourly_rollup_archive_replayed_tx(
             tx.as_mut(),
             HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
@@ -400,16 +547,32 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
             &file_path,
         )
         .await?;
-        if breakdown_replayed {
+        if !has_stale_replay_marker && breakdown_replayed {
             continue;
         }
-        let reopened = reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
-            tx.as_mut(),
-            &file_path,
-            coverage_start_at.as_deref(),
-            coverage_end_at.as_deref(),
-        )
-        .await?;
+        let reopened = if has_stale_replay_marker {
+            // A non-null mismatch means the archive may have changed. Rebuild every affected
+            // target before permitting additive replay, rather than replaying over old rows.
+            let Some(reopened) = reopen_replaced_materialized_invocation_archive_tx(
+                tx.as_mut(),
+                &file_path,
+                coverage_start_at.as_deref(),
+                coverage_end_at.as_deref(),
+            )
+            .await?
+            else {
+                continue;
+            };
+            reopened
+        } else {
+            reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
+                tx.as_mut(),
+                &file_path,
+                coverage_start_at.as_deref(),
+                coverage_end_at.as_deref(),
+            )
+            .await?
+        };
         for reopened_file_path in reopened {
             if reopened_file_paths.insert(reopened_file_path) {
                 touched_batches += 1;
@@ -701,6 +864,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_archive_files(
         r#"
                   AND replay.dataset = batches.dataset
                   AND replay.file_path = batches.file_path
+                  AND replay.archive_sha256 = batches.sha256
           )
         "#,
     );
@@ -758,6 +922,7 @@ pub(crate) async fn load_pending_pool_upstream_node_health_hourly_archive_files(
         r#"
                   AND replay.dataset = batches.dataset
                   AND replay.file_path = batches.file_path
+                  AND replay.archive_sha256 = batches.sha256
           )
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,

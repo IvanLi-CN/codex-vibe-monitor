@@ -1952,6 +1952,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let archive_batch_columns = load_sqlite_table_columns(pool, "archive_batches").await?;
     for (column, ty) in [
+        // A legacy archive without a recorded hash cannot prove replay identity and remains
+        // pending until it is rebuilt; use a nullable upgrade column for that state.
+        ("sha256", "TEXT"),
         ("day_key", "TEXT"),
         ("part_key", "TEXT"),
         ("layout", "TEXT NOT NULL DEFAULT 'legacy_month'"),
@@ -4617,9 +4620,46 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     seed_default_pricing_catalog(pool).await?;
     ensure_long_term_stats_schema(pool).await?;
+    backfill_legacy_hourly_rollup_archive_replay_hashes(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
     ensure_long_term_projection_account_trigger(pool).await?;
 
+    Ok(())
+}
+
+pub(crate) async fn backfill_legacy_hourly_rollup_archive_replay_hashes(
+    pool: &Pool<Sqlite>,
+) -> Result<()> {
+    // Older versions recorded a completed replay without its immutable archive identity. A
+    // completed manifest with a non-empty SHA is the only proof accepted for that upgrade.
+    sqlx::query(
+        r#"
+        UPDATE hourly_rollup_archive_replay AS replay
+        SET archive_sha256 = (
+            SELECT batches.sha256
+            FROM archive_batches AS batches
+            WHERE batches.dataset = replay.dataset
+              AND batches.file_path = replay.file_path
+              AND batches.status = 'completed'
+              AND batches.sha256 IS NOT NULL
+              AND TRIM(batches.sha256) <> ''
+            LIMIT 1
+        )
+        WHERE replay.archive_sha256 IS NULL
+          AND EXISTS (
+              SELECT 1
+              FROM archive_batches AS batches
+              WHERE batches.dataset = replay.dataset
+                AND batches.file_path = replay.file_path
+                AND batches.status = 'completed'
+                AND batches.sha256 IS NOT NULL
+                AND TRIM(batches.sha256) <> ''
+          )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill legacy hourly archive replay marker hashes")?;
     Ok(())
 }
 

@@ -3785,10 +3785,23 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
             sha256,
             row_count,
             status,
+            coverage_start_at,
+            coverage_end_at,
             historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, '2026-01', ?2, 'archive-sha-a', 1, ?3, datetime('now'), datetime('now'))
+        VALUES (
+            ?1,
+            '2026-01',
+            ?2,
+            'archive-sha-a',
+            1,
+            ?3,
+            '2026-01-15 08:00:00',
+            '2026-01-15 08:30:00',
+            datetime('now'),
+            datetime('now')
+        )
         "#,
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
@@ -3871,6 +3884,275 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
     .await
     .expect("count stale usage breakdown replay markers");
     assert_eq!(replay_marker_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn legacy_replay_markers_upgrade_without_replaying_global_or_account_rollups() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("legacy-replay-marker-upgrade").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "legacy-replay-marker-upgrade",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "legacy-replay-marker-upgrade",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"legacy-replay-marker-upgrade"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize archive before legacy marker upgrade");
+    assert_eq!(initial.materialized_invocation_batches, 1);
+
+    let before = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture materialized global and account totals");
+    assert_eq!(before, (1, 1, 1));
+
+    sqlx::query(
+        r#"
+        UPDATE hourly_rollup_archive_replay
+        SET archive_sha256 = NULL
+        WHERE dataset = ?1 AND file_path = ?2
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed legacy replay markers");
+
+    crate::schema::backfill_legacy_hourly_rollup_archive_replay_hashes(&pool)
+        .await
+        .expect("upgrade legacy replay markers");
+    let manifest_sha256: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load completed archive manifest SHA");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        let replay_sha256: Option<String> = sqlx::query_scalar(
+            "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&archive_file_path)
+        .fetch_one(&pool)
+        .await
+        .expect("load upgraded replay marker");
+        assert_eq!(replay_sha256.as_deref(), Some(manifest_sha256.as_str()));
+    }
+
+    assert_eq!(
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("legacy marker upgrade must not reopen the archive"),
+        0
+    );
+    let after = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load totals after legacy marker upgrade");
+    assert_eq!(after, before);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("stale-replay-sha-full-rebuild").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "stale-replay-sha-full-rebuild",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "stale-replay-sha-full-rebuild",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"stale-replay-sha-full-rebuild"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize original archive");
+    assert_eq!(initial.materialized_invocation_batches, 1);
+    let before = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(sample_count), 0) FROM proxy_perf_stage_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_upstream_account_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(activity_v2_request_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_minute WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_sticky_key_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture original global and account totals");
+    assert_eq!(before, (1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
+
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = 'replacement-archive-sha' WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("publish replacement archive manifest SHA");
+    sqlx::query(
+        r#"
+        DELETE FROM upstream_account_usage_breakdown_hourly
+        WHERE upstream_account_id = 17
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("clear only the stale usage breakdown rows");
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("clear only the stale usage breakdown marker");
+
+    assert_eq!(
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("rebuild stale archive contributions before replay"),
+        1
+    );
+    let stale_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count cleared stale replay markers");
+    assert_eq!(stale_marker_count, 0);
+
+    let rebuilt = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize the replacement archive after clearing old contributions");
+    assert_eq!(rebuilt.materialized_invocation_batches, 1);
+    let after = sqlx::query_as::<_, (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(sample_count), 0) FROM proxy_perf_stage_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_rollup_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM prompt_cache_upstream_account_hourly),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(activity_v2_request_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_minute WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_sticky_key_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt global and account totals");
+    assert_eq!(after, before);
+
+    let replacement_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2 AND archive_sha256 = 'replacement-archive-sha'",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count replacement replay markers");
+    assert_eq!(
+        replacement_marker_count,
+        INVOCATION_HOURLY_ROLLUP_TARGETS.len() as i64
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -4015,7 +4297,7 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
             archive_sha256,
             replayed_at
         )
-        VALUES (?1, ?2, ?3, 'archive-sha-a', datetime('now'))
+        VALUES (?1, ?2, ?3, NULL, datetime('now'))
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
@@ -4024,6 +4306,23 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
     .execute(&pool)
     .await
     .expect("seed replay marker without a manifest");
+
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("upgrade legacy marker without a manifest");
+    let missing_manifest_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load missing-manifest legacy marker");
+    assert!(
+        missing_manifest_sha.is_none(),
+        "a legacy marker without a completed manifest must remain unverified"
+    );
 
     let mut tx = pool.begin().await.expect("begin missing-manifest check");
     assert!(
@@ -4060,6 +4359,20 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
     .await
     .expect("seed matching completed archive manifest");
 
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("upgrade legacy marker with a completed manifest");
+    let upgraded_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load upgraded legacy marker");
+    assert_eq!(upgraded_sha.as_deref(), Some("archive-sha-a"));
+
     let mut tx = pool.begin().await.expect("begin matching-manifest check");
     assert!(
         hourly_rollup_archive_replayed_tx(
@@ -4087,6 +4400,32 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
     .execute(&pool)
     .await
     .expect("make manifest incomplete");
+
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_replay SET archive_sha256 = NULL WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("restore legacy marker before incomplete-manifest check");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("upgrade legacy marker with an incomplete manifest");
+    let incomplete_manifest_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load incomplete-manifest legacy marker");
+    assert!(
+        incomplete_manifest_sha.is_none(),
+        "a legacy marker with an incomplete manifest must remain unverified"
+    );
 
     let mut tx = pool.begin().await.expect("begin incomplete-manifest check");
     assert!(
@@ -5479,15 +5818,34 @@ async fn pool_node_health_hourly_backfill_waits_for_cache_replay_and_refreshes_f
     .expect("count hourly rows before cache replay completes");
     assert_eq!(hourly_rows_before, 0);
 
+    let archive_sha256: String = sqlx::query_scalar(
+        r#"
+        SELECT sha256
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load pool upstream archive checksum");
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay (
+            target,
+            dataset,
+            file_path,
+            archive_sha256,
+            replayed_at
+        )
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         "#,
     )
     .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
     .bind("pool_upstream_request_attempts")
     .bind(&archive_file_path)
+    .bind(&archive_sha256)
     .execute(&pool)
     .await
     .expect("mark cached pool node health replay complete");
@@ -5533,6 +5891,34 @@ async fn pool_node_health_hourly_backfill_waits_for_cache_replay_and_refreshes_f
     .await
     .expect("count hourly replay markers after cache refresh");
     assert_eq!(hourly_replayed, 1);
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = 'replaced-hourly-cache-replay-gate'
+        WHERE dataset = 'pool_upstream_request_attempts'
+          AND file_path = ?1
+        "#,
+    )
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("replace pool upstream archive checksum");
+
+    assert_eq!(
+        pending_pool_upstream_node_health_archive_batches(&pool)
+            .await
+            .expect("load cache archives pending after checksum replacement"),
+        1,
+        "a stale cache replay marker must reopen the archive"
+    );
+    assert_eq!(
+        pending_pool_upstream_node_health_hourly_archive_batches(&pool)
+            .await
+            .expect("load hourly archives pending after checksum replacement"),
+        1,
+        "a stale hourly replay marker must reopen the archive"
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
