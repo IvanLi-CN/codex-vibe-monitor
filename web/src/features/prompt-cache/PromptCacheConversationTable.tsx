@@ -536,6 +536,23 @@ function routingSelectionExclusionLabel(
     : translated;
 }
 
+function routingSelectionHandoffLabel(
+  audit: PoolRoutingSelectionAudit,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const admission = audit.handoffAdmission;
+  if (!admission) return null;
+  const decisionKey = `live.routing.record.handoffDecisions.${admission.decision}`;
+  const phaseKey = `live.routing.record.handoffPhases.${admission.phase}`;
+  const decision = t(decisionKey) === decisionKey ? admission.decision : t(decisionKey);
+  const phase = t(phaseKey) === phaseKey ? admission.phase : t(phaseKey);
+  return t("live.routing.record.handoffAdmissionValue", {
+    decision,
+    phase,
+    count: admission.verificationSuccessCount,
+  });
+}
+
 function routingAttemptHref(event: PromptCacheConversationOperationEvent, attemptId: string) {
   const search = new URLSearchParams({ attemptId });
   if (event.invokeId && event.routingContext?.triggerAttemptId === attemptId) {
@@ -4020,6 +4037,12 @@ export function PromptCacheConversationHistoryDrawer({
                   <p>
                     {routingSelectionWinnerLabel(event.routingContext.routingSelectionAudit, t)}
                   </p>
+                  {routingSelectionHandoffLabel(event.routingContext.routingSelectionAudit, t) ? (
+                    <p>
+                      {t("live.routing.record.handoffAdmission")}:{" "}
+                      {routingSelectionHandoffLabel(event.routingContext.routingSelectionAudit, t)}
+                    </p>
+                  ) : null}
                   {event.routingContext.routingSelectionAudit.selectedScore ? (
                     <p data-testid="conversation-routing-selection-score">
                       {routingSelectionScoreLabel(

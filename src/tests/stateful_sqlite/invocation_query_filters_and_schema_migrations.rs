@@ -6225,6 +6225,7 @@ async fn fresh_assignment_persists_selection_audit_for_attempt_and_sticky_event(
         compared_account_name: None,
         selected_score: None,
         compared_score: None,
+        handoff_admission: None,
         excluded_candidates: vec![PoolRoutingSelectionAuditExcludedCandidate {
             account_id: excluded_account_id,
             account_name: "Excluded CIII".to_string(),

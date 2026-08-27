@@ -591,6 +591,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -1073,6 +1074,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -1216,6 +1218,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -1587,6 +1590,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

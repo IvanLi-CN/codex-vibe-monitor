@@ -1081,6 +1081,32 @@ fn spawn_pool_attempt_response_capture(
     });
 }
 
+fn take_priority_handoff_terminal_error(
+    account: &PoolResolvedAccount,
+    last_error: &mut Option<PoolUpstreamError>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<PoolUpstreamError> {
+    if !priority_handoff_is_single_attempt(account) {
+        return None;
+    }
+    let mut error = last_error.take()?;
+    error.attempt_summary = pool_attempt_summary(
+        attempt_count,
+        distinct_account_count,
+        Some(error.failure_kind.to_string()),
+    );
+    Some(error)
+}
+
+fn priority_handoff_is_single_attempt(account: &PoolResolvedAccount) -> bool {
+    account.routing_source == PoolRoutingSelectionSource::PriorityHandoff
+        && account
+            .priority_handoff_permit
+            .as_ref()
+            .is_some_and(|permit| permit.is_sticky_migration())
+}
+
 async fn send_pool_request_with_failover_and_binding_constraint_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -1941,19 +1967,32 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             }
             PoolResolvedAuth::Oauth { .. } => None,
         };
-        let same_account_attempt_budget = pool_same_account_attempt_budget(
-            original_uri,
-            &method,
-            distinct_account_count,
-            initial_same_account_attempts,
-        );
-        let overload_same_account_attempt_budget = pool_overload_same_account_attempt_budget(
-            original_uri,
-            &method,
-            distinct_account_count,
-            same_account_attempt_budget,
-        );
-        let group_upstream_429_max_retries = account.effective_upstream_429_max_retries();
+        let priority_handoff_admitted = priority_handoff_is_single_attempt(&account);
+        let same_account_attempt_budget = if priority_handoff_admitted {
+            1
+        } else {
+            pool_same_account_attempt_budget(
+                original_uri,
+                &method,
+                distinct_account_count,
+                initial_same_account_attempts,
+            )
+        };
+        let overload_same_account_attempt_budget = if priority_handoff_admitted {
+            0
+        } else {
+            pool_overload_same_account_attempt_budget(
+                original_uri,
+                &method,
+                distinct_account_count,
+                same_account_attempt_budget,
+            )
+        };
+        let group_upstream_429_max_retries = if priority_handoff_admitted {
+            0
+        } else {
+            account.effective_upstream_429_max_retries()
+        };
         let model_mapping = load_model_mapping_for_account(
             state.as_ref(),
             account.account_id,
@@ -2747,6 +2786,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 timeout_route_failover_pending = true;
                             }
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            if let Some(final_error) = take_priority_handoff_terminal_error(
+                                &account,
+                                &mut last_error,
+                                attempt_count,
+                                distinct_account_count,
+                            ) {
+                                return Err(final_error);
+                            }
                             continue 'account_loop;
                         }
                         Err(_) => {
@@ -3006,6 +3053,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 timeout_route_failover_pending = true;
                             }
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            if let Some(final_error) = take_priority_handoff_terminal_error(
+                                &account,
+                                &mut last_error,
+                                attempt_count,
+                                distinct_account_count,
+                            ) {
+                                return Err(final_error);
+                            }
                             continue 'account_loop;
                         }
                     }
@@ -3366,8 +3421,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 )
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
-                let has_upstream_413_retry_budget =
-                    status == StatusCode::PAYLOAD_TOO_LARGE && !retried_upstream_413_for_account;
+                let has_upstream_413_retry_budget = pool_upstream_413_retry_allowed(
+                    status,
+                    priority_handoff_admitted,
+                    retried_upstream_413_for_account,
+                );
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
                     && group_upstream_429_retry_count < group_upstream_429_max_retries;
                 let upstream_request_id_header = response
@@ -4022,6 +4080,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     timeout_route_failover_pending = true;
                 }
                 disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                if let Some(final_error) = take_priority_handoff_terminal_error(
+                    &account,
+                    &mut last_error,
+                    attempt_count,
+                    distinct_account_count,
+                ) {
+                    return Err(final_error);
+                }
                 continue 'account_loop;
             }
 
@@ -4256,6 +4322,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             timeout_route_failover_pending = true;
                         }
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                        if let Some(final_error) = take_priority_handoff_terminal_error(
+                            &account,
+                            &mut last_error,
+                            attempt_count,
+                            distinct_account_count,
+                        ) {
+                            return Err(final_error);
+                        }
                         continue 'account_loop;
                     }
                 };
@@ -4455,6 +4529,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         exhausted_accounts_all_rate_limited = false;
                         overload_required_upstream_route_key = Some(upstream_route_key.clone());
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                        if let Some(final_error) = take_priority_handoff_terminal_error(
+                            &account,
+                            &mut last_error,
+                            attempt_count,
+                            distinct_account_count,
+                        ) {
+                            return Err(final_error);
+                        }
                         continue 'account_loop;
                     }
                     Err(err) => {
@@ -4554,6 +4636,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         );
                         exhausted_accounts_all_rate_limited = false;
                         disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                        if let Some(final_error) = take_priority_handoff_terminal_error(
+                            &account,
+                            &mut last_error,
+                            attempt_count,
+                            distinct_account_count,
+                        ) {
+                            return Err(final_error);
+                        }
                         continue 'account_loop;
                     }
                 };
@@ -4658,6 +4748,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
     }
 }
 
+fn pool_upstream_413_retry_allowed(
+    status: StatusCode,
+    priority_handoff_admitted: bool,
+    retried_upstream_413_for_account: bool,
+) -> bool {
+    status == StatusCode::PAYLOAD_TOO_LARGE
+        && !priority_handoff_admitted
+        && !retried_upstream_413_for_account
+}
+
 #[cfg(test)]
 mod request_compression_tests {
     use super::*;
@@ -4726,5 +4826,24 @@ mod request_compression_tests {
             resolve_terminal_request_compression_algorithm(None, Some("zstd".to_string())),
             Some("zstd".to_string())
         );
+    }
+
+    #[test]
+    fn priority_handoff_disables_upstream_413_retry_budget() {
+        assert!(!pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            true,
+            false,
+        ));
+        assert!(pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+            false,
+        ));
+        assert!(!pool_upstream_413_retry_allowed(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            false,
+            true,
+        ));
     }
 }

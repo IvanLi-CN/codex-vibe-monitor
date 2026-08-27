@@ -551,6 +551,12 @@ export interface PoolRoutingSelectionAudit {
   comparedAccountName?: string | null;
   selectedScore?: PoolRoutingSelectionScoreSnapshot | null;
   comparedScore?: PoolRoutingSelectionScoreSnapshot | null;
+  handoffAdmission?: {
+    decision: string;
+    phase: string;
+    verificationSuccessCount: number;
+    generation?: number;
+  } | null;
   excludedCandidates: PoolRoutingSelectionAuditExcludedCandidate[];
 }
 
@@ -3540,6 +3546,9 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
           : 50,
     },
   };
+  if (typeof payload.priorityHandoffAdmissionEnabled === "boolean") {
+    normalized.priorityHandoffAdmissionEnabled = payload.priorityHandoffAdmissionEnabled;
+  }
   if (Array.isArray(payload.availableModels)) {
     normalized.availableModels = payload.availableModels.filter(
       (value): value is string => typeof value === "string",
@@ -3850,7 +3859,7 @@ function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionA
           : null,
     };
   };
-  return {
+  const normalized: PoolRoutingSelectionAudit = {
     selectedAccountId,
     selectedAccountName,
     eligibleCandidateCount,
@@ -3864,6 +3873,18 @@ function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionA
     comparedScore: normalizeScore(payload.comparedScore),
     excludedCandidates,
   };
+  if (typeof payload.handoffAdmission === "object" && payload.handoffAdmission !== null) {
+    const admission = payload.handoffAdmission as Record<string, unknown>;
+    const decision = typeof admission.decision === "string" ? admission.decision.trim() : "";
+    const phase = typeof admission.phase === "string" ? admission.phase.trim() : "";
+    const verificationSuccessCount = normalizeFiniteNumber(admission.verificationSuccessCount);
+    if (decision && phase && verificationSuccessCount != null) {
+      normalized.handoffAdmission = { decision, phase, verificationSuccessCount };
+      const generation = normalizeFiniteNumber(admission.generation);
+      if (generation != null) normalized.handoffAdmission.generation = generation;
+    }
+  }
+  return normalized;
 }
 
 function normalizePromptCacheConversationOperationRoutingContext(

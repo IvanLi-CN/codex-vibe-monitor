@@ -10767,7 +10767,7 @@ async fn build_summary_projection_once(
     )
     .await?;
     let recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
-    let recent_index_overflow_at = if recent_index_complete {
+    let mut recent_index_overflow_at = if recent_index_complete {
         None
     } else {
         let overflow_row = recent_rows
@@ -11267,6 +11267,12 @@ async fn build_summary_projection_once(
         }
     }
     for range in exact_live_ranges {
+        if recent_index_overflow_at.is_some_and(|overflow_at| range.start <= overflow_at) {
+            // The recent index already proves that this range reaches omitted live history. Do
+            // not spend the remaining resident budget rereading rows that cannot make the range
+            // exact; the cutoff below will fail closed for any request which touches it.
+            continue;
+        }
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
@@ -11284,10 +11290,22 @@ async fn build_summary_projection_once(
             },
         )
         .await?;
-        if exact_live_rows.len() >= remaining {
-            return Err(anyhow!(
-                "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-            ));
+        let new_exact_live_rows = exact_live_rows
+            .iter()
+            .filter(|row| !records_by_invoke_id.contains_key(&row.invoke_id))
+            .count();
+        if new_exact_live_rows >= remaining {
+            // This exact bucket cannot be reconstructed within the remaining resident record
+            // budget. Keep the projection publishable, but extend the rolling unavailable cutoff
+            // through the bucket so requests touching the omitted live history fail closed
+            // instead of returning a truncated total.
+            let bucket_end = range.end;
+            recent_index_overflow_at = Some(
+                recent_index_overflow_at
+                    .map(|existing| existing.max(bucket_end))
+                    .unwrap_or(bucket_end),
+            );
+            continue;
         }
         for row in exact_live_rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {

@@ -2604,6 +2604,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
                 sticky_affinity_generation: None,
                 routing_selection_audit: None,
+                priority_handoff_permit: None,
             }),
             status: StatusCode::BAD_GATEWAY,
             message: "terminal scoped failure".to_string(),
@@ -5219,6 +5220,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -5353,6 +5355,7 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
@@ -5502,6 +5505,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
         forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(

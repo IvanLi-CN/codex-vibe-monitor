@@ -4153,6 +4153,44 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             had_stream_error,
             had_logical_stream_failure,
         );
+        if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref()
+            && pending_attempt_record.routing_source.as_deref()
+                == Some(PRIORITY_HANDOFF_ROUTING_SOURCE)
+        {
+            if pure_downstream_closed {
+                forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+                forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+            } else if pool_capture_success {
+                // The capture finalizer now owns the durable terminal ordering;
+                // complete a successful handoff only after its row is finalized.
+                complete_priority_handoff_from_attempt_or_invoke(
+                    &state_for_task.pool,
+                    pending_attempt_record.attempt_id,
+                    Some(&pending_attempt_record.invoke_id),
+                    true,
+                    false,
+                )
+                .await;
+                if let Some(model_key) = pending_attempt_record.request_model.as_deref()
+                    && let Some(generation) = priority_handoff_generation_from_audit_json(
+                        pending_attempt_record
+                            .routing_selection_audit_json
+                            .as_deref(),
+                    )
+                {
+                    release_priority_handoff_for_key(
+                        pending_attempt_record.upstream_account_id,
+                        model_key,
+                        generation,
+                    );
+                }
+                forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+                forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+            } else {
+                forget_priority_handoff_attempt(pending_attempt_record.attempt_id);
+                forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+            }
+        }
         if pool_capture_success
             && let (Some(prompt_cache_key), Some(account)) = (
                 prompt_cache_key_for_task.as_deref(),

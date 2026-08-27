@@ -584,6 +584,7 @@ pub(crate) fn build_pool_resolved_account(
         routing_source,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
+        priority_handoff_permit: None,
     }
 }
 

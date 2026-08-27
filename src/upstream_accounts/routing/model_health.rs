@@ -1449,6 +1449,50 @@ async fn persist_model_event(
     Ok(())
 }
 
+pub(crate) async fn persist_priority_handoff_event(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: Option<i64>,
+    model: &str,
+    reason_code: &str,
+) -> Result<()> {
+    let (action, result) = match reason_code {
+        PRIORITY_HANDOFF_SUCCEEDED_REASON => (
+            UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED,
+            "priority_handoff_succeeded",
+        ),
+        PRIORITY_HANDOFF_FAILURE_COOLDOWN_REASON => (
+            UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_COOLDOWN,
+            "priority_handoff_failure_cooldown",
+        ),
+        PRIORITY_HANDOFF_RECOVERY_PROGRESS_REASON => (
+            UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED,
+            "priority_handoff_recovery_progress",
+        ),
+        _ => return Ok(()),
+    };
+    persist_model_event(
+        pool,
+        account_id,
+        attempt_id,
+        model,
+        action,
+        UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+        result,
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+        None,
+        Some(reason_code),
+        None,
+        None,
+    )
+    .await
+}
+
 async fn persist_cache_hit_route_event(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -1984,7 +2028,8 @@ pub(crate) async fn reset_model_route(
     .bind(model)
     .execute(pool)
     .await?;
-    persist_model_event(
+    reset_priority_handoff_for_model(account_id, model);
+    if let Err(error) = persist_model_event(
         pool,
         account_id,
         None,
@@ -2003,7 +2048,15 @@ pub(crate) async fn reset_model_route(
         None,
         None,
     )
-    .await?;
+    .await
+    {
+        warn!(
+            account_id,
+            model,
+            error = %error,
+            "failed to persist manual model route reset event"
+        );
+    }
     let updated = sqlx::query_as::<_, ModelRouteRow>(
         "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
     )

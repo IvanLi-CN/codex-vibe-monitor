@@ -732,6 +732,7 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_overflow_mode
             ,live_request_streaming_enabled
             ,live_request_streaming_treatment_percent
+            ,priority_handoff_admission_enabled
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -809,6 +810,7 @@ pub(crate) fn build_pool_routing_settings_response(
         timeouts: pool_routing_timeouts_response(timeouts),
         cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
         live_request_streaming: resolve_live_request_streaming_settings(row).into_response(),
+        priority_handoff_admission_enabled: priority_handoff_admission_enabled(),
     }
 }
 
@@ -896,7 +898,7 @@ pub(crate) fn build_pool_routing_runtime_cache(
         _ => None,
     };
 
-    Ok(PoolRoutingRuntimeCache {
+    let cache = PoolRoutingRuntimeCache {
         generation: 0,
         invalidated: false,
         #[cfg(test)]
@@ -910,7 +912,8 @@ pub(crate) fn build_pool_routing_runtime_cache(
         model_routing: PoolModelRoutingRuntimeCache::default(),
         prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
         sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
-    })
+    };
+    Ok(cache)
 }
 
 pub(crate) async fn refresh_pool_routing_runtime_cache(
@@ -945,6 +948,10 @@ async fn refresh_pool_routing_runtime_cache_locked(
         .unwrap_or(1);
     cache.model_routing = model_routing;
     *runtime_cache = Some(cache.clone());
+    set_priority_handoff_admission_enabled(
+        row.priority_handoff_admission_enabled
+            .is_none_or(|value| value != 0),
+    );
     Ok(cache)
 }
 
@@ -1116,6 +1123,7 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
     pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
     pub(crate) live_request_streaming: Option<LiveRequestStreamingSettings>,
+    pub(crate) priority_handoff_admission_enabled: Option<bool>,
 }
 
 pub(crate) async fn save_pool_routing_settings(
@@ -1225,6 +1233,13 @@ pub(crate) async fn save_pool_routing_settings(
     let live_request_streaming = update
         .live_request_streaming
         .unwrap_or_else(|| resolve_live_request_streaming_settings(&current));
+    let priority_handoff_admission_enabled_value = update
+        .priority_handoff_admission_enabled
+        .unwrap_or_else(|| {
+            current
+                .priority_handoff_admission_enabled
+                .is_none_or(|value| value != 0)
+        });
     let now_iso = format_utc_iso(Utc::now());
 
     let mut tx = pool.begin().await.map_err(internal_error_tuple)?;
@@ -1250,7 +1265,8 @@ pub(crate) async fn save_pool_routing_settings(
             default_first_byte_timeout_secs = ?17,
             upstream_handshake_timeout_secs = ?18,
             request_read_timeout_secs = ?19,
-            updated_at = ?20
+            priority_handoff_admission_enabled = ?20,
+            updated_at = ?21
         WHERE id = ?1
         "#,
     )
@@ -1273,6 +1289,7 @@ pub(crate) async fn save_pool_routing_settings(
     .bind(default_first_byte_timeout_secs)
     .bind(upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
+    .bind(if priority_handoff_admission_enabled_value { 1_i64 } else { 0_i64 })
     .bind(now_iso)
     .execute(&mut *tx)
     .await
@@ -1461,6 +1478,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) routing_source: PoolRoutingSelectionSource,
     pub(crate) sticky_affinity_generation: Option<i64>,
     pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
+    pub(crate) priority_handoff_permit: Option<Arc<PriorityHandoffPermit>>,
 }
 
 impl PoolResolvedAccount {
@@ -1516,7 +1534,19 @@ pub(crate) struct PoolRoutingSelectionAudit {
     pub(crate) selected_score: Option<PoolRoutingSelectionScoreSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) compared_score: Option<PoolRoutingSelectionScoreSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) handoff_admission: Option<PoolRoutingHandoffAdmission>,
     pub(crate) excluded_candidates: Vec<PoolRoutingSelectionAuditExcludedCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingHandoffAdmission {
+    pub(crate) decision: String,
+    pub(crate) phase: String,
+    pub(crate) verification_success_count: u8,
+    #[serde(default)]
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1531,6 +1561,7 @@ pub(crate) struct PoolRoutingSelectionAuditExcludedCandidate {
 pub(crate) enum PoolRoutingSelectionSource {
     StickyReuse,
     FreshAssignment,
+    PriorityHandoff,
 }
 
 impl PoolRoutingSelectionSource {
@@ -1538,6 +1569,7 @@ impl PoolRoutingSelectionSource {
         match self {
             Self::StickyReuse => "stickyReuse",
             Self::FreshAssignment => "freshAssignment",
+            Self::PriorityHandoff => PRIORITY_HANDOFF_ROUTING_SOURCE,
         }
     }
 }

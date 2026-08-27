@@ -88,6 +88,23 @@ function routeSourceLabel(
   return translated === key ? t("live.routing.record.unknown") : translated;
 }
 
+function handoffAdmissionLabel(
+  admission: NonNullable<
+    NonNullable<ModelRoutingTimelineRecord["routingSelectionAudit"]>["handoffAdmission"]
+  >,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const decisionKey = `live.routing.record.handoffDecisions.${admission.decision}`;
+  const phaseKey = `live.routing.record.handoffPhases.${admission.phase}`;
+  const decision = t(decisionKey) === decisionKey ? admission.decision : t(decisionKey);
+  const phase = t(phaseKey) === phaseKey ? admission.phase : t(phaseKey);
+  return t("live.routing.record.handoffAdmissionValue", {
+    decision,
+    phase,
+    count: admission.verificationSuccessCount,
+  });
+}
+
 export function modelRoutingRecordsId(model: string) {
   return `model-routing-records-${modelRoutingKey(model)}`;
 }
@@ -234,6 +251,11 @@ function RecordRow({
                   : ""}
               </DetailItem>
             </div>
+          ) : null}
+          {audit?.handoffAdmission ? (
+            <DetailItem label={t("live.routing.record.handoffAdmission")}>
+              {handoffAdmissionLabel(audit.handoffAdmission, t)}
+            </DetailItem>
           ) : null}
           {record.modelRouteStateBefore || record.modelRouteStateAfter ? (
             <DetailItem label={t("live.routing.record.transition")}>

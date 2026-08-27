@@ -188,6 +188,21 @@ function routingSelectionExclusionLabel(account: string, reasonCode: string, t: 
     : translated;
 }
 
+function routingSelectionHandoffLabel(audit: PoolRoutingSelectionAudit, t: Translator) {
+  const admission = audit.handoffAdmission;
+  if (!admission) return null;
+  const decisionKey =
+    `live.routing.record.handoffDecisions.${admission.decision}` as TranslationKey;
+  const phaseKey = `live.routing.record.handoffPhases.${admission.phase}` as TranslationKey;
+  const decision = t(decisionKey) === decisionKey ? admission.decision : t(decisionKey);
+  const phase = t(phaseKey) === phaseKey ? admission.phase : t(phaseKey);
+  return t("live.routing.record.handoffAdmissionValue", {
+    decision,
+    phase,
+    count: admission.verificationSuccessCount,
+  });
+}
+
 export function PoolAttemptRecordCard({
   attempt,
   proxyDisplay,
@@ -252,6 +267,12 @@ export function PoolAttemptRecordCard({
             })}
           </p>
           <p>{routingSelectionWinnerLabel(attempt.routingSelectionAudit, t)}</p>
+          {routingSelectionHandoffLabel(attempt.routingSelectionAudit, t) ? (
+            <p>
+              {t("live.routing.record.handoffAdmission")}:{" "}
+              {routingSelectionHandoffLabel(attempt.routingSelectionAudit, t)}
+            </p>
+          ) : null}
           {attempt.routingSelectionAudit.selectedScore ? (
             <p data-testid="pool-attempt-routing-selection-score">
               {routingSelectionScoreLabel(

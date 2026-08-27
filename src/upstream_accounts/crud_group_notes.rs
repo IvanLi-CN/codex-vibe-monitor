@@ -2458,6 +2458,7 @@ mod model_routing_live_api_tests {
                     compared_account_name: Some("stale-compared-name".to_string()),
                     selected_score: None,
                     compared_score: None,
+                    handoff_admission: None,
                     excluded_candidates: vec![PoolRoutingSelectionAuditExcludedCandidate {
                         account_id: 13,
                         account_name: "stale-excluded-name".to_string(),

@@ -1,6 +1,25 @@
 use super::*;
 use serde_json::json;
 
+fn run_routing_future_with_large_stack<Fut>(future: Fut)
+where
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("routing-failover-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack test runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack test worker")
+        .join()
+        .expect("join large-stack test worker");
+}
+
 #[tokio::test]
 async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_alternate_fails() {
     #[derive(Debug, sqlx::FromRow)]
@@ -760,6 +779,94 @@ async fn pool_route_retries_upstream_413_once_on_same_account_then_succeeds() {
     );
 
     upstream_handle.abort();
+}
+
+#[test]
+fn priority_handoff_does_not_retry_upstream_413() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
+    run_routing_future_with_large_stack(async {
+        let (upstream_base, attempts, upstream_handle) =
+            spawn_pool_sequential_failure_responses_upstream(vec![
+                (
+                    "Bearer priority-handoff-target",
+                    vec![StatusCode::PAYLOAD_TOO_LARGE],
+                ),
+                ("Bearer priority-handoff-source", vec![]),
+            ])
+            .await;
+        let state = test_state_with_openai_base(
+            Url::parse(&upstream_base).expect("valid upstream base url"),
+        )
+        .await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        let source_id = insert_test_pool_api_key_account(
+            &state,
+            "Priority Handoff Source",
+            "priority-handoff-source",
+        )
+        .await;
+        let target_id = insert_test_pool_api_key_account(
+            &state,
+            "Priority Handoff Target",
+            "priority-handoff-target",
+        )
+        .await;
+        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+            .bind(source_id)
+            .bind(TagPriorityTier::Fallback.as_str())
+            .execute(&state.pool)
+            .await
+            .expect("set fallback handoff source priority");
+        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+            .bind(target_id)
+            .bind(TagPriorityTier::Primary.as_str())
+            .execute(&state.pool)
+            .await
+            .expect("set primary handoff target priority");
+        let sticky_key = "priority-handoff-413";
+        upsert_test_sticky_route_at(
+            &state.pool,
+            sticky_key,
+            source_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await;
+
+        let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            br#"{"model":"gpt-priority-handoff-413","input":"hello","stickyKey":"priority-handoff-413"}"#
+                .to_vec(),
+        ),
+    )
+    .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let _body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read priority handoff 413 body");
+        wait_for_pool_attempt_row_count(&state.pool, 1).await;
+        {
+            let attempts = attempts.lock().expect("lock attempts");
+            assert_eq!(
+                attempts.get("Bearer priority-handoff-target").copied(),
+                Some(1)
+            );
+            assert_eq!(
+                attempts.get("Bearer priority-handoff-source").copied(),
+                None
+            );
+        }
+        assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+        upstream_handle.abort();
+    });
 }
 
 #[tokio::test]

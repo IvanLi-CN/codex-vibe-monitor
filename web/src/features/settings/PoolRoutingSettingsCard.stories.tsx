@@ -34,6 +34,7 @@ const meta = {
       cacheHitOverflowMode: "queue",
       liveRequestStreamingEnabled: false,
       liveRequestStreamingTreatmentPercent: "50",
+      priorityHandoffAdmissionEnabled: true,
     },
     busy: false,
     writesEnabled: true,
@@ -47,14 +48,17 @@ const meta = {
     onTimeoutChange: () => undefined,
     onCacheHitProtectionChange: () => undefined,
     onLiveRequestStreamingChange: () => undefined,
+    onPriorityHandoffAdmissionChange: () => undefined,
     onSave: () => undefined,
   },
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-[30px] pb-[9.5px] pt-[10.5px] text-base-content sm:px-10">
-          <div className="mx-auto max-w-4xl">
-            <Story />
+        <div className="min-h-screen bg-[#21383d] px-[30px] pb-[9.5px] pt-[10.5px] sm:px-10">
+          <div className="mx-auto max-w-4xl bg-base-200 p-2 text-base-content">
+            <div className="bg-base-200">
+              <Story />
+            </div>
           </div>
         </div>
       </I18nProvider>
@@ -90,6 +94,7 @@ export const ModelPolicy: Story = {
           cacheHitOverflowMode: "queue",
           liveRequestStreamingEnabled: false,
           liveRequestStreamingTreatmentPercent: "50",
+          priorityHandoffAdmissionEnabled: true,
         }}
         busy={false}
         writesEnabled
@@ -103,9 +108,49 @@ export const ModelPolicy: Story = {
         onTimeoutChange={() => undefined}
         onCacheHitProtectionChange={() => undefined}
         onLiveRequestStreamingChange={() => undefined}
+        onPriorityHandoffAdmissionChange={() => undefined}
         onSave={() => undefined}
       />
     );
+  },
+};
+
+export const PriorityHandoffAdmissionDisabled: Story = {
+  args: {
+    draft: {
+      requestCompressionAlgorithm: "zstd",
+      requestCompressionLevelPreset: "best",
+      codexImagegenRewriteMode: "keep_original",
+      availableModels: ["gpt-image-2", "gpt-5.4-mini"],
+      availableModelsMode: "allowlist",
+      responsesFirstByteTimeoutSecs: "120",
+      compactFirstByteTimeoutSecs: "300",
+      imageFirstByteTimeoutSecs: "300",
+      responsesStreamTimeoutSecs: "300",
+      compactStreamTimeoutSecs: "300",
+      cacheHitProtectionEnabled: false,
+      cacheHitRateThresholdPercent: "10",
+      cacheHitOverflowMode: "queue",
+      liveRequestStreamingEnabled: false,
+      liveRequestStreamingTreatmentPercent: "50",
+      priorityHandoffAdmissionEnabled: false,
+    },
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("switch", { name: /优先级迁移准入|Priority handoff admission/ }),
+    ).toHaveAttribute("aria-checked", "false");
+  },
+};
+
+export const PriorityHandoffAdmissionMobile: Story = {
+  ...PriorityHandoffAdmissionDisabled,
+  parameters: {
+    viewport: {
+      defaultViewport: "mobile393",
+    },
   },
 };
 
@@ -127,6 +172,7 @@ export const CacheHitProtection: Story = {
       cacheHitOverflowMode: "reroute",
       liveRequestStreamingEnabled: true,
       liveRequestStreamingTreatmentPercent: "50",
+      priorityHandoffAdmissionEnabled: true,
     },
   },
   tags: ["test"],
@@ -160,6 +206,7 @@ export const LiveRequestStreamingEnabled: Story = {
       cacheHitOverflowMode: "queue",
       liveRequestStreamingEnabled: true,
       liveRequestStreamingTreatmentPercent: "50",
+      priorityHandoffAdmissionEnabled: true,
     },
   },
   tags: ["test"],

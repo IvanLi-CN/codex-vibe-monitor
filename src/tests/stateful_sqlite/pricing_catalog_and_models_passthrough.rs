@@ -2642,7 +2642,12 @@ fn classify_compact_support_observation_is_conservative() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let mut config = test_config();
     config.request_timeout = Duration::from_secs(61);
     config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);
@@ -2661,6 +2666,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert_eq!(initial.timeouts.image_first_byte_timeout_secs, 306);
     assert_eq!(initial.timeouts.responses_stream_timeout_secs, 301);
     assert_eq!(initial.timeouts.compact_stream_timeout_secs, 301);
+    assert!(initial.priority_handoff_admission_enabled);
 
     let persisted = sqlx::query_as::<
         _,
@@ -2702,6 +2708,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: Some(false),
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),
@@ -2719,6 +2726,43 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert_eq!(updated.timeouts.image_first_byte_timeout_secs, 300);
     assert_eq!(updated.timeouts.responses_stream_timeout_secs, 405);
     assert_eq!(updated.timeouts.compact_stream_timeout_secs, 505);
+    assert!(!updated.priority_handoff_admission_enabled);
+
+    let Json(reloaded) = get_pool_routing_settings(State(state.clone()))
+        .await
+        .expect("reload pool routing settings after admission update");
+    assert!(!reloaded.priority_handoff_admission_enabled);
+
+    sqlx::query(
+        "UPDATE pool_routing_settings SET priority_handoff_admission_enabled = 1 WHERE id = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("simulate stale persisted admission setting");
+    let Json(local_mirror) = get_pool_routing_settings(State(state.clone()))
+        .await
+        .expect("read local admission mirror after stale persistence");
+    assert!(!local_mirror.priority_handoff_admission_enabled);
+
+    let _ = update_pool_routing_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(UpdatePoolRoutingSettingsRequest {
+            api_key: None,
+            maintenance: None,
+            request_compression_algorithm: None,
+            request_compression_level_preset: None,
+            codex_imagegen_rewrite_mode: None,
+            available_models: None,
+            available_models_mode: None,
+            cache_hit_protection: None,
+            live_request_streaming: None,
+            priority_handoff_admission_enabled: Some(true),
+            timeouts: None,
+        }),
+    )
+    .await
+    .expect("restore priority handoff admission setting");
 
     let resolved = resolve_pool_routing_timeouts(&state.pool, &state.config)
         .await
@@ -2768,6 +2812,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
             overflow_mode: Some("reroute".to_string()),
         }),
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
     };
     let Json(updated) =
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
@@ -2795,6 +2840,7 @@ async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
             overflow_mode: None,
         }),
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
     };
     let error = update_pool_routing_settings(State(state), HeaderMap::new(), Json(invalid))
         .await
@@ -2823,6 +2869,7 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2870,6 +2917,7 @@ async fn pool_routing_settings_timeout_updates_tolerate_invalid_cached_api_key_c
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2921,6 +2969,7 @@ async fn pool_routing_settings_api_key_updates_require_crypto_key() {
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
         timeouts: None,
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
@@ -2944,6 +2993,7 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: None,
             compact_first_byte_timeout_secs: None,
@@ -2982,6 +3032,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         available_models_mode: None,
         cache_hit_protection: None,
         live_request_streaming: None,
+        priority_handoff_admission_enabled: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
             responses_first_byte_timeout_secs: Some(135),
             compact_first_byte_timeout_secs: Some(325),

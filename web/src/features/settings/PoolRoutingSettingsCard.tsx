@@ -53,6 +53,7 @@ type PoolRoutingSettingsCardProps = {
     cacheHitOverflowMode: "queue" | "reroute";
     liveRequestStreamingEnabled: boolean;
     liveRequestStreamingTreatmentPercent: string;
+    priorityHandoffAdmissionEnabled: boolean;
   };
   busy: boolean;
   writesEnabled: boolean;
@@ -74,6 +75,7 @@ type PoolRoutingSettingsCardProps = {
     liveRequestStreamingEnabled?: boolean;
     liveRequestStreamingTreatmentPercent?: string;
   }) => void;
+  onPriorityHandoffAdmissionChange: (enabled: boolean) => void;
   onSave: () => void;
 };
 
@@ -92,6 +94,7 @@ export function PoolRoutingSettingsCard({
   onTimeoutChange,
   onCacheHitProtectionChange,
   onLiveRequestStreamingChange,
+  onPriorityHandoffAdmissionChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
   const { t } = useTranslation();
@@ -178,6 +181,24 @@ export function PoolRoutingSettingsCard({
       </CardHeader>
 
       <CardContent className="mobile-flat-surface-body space-y-5 pt-4">
+        <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <div className="font-medium leading-snug">
+                {t("settings.routing.priorityHandoff.title")}
+              </div>
+              <div className="text-sm leading-snug text-base-content/70">
+                {t("settings.routing.priorityHandoff.description")}
+              </div>
+            </div>
+            <Switch
+              checked={draft.priorityHandoffAdmissionEnabled}
+              disabled={!writesEnabled || busy}
+              aria-label={t("settings.routing.priorityHandoff.title")}
+              onCheckedChange={onPriorityHandoffAdmissionChange}
+            />
+          </div>
+        </div>
         <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
