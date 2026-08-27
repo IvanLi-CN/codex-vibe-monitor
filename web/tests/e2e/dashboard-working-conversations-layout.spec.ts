@@ -809,25 +809,31 @@ test.describe("Dashboard working conversations responsive layout", () => {
             ),
           );
         const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const hasVisiblePseudo = (element: Element, pseudo: "::before" | "::after") => {
+          const pseudoStyle = getComputedStyle(element, pseudo);
+          const width = Number.parseFloat(pseudoStyle.width);
+          const height = Number.parseFloat(pseudoStyle.height);
+          return (
+            pseudoStyle.display !== "none" &&
+            pseudoStyle.visibility !== "hidden" &&
+            Number.parseFloat(pseudoStyle.opacity || "1") > 0 &&
+            (width > 0 || height > 0)
+          );
+        };
+        const pseudoDividerCount = [cluster, ...Array.from(cluster.children)].reduce(
+          (count, element) =>
+            count +
+            Number(hasVisiblePseudo(element, "::before")) +
+            Number(hasVisiblePseudo(element, "::after")),
+          0,
+        );
         const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
           const part = child.getAttribute("data-model-context-part");
           const style = getComputedStyle(child);
           const hasBorder =
             Number.parseFloat(style.borderLeftWidth) > 0 ||
             Number.parseFloat(style.borderRightWidth) > 0;
-          const hasVisiblePseudo = ["::before", "::after"].some((pseudo) => {
-            const pseudoStyle = getComputedStyle(child, pseudo);
-            const content = pseudoStyle.content.trim();
-            return (
-              content !== "none" &&
-              content !== '""' &&
-              (Number.parseFloat(pseudoStyle.width) > 0 ||
-                Number.parseFloat(pseudoStyle.height) > 0)
-            );
-          });
-          return (
-            count + Number(!part || !expectedDirectParts.has(part) || hasBorder || hasVisiblePseudo)
-          );
+          return count + Number(!part || !expectedDirectParts.has(part) || hasBorder);
         }, 0);
         return {
           modelWidth: modelRect.width,
@@ -841,7 +847,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
-          internalDividerCount,
+          internalDividerCount: internalDividerCount + pseudoDividerCount,
         };
       });
 
@@ -985,25 +991,31 @@ test.describe("Dashboard working conversations responsive layout", () => {
             ),
           );
         const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const hasVisiblePseudo = (element: Element, pseudo: "::before" | "::after") => {
+          const pseudoStyle = getComputedStyle(element, pseudo);
+          const width = Number.parseFloat(pseudoStyle.width);
+          const height = Number.parseFloat(pseudoStyle.height);
+          return (
+            pseudoStyle.display !== "none" &&
+            pseudoStyle.visibility !== "hidden" &&
+            Number.parseFloat(pseudoStyle.opacity || "1") > 0 &&
+            (width > 0 || height > 0)
+          );
+        };
+        const pseudoDividerCount = [cluster, ...Array.from(cluster.children)].reduce(
+          (count, element) =>
+            count +
+            Number(hasVisiblePseudo(element, "::before")) +
+            Number(hasVisiblePseudo(element, "::after")),
+          0,
+        );
         const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
           const part = child.getAttribute("data-model-context-part");
           const style = getComputedStyle(child);
           const hasBorder =
             Number.parseFloat(style.borderLeftWidth) > 0 ||
             Number.parseFloat(style.borderRightWidth) > 0;
-          const hasVisiblePseudo = ["::before", "::after"].some((pseudo) => {
-            const pseudoStyle = getComputedStyle(child, pseudo);
-            const content = pseudoStyle.content.trim();
-            return (
-              content !== "none" &&
-              content !== '""' &&
-              (Number.parseFloat(pseudoStyle.width) > 0 ||
-                Number.parseFloat(pseudoStyle.height) > 0)
-            );
-          });
-          return (
-            count + Number(!part || !expectedDirectParts.has(part) || hasBorder || hasVisiblePseudo)
-          );
+          return count + Number(!part || !expectedDirectParts.has(part) || hasBorder);
         }, 0);
         const partsWithinCluster = [modelRect, markerRect, effortTextRect, fastPartRect].every(
           (partRect) =>
@@ -1024,7 +1036,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
-          internalDividerCount,
+          internalDividerCount: internalDividerCount + pseudoDividerCount,
           effortText: effortText.textContent,
         };
       });
