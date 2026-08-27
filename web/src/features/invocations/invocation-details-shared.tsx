@@ -306,10 +306,15 @@ function formatPoolAttemptProxyBindingDisplay(
   };
 }
 
-export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
+export function renderFastIndicator(
+  state: FastIndicatorState,
+  t: Translator,
+  options?: { verticalAlign?: "baseline" | "center" },
+) {
   if (state === "none") return null;
 
   const isEffective = state === "effective";
+  const verticalAlign = options?.verticalAlign ?? "baseline";
   const titleKey: TranslationKey = isEffective
     ? "table.model.fastPriorityTitle"
     : "table.model.fastRequestedOnlyTitle";
@@ -329,7 +334,11 @@ export function renderFastIndicator(state: FastIndicatorState, t: Translator) {
       data-fast-state={state}
       role="img"
     >
-      <AppIcon name="lightning-bolt" className="h-3.5 w-3.5 -translate-y-px" aria-hidden />
+      <AppIcon
+        name="lightning-bolt"
+        className={cn("h-3.5 w-3.5", verticalAlign === "baseline" ? "-translate-y-px" : undefined)}
+        aria-hidden
+      />
     </span>
   );
 }
