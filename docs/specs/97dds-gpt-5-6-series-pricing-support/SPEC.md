@@ -209,8 +209,6 @@ PR: include
 - state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-light` theme
 - evidence_note: Owner-approved component capture of the same state as the dark-theme evidence. The light theme preserves the same geometry and semantics without a mobile-only rendering difference.
 
-PR: none
-
 ## References
 
 - OpenAI pricing announcement and API pricing pages published on 2026-07-08.
