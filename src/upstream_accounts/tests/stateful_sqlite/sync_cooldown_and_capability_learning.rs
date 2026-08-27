@@ -7117,6 +7117,67 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
 }
 
 #[tokio::test]
+async fn resolver_admits_first_untracked_priority_fresh_assignment() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let target_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Untracked Fresh Assignment Handoff Target",
+        "sk-untracked-fresh-assignment-handoff-target",
+        Some("untracked-fresh-assignment-handoff"),
+        Some("https://untracked-fresh-assignment-handoff-target.example.com/backend-api/codex"),
+    )
+    .await;
+    let alternate_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Untracked Fresh Assignment Handoff Alternate",
+        "sk-untracked-fresh-assignment-handoff-alternate",
+        Some("untracked-fresh-assignment-handoff"),
+        Some("https://untracked-fresh-assignment-handoff-alternate.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+        .bind(target_account_id)
+        .bind(TagPriorityTier::Primary.as_str())
+        .execute(&state.pool)
+        .await
+        .expect("set untracked fresh assignment target priority");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some("gpt-untracked-fresh-assignment-handoff"),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve first untracked priority assignment");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected first untracked priority assignment, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, target_account_id);
+    assert_ne!(account.account_id, alternate_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::PriorityHandoff
+    );
+    assert_eq!(
+        account
+            .routing_selection_audit
+            .as_ref()
+            .and_then(|audit| audit.handoff_admission.as_ref())
+            .map(|admission| admission.decision.as_str()),
+        Some("admitted")
+    );
+}
+
+#[tokio::test]
 async fn resolver_keeps_fallback_sticky_when_no_higher_priority_candidate_exists() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_account_id = insert_test_pool_api_key_account_with_options(
