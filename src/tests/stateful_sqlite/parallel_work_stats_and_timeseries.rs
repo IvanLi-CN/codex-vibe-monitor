@@ -22753,7 +22753,7 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
 
     for window in ["current", "1d"] {
         for upstream_account_id in [None, Some(42)] {
-            let Json(response) = fetch_summary(
+            let response = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
                     window: Some(window.to_string()),
@@ -22762,8 +22762,16 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
                     upstream_account_id,
                 }),
             )
-            .await
-            .expect("serve the exact paged-boundary response without SQLite");
+            .await;
+            if window == "current" {
+                assert!(
+                    matches!(response, Err(ApiError::Unavailable(_))),
+                    "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
+                );
+                continue;
+            }
+            let Json(response) =
+                response.expect("serve the exact paged-boundary response without SQLite");
             assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
             assert_eq!(
                 response.total_tokens, 20,

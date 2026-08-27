@@ -7487,8 +7487,8 @@ pub(crate) struct SummaryProjection {
     current_archive_has_unknown_coverage: bool,
     current_archive_admission_exceeded: bool,
     // Archive newest-N candidates are admitted globally. Per-account newest-N cannot borrow
-    // that proof until its own archive candidates are present, because a quiet account can have
-    // a newer archive row outside the global selected prefix.
+    // that proof until every completed archive is represented: a quiet account can have its
+    // newest row in history which falls outside the global current-admission horizon.
     current_account_source_unavailable: bool,
     // In-progress state is not the same thing as a row whose persisted status happens to be
     // `running`: the typed runtime overlay reconciles terminal replacements and retry lineage.
@@ -7506,7 +7506,9 @@ impl SummaryProjection {
             return None;
         }
         let indexes = self.recent_indexes.get(&None)?;
-        let index = *indexes.get(limit.saturating_sub(1).min(indexes.len().saturating_sub(1)))?;
+        // A shorter resident prefix has no Nth cutoff. Clamping it to the oldest retained row
+        // would incorrectly prove that an unrepresented archive cannot supply the missing rank.
+        let index = *indexes.get(limit.saturating_sub(1))?;
         self.current_records
             .get(index)
             .map(|record| record.occurred_at)
@@ -8749,13 +8751,23 @@ fn summary_projection_archive_overlap_range(
         .coverage_start_at()
         .and_then(parse_to_utc_datetime)
         .unwrap_or(requested_range.start);
-    let coverage_end = archive
-        .coverage_end_at()
-        .and_then(parse_to_utc_datetime)
-        .unwrap_or(requested_range.end);
+    let coverage_end =
+        summary_projection_archive_coverage_end_exclusive(archive).unwrap_or(requested_range.end);
     let start = coverage_start.max(requested_range.start);
     let end = coverage_end.min(requested_range.end);
     (start < end).then_some(ExactUtcRange { start, end })
+}
+
+fn summary_projection_archive_coverage_end_exclusive(
+    archive: &crate::stats::ArchiveBatchPathRow,
+) -> Option<DateTime<Utc>> {
+    // Archive manifests record their final row inclusively, while every exact projection range
+    // is half-open. Archive rows use second-granularity timestamps, so advance the endpoint by
+    // one second before issuing the `< end` archive query.
+    archive
+        .coverage_end_at()
+        .and_then(parse_to_utc_datetime)
+        .and_then(|end| end.checked_add_signed(ChronoDuration::seconds(1)))
 }
 
 fn summary_projection_archive_is_fully_within_exact_horizon(
@@ -8766,6 +8778,19 @@ fn summary_projection_archive_is_fully_within_exact_horizon(
         return false;
     };
     let Some(end) = archive.coverage_end_at().and_then(parse_to_utc_datetime) else {
+        return false;
+    };
+    start >= exact_horizon.start && end <= exact_horizon.end
+}
+
+fn summary_projection_archive_is_fully_represented_for_current(
+    archive: &crate::stats::ArchiveBatchPathRow,
+    exact_horizon: ExactUtcRange,
+) -> bool {
+    let Some(start) = archive.coverage_start_at().and_then(parse_to_utc_datetime) else {
+        return false;
+    };
+    let Some(end) = summary_projection_archive_coverage_end_exclusive(archive) else {
         return false;
     };
     start >= exact_horizon.start && end <= exact_horizon.end
@@ -12073,7 +12098,7 @@ async fn build_summary_projection_once(
                 // The current candidate read only covers the moving exact tail. Do not treat a
                 // manifest which reaches outside that tail as fully represented: a larger
                 // newest-N selection could still need one of its older rows.
-                if summary_projection_archive_is_fully_within_exact_horizon(
+                if summary_projection_archive_is_fully_represented_for_current(
                     archive,
                     ExactUtcRange {
                         start: live_start,
@@ -12945,10 +12970,12 @@ async fn build_summary_projection_once(
             &current_complete_archive_paths,
         )
         .await?;
+    // The global current admission only hydrates the moving exact tail. A completed archive
+    // outside that tail may still be the newest record for a quiet account, so account current
+    // can be exact only when every completed archive was represented in the resident view.
     let current_account_source_unavailable = current_archive_admission_exceeded
-        || current_archive_admission
-            .iter()
-            .any(|archive| !current_complete_archive_paths.contains(archive.file_path()));
+        || current_archive_has_unknown_coverage
+        || current_archive_latest_coverage_end.is_some();
     let projection = SummaryProjection {
         records,
         current_records,
@@ -28225,7 +28252,10 @@ mod attempt_response_body_query_tests {
 #[cfg(test)]
 mod request_compression_query_tests {
     use super::*;
-    use crate::tests::seed_invocation_archive_batch;
+    use crate::tests::{
+        SeedInvocationArchiveBatchRow, seed_invocation_archive_batch,
+        seed_invocation_archive_batch_with_details,
+    };
     use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
@@ -28676,7 +28706,7 @@ mod request_compression_query_tests {
         assert_eq!(overlap.start, requested_range.start);
         assert_eq!(
             overlap.end,
-            Utc.with_ymd_and_hms(2026, 8, 20, 1, 0, 0)
+            Utc.with_ymd_and_hms(2026, 8, 20, 1, 0, 1)
                 .single()
                 .expect("valid overlap end")
         );
@@ -31280,6 +31310,296 @@ mod request_compression_query_tests {
         )
         .await;
         assert!(matches!(account, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_fails_closed_when_historical_materialized_archive_can_fill_missing_rank()
+     {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-current-resident-only', ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(now))
+        .execute(&state.pool)
+        .await
+        .expect("seed one resident current row");
+        let archive_endpoint = now - ChronoDuration::days(3);
+        let archive_at = format_naive(archive_endpoint.with_timezone(&Shanghai).naive_local());
+        let archive_path = seed_invocation_archive_batch(
+            &state.pool,
+            &state.config,
+            "summary-current-historical-materialized",
+            &[(
+                101_i64,
+                "summary-current-historical-materialized",
+                archive_at.as_str(),
+                SOURCE_PROXY,
+                "success",
+                7_i64,
+                0.7_f64,
+                None,
+            )],
+        )
+        .await;
+        sqlx::query(
+            "UPDATE archive_batches \
+             SET coverage_start_at = ?1, coverage_end_at = ?2, \
+                 historical_rollups_materialized_at = datetime('now') \
+             WHERE dataset = 'codex_invocations' AND file_path = ?3",
+        )
+        .bind(db_occurred_at_lower_bound(
+            archive_endpoint - ChronoDuration::minutes(1),
+        ))
+        .bind(db_occurred_at_lower_bound(archive_endpoint))
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&state.pool)
+        .await
+        .expect("mark historical archive materialized with bounded coverage");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with historical materialized archive");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert_eq!(projection.recent_indexes[&None].len(), 1);
+        assert!(
+            projection.current_archive_latest_coverage_end.is_some(),
+            "an archive outside the current admission horizon remains unrepresented"
+        );
+        state.pool.close().await;
+
+        let response = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(2),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "one resident candidate cannot prove that a historical materialized archive does not fill rank two"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_fails_closed_when_unreadable_archive_can_fill_missing_rank()
+    {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let now = Utc::now();
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-current-unreadable-resident', ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
+        )
+        .bind(db_occurred_at_lower_bound(now))
+        .execute(&state.pool)
+        .await
+        .expect("seed one resident current row");
+        let archive_endpoint = now - ChronoDuration::days(3);
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', '/definitely/missing/summary-current-unreadable.sqlite.gz', \
+                     'summary-current-unreadable', 1, 'completed', ?1, ?2, datetime('now'))",
+        )
+        .bind(db_occurred_at_lower_bound(
+            archive_endpoint - ChronoDuration::minutes(1),
+        ))
+        .bind(db_occurred_at_lower_bound(archive_endpoint))
+        .execute(&state.pool)
+        .await
+        .expect("seed unreadable historical archive manifest");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish projection with unreadable historical archive metadata");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert_eq!(projection.recent_indexes[&None].len(), 1);
+        assert!(
+            !projection
+                .unavailable_unmaterialized_archive_ranges
+                .is_empty(),
+            "unreadable archive must retain an in-memory unavailability proof"
+        );
+        state.pool.close().await;
+
+        let response = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(2),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "one resident candidate cannot prove that an unreadable archive does not fill rank two"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_quiet_account_with_historical_archive_is_unavailable_without_sqlite()
+     {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let archive_endpoint = Utc::now() - ChronoDuration::days(3);
+        let archive_at = format_naive(archive_endpoint.with_timezone(&Shanghai).naive_local());
+        let archive_path = seed_invocation_archive_batch_with_details(
+            &state.pool,
+            &state.config,
+            "summary-current-quiet-account-history",
+            &[SeedInvocationArchiveBatchRow {
+                id: 102,
+                invoke_id: "summary-current-quiet-account-history",
+                occurred_at: archive_at.as_str(),
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: 11,
+                cost: 1.1,
+                ttfb_ms: None,
+                payload: Some(r#"{"upstreamAccountId":42}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            }],
+        )
+        .await;
+        sqlx::query(
+            "UPDATE archive_batches \
+             SET coverage_start_at = ?1, coverage_end_at = ?2 \
+             WHERE dataset = 'codex_invocations' AND file_path = ?3",
+        )
+        .bind(db_occurred_at_lower_bound(
+            archive_endpoint - ChronoDuration::minutes(1),
+        ))
+        .bind(db_occurred_at_lower_bound(archive_endpoint))
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&state.pool)
+        .await
+        .expect("record quiet account archive coverage");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate projection with quiet account history");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("hydrated projection");
+        assert!(projection.current_account_source_unavailable);
+        state.pool.close().await;
+
+        let response = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "account current must not become an empty memory-only response when its only candidate is archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_current_includes_materialized_archive_endpoint_row() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let endpoint = Utc::now() - ChronoDuration::minutes(1);
+        let older = endpoint - ChronoDuration::minutes(1);
+        let older_at = format_naive(older.with_timezone(&Shanghai).naive_local());
+        let endpoint_at = format_naive(endpoint.with_timezone(&Shanghai).naive_local());
+        let archive_path = seed_invocation_archive_batch(
+            &state.pool,
+            &state.config,
+            "summary-current-inclusive-endpoint",
+            &[
+                (
+                    103_i64,
+                    "summary-current-inclusive-endpoint-older",
+                    older_at.as_str(),
+                    SOURCE_PROXY,
+                    "success",
+                    5_i64,
+                    0.5_f64,
+                    None,
+                ),
+                (
+                    104_i64,
+                    "summary-current-inclusive-endpoint-newer",
+                    endpoint_at.as_str(),
+                    SOURCE_PROXY,
+                    "success",
+                    17_i64,
+                    1.7_f64,
+                    None,
+                ),
+            ],
+        )
+        .await;
+        sqlx::query(
+            "UPDATE archive_batches \
+             SET coverage_start_at = ?1, coverage_end_at = ?2, \
+                 historical_rollups_materialized_at = datetime('now') \
+             WHERE dataset = 'codex_invocations' AND file_path = ?3",
+        )
+        .bind(db_occurred_at_lower_bound(older))
+        .bind(db_occurred_at_lower_bound(endpoint))
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&state.pool)
+        .await
+        .expect("record inclusive materialized archive bounds");
+
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate materialized archive current candidates");
+        state.pool.close().await;
+
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve inclusive endpoint current candidate without SQLite");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+        assert_eq!(response.total_cost, 1.7);
     }
 
     #[tokio::test]
