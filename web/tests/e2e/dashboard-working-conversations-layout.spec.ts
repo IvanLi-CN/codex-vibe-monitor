@@ -837,6 +837,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
           fastIconCenterDelta:
             fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
+          effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
           ).length,
@@ -867,6 +868,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
     expect(layout.groupedGeometry.length).toBeGreaterThan(0);
     expect(layout.groupedGeometry.every((geometry) => geometry.modelWidth === 20)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => !geometry.effortTextOverflow)).toBe(true);
     expect(
       layout.groupedGeometry.every(
         (geometry) =>
@@ -1017,6 +1019,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           effortToFastGap: fastPartRect.left - effortTextRect.right,
           modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
           fastIconCenterDelta: fastIconRect ? centerDelta(fastIconRect, fastPartRect) : null,
+          effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
           partsWithinCluster,
           markerCount: cluster.querySelectorAll(
             '[data-model-context-part="reasoning-effort-marker"]',
@@ -1067,6 +1070,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.groupedContexts.every((context) => context.markerCount === 1)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
     expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
+    expect(layout.groupedContexts.every((context) => !context.effortTextOverflow)).toBe(true);
     expect(layout.groupedContexts.every((context) => context.partsWithinCluster)).toBe(true);
     expect(
       layout.groupedContexts.every(
