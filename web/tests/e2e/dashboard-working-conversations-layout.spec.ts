@@ -713,9 +713,9 @@ test.describe("Dashboard working conversations responsive layout", () => {
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
     const invalidFirstToken = invalidSlot.getByTestId("dashboard-compact-latency-ttft");
-    await expect(invalidFirstToken).toContainText("--");
-    expect(await invalidFirstToken.getAttribute("class")).not.toContain("text-success");
-    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response")).toContainText("--");
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-request")).toBeVisible();
+    await expect(invalidFirstToken).toHaveCount(0);
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response")).toHaveCount(0);
   });
 
   test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
