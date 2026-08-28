@@ -70,9 +70,12 @@ import {
   isImageInvocationEndpointKind,
 } from "../../lib/invocation";
 import {
-  isFiniteNonNegativeMilliseconds,
-  isFinitePositiveMilliseconds,
-} from "../../lib/invocationTiming";
+  buildInvocationCompactTiming,
+  formatInvocationCompactTimingValue,
+  type InvocationCompactTimingPresentation,
+  reconcileInvocationCompactTiming,
+} from "../../lib/invocationCompactTiming";
+import { isFinitePositiveMilliseconds } from "../../lib/invocationTiming";
 import {
   compactUpstreamPlanLabel,
   shouldShowUpstreamPlanChip,
@@ -464,20 +467,104 @@ function formatStatusLabel(status: string) {
 }
 
 function CompactLatencyPills({
-  firstTokenMeasured,
-  firstTokenValue,
-  responseTimeValue,
+  invocation,
+  nowMs,
+  localeTag,
   t,
   className,
 }: {
-  firstTokenMeasured: boolean;
-  firstTokenValue: string;
-  responseTimeValue: string;
+  invocation: DashboardWorkingConversationInvocationModel;
+  nowMs: number;
+  localeTag: string;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
 }) {
-  const firstResponseTimeLabel = t("dashboard.today.firstResponseTime");
-  const responseTimeLabel = t("dashboard.today.responseTime");
+  const presentationRef = useRef<{
+    key: string;
+    value: InvocationCompactTimingPresentation;
+  } | null>(null);
+  const timing = buildInvocationCompactTiming({
+    record: invocation.record,
+    occurredAtEpoch: invocation.occurredAtEpoch,
+    isInFlight: invocation.isInFlight,
+    nowMs,
+  });
+  const previous =
+    presentationRef.current?.key === invocation.record.invokeId
+      ? presentationRef.current.value
+      : null;
+  const presentation = reconcileInvocationCompactTiming(timing, previous);
+  presentationRef.current = { key: invocation.record.invokeId, value: presentation };
+
+  const requestLabel = t("dashboard.compactTiming.request");
+  const ttftLabel = t("dashboard.compactTiming.ttft");
+  const responseLabel = t("dashboard.compactTiming.response");
+  const estimatedLabel = t("dashboard.compactTiming.estimated");
+  const requestAccessibleLabel = presentation.requestProvisional
+    ? `${requestLabel} (${estimatedLabel})`
+    : requestLabel;
+  const ttftAccessibleLabel = presentation.ttftProvisional
+    ? `${ttftLabel} (${estimatedLabel})`
+    : ttftLabel;
+  const requestValue = formatInvocationCompactTimingValue(
+    timing.state === "responding" || timing.state === "terminal" ? null : presentation.requestMs,
+    localeTag,
+  );
+  const ttftValue = formatInvocationCompactTimingValue(
+    timing.state === "requesting" ? null : presentation.ttftMs,
+    localeTag,
+  );
+  const responseValue = formatInvocationCompactTimingValue(
+    timing.state === "awaitingToken" || timing.state === "requesting"
+      ? null
+      : presentation.responseMs,
+    localeTag,
+    isFinitePositiveMilliseconds,
+  );
+  const visibleReadings =
+    timing.state === "requesting"
+      ? [
+          {
+            label: requestAccessibleLabel,
+            value: requestValue,
+            icon: "navigation-variant" as const,
+            tone: "text-info",
+            testId: "dashboard-compact-latency-request",
+          },
+        ]
+      : timing.state === "awaitingToken"
+        ? [
+            {
+              label: requestAccessibleLabel,
+              value: requestValue,
+              icon: "navigation-variant" as const,
+              tone: "text-info",
+              testId: "dashboard-compact-latency-request",
+            },
+            {
+              label: ttftAccessibleLabel,
+              value: ttftValue,
+              icon: "timer-outline" as const,
+              tone: "text-success",
+              testId: "dashboard-compact-latency-ttft",
+            },
+          ]
+        : [
+            {
+              label: ttftAccessibleLabel,
+              value: ttftValue,
+              icon: "timer-outline" as const,
+              tone: "text-success",
+              testId: "dashboard-compact-latency-ttft",
+            },
+            {
+              label: responseLabel,
+              value: responseValue,
+              icon: "speedometer" as const,
+              tone: "text-secondary",
+              testId: "dashboard-compact-latency-response",
+            },
+          ];
 
   return (
     <div
@@ -487,26 +574,20 @@ function CompactLatencyPills({
         "inline-flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1 font-mono text-[11px] font-semibold leading-none text-base-content/86",
         className,
       )}
-      aria-label={`${firstResponseTimeLabel} ${firstTokenValue}; ${responseTimeLabel} ${responseTimeValue}`}
-      title={`${firstResponseTimeLabel}: ${firstTokenValue} · ${responseTimeLabel}: ${responseTimeValue}`}
+      aria-label={visibleReadings.map(({ label, value }) => `${label} ${value}`).join("; ")}
+      title={visibleReadings.map(({ label, value }) => `${label}: ${value}`).join(" · ")}
     >
-      <span
-        data-testid="dashboard-compact-latency-first-byte"
-        className={cn(
-          "inline-flex min-w-0 items-center gap-0.5",
-          firstTokenMeasured ? "text-success" : "text-base-content/58",
-        )}
-      >
-        <AppIcon name="timer-outline" className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span className="truncate whitespace-nowrap">{firstTokenValue}</span>
-      </span>
-      <span
-        data-testid="dashboard-compact-latency-response-time"
-        className="inline-flex min-w-0 items-center gap-0.5 text-primary"
-      >
-        <AppIcon name="speedometer" className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        <span className="truncate whitespace-nowrap">{responseTimeValue}</span>
-      </span>
+      {visibleReadings.map(({ label, value, icon, tone, testId }) => (
+        <span
+          key={testId}
+          data-testid={testId}
+          className={cn("inline-flex min-w-0 items-center gap-0.5", tone)}
+          title={`${label}: ${value}`}
+        >
+          <AppIcon name={icon} className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span className="truncate whitespace-nowrap">{value}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -877,33 +958,6 @@ function formatAccountDurationValue(value: number | null | undefined, localeTag:
     return `${formatAccountNumberValue(seconds, localeTag, maximumFractionDigits)} s`;
   }
   return `${formatAccountNumberValue(value, localeTag, abs >= 100 ? 0 : 1)} ms`;
-}
-
-function formatCompactTimingSecondsValue(
-  value: number | null | undefined,
-  localeTag: string,
-  isMeasured: (value: number | null | undefined) => value is number,
-) {
-  if (!isMeasured(value)) return "--";
-
-  const seconds = value / 1000;
-  const roundedTenths = Math.round(seconds * 10) / 10;
-  const fractionDigits = roundedTenths >= 100 ? 0 : 1;
-  const rounded = Number(seconds.toFixed(fractionDigits));
-
-  return `${rounded.toLocaleString(localeTag, {
-    useGrouping: false,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: fractionDigits,
-  })}s`;
-}
-
-function formatCompactLatencySecondsValue(value: number | null | undefined, localeTag: string) {
-  return formatCompactTimingSecondsValue(value, localeTag, isFiniteNonNegativeMilliseconds);
-}
-
-function formatCompactResponseTimeValue(value: number | null | undefined, localeTag: string) {
-  return formatCompactTimingSecondsValue(value, localeTag, isFinitePositiveMilliseconds);
 }
 
 function finiteNumber(value: number | null | undefined) {
@@ -2075,16 +2129,6 @@ function AccountRecentInvocationRow({
     : null;
   const requestModelValue = viewModel.requestModelValue;
   const responseModelValue = viewModel.responseModelValue;
-  const compactLatencyValues = useMemo(() => {
-    return {
-      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
-      firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue: formatCompactResponseTimeValue(
-        invocation.record.tUpstreamStreamMs,
-        localeTag,
-      ),
-    };
-  }, [invocation.record, localeTag]);
   const recentSummaryFields = useMemo(
     () =>
       buildInvocationSummaryFields({
@@ -2226,12 +2270,7 @@ function AccountRecentInvocationRow({
             t={t}
           />
           {!shouldGroupModelContext ? fastIndicator : null}
-          <CompactLatencyPills
-            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
-            firstTokenValue={compactLatencyValues.firstTokenValue}
-            responseTimeValue={compactLatencyValues.responseTimeValue}
-            t={t}
-          />
+          <CompactLatencyPills invocation={invocation} nowMs={nowMs} localeTag={localeTag} t={t} />
         </div>
         <div
           data-testid="dashboard-upstream-account-recent-details-row"
@@ -2489,16 +2528,6 @@ function InvocationSlot({
       }),
     [invocation.record, localeTag, viewModel.costValue, viewModel.totalTokensValue],
   );
-  const compactLatencyValues = useMemo(() => {
-    return {
-      firstTokenMeasured: isFiniteNonNegativeMilliseconds(invocation.record.firstTokenMs),
-      firstTokenValue: formatCompactLatencySecondsValue(invocation.record.firstTokenMs, localeTag),
-      responseTimeValue: formatCompactResponseTimeValue(
-        invocation.record.tUpstreamStreamMs,
-        localeTag,
-      ),
-    };
-  }, [invocation.record, localeTag]);
   const fastAccessibleLabel =
     viewModel.fastIndicatorState === "effective"
       ? t("table.model.fastPriorityAria")
@@ -2659,9 +2688,9 @@ function InvocationSlot({
             </div>
           </div>
           <CompactLatencyPills
-            firstTokenMeasured={compactLatencyValues.firstTokenMeasured}
-            firstTokenValue={compactLatencyValues.firstTokenValue}
-            responseTimeValue={compactLatencyValues.responseTimeValue}
+            invocation={invocation}
+            nowMs={nowMs}
+            localeTag={localeTag}
             t={t}
             className="shrink-0 flex-nowrap text-[10px]"
           />
@@ -4220,6 +4249,16 @@ export function DashboardWorkingConversationsSection({
       ),
     [upstreamAccountActivity, upstreamAccountSort],
   );
+  const hasInFlightUpstreamAccountRecent = useMemo(
+    () =>
+      upstreamAccounts.some((account) =>
+        account.recentInvocations.some(
+          (preview) => buildDashboardWorkingConversationInvocationModel(preview).isInFlight,
+        ),
+      ),
+    [upstreamAccounts],
+  );
+  const hasLiveTimingRows = hasInFlightCards || hasInFlightUpstreamAccountRecent;
   const totalNetworkSpeed = useMemo(
     () => ({
       uploadBytesPerSecond: Math.max(
@@ -4666,13 +4705,13 @@ export function DashboardWorkingConversationsSection({
   }, [cards.length, columnCount, virtualRows]);
 
   useEffect(() => {
-    if (!hasInFlightCards) return;
+    if (!hasLiveTimingRows) return;
     setNowMs(Date.now());
     const timer = window.setInterval(() => {
       setNowMs(Date.now());
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [hasInFlightCards]);
+  }, [hasLiveTimingRows]);
 
   useEffect(() => {
     setNowMs(Date.now());

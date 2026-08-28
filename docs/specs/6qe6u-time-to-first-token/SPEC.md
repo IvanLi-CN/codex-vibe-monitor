@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- None
+
 ## 背景 / 问题陈述
 
 - 项目曾把请求读取、解析、连接和 HTTP 首字节耗时的累计值作为 owner-facing “首字用时”，该值是网络阶段指标，不是模型首个 Token 的产生时间。
@@ -49,6 +53,7 @@
 - HTTP 与 WebSocket 必须复用同一识别器，对同一事件负载得出相同结论。
 - 旧 `firstResponseByteTotal*` 可兼容读取，但不得继续参与 TTFT UI 或 TTFT 聚合。
 - `响应耗时` 是上游流开始持续输出到该上游流结束的 `tUpstreamStreamMs`；缺失值显示为 `—`，不得从 `tTotalMs` 反推。`tTotalMs` 只属于阶段耗时诊断。
+- Dashboard 紧凑调用行可以用 section 级本地时钟暂估请求用时、首字节后暂估 TTFT 和首 Token 后暂估响应耗时，但这些值只用于实时过渡显示，不写回、不进入聚合，也不得替代严格 `firstTokenMs`/`tUpstreamStreamMs`；服务器锚点追平或终态到达时直接采用后端值，终态无有效 token 的 TTFT 保持缺失。
 - 调用记录的网络摘要只消费 `avgFirstTokenMs` / `p95FirstTokenMs` 与 `avgResponseDurationMs` / `p95ResponseDurationMs`；`avgTtfbMs`、`avgTotalMs` 等旧摘要字段仅供兼容读取，不得作为该页面主指标。
 
 ### SHOULD
