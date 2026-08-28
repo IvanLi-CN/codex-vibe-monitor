@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.3",
+  "base_stable_version": "2.68.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-28T19:40:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "61063eb56df1677f8b581a87657e24a064fed354",
+  "pr_number": 869,
+  "pr_title": "fix(web): add live compact invocation timing",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.3",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.3",
+  "target_sha": "b557c80fbd44f5b84def2f742922e929fdfd8085",
+  "type_label": "type:patch"
+}
