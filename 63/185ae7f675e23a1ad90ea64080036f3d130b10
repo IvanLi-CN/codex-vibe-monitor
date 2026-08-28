@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.1",
+  "base_stable_version": "2.68.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-28T05:48:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "67c52602119f56afcb0ff7e7b4ad5aa5b123ae0c",
+  "pr_number": 867,
+  "pr_title": "fix(web): tighten GPT-5.6 model context cluster",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.1",
+  "target_sha": "63185ae7f675e23a1ad90ea64080036f3d130b10",
+  "type_label": "type:patch"
+}
