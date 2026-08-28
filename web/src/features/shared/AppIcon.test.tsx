@@ -35,6 +35,7 @@ describe("AppIcon registry", () => {
           <AppIcon name="lightning-bolt" />
           <AppIcon name="cash-clock" />
           <AppIcon name="currency-usd" />
+          <AppIcon name="clock-outline" />
           <AppIcon name="speedometer" />
           <AppIcon name="send" />
           <AppIcon name="timer-outline" />

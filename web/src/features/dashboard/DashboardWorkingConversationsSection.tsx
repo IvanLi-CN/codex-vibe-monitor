@@ -527,7 +527,7 @@ function CompactLatencyPills({
           {
             label: requestAccessibleLabel,
             value: requestValue,
-            icon: "navigation-variant" as const,
+            icon: "clock-outline" as const,
             tone: "text-info",
             testId: "dashboard-compact-latency-request",
           },
@@ -537,7 +537,7 @@ function CompactLatencyPills({
             {
               label: requestAccessibleLabel,
               value: requestValue,
-              icon: "navigation-variant" as const,
+              icon: "clock-outline" as const,
               tone: "text-info",
               testId: "dashboard-compact-latency-request",
             },
@@ -584,7 +584,12 @@ function CompactLatencyPills({
           className={cn("inline-flex min-w-0 items-center gap-0.5", tone)}
           title={`${label}: ${value}`}
         >
-          <AppIcon name={icon} className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <AppIcon
+            name={icon}
+            className="h-3.5 w-3.5 shrink-0"
+            data-compact-latency-icon-name={icon}
+            aria-hidden
+          />
           <span className="truncate whitespace-nowrap">{value}</span>
         </span>
       ))}
@@ -2653,7 +2658,7 @@ function InvocationSlot({
         </div>
         <div
           data-testid="dashboard-working-conversation-slot-readings"
-          className="flex min-w-0 flex-nowrap items-center justify-end gap-0"
+          className="flex min-w-0 flex-nowrap items-center justify-end gap-1.5"
         >
           <div className="flex min-w-0 shrink items-center justify-end gap-0">
             {invocation.livePhase ? (

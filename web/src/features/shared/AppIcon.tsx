@@ -21,6 +21,7 @@ import chevronDownIcon from "@iconify-icons/mdi/chevron-down";
 import chevronRightIcon from "@iconify-icons/mdi/chevron-right";
 import chevronRightCircleIcon from "@iconify-icons/mdi/chevron-right-circle";
 import chevronUpIcon from "@iconify-icons/mdi/chevron-up";
+import clockOutlineIcon from "@iconify-icons/mdi/clock-outline";
 import closeIcon from "@iconify-icons/mdi/close";
 import cogOutlineIcon from "@iconify-icons/mdi/cog-outline";
 import compareHorizontalIcon from "@iconify-icons/mdi/compare-horizontal";
@@ -94,6 +95,7 @@ const appIconRegistry = {
   "chevron-right": chevronRightIcon,
   "chevron-right-circle": chevronRightCircleIcon,
   "chevron-up": chevronUpIcon,
+  "clock-outline": clockOutlineIcon,
   close: closeIcon,
   "cog-outline": cogOutlineIcon,
   "content-copy": contentCopyIcon,

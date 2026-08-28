@@ -6410,6 +6410,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(slotReadings.className).toContain("flex-nowrap");
+    expect(slotReadings.className).toContain("gap-1.5");
     expect(latencyPills.className).toContain("flex-nowrap");
     expect(latencyPills.className).toContain("gap-1");
     expect(latencyPills.getAttribute("aria-label")).not.toMatch(/\d\s+s/);
@@ -6602,12 +6603,26 @@ describe("DashboardWorkingConversationsSection", () => {
       latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
     ).toContain("text-success");
     expect(
+      latencySlots[0]
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-ttft"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("timer-outline");
+    expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
     ).toContain("0s");
     expect(
       latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response"]')
         ?.textContent,
     ).toContain("8028s");
+    expect(
+      latencySlots[1]
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-response"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("speedometer");
     expect(
       latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
     ).toContain("100s");
@@ -6653,6 +6668,13 @@ describe("DashboardWorkingConversationsSection", () => {
       currentSlot?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.textContent,
     ).toBe("1.2s");
     expect(currentSlot?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')).toBeNull();
+    expect(
+      currentSlot
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-request"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("clock-outline");
 
     act(() => {
       vi.advanceTimersByTime(1_000);
