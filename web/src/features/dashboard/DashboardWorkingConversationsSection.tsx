@@ -2471,6 +2471,10 @@ function InvocationSlot({
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
     !viewModel.modelHasMismatch && resolveModelIdentityIcon(viewModel.modelValue) != null;
+  const modelContextTitle =
+    shouldGroupModelContext && viewModel.reasoningEffortValue === FALLBACK_CELL
+      ? viewModel.modelValue
+      : `${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`;
   const displayConversationSequenceId =
     formatDashboardWorkingConversationSequenceId(conversationSequenceId);
   const usageSummaryFields = useMemo(
@@ -2495,7 +2499,21 @@ function InvocationSlot({
       ),
     };
   }, [invocation.record, localeTag]);
-  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
+  const fastAccessibleLabel =
+    viewModel.fastIndicatorState === "effective"
+      ? t("table.model.fastPriorityAria")
+      : viewModel.fastIndicatorState === "requested_only"
+        ? t("table.model.fastRequestedOnlyAria")
+        : null;
+  const invocationActionLabel = [
+    t("dashboard.workingConversations.openInvocation"),
+    label,
+    displayConversationSequenceId,
+    ...(shouldGroupModelContext ? [modelContextTitle, fastAccessibleLabel] : []),
+    invocation.record.invokeId,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const handleOpenInvocation = useCallback(() => {
     if (interactionsDisabled) return;
@@ -2560,7 +2578,7 @@ function InvocationSlot({
           <div
             data-testid="dashboard-working-conversation-slot-model"
             className="min-w-0 max-w-full flex-1 truncate text-[9.5px] font-semibold text-base-content/76"
-            title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`}
+            title={modelContextTitle}
           >
             {shouldGroupModelContext ? (
               <InvocationModelContextCluster
@@ -2570,7 +2588,6 @@ function InvocationSlot({
                 grouped
                 t={t}
                 className="min-w-0 max-w-full"
-                showModelLabel
                 testId="dashboard-working-conversation-model-context"
                 modelTestId="dashboard-working-conversation-model-name"
               />

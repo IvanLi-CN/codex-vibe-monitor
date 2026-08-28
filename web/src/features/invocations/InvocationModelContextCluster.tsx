@@ -45,7 +45,6 @@ export interface InvocationModelContextClusterProps {
   grouped: boolean;
   t: ReturnType<typeof useTranslation>["t"];
   className?: string;
-  showModelLabel?: boolean;
   testId?: string;
   modelTestId?: string;
 }
@@ -108,12 +107,14 @@ export function InvocationModelContextCluster({
   grouped,
   t,
   className,
-  showModelLabel = false,
   testId,
   modelTestId,
 }: InvocationModelContextClusterProps) {
   const displayReasoningEffort = formatReasoningEffort(reasoningEffortValue);
-  const fastIndicator = renderFastIndicator(fastIndicatorState, t);
+  const hasReasoningEffort = displayReasoningEffort !== FALLBACK_CELL;
+  const fastIndicator = renderFastIndicator(fastIndicatorState, t, {
+    verticalAlign: grouped ? "center" : "baseline",
+  });
   const fastLabel =
     fastIndicatorState === "effective"
       ? t("table.model.fastPriorityAria")
@@ -127,10 +128,9 @@ export function InvocationModelContextCluster({
   ]
     .filter(Boolean)
     .join(" · ");
-  const reasoningTone =
-    displayReasoningEffort === FALLBACK_CELL
-      ? "none"
-      : getReasoningEffortTone(displayReasoningEffort);
+  const reasoningTone = hasReasoningEffort
+    ? getReasoningEffortTone(displayReasoningEffort)
+    : "none";
   const model = renderInvocationModelChip(modelValue, {
     t,
     hasMismatch: modelHasMismatch,
@@ -146,7 +146,7 @@ export function InvocationModelContextCluster({
         data-testid={testId}
         data-model-context-grouped="true"
         className={cn(
-          "inline-flex h-5 min-w-0 max-w-full items-stretch overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
+          "inline-flex h-5 min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none",
           className,
         )}
         title={modelLabel}
@@ -156,45 +156,44 @@ export function InvocationModelContextCluster({
         <span
           data-testid={modelTestId}
           data-model-context-part="model"
-          className={cn(
-            "flex shrink-0 items-center text-base-content/72",
-            showModelLabel
-              ? "min-w-[2.5rem] max-w-[9rem] flex-1 justify-start px-1.5"
-              : "w-5 justify-center",
-          )}
+          className="flex h-5 w-5 shrink-0 items-center justify-center text-base-content/72"
         >
           {model}
         </span>
-        <span className="w-px shrink-0 bg-base-300/75" aria-hidden />
-        <span
-          data-testid={testId ? `${testId}-reasoning-effort` : undefined}
-          data-model-context-part="reasoning-effort"
-          data-reasoning-effort-tone={reasoningTone}
-          className={cn(
-            "flex min-w-0 items-center gap-1 px-1.5 text-xs font-semibold",
-            REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
-          )}
-          title={displayReasoningEffort}
-        >
+        {hasReasoningEffort ? (
           <span
+            data-testid={testId ? `${testId}-reasoning-effort` : undefined}
+            data-model-context-part="reasoning-effort"
+            data-reasoning-effort-tone={reasoningTone}
             className={cn(
-              "h-1 w-1 shrink-0 rounded-full",
-              REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
+              "flex min-w-0 items-center gap-1 text-xs font-semibold",
+              REASONING_EFFORT_CONTEXT_TONE_CLASSNAMES[reasoningTone],
             )}
-            aria-hidden
-          />
-          <span className="truncate whitespace-nowrap">{displayReasoningEffort}</span>
-        </span>
-        {fastIndicator ? (
-          <>
-            <span className="w-px shrink-0 bg-base-300/75" aria-hidden />
+            title={displayReasoningEffort}
+          >
             <span
-              data-model-context-part="fast"
-              className="flex w-5 shrink-0 items-center justify-center"
+              data-model-context-part="reasoning-effort-marker"
+              className={cn(
+                "h-1 w-1 shrink-0 rounded-full",
+                REASONING_EFFORT_CONTEXT_MARKER_CLASSNAMES[reasoningTone],
+              )}
+              aria-hidden
+            />
+            <span
+              data-model-context-part="reasoning-effort-text"
+              className="truncate whitespace-nowrap"
             >
-              {fastIndicator}
+              {displayReasoningEffort}
             </span>
-          </>
+          </span>
+        ) : null}
+        {fastIndicator ? (
+          <span
+            data-model-context-part="fast"
+            className="flex w-5 shrink-0 items-center justify-center"
+          >
+            {fastIndicator}
+          </span>
         ) : null}
       </div>
     );

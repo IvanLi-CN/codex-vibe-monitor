@@ -24,6 +24,7 @@
 - [x] Extend records-side pricing observability with advisory `costAudit` totals and workflow-success usage audits that compare persisted cost against the current local catalog without rewriting historical truth.
 - [x] Add shared structured read-only model identity icons for the GPT-5.6 Sol/Terra/Luna family, including dated aliases, accessible IDs, invocation surfaces, usage/performance details, routing health, and long-term model summaries.
 - [x] Group GPT-5.6 invocation-card model identity, reasoning effort, and FAST metadata in a reusable visual cluster while preserving legacy non-target and mismatch layouts.
+- [x] Tighten the grouped Dashboard context cluster to a fixed 20px model segment, one tone-matched reasoning marker, 4px sibling spacing, no internal vertical separators, and omission of missing reasoning values while preserving FAST accessibility.
 - [x] Run Rust and web validation, capture visual evidence, and update this file with the final verification set.
 
 ## Verification
@@ -45,3 +46,4 @@
 - `cd web && bun run demo:build`
 - `bun run lint:web`
 - The spec's `assets/` directory contains mock-only Storybook evidence for the shared desktop and 390px `Usage details` table. The 390px state verifies that no horizontal scrollbar is needed.
+- The spec's `assets/` directory contains owner-approved dark- and light-theme Storybook component captures for the tightened GPT-5.6 model context cluster. Mobile remains covered by deterministic E2E assertions and does not create a separate owner-facing evidence image.

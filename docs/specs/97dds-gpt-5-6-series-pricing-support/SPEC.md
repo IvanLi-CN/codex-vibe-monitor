@@ -101,7 +101,8 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 - Given a record with both persisted `cost` and a locally recomputed total, when their absolute difference is greater than `0.000001 USD`, then the audit flags `mismatch=true`; if the recorded and local `priceVersion` differ, the reason is `price_version_changed`, otherwise the reason is `total_mismatch`.
 - Given a workflow attempt usage audit where `reasoningTokens` were never recorded, when the response audit object is rendered, then reasoning stays `null` / `—`; given a real recorded zero, when the same response audit object is rendered, then reasoning remains `0`.
 - Given a structured read-only field for any GPT-5.6 base or date-suffixed model, when it renders, then it shows the mapped icon with the complete model ID in its tooltip and accessible name; given a non-GPT-5.6 or unknown model, then the existing text fallback remains visible.
-- Given a structured read-only GPT-5.6 invocation card with model identity, reasoning effort, and FAST metadata, when it renders, then those three values appear in one reusable grouped cluster; non-GPT-5.6, routing-mismatch, editor/filter/selector, and raw payload views retain their existing rendering.
+- Given a structured read-only GPT-5.6 invocation card with model identity, reasoning effort, and FAST metadata, when it renders, then those three values appear in one reusable grouped cluster with a fixed 20px model segment, one reasoning-effort marker, and 4px spacing between model, marker, effort, and FAST; `max` and `ultra` use the error marker tone while other levels retain their existing tones, internal vertical separators are absent, and non-GPT-5.6, routing-mismatch, editor/filter/selector, and raw payload views retain their existing rendering.
+- Given a structured GPT-5.6 invocation with missing, blank, or formatted-em-dash reasoning effort, when its grouped Dashboard context renders, then the reasoning marker and effort text are omitted without displaying a placeholder, while the model identity and FAST accessible semantics remain available.
 
 ## Visual Evidence
 
@@ -120,8 +121,6 @@ Rows that only have legacy cached-input pricing treat `cache_input_per_1m` as th
 
 ![Unified usage details on desktop](./assets/usage-breakdown-desktop.jpg)
 
-PR: include
-
 - source_type: storybook_canvas
 - target_program: mock-only
 - capture_scope: story canvas
@@ -134,8 +133,6 @@ PR: include
 - evidence_note: Verifies the shared six-column table maps cache write to input plus cache-write cost, output to output plus reasoning cost, shows Tokens and amount in every applicable cell, places total after output, uses normal-weight body values with the same primary foreground for cache hit rate and Token values, and anchors cache hit rate in the first line with a blank second-line slot.
 
 ![Unified usage details at 390px](./assets/usage-breakdown-mobile390.jpg)
-
-PR: include
 
 - source_type: storybook_canvas
 - target_program: mock-only
@@ -180,20 +177,37 @@ PR: include
 
 PR: include
 
-![GPT-5.6 invocation context cluster](./assets/gpt56-invocation-context-storybook.png)
+![GPT-5.6 invocation context cluster, dark theme](./assets/gpt56-invocation-context-dark-storybook.png)
 
 - source_type: storybook_canvas
 - target_program: mock-only
 - capture_scope: element
-- requested_viewport: desktop
+- requested_viewport: desktop1660
 - viewport_strategy: storybook-viewport
 - margin_policy: require_margin
 - evidence_surface: component
 - sensitive_exclusion: N/A
 - submission_gate: approved
 - story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
-- state: GPT-5.6 Sol invocation with high reasoning effort and effective FAST priority
-- evidence_note: Verifies the invocation card presents the solar model icon, reasoning effort, and FAST indicator as one unified identity signature while keeping the full model ID in accessible semantics.
+- state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-dark` theme
+- evidence_note: Owner-approved component capture. The component keeps its own low-contrast boundary, one error-tone reasoning marker, 4px sibling spacing, and centered model/FAST icons without an additional presentation frame or excess whitespace.
+
+PR: include
+
+![GPT-5.6 invocation context cluster, light theme](./assets/gpt56-invocation-context-light-storybook.png)
+
+- source_type: storybook_canvas
+- target_program: mock-only
+- capture_scope: element
+- requested_viewport: desktop1660
+- viewport_strategy: storybook-viewport
+- margin_policy: require_margin
+- evidence_surface: component
+- sensitive_exclusion: N/A
+- submission_gate: approved
+- story_id_or_title: Dashboard/WorkingConversationsSection GPT56ModelContextCluster
+- state: GPT-5.6 Sol `max` reasoning with FAST in the `vibe-light` theme
+- evidence_note: Owner-approved component capture of the same state as the dark-theme evidence. The light theme preserves the same geometry and semantics without a mobile-only rendering difference.
 
 ## References
 

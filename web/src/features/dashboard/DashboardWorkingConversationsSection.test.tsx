@@ -166,7 +166,7 @@ function createPreview(
     outputTokens: overrides.outputTokens ?? 80,
     cacheInputTokens: overrides.cacheInputTokens ?? 30,
     reasoningTokens: overrides.reasoningTokens ?? 14,
-    reasoningEffort: overrides.reasoningEffort ?? "high",
+    reasoningEffort: "reasoningEffort" in overrides ? (overrides.reasoningEffort ?? null) : "high",
     errorMessage: overrides.errorMessage,
     downstreamStatusCode: overrides.downstreamStatusCode,
     downstreamErrorMessage: overrides.downstreamErrorMessage,
@@ -2819,12 +2819,156 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
     expect(cluster.getAttribute("aria-label")).toContain("gpt-5.6-sol");
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getAttribute("aria-label"),
+    ).toEqual(expect.stringContaining("gpt-5.6-sol"));
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-header"]')
+        ?.getAttribute("aria-label"),
+    ).toEqual(expect.stringContaining("Fast"));
     expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).toContain("w-5");
+    expect(cluster.querySelector('[data-model-context-part="model"]')?.className).not.toContain(
+      "flex-1",
+    );
+    expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).not.toBeNull();
+    expect(
+      cluster
+        .querySelector('[data-model-context-part="reasoning-effort-marker"]')
+        ?.getAttribute("aria-hidden"),
+    ).toBe("true");
+    expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')?.className,
+    ).toContain("bg-warning");
     expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
       )?.textContent,
     ).toContain("high");
+    expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      Array.from(cluster.children).map((child) => child.getAttribute("data-model-context-part")),
+    ).toEqual(["model", "reasoning-effort", "fast"]);
+    expect(cluster.querySelectorAll('[class~="w-px"]')).toHaveLength(0);
+  });
+
+  it("uses the error marker tone for max reasoning effort", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-gpt56-max-context", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-gpt56-max-context",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-5.6-sol",
+            requestModel: "gpt-5.6-sol",
+            responseModel: "gpt-5.6-sol",
+            reasoningEffort: "max",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const marker = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"] [data-model-context-part="reasoning-effort-marker"]',
+    );
+    expect(marker).not.toBeNull();
+    expect(marker?.className).toContain("bg-error");
+  });
+
+  it.each([
+    { label: "null", reasoningEffort: null },
+    { label: "blank", reasoningEffort: " " },
+  ])("omits $label grouped reasoning while keeping model and FAST semantics", ({
+    reasoningEffort,
+  }) => {
+    renderSection(
+      createResponse([
+        createConversation("pck-gpt56-missing-context", [
+          createPreview({
+            id: 3,
+            invokeId: "invoke-gpt56-missing-context",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            model: "gpt-5.6-sol",
+            requestModel: "gpt-5.6-sol",
+            responseModel: "gpt-5.6-sol",
+            reasoningEffort,
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-5.6 model context cluster");
+    }
+
+    expect(cluster.querySelector('[data-model-context-part="reasoning-effort"]')).toBeNull();
+    expect(cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]')).toBeNull();
+    expect(cluster.textContent).not.toContain("—");
+    expect(cluster.getAttribute("aria-label")).toContain("gpt-5.6-sol");
+    expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    expect(
+      host
+        ?.querySelector('[data-testid="dashboard-working-conversation-slot-model"]')
+        ?.getAttribute("title"),
+    ).toBe("gpt-5.6-sol");
+  });
+
+  it("reuses the grouped context cluster in upstream-account recent rows", () => {
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    const firstInvocation = upstreamActivity.accounts[0]?.recentInvocations[0];
+    if (!firstInvocation) throw new Error("missing upstream recent invocation fixture");
+    upstreamAccountActivityMock.data = {
+      ...upstreamActivity,
+      accounts: [
+        {
+          ...upstreamActivity.accounts[0],
+          recentInvocations: [
+            {
+              ...firstInvocation,
+              model: "gpt-5.6-sol",
+              requestModel: "gpt-5.6-sol",
+              responseModel: "gpt-5.6-sol",
+              reasoningEffort: "high",
+            },
+          ],
+        },
+      ],
+    };
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) throw new Error("missing upstream account tab");
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const cluster = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing upstream recent model context cluster");
+    }
+    expect(cluster.getAttribute("data-model-context-grouped")).toBe("true");
+    expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).not.toBeNull();
     expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
   });
 

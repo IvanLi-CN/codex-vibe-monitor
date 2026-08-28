@@ -20,6 +20,26 @@ _Avoid_: 压缩响应, 最终已压缩
 The response-side proof that the upstream actually emitted a compaction item for the invocation.
 _Avoid_: 压缩请求, 已启用压缩
 
+## Invocation Context Metadata
+
+**推理强度（Reasoning Effort）**:
+The request-side computation-effort value captured with an invocation from
+`reasoning.effort` or `reasoning_effort`. It is distinct from the model identity,
+FAST state, and the measured count of reasoning Tokens.
+_Avoid_: 思考状态, 推理 Tokens, 模型等级
+
+**模型上下文簇**:
+The bounded read-only Dashboard group that presents a model identity with its
+available 推理强度 and FAST state. Its separators are presentation-only and do not
+alter the underlying invocation metadata.
+_Avoid_: 模型标签, 路由上下文, 调用详情
+
+**缺失推理强度**:
+An invocation for which capture supplied no usable 推理强度 value. It does not mean
+zero, neutral, or default effort; compact Dashboard metadata omits the absent
+field rather than presenting a placeholder as a real value.
+_Avoid_: 中性推理, 默认推理强度, 零推理
+
 ## Runtime Read Models
 
 **Summary Projection**:

@@ -123,8 +123,10 @@ function createConversation(
 
 function buildWorkingConversationsResponse({
   currentFirstTokenMs = 740,
+  gpt56Current = false,
 }: {
   currentFirstTokenMs?: number | null;
+  gpt56Current?: boolean;
 } = {}) {
   const conversations = [
     createConversation("wc-current-1", [
@@ -139,6 +141,14 @@ function buildWorkingConversationsResponse({
         tUpstreamTtfbMs: null,
         tUpstreamStreamMs: null,
         tTotalMs: null,
+        ...(gpt56Current
+          ? {
+              model: "gpt-5.6-sol",
+              requestModel: "gpt-5.6-sol",
+              responseModel: "gpt-5.6-sol",
+              reasoningEffort: "max",
+            }
+          : {}),
       }),
       createPreview({
         id: 2,
@@ -493,7 +503,7 @@ const VIEWPORTS: LayoutExpectation[] = [
 
 async function installDashboardRoutes(
   page: Page,
-  options: { currentFirstTokenMs?: number | null } = {},
+  options: { currentFirstTokenMs?: number | null; gpt56Current?: boolean } = {},
 ) {
   await page.route("**/events**", async (route) => {
     const url = new URL(route.request().url());
@@ -682,7 +692,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
   });
 
   test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
-    await installDashboardRoutes(page);
+    await installDashboardRoutes(page, { gpt56Current: true });
     await page.setViewportSize({ width: 1660, height: 1180 });
     await page.goto("/#/dashboard");
 
@@ -763,6 +773,83 @@ test.describe("Dashboard working conversations responsive layout", () => {
           ),
         ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
       );
+      const groupedGeometry = Array.from(
+        card.querySelectorAll<HTMLElement>('[data-model-context-grouped="true"]'),
+      ).map((cluster) => {
+        const modelPart = cluster.querySelector<HTMLElement>('[data-model-context-part="model"]');
+        const modelIcon = cluster.querySelector<SVGElement>(
+          '[data-model-context-part="model"] svg',
+        );
+        const fastIcon = cluster.querySelector<SVGElement>(
+          '[data-testid="invocation-fast-icon"] svg',
+        );
+        const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
+        const marker = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-marker"]',
+        );
+        const effortText = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-text"]',
+        );
+        if (!modelPart || !marker || !effortText) {
+          throw new Error("missing grouped model context geometry anchors");
+        }
+        const modelRect = modelPart.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        const effortTextRect = effortText.getBoundingClientRect();
+        const fastPartRect = fastPart?.getBoundingClientRect();
+        const modelIconRect = modelIcon?.getBoundingClientRect();
+        const fastIconRect = fastIcon?.getBoundingClientRect();
+        const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
+          Math.max(
+            Math.abs(
+              iconRect.left + iconRect.width / 2 - (containerRect.left + containerRect.width / 2),
+            ),
+            Math.abs(
+              iconRect.top + iconRect.height / 2 - (containerRect.top + containerRect.height / 2),
+            ),
+          );
+        const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const hasVisiblePseudo = (element: Element, pseudo: "::before" | "::after") => {
+          const pseudoStyle = getComputedStyle(element, pseudo);
+          const width = Number.parseFloat(pseudoStyle.width);
+          const height = Number.parseFloat(pseudoStyle.height);
+          return (
+            pseudoStyle.display !== "none" &&
+            pseudoStyle.visibility !== "hidden" &&
+            Number.parseFloat(pseudoStyle.opacity || "1") > 0 &&
+            (width > 0 || height > 0)
+          );
+        };
+        const pseudoDividerCount = [cluster, ...Array.from(cluster.children)].reduce(
+          (count, element) =>
+            count +
+            Number(hasVisiblePseudo(element, "::before")) +
+            Number(hasVisiblePseudo(element, "::after")),
+          0,
+        );
+        const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
+          const part = child.getAttribute("data-model-context-part");
+          const style = getComputedStyle(child);
+          const hasBorder =
+            Number.parseFloat(style.borderLeftWidth) > 0 ||
+            Number.parseFloat(style.borderRightWidth) > 0;
+          return count + Number(!part || !expectedDirectParts.has(part) || hasBorder);
+        }, 0);
+        return {
+          modelWidth: modelRect.width,
+          modelToMarkerGap: markerRect.left - modelRect.right,
+          markerToEffortGap: effortTextRect.left - markerRect.right,
+          effortToFastGap: fastPartRect ? fastPartRect.left - effortTextRect.right : null,
+          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          fastIconCenterDelta:
+            fastIconRect && fastPartRect ? centerDelta(fastIconRect, fastPartRect) : null,
+          effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
+          markerCount: cluster.querySelectorAll(
+            '[data-model-context-part="reasoning-effort-marker"]',
+          ).length,
+          internalDividerCount: internalDividerCount + pseudoDividerCount,
+        };
+      });
 
       return {
         chipModelTopDelta: Math.abs(chipRect.top - accountLine.getBoundingClientRect().top),
@@ -773,6 +860,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
         reasoningTextOverflow,
         reasoningContextGap,
         reasoningChipHeight,
+        groupedGeometry,
       };
     });
 
@@ -784,10 +872,41 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.reasoningTextOverflow).toBe(false);
     expect(layout.reasoningContextGap).toBeLessThanOrEqual(8);
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+    expect(layout.groupedGeometry.length).toBeGreaterThan(0);
+    expect(layout.groupedGeometry.every((geometry) => geometry.modelWidth === 20)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => !geometry.effortTextOverflow)).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) =>
+          (geometry.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
+          (geometry.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) => geometry.modelToMarkerGap >= 3 && geometry.modelToMarkerGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) => geometry.markerToEffortGap >= 3 && geometry.markerToEffortGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedGeometry.every(
+        (geometry) =>
+          (geometry.effortToFastGap ?? Number.POSITIVE_INFINITY) >= 3 &&
+          (geometry.effortToFastGap ?? Number.NEGATIVE_INFINITY) <= 5,
+      ),
+    ).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => geometry.markerCount === 1)).toBe(true);
+    expect(layout.groupedGeometry.every((geometry) => geometry.internalDividerCount === 0)).toBe(
+      true,
+    );
   });
 
   test("keeps three slots and records inside a narrow viewport", async ({ page }) => {
-    await installDashboardRoutes(page);
+    await installDashboardRoutes(page, { gpt56Current: true });
     await page.setViewportSize({ width: 393, height: 852 });
     await page.goto("/#/dashboard");
 
@@ -835,6 +954,92 @@ test.describe("Dashboard working conversations responsive layout", () => {
           ),
         ).map((reasoningEffort) => reasoningEffort.getBoundingClientRect().height),
       );
+      const groupedContexts = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-model-context-grouped="true"]'),
+      ).map((cluster) => {
+        const modelPart = cluster.querySelector<HTMLElement>('[data-model-context-part="model"]');
+        const modelIcon = cluster.querySelector<SVGElement>(
+          '[data-model-context-part="model"] svg',
+        );
+        const fastIcon = cluster.querySelector<SVGElement>(
+          '[data-testid="invocation-fast-icon"] svg',
+        );
+        const fastPart = cluster.querySelector<HTMLElement>('[data-model-context-part="fast"]');
+        const marker = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-marker"]',
+        );
+        const effortText = cluster.querySelector<HTMLElement>(
+          '[data-model-context-part="reasoning-effort-text"]',
+        );
+        if (!modelPart || !marker || !effortText || !fastPart) {
+          throw new Error("missing mobile grouped model context geometry anchors");
+        }
+        const modelRect = modelPart.getBoundingClientRect();
+        const markerRect = marker.getBoundingClientRect();
+        const effortTextRect = effortText.getBoundingClientRect();
+        const fastPartRect = fastPart.getBoundingClientRect();
+        const clusterRect = cluster.getBoundingClientRect();
+        const modelIconRect = modelIcon?.getBoundingClientRect();
+        const fastIconRect = fastIcon?.getBoundingClientRect();
+        const centerDelta = (iconRect: DOMRect, containerRect: DOMRect) =>
+          Math.max(
+            Math.abs(
+              iconRect.left + iconRect.width / 2 - (containerRect.left + containerRect.width / 2),
+            ),
+            Math.abs(
+              iconRect.top + iconRect.height / 2 - (containerRect.top + containerRect.height / 2),
+            ),
+          );
+        const expectedDirectParts = new Set(["model", "reasoning-effort", "fast"]);
+        const hasVisiblePseudo = (element: Element, pseudo: "::before" | "::after") => {
+          const pseudoStyle = getComputedStyle(element, pseudo);
+          const width = Number.parseFloat(pseudoStyle.width);
+          const height = Number.parseFloat(pseudoStyle.height);
+          return (
+            pseudoStyle.display !== "none" &&
+            pseudoStyle.visibility !== "hidden" &&
+            Number.parseFloat(pseudoStyle.opacity || "1") > 0 &&
+            (width > 0 || height > 0)
+          );
+        };
+        const pseudoDividerCount = [cluster, ...Array.from(cluster.children)].reduce(
+          (count, element) =>
+            count +
+            Number(hasVisiblePseudo(element, "::before")) +
+            Number(hasVisiblePseudo(element, "::after")),
+          0,
+        );
+        const internalDividerCount = Array.from(cluster.children).reduce((count, child) => {
+          const part = child.getAttribute("data-model-context-part");
+          const style = getComputedStyle(child);
+          const hasBorder =
+            Number.parseFloat(style.borderLeftWidth) > 0 ||
+            Number.parseFloat(style.borderRightWidth) > 0;
+          return count + Number(!part || !expectedDirectParts.has(part) || hasBorder);
+        }, 0);
+        const partsWithinCluster = [modelRect, markerRect, effortTextRect, fastPartRect].every(
+          (partRect) =>
+            partRect.left >= clusterRect.left - 1 &&
+            partRect.right <= clusterRect.right + 1 &&
+            partRect.top >= clusterRect.top - 1 &&
+            partRect.bottom <= clusterRect.bottom + 1,
+        );
+        return {
+          modelWidth: modelRect.width,
+          modelToMarkerGap: markerRect.left - modelRect.right,
+          markerToEffortGap: effortTextRect.left - markerRect.right,
+          effortToFastGap: fastPartRect.left - effortTextRect.right,
+          modelIconCenterDelta: modelIconRect ? centerDelta(modelIconRect, modelRect) : null,
+          fastIconCenterDelta: fastIconRect ? centerDelta(fastIconRect, fastPartRect) : null,
+          effortTextOverflow: effortText.scrollWidth > effortText.clientWidth,
+          partsWithinCluster,
+          markerCount: cluster.querySelectorAll(
+            '[data-model-context-part="reasoning-effort-marker"]',
+          ).length,
+          internalDividerCount: internalDividerCount + pseudoDividerCount,
+          effortText: effortText.textContent,
+        };
+      });
       return {
         rootOverflow: root.scrollWidth - root.clientWidth,
         cards: cards.length,
@@ -861,6 +1066,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
         ),
         reasoningTextOverflow,
         reasoningChipHeight,
+        groupedContexts,
       };
     });
 
@@ -872,6 +1078,37 @@ test.describe("Dashboard working conversations responsive layout", () => {
     expect(layout.accountLineOverflow).toBeLessThanOrEqual(1);
     expect(layout.reasoningTextOverflow).toBe(false);
     expect(layout.reasoningChipHeight).toBeLessThanOrEqual(17);
+    expect(layout.groupedContexts.length).toBeGreaterThan(0);
+    expect(layout.groupedContexts.every((context) => context.markerCount === 1)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.effortText === "max")).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.modelWidth === 20)).toBe(true);
+    expect(layout.groupedContexts.every((context) => !context.effortTextOverflow)).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.partsWithinCluster)).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) =>
+          (context.modelIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5 &&
+          (context.fastIconCenterDelta ?? Number.POSITIVE_INFINITY) <= 0.5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.modelToMarkerGap >= 3 && context.modelToMarkerGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.markerToEffortGap >= 3 && context.markerToEffortGap <= 5,
+      ),
+    ).toBe(true);
+    expect(
+      layout.groupedContexts.every(
+        (context) => context.effortToFastGap >= 3 && context.effortToFastGap <= 5,
+      ),
+    ).toBe(true);
+    expect(layout.groupedContexts.every((context) => context.internalDividerCount === 0)).toBe(
+      true,
+    );
   });
 
   test("keeps static missing-history slots at the shared baseline on desktop and mobile", async ({

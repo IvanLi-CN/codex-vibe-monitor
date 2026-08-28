@@ -304,7 +304,7 @@ function createPreview(
     outputTokens: overrides.outputTokens ?? 92,
     cacheInputTokens: overrides.cacheInputTokens ?? 36,
     reasoningTokens: overrides.reasoningTokens ?? 24,
-    reasoningEffort: overrides.reasoningEffort ?? "high",
+    reasoningEffort: "reasoningEffort" in overrides ? overrides.reasoningEffort : "high",
     errorMessage: overrides.errorMessage,
     failureKind: overrides.failureKind,
     isActionable: overrides.isActionable,
@@ -828,7 +828,7 @@ const BASE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN = {
     },
     {
       model: "gpt-5.5-mini",
-      reasoningEffort: null,
+      reasoningEffort: "—",
       cacheWriteTokens: 28_600,
       cacheReadTokens: 15_600,
       outputTokens: 28_200,
@@ -874,7 +874,7 @@ const ADAPTIVE_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN = {
     },
     {
       model: "gpt-5.5-mini",
-      reasoningEffort: null,
+      reasoningEffort: "—",
       cacheWriteTokens: 936_100,
       cacheReadTokens: 434_300,
       outputTokens: 1_055_655,
@@ -1514,7 +1514,7 @@ function buildDashboardHistoryEvidenceFixtures() {
       reasoningTokens: 0,
       totalTokens: 164_437,
       cost: 0.121,
-      reasoningEffort: "high",
+      reasoningEffort: "max",
       responseContentEncoding: "identity",
       requestedServiceTier: "auto",
       serviceTier: "priority",
@@ -2428,7 +2428,7 @@ const gpt56ModelContextResponse = createResponse([
       model: "gpt-5.6-sol",
       requestModel: "gpt-5.6-sol",
       responseModel: "gpt-5.6-sol",
-      reasoningEffort: "high",
+      reasoningEffort: "max",
       requestedServiceTier: "priority",
       serviceTier: "priority",
       transport: "websocket",
@@ -3620,11 +3620,13 @@ export const CurrentAndPrevious: Story = {
 };
 
 export const GPT56ModelContextCluster: Story = {
+  tags: ["test"],
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
   parameters: {
     docs: {
       description: {
         story:
-          "GPT-5.6 invocation metadata keeps the model identity, reasoning effort, and FAST state in one reusable visual cluster.",
+          "GPT-5.6 invocation metadata keeps one error-tone max marker, reasoning effort, and FAST state in a compact reusable visual cluster.",
       },
     },
   },
@@ -3646,11 +3648,110 @@ export const GPT56ModelContextCluster: Story = {
     await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
     await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
     await expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).toHaveClass("bg-error/85");
+    await expect(
       cluster.querySelector(
         '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
       ),
-    ).toHaveTextContent("high");
+    ).toHaveTextContent("max");
     await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+  },
+};
+
+const gpt56ModelContextWithoutReasoningResponse = createResponse([
+  createConversation("story-gpt56-model-context-missing-reasoning", [
+    createPreview({
+      id: 9_561,
+      invokeId: "story-gpt56-model-context-missing-reasoning-invoke",
+      occurredAt: "2026-04-04T10:04:00Z",
+      status: "completed",
+      model: "gpt-5.6-sol",
+      requestModel: "gpt-5.6-sol",
+      responseModel: "gpt-5.6-sol",
+      reasoningEffort: "—",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      transport: "websocket",
+      totalTokens: 12_520,
+      cost: 0.014,
+    }),
+  ]),
+]);
+
+export const GPT56ModelContextMobile393: Story = {
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Mobile 393px renders the same GPT-5.6 max reasoning marker, effort text, and FAST state as the desktop context cluster.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(gpt56ModelContextResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const cluster = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-5.6 model context cluster");
+    }
+
+    await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
+    await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    await expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).toHaveClass("bg-error/85");
+    await expect(
+      cluster.querySelector(
+        '[data-testid="dashboard-working-conversation-model-context-reasoning-effort"]',
+      ),
+    ).toHaveTextContent("max");
+    await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+  },
+};
+
+export const GPT56ModelContextWithoutReasoning: Story = {
+  tags: ["test"],
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "When reasoning data is unavailable, the grouped context omits only the marker and effort text while retaining the model identity and FAST accessibility.",
+      },
+    },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(gpt56ModelContextWithoutReasoningResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const cluster = canvasElement.querySelector(
+      '[data-testid="dashboard-working-conversation-model-context"]',
+    );
+    if (!(cluster instanceof HTMLElement)) {
+      throw new Error("missing GPT-5.6 model context cluster");
+    }
+
+    await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
+    await expect(cluster.querySelector('[data-model-icon="white-balance-sunny"]')).not.toBeNull();
+    await expect(cluster.querySelector('[data-model-context-part="reasoning-effort"]')).toBeNull();
+    await expect(
+      cluster.querySelector('[data-model-context-part="reasoning-effort-marker"]'),
+    ).toBeNull();
+    await expect(cluster).not.toHaveTextContent("—");
+    await expect(cluster.querySelector('[data-testid="invocation-fast-icon"]')).not.toBeNull();
+    await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-5.6-sol"));
   },
 };
 
