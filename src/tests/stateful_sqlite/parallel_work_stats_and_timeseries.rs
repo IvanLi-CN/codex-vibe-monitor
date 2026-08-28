@@ -22615,9 +22615,13 @@ async fn materialized_timeseries_uses_exact_fallback_for_same_cursor_terminal_re
 
 #[tokio::test]
 async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_admission() {
+    // Exercise the paged-overflow proof with the smallest manifest set that exceeds admission.
+    const MANIFEST_COUNT: i64 = 4_097;
+
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
+    let projection_fixture_started_at = std::time::Instant::now();
     let archive_start = Utc
         .timestamp_opt(
             crate::stats::align_bucket_epoch(
@@ -22634,24 +22638,30 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     sqlx::query(
         "INSERT INTO invocation_rollup_hourly \
          (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
-         VALUES (?1, 'proxy', 50001, 50001, 0, 850017, 62501.25, 0)",
+         VALUES (?1, 'proxy', ?2, ?2, 0, ?3, ?4, 0)",
     )
     .bind(bucket)
+    .bind(MANIFEST_COUNT)
+    .bind(MANIFEST_COUNT * 17)
+    .bind(MANIFEST_COUNT as f64 * 1.25)
     .execute(&state.pool)
     .await
     .expect("insert durable summary rollup");
     sqlx::query(
         "INSERT INTO upstream_account_stats_hourly \
          (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
-         VALUES (?1, 'proxy', 42, 50001, 50001, 0, 850017, 62501.25, 0)",
+         VALUES (?1, 'proxy', 42, ?2, ?2, 0, ?3, ?4, 0)",
     )
     .bind(bucket)
+    .bind(MANIFEST_COUNT)
+    .bind(MANIFEST_COUNT * 17)
+    .bind(MANIFEST_COUNT as f64 * 1.25)
     .execute(&state.pool)
     .await
     .expect("insert durable account summary rollup");
     sqlx::query(
         "WITH RECURSIVE manifests(ordinal) AS ( \
-            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal <= 50000 \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < ?3 \
          ) \
          INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
@@ -22663,6 +22673,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     )
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(MANIFEST_COUNT)
     .execute(&state.pool)
     .await
     .expect("insert archive manifests beyond the exact-record admission");
@@ -22724,6 +22735,10 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     refresh_summary_snapshots_with_mode(state.as_ref(), false)
         .await
         .expect("rolling refresh retains the exact all-time snapshot");
+    assert!(
+        projection_fixture_started_at.elapsed() < std::time::Duration::from_secs(5),
+        "summary projection overflow-manifest fixture exceeded its bounded build budget"
+    );
     state.pool.close().await;
 
     for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
@@ -22755,9 +22770,9 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         )
         .await
         .expect("serve the exact all-time snapshot without SQLite");
-        assert_eq!(response.total_count, 50_002);
-        assert_eq!(response.total_tokens, 850_040);
-        assert_eq!(response.total_cost, 62_503.75);
+        assert_eq!(response.total_count, MANIFEST_COUNT + 1);
+        assert_eq!(response.total_tokens, MANIFEST_COUNT * 17 + 23);
+        assert_eq!(response.total_cost, MANIFEST_COUNT as f64 * 1.25 + 2.5);
     }
 }
 
