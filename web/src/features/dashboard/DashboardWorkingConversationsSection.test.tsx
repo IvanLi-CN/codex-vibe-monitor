@@ -179,7 +179,8 @@ function createPreview(
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 90,
     tUpstreamTtfbMs: "tUpstreamTtfbMs" in overrides ? (overrides.tUpstreamTtfbMs ?? null) : 70,
     firstTokenMs: "firstTokenMs" in overrides ? (overrides.firstTokenMs ?? null) : undefined,
-    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
+    tUpstreamStreamMs:
+      "tUpstreamStreamMs" in overrides ? (overrides.tUpstreamStreamMs ?? null) : 220,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
     tTotalMs: overrides.tTotalMs ?? 418,
