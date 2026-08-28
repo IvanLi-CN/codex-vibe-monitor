@@ -2722,15 +2722,25 @@ pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
     dataset: &str,
     file_path: &str,
 ) -> Result<()> {
-    sqlx::query(
+    let result = sqlx::query(
         r#"
-        INSERT OR IGNORE INTO hourly_rollup_archive_replay (
+        INSERT INTO hourly_rollup_archive_replay (
             target,
             dataset,
             file_path,
+            archive_sha256,
             replayed_at
         )
-        VALUES (?1, ?2, ?3, datetime('now'))
+        SELECT ?1, ?2, ?3, batches.sha256, datetime('now')
+        FROM archive_batches AS batches
+        WHERE batches.dataset = ?2
+          AND batches.status = 'completed'
+          AND batches.file_path = ?3
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
+        ON CONFLICT(target, dataset, file_path) DO UPDATE SET
+            archive_sha256 = excluded.archive_sha256,
+            replayed_at = excluded.replayed_at
         "#,
     )
     .bind(target)
@@ -2738,6 +2748,9 @@ pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
     .bind(file_path)
     .execute(&mut *tx)
     .await?;
+    if result.rows_affected() != 1 {
+        bail!("archive manifest changed before replay marker could be persisted: {file_path}");
+    }
     Ok(())
 }
 
@@ -2747,17 +2760,29 @@ pub(crate) async fn hourly_rollup_archive_replayed_tx(
     dataset: &str,
     file_path: &str,
 ) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3 LIMIT 1",
-        )
-        .bind(target)
-        .bind(dataset)
-        .bind(file_path)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some(),
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+            SELECT 1
+            FROM hourly_rollup_archive_replay AS replay
+            INNER JOIN archive_batches AS batches
+                ON batches.dataset = replay.dataset
+               AND batches.file_path = replay.file_path
+               AND batches.status = 'completed'
+               AND batches.sha256 IS NOT NULL
+               AND TRIM(batches.sha256) <> ''
+               AND batches.sha256 = replay.archive_sha256
+            WHERE replay.target = ?1
+              AND replay.dataset = ?2
+              AND replay.file_path = ?3
+            LIMIT 1
+            "#,
     )
+    .bind(target)
+    .bind(dataset)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
 }
 
 pub(crate) fn normalized_oauth_account_id(value: Option<&str>) -> Option<&str> {

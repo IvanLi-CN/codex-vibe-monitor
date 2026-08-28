@@ -1494,6 +1494,9 @@ async fn load_invocation_archives_missing_rollup_target_with_limit(
         r#"
               AND replay.dataset = 'codex_invocations'
               AND replay.file_path = batches.file_path
+              AND batches.sha256 IS NOT NULL
+              AND TRIM(batches.sha256) <> ''
+              AND replay.archive_sha256 = batches.sha256
           )
         "#,
     );

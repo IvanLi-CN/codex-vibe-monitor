@@ -4049,6 +4049,12 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
         SOURCE_PROXY,
     )
     .await;
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &first_archive_path,
+    )
+    .await;
 
     let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
@@ -4327,15 +4333,10 @@ async fn summary_projection_rejects_clipped_rolling_boundary_for_unreadable_repl
     assert_eq!(all_time.total_count, 2);
     assert_eq!(all_time.total_tokens, 30);
 
-    let refresh_error = hydrate_summary_snapshots(state.as_ref())
+    hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect_err("a clipped rolling boundary requires the unreadable raw archive");
-    assert!(
-        refresh_error
-            .to_string()
-            .contains("summary projection archive source is unavailable"),
-        "the refresh must fail closed instead of publishing a clipped full-hour rollup: {refresh_error:#}"
-    );
+        .expect("a materialized unreadable boundary must publish the rollup-backed projection");
+    state.pool.close().await;
     let rolling = fetch_summary(
         State(state),
         Query(SummaryQuery {
@@ -4348,8 +4349,344 @@ async fn summary_projection_rejects_clipped_rolling_boundary_for_unreadable_repl
     .await;
     assert!(
         matches!(rolling, Err(ApiError::Unavailable(_))),
-        "a clipped rolling boundary must not use the over-inclusive full-hour rollup: {rolling:?}"
+        "a clipped rolling boundary must remain unavailable without request-time I/O: {rolling:?}"
     );
+}
+
+#[tokio::test]
+async fn summary_projection_replaces_rollup_for_point_materialized_archive_without_replay() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+    let archived_at_utc = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::hours(6)).timestamp(),
+                3_600,
+                0,
+            ) + 15 * 60,
+            0,
+        )
+        .single()
+        .expect("align point archive fixture");
+    let archived_at = format_naive(archived_at_utc.with_timezone(&Shanghai).naive_local());
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-point-materialized-without-replay",
+        &[(
+            9_001,
+            "summary-point-materialized-without-replay",
+            archived_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            17,
+            1.25,
+            Some(120.0),
+        )],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches \
+         SET coverage_start_at = ?1, coverage_end_at = ?1, historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(&archived_at)
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark point archive materialized without replay");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(crate::stats::align_bucket_epoch(
+        archived_at_utc.timestamp(),
+        3_600,
+        0,
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("seed compact point rollup");
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate point materialized archive replacement");
+    state.pool.close().await;
+
+    let Json(response) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve point archive range without SQLite or archive I/O");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.success_count, 1);
+    assert_eq!(response.total_tokens, 17);
+    assert_f64_close(response.total_cost, 1.25);
+}
+
+#[tokio::test]
+async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archive_exceeds_admission()
+ {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+    let archive_hour = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::hours(6)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align current archive fixture");
+    let archive_end = archive_hour + ChronoDuration::hours(1);
+    let archive_last_row_at = archive_end - ChronoDuration::seconds(1);
+    let archive_middle_row_at = archive_hour + ChronoDuration::minutes(30);
+    let archive_db_path = state
+        .config
+        .archive_dir
+        .join("summary-current-materialized-over-admission.sqlite");
+    let archive_path = state
+        .config
+        .archive_dir
+        .join("summary-current-materialized-over-admission.sqlite.gz");
+    fs::create_dir_all(&state.config.archive_dir).expect("create current archive directory");
+    fs::File::create(&archive_db_path).expect("create current archive SQLite source");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open current archive SQLite source");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create current archive schema");
+    let archive_start = format_naive(archive_hour.with_timezone(&Shanghai).naive_local());
+    let archive_last = format_naive(archive_last_row_at.with_timezone(&Shanghai).naive_local());
+    let archive_middle = format_naive(archive_middle_row_at.with_timezone(&Shanghai).naive_local());
+    sqlx::query(
+        "WITH RECURSIVE rows(id) AS ( \
+            SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 50001 \
+         ) \
+         INSERT INTO codex_invocations \
+         (id, invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response, created_at) \
+         SELECT id, 'summary-current-materialized-over-admission-' || id, \
+                CASE WHEN id = 1 THEN ?1 WHEN id = 50001 THEN ?2 ELSE ?3 END, \
+                'proxy', 'success', 1, 0.01, 'full', '{}', '', ?3 \
+         FROM rows",
+    )
+    .bind(&archive_start)
+    .bind(&archive_last)
+    .bind(&archive_middle)
+    .execute(&archive_pool)
+    .await
+    .expect("seed current archive over bounded candidate admission");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress current archive source");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash current archive source");
+    fs::remove_file(&archive_db_path).expect("remove current archive SQLite source");
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, created_at) \
+         VALUES ('codex_invocations', ?1, ?2, ?3, 50001, 'completed', ?4, ?5, datetime('now'), datetime('now'))",
+    )
+    .bind(archive_start[..7].to_string())
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(&archive_sha256)
+    .bind(&archive_start)
+    .bind(&archive_last)
+    .execute(&state.pool)
+    .await
+    .expect("insert materialized current archive manifest");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 50001, 50001, 0, 50001, 500.01, 0)",
+    )
+    .bind(archive_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed complete materialized current summary rollup");
+    sqlx::query(
+        "INSERT INTO upstream_account_usage_breakdown_hourly \
+         (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
+          request_count, output_tokens, cost_unknown, has_cost) \
+         VALUES (?1, 'proxy', '-1', '', '', 50001, 50001, 500.01, 1)",
+    )
+    .bind(archive_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed complete materialized current usage rollup");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("current candidate admission must not abort rollup-backed projection hydration");
+    state.pool.close().await;
+
+    for window in ["1d", "all"] {
+        let Json(response) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some(window.to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("serve {window} from the rollup-backed memory projection");
+        assert_eq!(response.total_count, 50_001, "{window} count");
+        assert_eq!(response.total_tokens, 50_001, "{window} tokens");
+        assert_f64_close(response.total_cost, 500.01);
+    }
+    assert!(matches!(
+        fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await,
+        Err(ApiError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
+async fn summary_projection_pruned_compact_current_candidate_keeps_rolling_range_exact() {
+    let state =
+        test_state_with_openai_base(Url::parse("https://api.openai.com/").expect("valid test URL"))
+            .await;
+    let now = Utc::now();
+    let live_at = db_occurred_at_lower_bound(now - ChronoDuration::minutes(1));
+    sqlx::query(
+        "WITH RECURSIVE rows(value) AS ( \
+            SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50000 \
+         ) \
+         INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         SELECT 'summary-compact-current-live-' || value, ?1, 'proxy', 'success', 1, 0.1, '{}', '', 'full' \
+         FROM rows",
+    )
+    .bind(&live_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed bounded current resident prefix");
+
+    let archive_hour = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (now - ChronoDuration::hours(3)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align compact archive hour");
+    let archive_at = archive_hour + ChronoDuration::minutes(15);
+    let archive_occurred_at = format_naive(archive_at.with_timezone(&Shanghai).naive_local());
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-compact-current-prune",
+        &[(
+            60_001,
+            "summary-compact-current-pruned",
+            archive_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            17,
+            1.25,
+            None,
+        )],
+    )
+    .await;
+    sqlx::query(
+        "UPDATE archive_batches \
+         SET coverage_start_at = ?1, coverage_end_at = ?2, \
+             historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path = ?3",
+    )
+    .bind(db_occurred_at_lower_bound(archive_at))
+    .bind(db_occurred_at_lower_bound(
+        archive_at + ChronoDuration::seconds(1),
+    ))
+    .bind(archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("mark exact compact archive coverage");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(archive_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed compact archive totals");
+    sqlx::query(
+        "INSERT INTO upstream_account_usage_breakdown_hourly \
+         (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
+          request_count, output_tokens, cost_unknown, has_cost) \
+         VALUES (?1, 'proxy', '-1', '', '', 1, 17, 1.25, 1)",
+    )
+    .bind(archive_hour.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed compact archive usage");
+    mark_summary_archive_replay_complete(&state.pool, &archive_path).await;
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate the compact-proof current candidate");
+    state.pool.close().await;
+
+    let Json(rolling) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve compact-rollup-proven rolling range without SQLite");
+    assert_eq!(rolling.total_count, 50_001);
+    assert_eq!(rolling.total_tokens, 50_017);
+    assert_f64_close(rolling.total_cost, 5_001.25);
+
+    let Json(current) = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("current cutoff remains exact after compact candidate pruning");
+    assert_eq!(current.total_count, 1);
 }
 
 #[tokio::test]
@@ -4490,6 +4827,17 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
         SOURCE_PROXY,
     )
     .await;
+    // The shared bucket marker proves that a compact row exists. Each immutable batch also
+    // needs its own replay marker before the all-time projection can prove the row includes
+    // both sibling archives without reopening the unreadable one.
+    for archive_path in [&readable_archive_path, &unreadable_archive_path] {
+        insert_hourly_rollup_archive_replay_marker(
+            &state.pool,
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            archive_path,
+        )
+        .await;
+    }
 
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable same-bucket summary archive");
@@ -4658,6 +5006,8 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
 
     let bucket_start_epoch = invocation_bucket_start_epoch(&archived_materialized_at)
         .expect("same-month summary bucket start epoch should be derivable");
+    let unreadable_bucket_start_epoch = invocation_bucket_start_epoch(&archived_unreadable_at)
+        .expect("same-month unreadable summary bucket start epoch should be derivable");
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -4690,6 +5040,16 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     .execute(&state.pool)
     .await
     .expect("seed readable materialized summary rollup row");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) \
+         VALUES (?1, ?2, 1, 1, 0, 20, 0.20)",
+    )
+    .bind(unreadable_bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&state.pool)
+    .await
+    .expect("seed unreadable materialized same-month summary rollup row");
     insert_materialized_rollup_bucket_marker(
         &state.pool,
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
@@ -4697,6 +5057,21 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
         SOURCE_PROXY,
     )
     .await;
+    insert_materialized_rollup_bucket_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        unreadable_bucket_start_epoch,
+        SOURCE_PROXY,
+    )
+    .await;
+    for archive_path in [&materialized_archive_path, &unreadable_archive_path] {
+        insert_hourly_rollup_archive_replay_marker(
+            &state.pool,
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            archive_path,
+        )
+        .await;
+    }
 
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
         .expect("corrupt unreadable same-month summary sibling archive");
@@ -4713,11 +5088,11 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     .await
     .expect("fetch all-time summary with unreadable same-month materialized sibling archive");
 
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.success_count, 1);
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.success_count, 2);
     assert_eq!(summary.failure_count, 0);
-    assert_eq!(summary.total_tokens, 10);
-    assert!((summary.total_cost - 0.10).abs() < 1e-9);
+    assert_eq!(summary.total_tokens, 30);
+    assert!((summary.total_cost - 0.30).abs() < 1e-9);
 
     let start = local_naive_to_utc(archived_materialized_hour_local, Shanghai);
     let end = local_naive_to_utc(
@@ -12978,7 +13353,7 @@ async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_vie
     let state = test_state_from_config(config, true).await;
     let archived_at = archived_start_partial_hour_at();
 
-    seed_invocation_archive_batch_with_details(
+    let archive_path = seed_invocation_archive_batch_with_details(
         &state.pool,
         &state.config,
         "summary-materialized-boundary-over-48h",
@@ -13026,6 +13401,12 @@ async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_vie
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         bucket,
         SOURCE_PROXY,
+    )
+    .await;
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
     )
     .await;
 
@@ -22248,7 +22629,6 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         )
         .single()
         .expect("align archive fixture to a full hour");
-    let archive_end = archive_start + ChronoDuration::hours(1);
     let bucket = crate::stats::align_bucket_epoch(archive_start.timestamp(), 3_600, 0);
 
     sqlx::query(
@@ -22282,7 +22662,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
          FROM manifests",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
-    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
     .execute(&state.pool)
     .await
     .expect("insert archive manifests beyond the exact-record admission");
@@ -22753,7 +23133,7 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
 
     for window in ["current", "1d"] {
         for upstream_account_id in [None, Some(42)] {
-            let Json(response) = fetch_summary(
+            let response = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
                     window: Some(window.to_string()),
@@ -22762,8 +23142,16 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
                     upstream_account_id,
                 }),
             )
-            .await
-            .expect("serve the exact paged-boundary response without SQLite");
+            .await;
+            if window == "current" {
+                assert!(
+                    matches!(response, Err(ApiError::Unavailable(_))),
+                    "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
+                );
+                continue;
+            }
+            let Json(response) =
+                response.expect("serve the exact paged-boundary response without SQLite");
             assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
             assert_eq!(
                 response.total_tokens, 20,
@@ -22981,7 +23369,6 @@ async fn summary_projection_keeps_global_all_exact_when_account_manifest_admissi
         )
         .single()
         .expect("align archive fixture to a full hour");
-    let archive_end = archive_start + ChronoDuration::hours(1);
     let bucket = crate::stats::align_bucket_epoch(archive_start.timestamp(), 3_600, 0);
     let file_path = "/tmp/summary-account-manifest-admission.sqlite.gz";
     sqlx::query(
@@ -23002,7 +23389,7 @@ async fn summary_projection_keeps_global_all_exact_when_account_manifest_admissi
     )
     .bind(file_path)
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
-    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
     .execute(&state.pool)
     .await
     .expect("insert materialized archive manifest");
@@ -23076,7 +23463,7 @@ async fn summary_projection_keeps_global_all_exact_when_account_manifest_admissi
 }
 
 #[tokio::test]
-async fn summary_projection_keeps_all_unavailable_when_materialized_rollup_key_is_missing() {
+async fn summary_projection_rejects_materialized_endpoint_hour_missing_rollup_keys() {
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
             .await;
@@ -23091,21 +23478,56 @@ async fn summary_projection_keeps_all_unavailable_when_materialized_rollup_key_i
         )
         .single()
         .expect("align archive fixture to a full hour");
-    let archive_end = archive_start + ChronoDuration::hours(1);
-    let file_path = "/tmp/summary-missing-rollup-key.sqlite.gz";
+    let endpoint_hour = archive_start + ChronoDuration::hours(1);
+    let file_path = "/tmp/summary-missing-endpoint-rollup-key.sqlite.gz";
     sqlx::query(
         "INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
-          historical_rollups_materialized_at, created_at) \
-         VALUES ('codex_invocations', '2026-01', ?1, 'summary-missing-rollup-key', 1, 'completed', \
-                 ?2, ?3, datetime('now'), datetime('now'))",
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+         VALUES ('codex_invocations', '2026-01', ?1, 'summary-missing-endpoint-rollup-key', 2, 'completed', \
+                 ?2, ?3, datetime('now'), datetime('now'), datetime('now'))",
     )
     .bind(file_path)
     .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
-    .bind(crate::stats::db_occurred_at_lower_bound(archive_end))
+    // `coverage_end_at` is inclusive: this batch also contains a row in `endpoint_hour`.
+    .bind(crate::stats::db_occurred_at_lower_bound(endpoint_hour))
     .execute(&state.pool)
     .await
     .expect("insert materialized archive manifest");
+    let archive_batch_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(file_path)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load endpoint archive manifest id");
+    sqlx::query(
+        "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) \
+         VALUES (?1, 42, ?2)",
+    )
+    .bind(archive_batch_id)
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .execute(&state.pool)
+    .await
+    .expect("record endpoint archive account manifest");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly \
+         (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(archive_start.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed only the pre-endpoint global rollup key");
+    sqlx::query(
+        "INSERT INTO upstream_account_stats_hourly \
+         (bucket_start_epoch, source, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+         VALUES (?1, 'proxy', 42, 1, 1, 0, 17, 1.25, 0)",
+    )
+    .bind(archive_start.timestamp())
+    .execute(&state.pool)
+    .await
+    .expect("seed only the pre-endpoint account rollup key");
     for target in [
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
@@ -23140,17 +23562,22 @@ async fn summary_projection_keeps_all_unavailable_when_materialized_rollup_key_i
     .expect("serve the exact rolling zero response without SQLite");
     assert_eq!(rolling.total_count, 0);
 
-    assert!(matches!(
-        fetch_summary(
-            State(state),
-            Query(SummaryQuery {
-                window: Some("all".to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await,
-        Err(ApiError::Unavailable(_))
-    ));
+    for upstream_account_id in [None, Some(42)] {
+        assert!(
+            matches!(
+                fetch_summary(
+                    State(state.clone()),
+                    Query(SummaryQuery {
+                        window: Some("all".to_string()),
+                        limit: None,
+                        time_zone: Some("UTC".to_string()),
+                        upstream_account_id,
+                    }),
+                )
+                .await,
+                Err(ApiError::Unavailable(_))
+            ),
+            "the endpoint hour must be proven for {upstream_account_id:?}"
+        );
+    }
 }

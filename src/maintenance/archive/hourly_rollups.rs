@@ -6040,6 +6040,7 @@ mod retention_breakdown_materialization_tests {
                 dataset TEXT NOT NULL,
                 month_key TEXT,
                 file_path TEXT NOT NULL UNIQUE,
+                sha256 TEXT,
                 status TEXT NOT NULL,
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
@@ -6057,6 +6058,7 @@ mod retention_breakdown_materialization_tests {
                 target TEXT NOT NULL,
                 dataset TEXT NOT NULL,
                 file_path TEXT NOT NULL,
+                archive_sha256 TEXT,
                 replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (target, dataset, file_path)
             )
@@ -6985,13 +6987,14 @@ mod retention_breakdown_materialization_tests {
         let first_file_path = "/tmp/usage-breakdown-overlap-first.sqlite.gz";
         let second_file_path = "/tmp/usage-breakdown-overlap-second.sqlite.gz";
 
-        for (file_path, coverage_start_at, coverage_end_at, replayed, cursor_id) in [
+        for (file_path, coverage_start_at, coverage_end_at, replayed, cursor_id, sha256) in [
             (
                 first_file_path,
                 "2026-07-01 15:05:00",
                 "2026-07-01 15:15:00",
                 false,
                 101_i64,
+                "usage-breakdown-overlap-first-sha",
             ),
             (
                 second_file_path,
@@ -6999,6 +7002,7 @@ mod retention_breakdown_materialization_tests {
                 "2026-07-01 15:35:00",
                 true,
                 202_i64,
+                "usage-breakdown-overlap-second-sha",
             ),
         ] {
             sqlx::query(
@@ -7008,17 +7012,19 @@ mod retention_breakdown_materialization_tests {
                     month_key,
                     file_path,
                     status,
+                    sha256,
                     coverage_start_at,
                     coverage_end_at,
                     historical_rollups_materialized_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
                 "#,
             )
             .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
             .bind("2026-07")
             .bind(file_path)
             .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(sha256)
             .bind(coverage_start_at)
             .bind(coverage_end_at)
             .execute(&pool)
@@ -7041,13 +7047,16 @@ mod retention_breakdown_materialization_tests {
             if replayed {
                 sqlx::query(
                     r#"
-                    INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-                    VALUES (?1, ?2, ?3, datetime('now'))
+                    INSERT INTO hourly_rollup_archive_replay (
+                        target, dataset, file_path, archive_sha256, replayed_at
+                    )
+                    VALUES (?1, ?2, ?3, ?4, datetime('now'))
                     "#,
                 )
                 .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
                 .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
                 .bind(file_path)
+                .bind(sha256)
                 .execute(&pool)
                 .await
                 .expect("insert replay marker");

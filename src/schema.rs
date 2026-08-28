@@ -1952,6 +1952,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let archive_batch_columns = load_sqlite_table_columns(pool, "archive_batches").await?;
     for (column, ty) in [
+        // A legacy archive without a recorded hash cannot prove replay identity and remains
+        // pending until it is rebuilt; use a nullable upgrade column for that state.
+        ("sha256", "TEXT"),
         ("day_key", "TEXT"),
         ("part_key", "TEXT"),
         ("layout", "TEXT NOT NULL DEFAULT 'legacy_month'"),
@@ -2068,6 +2071,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_dataset_month")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_dataset_file_path
+        ON archive_batches (dataset, file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_dataset_file_path")?;
 
     sqlx::query(
         r#"
@@ -3400,6 +3413,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             target TEXT NOT NULL,
             dataset TEXT NOT NULL,
             file_path TEXT NOT NULL,
+            archive_sha256 TEXT,
             replayed_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (target, dataset, file_path)
         )
@@ -3408,6 +3422,17 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_replay table existence")?;
+
+    // SQLite leaves an existing table untouched for CREATE TABLE IF NOT EXISTS. Upgrade the
+    // pre-identity replay table before any startup backfill reads or writes archive_sha256.
+    let hourly_rollup_archive_replay_columns =
+        load_sqlite_table_columns(pool, "hourly_rollup_archive_replay").await?;
+    if !hourly_rollup_archive_replay_columns.contains("archive_sha256") {
+        sqlx::query("ALTER TABLE hourly_rollup_archive_replay ADD COLUMN archive_sha256 TEXT")
+            .execute(pool)
+            .await
+            .context("failed to add hourly rollup archive replay identity column")?;
+    }
 
     sqlx::query(
         r#"
