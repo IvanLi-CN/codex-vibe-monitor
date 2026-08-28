@@ -2074,6 +2074,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_dataset_file_path
+        ON archive_batches (dataset, file_path)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_dataset_file_path")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_archive_batches_dataset_layout_day_part
         ON archive_batches (dataset, layout, day_key, part_key, id)
         "#,
