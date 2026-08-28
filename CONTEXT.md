@@ -40,6 +40,30 @@ zero, neutral, or default effort; compact Dashboard metadata omits the absent
 field rather than presenting a placeholder as a real value.
 _Avoid_: 中性推理, 默认推理强度, 零推理
 
+## Invocation Timing
+
+**请求用时**:
+The duration from an invocation entering the proxy to the first upstream response byte.
+_Avoid_: 连接用时, TTFT, 总耗时
+
+**TTFT**:
+The duration from an invocation entering the proxy to its first valid model-output delta.
+_Avoid_: TTFB, 首响应, 首字节耗时
+
+**暂估 TTFT**:
+The local, non-authoritative elapsed value after the first upstream response byte arrives and
+before the first valid model-output delta is observed. It is not a measured TTFT.
+_Avoid_: 已测 TTFT, 首响应时间
+
+**缺失 TTFT**:
+A terminal invocation with no valid model-output delta from which TTFT can be measured. It is
+neither zero nor a substitute first-response measurement; the compact presentation uses a dash.
+_Avoid_: TTFT 为零, 首响应, TTFB 回退
+
+**响应耗时**:
+The duration from the first upstream response byte to the end of that upstream stream.
+_Avoid_: 总耗时, TTFT, 代理处理耗时
+
 ## Runtime Read Models
 
 **Summary Projection**:
