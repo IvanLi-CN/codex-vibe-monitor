@@ -123,9 +123,11 @@ function createConversation(
 
 function buildWorkingConversationsResponse({
   currentFirstTokenMs = 740,
+  currentTtfbMs = null,
   gpt56Current = false,
 }: {
   currentFirstTokenMs?: number | null;
+  currentTtfbMs?: number | null;
   gpt56Current?: boolean;
 } = {}) {
   const conversations = [
@@ -138,7 +140,7 @@ function buildWorkingConversationsResponse({
         upstreamAccountName: "paisleeeinar5710 Team sandbox workflow monitor",
         endpoint: "/v1/responses/compact",
         firstTokenMs: currentFirstTokenMs,
-        tUpstreamTtfbMs: null,
+        tUpstreamTtfbMs: currentTtfbMs,
         tUpstreamStreamMs: null,
         tTotalMs: null,
         ...(gpt56Current
@@ -503,7 +505,11 @@ const VIEWPORTS: LayoutExpectation[] = [
 
 async function installDashboardRoutes(
   page: Page,
-  options: { currentFirstTokenMs?: number | null; gpt56Current?: boolean } = {},
+  options: {
+    currentFirstTokenMs?: number | null;
+    currentTtfbMs?: number | null;
+    gpt56Current?: boolean;
+  } = {},
 ) {
   await page.route("**/events**", async (route) => {
     const url = new URL(route.request().url());
@@ -651,10 +657,37 @@ test.describe("Dashboard working conversations responsive layout", () => {
     const currentSlot = page.locator(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
-    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
-      "0.7s",
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-ttft")).toContainText("0.7s");
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response")).toContainText("--");
+  });
+
+  test("shows request-only and first-byte provisional timings without manufacturing TTFT", async ({
+    page,
+  }) => {
+    await installDashboardRoutes(page, { currentFirstTokenMs: null });
+    await page.setViewportSize({ width: 1660, height: 1180 });
+    await page.goto("/#/dashboard");
+
+    const currentSlot = page.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
-    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-request")).toBeVisible();
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-ttft")).toHaveCount(0);
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response")).toHaveCount(0);
+
+    await page.close();
+    const firstBytePage = await page.context().newPage();
+    await installDashboardRoutes(firstBytePage, {
+      currentFirstTokenMs: 740,
+      currentTtfbMs: 91,
+    });
+    await firstBytePage.setViewportSize({ width: 1660, height: 1180 });
+    await firstBytePage.goto("/#/dashboard");
+    const respondingSlot = firstBytePage.locator(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
+    );
+    await expect(respondingSlot.getByTestId("dashboard-compact-latency-ttft")).toHaveText("0.7s");
+    await expect(respondingSlot.getByTestId("dashboard-compact-latency-response")).not.toHaveText(
       "--",
     );
   });
@@ -667,12 +700,8 @@ test.describe("Dashboard working conversations responsive layout", () => {
     const currentSlot = page.locator(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
-    await expect(currentSlot.getByTestId("dashboard-compact-latency-first-byte")).toContainText(
-      "0s",
-    );
-    await expect(currentSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
-      "--",
-    );
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-ttft")).toContainText("0s");
+    await expect(currentSlot.getByTestId("dashboard-compact-latency-response")).toContainText("--");
 
     await page.close();
     const invalidPage = await page.context().newPage();
@@ -683,12 +712,10 @@ test.describe("Dashboard working conversations responsive layout", () => {
     const invalidSlot = invalidPage.locator(
       '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"][aria-label*="wc-1-a"]',
     );
-    const invalidFirstToken = invalidSlot.getByTestId("dashboard-compact-latency-first-byte");
-    await expect(invalidFirstToken).toContainText("--");
-    expect(await invalidFirstToken.getAttribute("class")).not.toContain("text-success");
-    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response-time")).toContainText(
-      "--",
-    );
+    const invalidFirstToken = invalidSlot.getByTestId("dashboard-compact-latency-ttft");
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-request")).toBeVisible();
+    await expect(invalidFirstToken).toHaveCount(0);
+    await expect(invalidSlot.getByTestId("dashboard-compact-latency-response")).toHaveCount(0);
   });
 
   test("keeps compact invocation rows aligned on wide desktop cards", async ({ page }) => {
@@ -1157,7 +1184,7 @@ test.describe("Dashboard working conversations responsive layout", () => {
           latencyGap: window.getComputedStyle(latencyPills).columnGap,
           latencyValues: Array.from(
             latencyPills.querySelectorAll<HTMLElement>(
-              '[data-testid="dashboard-compact-latency-first-byte"], [data-testid="dashboard-compact-latency-response-time"]',
+              '[data-testid="dashboard-compact-latency-ttft"], [data-testid="dashboard-compact-latency-response"]',
             ),
           ).map((element) => element.textContent ?? ""),
         };

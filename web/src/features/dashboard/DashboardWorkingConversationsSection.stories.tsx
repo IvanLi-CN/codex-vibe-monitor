@@ -314,9 +314,10 @@ function createPreview(
     tReqReadMs: overrides.tReqReadMs ?? 14,
     tReqParseMs: overrides.tReqParseMs ?? 8,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 136,
-    tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 98,
-    firstTokenMs: overrides.firstTokenMs ?? 742,
-    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 324,
+    tUpstreamTtfbMs: "tUpstreamTtfbMs" in overrides ? (overrides.tUpstreamTtfbMs ?? null) : 98,
+    firstTokenMs: "firstTokenMs" in overrides ? (overrides.firstTokenMs ?? null) : 742,
+    tUpstreamStreamMs:
+      "tUpstreamStreamMs" in overrides ? (overrides.tUpstreamStreamMs ?? null) : 324,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
     tTotalMs: overrides.tTotalMs ?? 601,
@@ -1305,6 +1306,7 @@ function createRequestingOnlyResponse() {
         upstreamAccountName: "request-alpha@example.com",
         reasoningEffort: "medium",
         tUpstreamTtfbMs: null,
+        firstTokenMs: null,
         tUpstreamStreamMs: null,
         tTotalMs: null,
       }),
@@ -1345,6 +1347,7 @@ function createPoolRoutingAccountStatesResponse() {
         upstreamAccountId: null,
         upstreamAccountName: null,
         tUpstreamTtfbMs: null,
+        firstTokenMs: null,
         tUpstreamStreamMs: null,
         tTotalMs: null,
       }),
@@ -3534,11 +3537,9 @@ export const CurrentAndPrevious: Story = {
       throw new Error("missing current slot");
     }
 
-    const firstByteLatency = currentSlot.querySelector(
-      '[data-testid="dashboard-compact-latency-first-byte"]',
-    );
+    const ttftLatency = currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]');
     const responseLatency = currentSlot.querySelector(
-      '[data-testid="dashboard-compact-latency-response-time"]',
+      '[data-testid="dashboard-compact-latency-response"]',
     );
     const reasoningEffort = currentSlot.querySelector(
       '[data-testid="dashboard-working-conversation-reasoning-effort"]',
@@ -3548,7 +3549,7 @@ export const CurrentAndPrevious: Story = {
       '[data-testid="dashboard-working-conversation-model-name"]',
     );
     if (
-      !(firstByteLatency instanceof HTMLElement) ||
+      !(ttftLatency instanceof HTMLElement) ||
       !(responseLatency instanceof HTMLElement) ||
       !(reasoningEffort instanceof HTMLElement) ||
       !(reasoningText instanceof HTMLElement) ||
@@ -3571,19 +3572,19 @@ export const CurrentAndPrevious: Story = {
     await expect(
       canvasElement.querySelectorAll('[data-testid="dashboard-working-conversation-slot"]'),
     ).toHaveLength(3);
-    await expect(slotHeader).toContainElement(firstByteLatency);
+    await expect(slotHeader).toContainElement(ttftLatency);
     await expect(slotHeader).toContainElement(responseLatency);
-    await expect(firstByteLatency).toHaveTextContent("0.7s");
+    await expect(ttftLatency).toHaveTextContent("0.7s");
     await expect(responseLatency).toHaveTextContent("0.3s");
-    await expect(firstByteLatency.parentElement).toHaveClass("gap-1");
-    await expect(firstByteLatency.parentElement).not.toHaveTextContent(/\d\s+s/);
+    await expect(ttftLatency.parentElement).toHaveClass("gap-1");
+    await expect(ttftLatency.parentElement).not.toHaveTextContent(/\d\s+s/);
     await expect(reasoningEffort).toHaveTextContent("medium");
     await expect(reasoningText.scrollWidth).toBeLessThanOrEqual(reasoningText.clientWidth);
     await expect(reasoningEffort.getBoundingClientRect().height).toBeLessThanOrEqual(17);
     await expect(
       reasoningEffort.getBoundingClientRect().left - modelIdentity.getBoundingClientRect().right,
     ).toBeLessThanOrEqual(8);
-    await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
+    await expect(ttftLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
     const imageBadge = currentSlot.querySelector('[data-testid="dashboard-image-tool-icon-badge"]');
     if (!(imageBadge instanceof HTMLElement)) {
@@ -4034,6 +4035,12 @@ export const RunningOnlyConversation: Story = {
     const respondingIcon = respondingBadge?.querySelector('[data-testid="invocation-phase-icon"]');
     expect(respondingIcon).not.toBeNull();
     expect(respondingIcon?.className).toContain("animate-spin");
+    const measuredTtft = await within(currentSlot).findByTestId("dashboard-compact-latency-ttft");
+    const measuredResponse = await within(currentSlot).findByTestId(
+      "dashboard-compact-latency-response",
+    );
+    expect(measuredTtft).toHaveTextContent("0.9s");
+    expect(measuredResponse).not.toHaveTextContent("--");
   },
 };
 
@@ -4071,6 +4078,13 @@ export const RequestingConversation: Story = {
     }
     await expect(requestingIcon.className).toContain("animate-invocation-phase-requesting");
     await expect(currentSlot).not.toHaveTextContent(/请求中|Requesting/);
+    expect(
+      await within(currentSlot).findByTestId("dashboard-compact-latency-request"),
+    ).toBeInTheDocument();
+    expect(currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]')).toBeNull();
+    expect(
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+    ).toBeNull();
   },
 };
 
@@ -4603,16 +4617,16 @@ export const UpstreamAccountTab: Story = {
     if (!(firstRecentRow instanceof HTMLElement)) {
       throw new Error("missing first upstream recent row");
     }
-    const firstByteLatency = firstRecentRow.querySelector(
-      '[data-testid="dashboard-compact-latency-first-byte"]',
+    const ttftLatency = firstRecentRow.querySelector(
+      '[data-testid="dashboard-compact-latency-ttft"]',
     );
     const responseLatency = firstRecentRow.querySelector(
-      '[data-testid="dashboard-compact-latency-response-time"]',
+      '[data-testid="dashboard-compact-latency-response"]',
     );
-    if (!(firstByteLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
+    if (!(ttftLatency instanceof HTMLElement) || !(responseLatency instanceof HTMLElement)) {
       throw new Error("missing upstream compact latency readings");
     }
-    await expect(firstByteLatency.className).not.toMatch(/rounded|border|bg-/);
+    await expect(ttftLatency.className).not.toMatch(/rounded|border|bg-/);
     await expect(responseLatency.className).not.toMatch(/rounded|border|bg-/);
     const imageBadge = firstRecentRow.querySelector(
       '[data-testid="dashboard-image-tool-icon-badge"]',
@@ -4912,7 +4926,7 @@ export const UpstreamAccountRecentLayout: Story = {
       throw new Error("missing upstream account recent layout row");
     }
     await expect(
-      recentRow.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+      recentRow.querySelector('[data-testid="dashboard-compact-latency-response"]'),
     ).toHaveTextContent("--");
     const recentLatencyPills = recentRow.querySelector(
       '[data-testid="dashboard-compact-latency-pills"]',
@@ -6901,7 +6915,7 @@ export const WideDesktop1660: Story = {
       "dashboard-working-conversations-actions",
     );
     const responseTimes = Array.from(
-      canvasElement.querySelectorAll('[data-testid="dashboard-compact-latency-response-time"]'),
+      canvasElement.querySelectorAll('[data-testid="dashboard-compact-latency-response"]'),
     ).map((element) => element.textContent);
     await expect(responseTimes).toContain("--");
   },

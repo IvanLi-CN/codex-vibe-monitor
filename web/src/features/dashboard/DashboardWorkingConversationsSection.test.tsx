@@ -177,9 +177,10 @@ function createPreview(
     tReqReadMs: overrides.tReqReadMs ?? 10,
     tReqParseMs: overrides.tReqParseMs ?? 7,
     tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 90,
-    tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 70,
-    firstTokenMs: overrides.firstTokenMs,
-    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 220,
+    tUpstreamTtfbMs: "tUpstreamTtfbMs" in overrides ? (overrides.tUpstreamTtfbMs ?? null) : 70,
+    firstTokenMs: "firstTokenMs" in overrides ? (overrides.firstTokenMs ?? null) : undefined,
+    tUpstreamStreamMs:
+      "tUpstreamStreamMs" in overrides ? (overrides.tUpstreamStreamMs ?? null) : 220,
     tRespParseMs: overrides.tRespParseMs ?? 12,
     tPersistMs: overrides.tPersistMs ?? 9,
     tTotalMs: overrides.tTotalMs ?? 418,
@@ -1290,18 +1291,19 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(firstRecentRow?.textContent).not.toContain("UP ");
     expect(firstRecentRow?.textContent).not.toContain("ED ");
     expect(
-      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-ttft"]'),
     ).not.toBeNull();
     expect(
-      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]'),
     ).not.toBeNull();
     expect(
-      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
-        ?.className,
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+    ).toBeNull();
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
     ).not.toMatch(/rounded|border|bg-/);
     expect(
-      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
-        ?.className,
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.className,
     ).not.toMatch(/rounded|border|bg-/);
     const firstRecentLatencyPills = firstRecentRow?.querySelector(
       '[data-testid="dashboard-compact-latency-pills"]',
@@ -3039,17 +3041,16 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(currentSlot.textContent).not.toContain("ED ");
     expect(currentSlot.textContent).not.toContain("TT ");
     expect(
-      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]'),
     ).not.toBeNull();
     expect(
-      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
-    ).not.toBeNull();
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+    ).toBeNull();
     expect(
-      currentSlot.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.className,
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
     ).not.toMatch(/rounded|border|bg-/);
     expect(
-      currentSlot.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
-        ?.className,
+      currentSlot.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
     ).not.toMatch(/rounded|border|bg-/);
   });
 
@@ -4195,7 +4196,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     act(() => {
       fireEvent.click(accountTab);
-      vi.runAllTimers();
+      vi.runOnlyPendingTimers();
       window.dispatchEvent(new Event("scroll"));
     });
 
@@ -5082,10 +5083,10 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(statusLabel.getAttribute("data-phase-label-visible")).toBe("false");
     expect(statusLabel.getAttribute("data-phase-motion")).toBe("dynamic");
     expect(
-      slotHeader.querySelector('[data-testid="dashboard-compact-latency-first-byte"]'),
+      slotHeader.querySelector('[data-testid="dashboard-compact-latency-ttft"]'),
     ).toBeInstanceOf(HTMLElement);
     expect(
-      slotHeader.querySelector('[data-testid="dashboard-compact-latency-response-time"]'),
+      slotHeader.querySelector('[data-testid="dashboard-compact-latency-response"]'),
     ).toBeInstanceOf(HTMLElement);
 
     const phaseLabels = Array.from(card.querySelectorAll('[data-testid="invocation-phase-badge"]'));
@@ -6409,6 +6410,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
 
     expect(slotReadings.className).toContain("flex-nowrap");
+    expect(slotReadings.className).toContain("gap-1.5");
     expect(latencyPills.className).toContain("flex-nowrap");
     expect(latencyPills.className).toContain("gap-1");
     expect(latencyPills.getAttribute("aria-label")).not.toMatch(/\d\s+s/);
@@ -6559,7 +6561,7 @@ describe("DashboardWorkingConversationsSection", () => {
             tReqReadMs: 120,
             tReqParseMs: 36,
             tUpstreamConnectMs: 100,
-            tUpstreamTtfbMs: 0,
+            tUpstreamTtfbMs: 70,
             firstTokenMs: 0,
             tUpstreamStreamMs: 8_028_073.3,
             tTotalMs: 0,
@@ -6569,6 +6571,10 @@ describe("DashboardWorkingConversationsSection", () => {
             invokeId: "invoke-latency-earlier",
             occurredAt: "2026-04-04T10:02:00.000Z",
             status: "completed",
+            tReqReadMs: 1,
+            tReqParseMs: 1,
+            tUpstreamConnectMs: 1,
+            tUpstreamTtfbMs: 1,
             firstTokenMs: 99_950,
             tUpstreamStreamMs: 100_000,
             tTotalMs: 0,
@@ -6587,28 +6593,38 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(latencySlots).toHaveLength(3);
     expect(
-      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
-        ?.textContent,
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
     ).toContain("1.2s");
     expect(
-      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-response"]')
         ?.textContent,
     ).toContain("--");
     expect(
-      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
-        ?.className,
+      latencySlots[0]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.className,
     ).toContain("text-success");
     expect(
-      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
-        ?.textContent,
+      latencySlots[0]
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-ttft"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("timer-outline");
+    expect(
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
     ).toContain("0s");
     expect(
-      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')
+      latencySlots[1]?.querySelector('[data-testid="dashboard-compact-latency-response"]')
         ?.textContent,
     ).toContain("8028s");
     expect(
-      latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')
-        ?.textContent,
+      latencySlots[1]
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-response"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("speedometer");
+    expect(
+      latencySlots[2]?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent,
     ).toContain("100s");
 
     expect(readings).toContain("1.2s");
@@ -6622,6 +6638,83 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(readings).not.toContain("100.0s");
     expect(readings).not.toContain("8,028");
 
+    vi.useRealTimers();
+  });
+
+  it("updates request-only compact timing with the shared section clock", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+    renderSection(
+      createResponse([
+        createConversation("pck-live-request-clock", [
+          createPreview({
+            id: 72,
+            invokeId: "invoke-live-request-clock",
+            occurredAt: "2026-04-04T10:04:58.800Z",
+            status: "running",
+            livePhase: "requesting",
+            tUpstreamTtfbMs: null,
+            tUpstreamStreamMs: null,
+            tTotalMs: null,
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    expect(
+      currentSlot?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.textContent,
+    ).toBe("1.2s");
+    expect(currentSlot?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')).toBeNull();
+    expect(
+      currentSlot
+        ?.querySelector(
+          '[data-testid="dashboard-compact-latency-request"] [data-compact-latency-icon-name]',
+        )
+        ?.getAttribute("data-compact-latency-icon-name"),
+    ).toBe("clock-outline");
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(
+      currentSlot?.querySelector('[data-testid="dashboard-compact-latency-request"]')?.textContent,
+    ).toBe("2.2s");
+    vi.useRealTimers();
+  });
+
+  it("updates upstream account recent request timing with the same section clock", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-04T10:05:00.000Z"));
+    const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.livePhase = "requesting";
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamTtfbMs = null;
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = null;
+    upstreamAccountActivityMock.data = upstreamActivity;
+
+    renderSection(createResponse([]));
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) throw new Error("missing upstream account tab");
+    act(() => fireEvent.click(accountTab));
+
+    const firstRecentRow = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"]',
+    );
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]')
+        ?.textContent,
+    ).toBe("0s");
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-request"]')
+        ?.textContent,
+    ).toBe("1s");
     vi.useRealTimers();
   });
 
@@ -6642,14 +6735,17 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const responseTime = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-response-time"]',
+    const firstRecentRow = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"]',
     );
-    expect(responseTime?.textContent).toBe("--");
+    expect(
+      firstRecentRow?.querySelector('[data-testid="dashboard-compact-latency-response"]'),
+    ).toBeNull();
   });
 
   it("keeps missing upstream account recent TTFT unavailable", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.status = "success";
     upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = null;
     upstreamAccountActivityMock.data = upstreamActivity;
 
@@ -6665,15 +6761,16 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const firstToken = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
+    const ttft = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-ttft"]',
     );
-    expect(firstToken?.textContent).toBe("--");
-    expect(firstToken?.className).not.toContain("text-success");
+    expect(ttft?.textContent).toBe("--");
+    expect(ttft?.className).toContain("text-success");
   });
 
   it("keeps invalid upstream account recent TTFT neutral", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.status = "success";
     upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = -1;
     upstreamAccountActivityMock.data = upstreamActivity;
 
@@ -6689,15 +6786,16 @@ describe("DashboardWorkingConversationsSection", () => {
       fireEvent.click(accountTab);
     });
 
-    const firstToken = host?.querySelector(
-      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-first-byte"]',
+    const ttft = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row"] [data-testid="dashboard-compact-latency-ttft"]',
     );
-    expect(firstToken?.textContent).toBe("--");
-    expect(firstToken?.className).not.toContain("text-success");
+    expect(ttft?.textContent).toBe("--");
+    expect(ttft?.className).toContain("text-success");
   });
 
   it("keeps nonfinite upstream account timing unavailable", () => {
     const upstreamActivity = createUpstreamAccountActivityResponse();
+    upstreamActivity.accounts[0]!.recentInvocations[0]!.status = "success";
     upstreamActivity.accounts[0]!.recentInvocations[0]!.firstTokenMs = Number.POSITIVE_INFINITY;
     upstreamActivity.accounts[0]!.recentInvocations[0]!.tUpstreamStreamMs = Number.NaN;
     upstreamAccountActivityMock.data = upstreamActivity;
@@ -6715,11 +6813,11 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     const row = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    expect(row?.querySelector('[data-testid="dashboard-compact-latency-ttft"]')?.textContent).toBe(
+      "--",
+    );
     expect(
-      row?.querySelector('[data-testid="dashboard-compact-latency-first-byte"]')?.textContent,
-    ).toBe("--");
-    expect(
-      row?.querySelector('[data-testid="dashboard-compact-latency-response-time"]')?.textContent,
+      row?.querySelector('[data-testid="dashboard-compact-latency-response"]')?.textContent,
     ).toBe("--");
   });
 
