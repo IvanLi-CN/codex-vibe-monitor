@@ -846,7 +846,8 @@ async fn ensure_schema_creates_sticky_affinity_generation_and_routing_source_sto
 }
 
 #[tokio::test]
-async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_backfill() {
+async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upgrading_unverified_markers()
+ {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect in-memory sqlite");
@@ -880,7 +881,7 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_back
     )
     .execute(&pool)
     .await
-    .expect("seed completed manifest for legacy replay");
+        .expect("seed completed manifest for legacy replay");
     sqlx::query(
         "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) \
          VALUES ('invocation_hourly', 'codex_invocations', 'legacy-replay.sqlite.gz')",
@@ -891,7 +892,7 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_back
 
     ensure_schema(&pool)
         .await
-        .expect("first startup migrates the legacy replay table before backfill");
+        .expect("first startup migrates the legacy replay table without promoting it");
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('hourly_rollup_archive_replay')")
             .fetch_all(&pool)
@@ -905,8 +906,11 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_back
     )
     .fetch_one(&pool)
     .await
-    .expect("load backfilled replay identity after first startup");
-    assert_eq!(first_start_sha.as_deref(), Some("legacy-replay-sha"));
+    .expect("load unverified replay identity after first startup");
+    assert!(
+        first_start_sha.is_none(),
+        "a legacy replay marker remains unverified even when a completed manifest exists"
+    );
 
     ensure_schema(&pool)
         .await
@@ -918,8 +922,11 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_before_back
     )
     .fetch_one(&pool)
     .await
-    .expect("load replay identity after second startup");
-    assert_eq!(second_start_sha.as_deref(), Some("legacy-replay-sha"));
+    .expect("load unverified replay identity after second startup");
+    assert!(
+        second_start_sha.is_none(),
+        "reapplying the schema must not upgrade an unverified legacy replay marker"
+    );
 }
 
 #[tokio::test]

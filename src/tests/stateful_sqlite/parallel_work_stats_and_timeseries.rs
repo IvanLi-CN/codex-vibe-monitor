@@ -4049,6 +4049,12 @@ async fn all_time_summary_fallback_keeps_unmaterialized_rows_when_sibling_archiv
         SOURCE_PROXY,
     )
     .await;
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &first_archive_path,
+    )
+    .await;
 
     let Json(summary) = fetch_summary_from_memory_snapshot(
         State(state),
@@ -13347,7 +13353,7 @@ async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_vie
     let state = test_state_from_config(config, true).await;
     let archived_at = archived_start_partial_hour_at();
 
-    seed_invocation_archive_batch_with_details(
+    let archive_path = seed_invocation_archive_batch_with_details(
         &state.pool,
         &state.config,
         "summary-materialized-boundary-over-48h",
@@ -13395,6 +13401,12 @@ async fn summary_projection_materialized_boundary_older_than_48h_keeps_exact_vie
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         bucket,
         SOURCE_PROXY,
+    )
+    .await;
+    insert_hourly_rollup_archive_replay_marker(
+        &state.pool,
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        &archive_path,
     )
     .await;
 

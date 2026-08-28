@@ -2541,8 +2541,18 @@ async fn materialize_historical_rollups_bounded_counts_fully_blocked_archive_bud
     ] {
         sqlx::query(
             r#"
-            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-            VALUES (?1, ?2, ?3, datetime('now'))
+            INSERT INTO hourly_rollup_archive_replay (
+                target,
+                dataset,
+                file_path,
+                archive_sha256,
+                replayed_at
+            )
+            SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+            FROM archive_batches AS batches
+            WHERE batches.dataset = ?2
+              AND batches.status = 'completed'
+              AND batches.file_path = ?3
             "#,
         )
         .bind(target)
@@ -3133,8 +3143,18 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized_a
     ] {
         sqlx::query(
             r#"
-            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-            VALUES (?1, ?2, ?3, datetime('now'))
+            INSERT INTO hourly_rollup_archive_replay (
+                target,
+                dataset,
+                file_path,
+                archive_sha256,
+                replayed_at
+            )
+            SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+            FROM archive_batches AS batches
+            WHERE batches.dataset = ?2
+              AND batches.status = 'completed'
+              AND batches.file_path = ?3
             "#,
         )
         .bind(target)
@@ -3251,8 +3271,18 @@ async fn materialize_historical_rollups_replays_usage_breakdown_when_account_tar
     ] {
         sqlx::query(
             r#"
-            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-            VALUES (?1, ?2, ?3, datetime('now'))
+            INSERT INTO hourly_rollup_archive_replay (
+                target,
+                dataset,
+                file_path,
+                archive_sha256,
+                replayed_at
+            )
+            SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
+            FROM archive_batches AS batches
+            WHERE batches.dataset = ?2
+              AND batches.status = 'completed'
+              AND batches.file_path = ?3
             "#,
         )
         .bind(target)
@@ -5513,8 +5543,8 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
 
     crate::schema::ensure_schema(&pool)
         .await
-        .expect("upgrade legacy marker with a completed manifest");
-    let upgraded_sha: Option<String> = sqlx::query_scalar(
+        .expect("reapply schema without upgrading a legacy marker");
+    let completed_manifest_legacy_sha: Option<String> = sqlx::query_scalar(
         "SELECT archive_sha256 FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
@@ -5522,8 +5552,40 @@ async fn usage_breakdown_replay_marker_requires_a_matching_completed_manifest() 
     .bind(&archive_path)
     .fetch_one(&pool)
     .await
-    .expect("load upgraded legacy marker");
-    assert_eq!(upgraded_sha.as_deref(), Some("archive-sha-a"));
+    .expect("load legacy marker after completed manifest");
+    assert!(
+        completed_manifest_legacy_sha.is_none(),
+        "a completed manifest alone must not upgrade a legacy replay marker"
+    );
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin unverified completed-manifest check");
+    assert!(
+        !hourly_rollup_archive_replayed_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_path,
+        )
+        .await
+        .expect("check legacy marker with a completed manifest"),
+        "an unverified legacy marker must fail closed even with a completed manifest"
+    );
+    tx.commit()
+        .await
+        .expect("commit unverified completed-manifest check");
+
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_replay SET archive_sha256 = 'archive-sha-a' WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("record a verified replay marker matching the completed manifest");
 
     let mut tx = pool.begin().await.expect("begin matching-manifest check");
     assert!(
