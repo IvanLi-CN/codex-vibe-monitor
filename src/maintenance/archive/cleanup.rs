@@ -908,12 +908,17 @@ pub(crate) struct HistoricalRollupPendingArchiveBatchRow {
 
 const STARTUP_HISTORICAL_ROLLUP_CANDIDATE_LIMIT: i64 = 32;
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: usize = 16;
+const LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT: i64 = 128;
+const LEGACY_DETAIL_MIRROR_IDENTITY_PAGE_SIZE: i64 = 400;
 
 #[derive(Debug, FromRow)]
 struct HistoricalRollupStartupCandidateRow {
     id: i64,
     dataset: String,
     file_path: String,
+    sha256: String,
+    row_count: i64,
+    summary_source_kind: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -947,6 +952,23 @@ pub(crate) struct HistoricalRollupStartupPendingHint {
     pub(crate) inspected_path_count: usize,
 }
 
+#[derive(Debug)]
+pub(crate) struct LegacyDetailMirrorRecoveryWindowResult {
+    pub(crate) next_cursor_id: i64,
+    pub(crate) candidate_count: usize,
+    pub(crate) inspected_path_count: usize,
+    pub(crate) changed_path_count: usize,
+    pub(crate) hit_budget: bool,
+    pub(crate) wrapped: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyDetailMirrorProof {
+    Proven,
+    NotMirror,
+    BudgetExhausted,
+}
+
 async fn load_historical_rollup_startup_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
@@ -957,6 +979,9 @@ async fn load_historical_rollup_startup_candidates(
             batches.id,
             batches.dataset,
             batches.file_path,
+            batches.sha256,
+            batches.row_count,
+            batches.summary_source_kind,
             batches.coverage_start_at,
             batches.coverage_end_at
         FROM archive_batches AS batches
@@ -1008,6 +1033,289 @@ async fn load_historical_rollup_startup_candidates(
     .fetch_all(pool)
     .await
     .context("failed to load historical rollup startup keyset candidates")
+}
+
+async fn legacy_invocation_archive_is_live_detail_mirror(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> Result<LegacyDetailMirrorProof> {
+    if candidate.row_count < 0 {
+        return Ok(LegacyDetailMirrorProof::NotMirror);
+    }
+    let archive_path = Path::new(&candidate.file_path);
+    let Some(sha256_before_open) =
+        legacy_detail_mirror_sha256_with_budget(archive_path, started_at, max_elapsed)?
+    else {
+        return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+    };
+    if sha256_before_open != candidate.sha256 {
+        return Ok(LegacyDetailMirrorProof::NotMirror);
+    }
+    if started_at.elapsed() >= max_elapsed {
+        return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+    }
+
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    if !inflate_gzip_sqlite_file_with_budget(
+        archive_path,
+        &temp_path,
+        started_at,
+        Some(max_elapsed),
+    )? {
+        drop(temp_cleanup);
+        return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+    }
+    if started_at.elapsed() >= max_elapsed {
+        drop(temp_cleanup);
+        return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+    };
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_for_path(&temp_path))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open legacy detail archive {}",
+                archive_path.display()
+            )
+        })?;
+
+    let mut after_id = i64::MIN;
+    let mut matched_rows = 0_i64;
+    let proof_result: Result<LegacyDetailMirrorProof> = async {
+        loop {
+            if started_at.elapsed() >= max_elapsed {
+                return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+            }
+            let archive_rows = sqlx::query_as::<_, (i64, String)>(
+                "SELECT id, invoke_id FROM codex_invocations WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+            )
+            .bind(after_id)
+            .bind(LEGACY_DETAIL_MIRROR_IDENTITY_PAGE_SIZE)
+            .fetch_all(&archive_pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to read legacy detail archive identities for archive batch {}",
+                    candidate.id
+                )
+            })?;
+            if started_at.elapsed() >= max_elapsed {
+                return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+            }
+            let Some(last_id) = archive_rows.last().map(|(id, _)| *id) else {
+                break;
+            };
+            after_id = last_id;
+
+            let mut live_query = QueryBuilder::<Sqlite>::new(
+                "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
+            );
+            {
+                let mut ids = live_query.separated(", ");
+                for (id, _) in &archive_rows {
+                    ids.push_bind(id);
+                }
+            }
+            live_query.push(")");
+            let live_rows = live_query
+                .build_query_as::<(i64, String)>()
+                .fetch_all(pool)
+                .await
+                .context("failed to read live identities for legacy detail mirror recovery")?;
+            if started_at.elapsed() >= max_elapsed {
+                return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+            }
+            if live_rows.len() != archive_rows.len() {
+                return Ok(LegacyDetailMirrorProof::NotMirror);
+            }
+            let live_invoke_ids = live_rows.into_iter().collect::<HashMap<_, _>>();
+            if archive_rows
+                .iter()
+                .any(|(id, invoke_id)| live_invoke_ids.get(id) != Some(invoke_id))
+            {
+                return Ok(LegacyDetailMirrorProof::NotMirror);
+            }
+            matched_rows += archive_rows.len() as i64;
+        }
+        Ok(LegacyDetailMirrorProof::Proven)
+    }
+    .await;
+    archive_pool.close().await;
+    let proof = proof_result?;
+    if proof != LegacyDetailMirrorProof::Proven {
+        return Ok(proof);
+    }
+    if matched_rows != candidate.row_count {
+        return Ok(LegacyDetailMirrorProof::NotMirror);
+    }
+    let Some(sha256_after_read) =
+        legacy_detail_mirror_sha256_with_budget(archive_path, started_at, max_elapsed)?
+    else {
+        return Ok(LegacyDetailMirrorProof::BudgetExhausted);
+    };
+    Ok(if sha256_after_read == candidate.sha256 {
+        LegacyDetailMirrorProof::Proven
+    } else {
+        LegacyDetailMirrorProof::NotMirror
+    })
+}
+
+fn legacy_detail_mirror_sha256_with_budget(
+    path: &Path,
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> Result<Option<String>> {
+    if started_at.elapsed() >= max_elapsed {
+        return Ok(None);
+    }
+    let mut file = fs::File::open(path).with_context(|| {
+        format!(
+            "failed to open legacy detail archive for sha256 {}",
+            path.display()
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).with_context(|| {
+            format!(
+                "failed to read legacy detail archive for sha256 {}",
+                path.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        if started_at.elapsed() >= max_elapsed {
+            return Ok(None);
+        }
+    }
+    Ok(Some(format!("{:x}", hasher.finalize())))
+}
+
+async fn load_legacy_detail_mirror_recovery_candidates(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+        r#"
+        SELECT
+            id,
+            dataset,
+            file_path,
+            sha256,
+            row_count,
+            summary_source_kind,
+            coverage_start_at,
+            coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND summary_source_kind = ?2
+          AND id > ?3
+        ORDER BY id ASC
+        LIMIT ?4
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+    .bind(cursor_id)
+    .bind(LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT)
+    .fetch_all(pool)
+    .await
+    .context("failed to load legacy detail mirror recovery candidates")
+}
+
+pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+    max_elapsed: Duration,
+) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(pool, cursor_id).await?;
+    let mut wrapped = false;
+    if candidates.is_empty() && cursor_id > 0 {
+        candidates = load_legacy_detail_mirror_recovery_candidates(pool, 0).await?;
+        wrapped = !candidates.is_empty();
+    }
+    if candidates.is_empty() {
+        return Ok(LegacyDetailMirrorRecoveryWindowResult {
+            next_cursor_id: 0,
+            candidate_count: 0,
+            inspected_path_count: 0,
+            changed_path_count: 0,
+            hit_budget: false,
+            wrapped,
+        });
+    }
+
+    let started_at = Instant::now();
+    let mut next_cursor_id = cursor_id;
+    let mut inspected_path_count = 0_usize;
+    let mut hit_budget = false;
+    let mut proven_mirrors = Vec::new();
+    for candidate in candidates.iter() {
+        if started_at.elapsed() >= max_elapsed {
+            hit_budget = true;
+            break;
+        }
+        match legacy_invocation_archive_is_live_detail_mirror(
+            pool,
+            candidate,
+            started_at,
+            max_elapsed,
+        )
+        .await?
+        {
+            LegacyDetailMirrorProof::Proven => proven_mirrors.push(candidate),
+            LegacyDetailMirrorProof::NotMirror => {}
+            LegacyDetailMirrorProof::BudgetExhausted => {
+                hit_budget = true;
+                inspected_path_count += 1;
+                next_cursor_id = candidate.id;
+                break;
+            }
+        }
+        inspected_path_count += 1;
+        next_cursor_id = candidate.id;
+    }
+
+    let mut changed_path_count = 0_usize;
+    if !proven_mirrors.is_empty() {
+        let mut tx = pool.begin().await?;
+        for candidate in proven_mirrors {
+            changed_path_count += sqlx::query(
+                "UPDATE archive_batches SET summary_source_kind = ?1 \
+                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+            )
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
+            .bind(candidate.id)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected() as usize;
+        }
+        tx.commit().await?;
+    }
+
+    Ok(LegacyDetailMirrorRecoveryWindowResult {
+        next_cursor_id,
+        candidate_count: candidates.len(),
+        inspected_path_count,
+        changed_path_count,
+        hit_budget,
+        wrapped,
+    })
 }
 
 pub(crate) async fn count_historical_rollup_startup_pending_hint(

@@ -122,15 +122,26 @@ _Avoid_: detail mirror, optional replay source, completed file only
 
 **Live Detail Mirror**:
 An archive emitted while pruning invocation payload details even though each
-canonical invocation remains in `codex_invocations`. It preserves observability
-only and is never a Summary, rollup-repair, or archive-admission source.
+canonical invocation remains in `codex_invocations`. A legacy mirror is certified
+only by a current-SHA, complete archive-to-live `(id, invoke_id)` identity proof;
+an encoded ID interval is only a fast compatibility shortcut. It preserves
+observability only and is never a Summary, rollup-repair, or archive-admission
+source.
 _Avoid_: historical Summary source, second canonical copy, proof backlog
 
 **Unknown Legacy Archive Source**:
 A pre-role manifest whose source relationship cannot be proven automatically.
 It remains fail-closed as a potential authoritative source until bounded
-reconciliation proves it is a Live Detail Mirror.
+reconciliation proves it is a Live Detail Mirror through complete archive/live
+identity coverage.
 _Avoid_: assumed mirror, skipped source, marker-only classification
+
+**Legacy Detail Mirror Identity Proof**:
+The background certificate that the current archive SHA and row count match a
+complete page-by-page `(id, invoke_id)` correspondence with live canonical rows.
+It may classify an otherwise ambiguous legacy archive as a Live Detail Mirror;
+any missing, changed, unreadable, or replaced record leaves the archive unknown.
+_Avoid_: interval-density proof, count-only classification, Summary HTTP scan
 
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a

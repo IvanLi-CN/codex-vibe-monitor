@@ -26,12 +26,14 @@ ordering is insufficient because a future writer can bypass it.
   records that remain live and is excluded from Summary admission and rollup
   repair. `unknown` legacy manifests remain fail-closed potential sources.
 - A normal application update automatically reconciles legacy completed
-  archives in the bounded historical-rollup scheduler through source-identity
-  and full bucket-closure verification or rebuild. It classifies a legacy
-  `segment_v1` manifest as `live_mirror` only when its encoded inclusive ID
-  range is continuously retained in `codex_invocations`; every ambiguous
-  manifest stays `unknown`. It never promotes a materialized timestamp or a
-  hand-written marker into proof, and it requires no operator command.
+  archives through two bounded background paths. A SHA-bound archive/live
+  `(id, invoke_id)` identity proof may classify any legacy layout as
+  `live_mirror`; the encoded `segment_v1` inclusive ID range remains a fast
+  shortcut, not the only proof. Every missing, changed, unreadable, or replaced
+  record stays `unknown`, then follows source-identity and full bucket-closure
+  verification or rebuild as a potential authoritative source. It never
+  promotes a materialized timestamp or a hand-written marker into proof, and it
+  requires no operator command.
 
 ## Considered Options
 

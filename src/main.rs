@@ -215,6 +215,7 @@ const STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES: &str =
     "pool_upstream_node_health_archives_v1";
 const STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE: &str =
     "account_activity_v2_coverage_repair_v1";
+const STARTUP_BACKFILL_TASK_LEGACY_DETAIL_MIRRORS: &str = "legacy_detail_mirror_reconciliation_v1";
 const STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS: &str = "historical_rollup_materialization_v1";
 const DEFAULT_PROXY_RAW_MAX_BYTES: Option<usize> = None;
 const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
