@@ -11110,6 +11110,7 @@ async fn build_summary_projection_once(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(pool).await?;
+    let live_high_watermark_id = load_summary_projection_live_high_watermark(pool).await?;
     let mut live_preview_cache = HashMap::<i64, UpstreamAccountInvocationPreviewRow>::new();
     let live_admission = query_summary_projection_live_rows_with_budget(
         pool,
@@ -11118,6 +11119,7 @@ async fn build_summary_projection_once(
             start: live_start,
             end,
         },
+        live_high_watermark_id,
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
@@ -11174,6 +11176,7 @@ async fn build_summary_projection_once(
                 .expect("Unix epoch is valid"),
             end,
         },
+        live_high_watermark_id,
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
@@ -11512,6 +11515,7 @@ async fn build_summary_projection_once(
         mark_summary_projection_uncovered_historical_live_ranges(
             pool,
             historical_live_range,
+            live_high_watermark_id,
             rollup_live_cursor,
             account_rollup_live_cursor,
             &hourly_rollup_totals,
@@ -11887,6 +11891,7 @@ async fn build_summary_projection_once(
             pool,
             InvocationSourceScope::All,
             range,
+            live_high_watermark_id,
             None,
             remaining,
             false,
@@ -17695,6 +17700,16 @@ fn summary_projection_live_source_row_bytes_sql(text_columns: &[&str]) -> String
     format!("512 + {row_bytes}")
 }
 
+async fn load_summary_projection_live_high_watermark(
+    pool: &Pool<Sqlite>,
+) -> Result<i64, anyhow::Error> {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+        .fetch_one(pool)
+        .await
+        .map(|high_watermark| high_watermark.unwrap_or_default())
+        .context("summary projection live high-watermark hydration failed")
+}
+
 fn pack_summary_projection_live_candidates(
     mut candidates: Vec<SummaryProjectionLiveCandidate>,
     limit: usize,
@@ -17737,6 +17752,7 @@ async fn query_summary_projection_live_candidates(
     text_columns: &[&str],
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    high_watermark_id: i64,
     upstream_account_id: Option<Option<i64>>,
     in_progress_only: bool,
     limit: usize,
@@ -17749,7 +17765,9 @@ async fn query_summary_projection_live_candidates(
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, ")
         .push(row_bytes.as_str())
-        .push(" AS source_bytes FROM codex_invocations WHERE occurred_at >= ");
+        .push(" AS source_bytes FROM codex_invocations WHERE id <= ")
+        .push_bind(high_watermark_id)
+        .push(" AND occurred_at >= ");
     query
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -17799,6 +17817,7 @@ async fn query_summary_projection_live_rows_with_budget(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
+    high_watermark_id: i64,
     upstream_account_id: Option<Option<i64>>,
     limit: usize,
     in_progress_only: bool,
@@ -17812,6 +17831,7 @@ async fn query_summary_projection_live_rows_with_budget(
         &text_columns,
         source_scope,
         range,
+        high_watermark_id,
         upstream_account_id,
         in_progress_only,
         limit,
@@ -17886,6 +17906,7 @@ async fn query_summary_projection_live_rows_with_budget(
 async fn mark_summary_projection_uncovered_historical_live_ranges(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
+    high_watermark_id: i64,
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
@@ -17900,6 +17921,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         pool,
         InvocationSourceScope::All,
         range,
+        high_watermark_id,
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
