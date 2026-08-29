@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.5",
+  "base_stable_version": "2.68.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-29T13:50:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d85f60aee5cfeadafe63391e24118c0342826837",
+  "pr_number": 871,
+  "pr_title": "test(summary): scope projection budget fixtures",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.5",
+  "target_sha": "caf7d6a77c2bf97d51bbe77f93467bef3e7305ef",
+  "type_label": "type:patch"
+}
