@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.7",
+  "base_stable_version": "2.68.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-29T17:55:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0b89ff7fa3eae383daf0e162b5697803edeafb85",
+  "pr_number": 873,
+  "pr_title": "fix(summary): recover legacy detail mirrors automatically",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.7",
+  "target_sha": "4fe3d47a571c2976a05a0bdea5d492316db40cbc",
+  "type_label": "type:patch"
+}
