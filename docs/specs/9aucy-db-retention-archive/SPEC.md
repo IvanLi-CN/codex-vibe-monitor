@@ -49,7 +49,7 @@
   - `detail_level='structured_only'`
   - `detail_pruned_at=<maintenance timestamp>`
   - `detail_prune_reason='success_over_30d'`
-- 任意记录超过 90 个上海自然日时，先归档到 `archives/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，校验 `row_count` 与 `sha256` 成功后写入 `archive_batches`，再从主库删除。
+- 任意记录超过 90 个上海自然日时，先归档到 `archives/<table>/<yyyy>/<table>-<yyyy-mm>.sqlite.gz`，校验 `row_count` 与 `sha256` 成功后写入 `archive_batches`，再从主库删除。对 `codex_invocations`，`completed` 还要求有限 coverage、current-SHA Summary rollup proof 与 historical materialization 在同一事务完成；未满足时 archive 只能保持内部 materializing 状态，live source 不得删除。
 - 离线归档前必须先将待删调用折叠进 `invocation_rollup_daily`，确保长期 totals 不缩水。
 - 运行时不再维护 `raw_expires_at`；历史 archive `sqlite.gz` 中若仍带该列，不作为新版本的在线契约，也不执行离线回写重做。
 
@@ -115,7 +115,7 @@
 
 ## 归档与维护约束
 
-- 所有删除动作都必须遵守 `导出成功 -> manifest 成功 -> 删除源数据`。
+- 所有删除动作都必须遵守 `导出成功 -> Summary-eligible manifest 成功 -> 删除源数据`。`codex_invocations` manifest 只有在 Archive Publication Proof 完整时才能最终化为 `completed`。
 - `archive_batches` 至少记录：`dataset`、`month_key`、`file_path`、`sha256`、`row_count`、`created_at`、`status`。
 - 所有 retention 主库写入必须通过统一写协调器，优先级低于 P1 terminal、同步代理写和 P2 derived。文件压缩、hash 与 archive 准备在主库写 permit 外执行。
 - 正常 maintenance 只有在更高优先级无等待且 pressure gate 开放时才可提交；连续饥饿时每 15 秒最多公平提交一个微事务。fairness 不得绕过 pressure cooldown。
@@ -124,7 +124,7 @@
 - fairness 不得越过已排队的 P1 terminal；pressure 拒绝后必须归还尚未产生提交的 fairness token。维护准入等待必须响应 shutdown，取消时仅丢弃尚未开始的 microtransaction。
 - archive expiry backfill 与 upstream-activity manifest rebuild 也必须先取有界候选；manifest 的清理、写入和完成 marker 各自是 coordinator-admitted microtransaction，不能在一次 archive pass 内聚集全表行。
 - shared raw blob 的 owner-path replacement 必须按引用分组分批提交；startup backfill wake 和 raw metrics inventory reset 同样经 maintenance admission。多批 reset 期间 inventory 明确处于 preparing，而不是读取半旧基线。
-- historical rollup startup backfill uses the durable `startup_backfill_progress.cursor_id` as an `archive_batches.id` keyset cursor. A pass reads at most 32 eligible archive manifests, checks paths only inside that window, and replays at most 16 batches or six seconds of work. It must defer behind the SQLite pressure gate, resume a partially replayed archive from its persisted cursor, advance past an archive whose replay could not begin before the elapsed budget, schedule that safe cursor advance for a short retry without creating a `system_task_runs` row, wrap to retry that archive after exhausting the keyset, and avoid creating `system_task_runs` for a pass that made no materialization progress.
+- historical rollup startup backfill uses the durable `startup_backfill_progress.cursor_id` as an `archive_batches.id` keyset cursor. A pass reads at most 32 eligible archive manifests, checks paths only inside that window, and replays at most 16 batches or six seconds of work. A materialized invocation archive missing a Summary proof first verifies every SHA in its overlap closure, resets that closure, then replays it; it never adds a missing proof over retained aggregate rows. The pass must defer behind the SQLite pressure gate, resume a partially replayed archive from its persisted cursor, advance past an archive whose replay could not begin before the elapsed budget, schedule that safe cursor advance for a short retry without creating a `system_task_runs` row, wrap to retry that archive after exhausting the keyset, and avoid creating `system_task_runs` for a pass that made no materialization progress.
 - Normal startup persistent preparation may report a bounded backlog hint from that same 32-candidate window, but must not load all pending manifests or scan all archive paths.
 - 被精简或归档的记录，其关联 raw 文件要立即删除；另外执行 orphan sweep，按文件名反查主库引用并清理无引用文件。缺失文件视为可接受且必须幂等。
 - live DB 与新创建 archive DB 均不再包含 `raw_expires_at`；历史 archive 文件保持只读兼容，不在本轮做离线 schema 重写。
@@ -136,6 +136,8 @@
 
 - 成功调用超过 30 天后，主库在线记录仍可用于结构化排障，但 `detailLevel` 变为 `structured_only`，并明确标出精简时间与原因。
 - 超过 90 天的调用明细与超过 30 天的代理尝试，在归档文件与 `archive_batches` 清单成功生成后，才能从主库删除。
+- `codex_invocations` archive 的任意成功 `completed` 最终化都同时具有有限 coverage、当前 SHA-bound Summary proof 与 materialized rollup；数据库拒绝不完整最终化，失败事务不删除 live rows。
+- 历史 completed invocation archive 缺少任一 Summary proof 时，正常版本启动的有界 rollup scheduler 自动以文件 identity 和 bucket closure 验证、重置并重建；不依赖人工 maintenance CLI、SQL 或临时运维步骤。
 - `summary?window=all` 与总量统计在归档前后完全一致；长期 totals 依赖 invocation rollups，而不是 archived 明细在线回查。
 - 给定 `previous7d`、`昨天前 7 天`、账号 usage 等跨自然日 summary 窗口，若其中一部分自然日已在更早的 retention 配置下 materialize 到 hourly rollup / archive，而另一部分仍保留在 live DB，读取结果仍必须与对应日粒度 timeseries totals 一致，不能因为当前 retention cutoff 已覆盖 `window.start` 就漏掉较早那几天。
 - 最近 30 天的 `codex_quota_snapshots` 逐条保留，更老日期只保留每天最后一条在线记录。

@@ -907,6 +907,47 @@ pub(crate) async fn upsert_archive_batch_manifest(
     tx: &mut sqlx::SqliteConnection,
     batch: &ArchiveBatchOutcome,
 ) -> Result<()> {
+    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_COMPLETED).await
+}
+
+pub(crate) async fn stage_invocation_archive_batch_manifest(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+) -> Result<()> {
+    debug_assert_eq!(batch.dataset, HOURLY_ROLLUP_DATASET_INVOCATIONS);
+    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_MATERIALIZING).await
+}
+
+pub(crate) async fn finalize_invocation_archive_batch_publication_tx(
+    tx: &mut sqlx::SqliteConnection,
+    file_path: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET status = ?1
+        WHERE dataset = ?2
+          AND file_path = ?3
+          AND status = ?4
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .bind(ARCHIVE_STATUS_MATERIALIZING)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() != 1 {
+        bail!("staged invocation archive was not available for publication: {file_path}");
+    }
+    Ok(())
+}
+
+async fn upsert_archive_batch_manifest_with_status(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+    status: &str,
+) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -962,7 +1003,7 @@ pub(crate) async fn upsert_archive_batch_manifest(
     .bind(&batch.file_path)
     .bind(&batch.sha256)
     .bind(batch.row_count)
-    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(status)
     .bind(batch.layout)
     .bind(batch.codec)
     .bind(batch.writer_version)

@@ -100,6 +100,20 @@ range-local unavailable until a later hydration proves coverage. It never
 represents incomplete coverage as a fresh result.
 _Avoid_: fabricated success, permanent global outage
 
+**Archive Publication Proof**:
+The durable certificate that an immutable `codex_invocations` archive has
+finite coverage and a current manifest identity whose required Summary rollups
+are exactly represented. A completed archive is Summary-eligible only when
+this proof becomes visible atomically with completion; an older archive obtains
+it only through automatic identity and source-closure reconciliation.
+_Avoid_: materialized timestamp as proof, marker-only repair, eventually
+consistent completed archive
+
+**Summary-Eligible Archive**:
+A completed invocation archive with Archive Publication Proof. It may supply
+durable Summary rollups without request-time archive access.
+_Avoid_: merely completed archive, readable archive, best-effort replay
+
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a
 background refresh is unavailable. Its retention does not permit a stale or

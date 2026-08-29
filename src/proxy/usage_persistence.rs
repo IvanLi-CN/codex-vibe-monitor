@@ -2734,7 +2734,7 @@ pub(crate) async fn mark_hourly_rollup_archive_replayed_tx(
         SELECT ?1, ?2, ?3, batches.sha256, datetime('now')
         FROM archive_batches AS batches
         WHERE batches.dataset = ?2
-          AND batches.status = 'completed'
+          AND batches.status IN ('completed', 'materializing')
           AND batches.file_path = ?3
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''

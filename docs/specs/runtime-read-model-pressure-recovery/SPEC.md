@@ -6,6 +6,7 @@
 
 - [ADR 0002: Exact Summary projection contract](../../adr/0002-exact-summary-projection-contract.md)
 - [ADR 0003: Durable invocation classification](../../adr/0003-durable-invocation-classification.md)
+- [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 
 ## 背景 / 问题陈述
 
@@ -72,6 +73,9 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
 - 仅为 `current` newest-N 候选而读取的 archive record 若在 current-index admission 中被裁剪，且该 record 已由相同 global/account totals 与 usage compact rollup 完整证明，则其裁剪不得写入 rolling/calendar 的遗漏时间边界；没有该完整 scope proof 的裁剪仍必须 fail closed。
 - archive manifest 或历史 source capacity 超过 bounded source admission 或 shared resident preview capacity 时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
+- `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。
+- 正常版本启动必须自动发现任一缺少 Archive Publication Proof 的 legacy completed invocation archive，并以文件 SHA 与完整 source/bucket closure 验证或重建其 compact rollup；不得由 `historical_rollups_materialized_at` 或缺失 marker 直接推断 proof，不得要求人工 CLI、SQL 或额外运维步骤。该协调仍在后台、pressure-aware 路径，HTTP/SSE 不参与 I/O。
+- source-record admission 的 range-local unavailable 只适用于外部 source capacity 或不可恢复 source 条件；它不是服务自身创建的 archive publication gap 的稳态语义。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
 - hydration、archive 读取和 reconcile 必须有 deadline、取消点、coalescing 与受控重试，不得在请求路径执行。
@@ -147,6 +151,8 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 ## 验收标准（Acceptance Criteria）
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
+- Given 一个 legacy completed invocation archive 具有有限 coverage、materialized timestamp 与两个 Summary replay proof、但缺少 SHA-bound global invocation proof，When 正常版本更新后的有界 startup reconciliation 完成，Then 它先验证并重置完整 source/bucket closure，再原子重建 proof 并发布 exact Projection；不需要人工 maintenance 命令，关闭 SQLite 后合法 current/1d/rolling HTTP read 仍为零 SQL/文件 I/O。
+- Given 新 invocation archive 在 Summary rollup 或任一 required SHA-bound proof 写入前失败，When 它尝试最终化为 `completed`，Then 数据库拒绝该状态转换、事务回滚且 live source 不被删除；后续正常启动只处理遗留 completed archive 的验证式 reconciliation。
 - Given 多个各自可 admission 的 live canonical source record，其累计 raw text 超过 shared resident preview-byte budget、但保留的 preview value 仍可容纳，When Summary Projection hydrate，Then 合法 `current`/`1d`/rolling selection 精确且可用；关闭 SQLite 后，每个 HTTP read 的 SQLite/file I/O 均为零。
 - Given 一个 source record 或 page 无法建立精确 coverage，When 它与 rolling/calendar exact boundary 相交或可能进入请求的 `current` prefix，Then 只有该 selection 为 `unavailable`；同一已发布 Projection 的不相交 exact selection 保持可用，且不返回 partial response。
 - Given 同一路径的 unmaterialized archive 被替换且 global/account replay marker 保留旧 SHA，When hydration 构建 all-time Projection，Then 两个 scope 都回放当前 archive 的精确 raw 数据，后续 HTTP 读取在关闭 SQLite 后仍不执行 SQL 或文件 I/O。

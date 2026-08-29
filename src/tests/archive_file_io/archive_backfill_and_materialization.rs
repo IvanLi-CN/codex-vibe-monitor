@@ -3133,6 +3133,12 @@ async fn materialize_historical_rollups_marks_replayed_batches_as_materialized_a
     .fetch_one(&pool)
     .await
     .expect("load invocation archive path");
+    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2")
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&invocation_archive_path)
+        .execute(&pool)
+        .await
+        .expect("clear atomic publication proofs to mimic pre-upgrade replay state");
     for target in [
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
@@ -3805,6 +3811,15 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
         .join("breakdown-repair-stale-replay-sha.sqlite.gz")
         .to_string_lossy()
         .to_string();
+    let archive_file = PathBuf::from(&archive_path);
+    fs::create_dir_all(
+        archive_file
+            .parent()
+            .expect("archive fixture has a parent directory"),
+    )
+    .expect("create archive fixture directory");
+    fs::write(&archive_file, b"initial archive bytes").expect("write initial archive fixture");
+    let initial_sha256 = sha256_hex_file(&archive_file).expect("hash initial archive fixture");
 
     sqlx::query(
         r#"
@@ -3824,9 +3839,9 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
             ?1,
             '2026-01',
             ?2,
-            'archive-sha-a',
-            1,
             ?3,
+            1,
+            ?4,
             '2026-01-15 08:00:00',
             '2026-01-15 08:30:00',
             datetime('now'),
@@ -3836,6 +3851,7 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_path)
+    .bind(&initial_sha256)
     .bind(ARCHIVE_STATUS_COMPLETED)
     .execute(&pool)
     .await
@@ -3849,12 +3865,13 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
             archive_sha256,
             replayed_at
         )
-        VALUES (?1, ?2, ?3, 'archive-sha-a', datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_path)
+    .bind(&initial_sha256)
     .execute(&pool)
     .await
     .expect("seed matching usage breakdown replay marker");
@@ -3864,14 +3881,18 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
         .expect("matching marker must preserve materialized archive state");
     assert_eq!(untouched, 0);
 
+    fs::write(&archive_file, b"replacement archive bytes").expect("replace archive fixture bytes");
+    let replacement_sha256 =
+        sha256_hex_file(&archive_file).expect("hash replacement archive fixture");
     sqlx::query(
         r#"
         UPDATE archive_batches
-        SET sha256 = 'archive-sha-b'
-        WHERE dataset = ?1
-          AND file_path = ?2
+        SET sha256 = ?1
+        WHERE dataset = ?2
+          AND file_path = ?3
         "#,
     )
+    .bind(&replacement_sha256)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_path)
     .execute(&pool)
@@ -4478,6 +4499,117 @@ async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() 
     assert_eq!(
         replacement_marker_count,
         INVOCATION_HOURLY_ROLLUP_TARGETS.len() as i64
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn startup_summary_proof_recovery_reopens_materialized_archive_and_replays_exactly() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("summary-proof-recovery").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "summary-proof-recovery",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "summary-proof-recovery",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"summary-proof-recovery"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    let initial = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize original archive");
+    assert_eq!(initial.materialized_invocation_batches, 1);
+    let before = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("capture original Summary rollup totals");
+    assert_eq!(before, (1, 1, 1));
+
+    sqlx::query(
+        r#"
+        DELETE FROM hourly_rollup_archive_replay
+        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("remove only the global Summary proof");
+
+    let recovered = materialize_historical_rollups_startup_window(&pool, 0, Duration::from_secs(6))
+        .await
+        .expect("startup recovery must reopen and replay the verified archive");
+    assert_eq!(recovered.summary.materialized_invocation_batches, 1);
+    assert_eq!(recovered.changed_path_count, 1);
+    let after = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            (SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly),
+            (SELECT COALESCE(SUM(total_count), 0) FROM upstream_account_stats_hourly WHERE upstream_account_id = 17),
+            (SELECT COALESCE(SUM(request_count), 0) FROM upstream_account_usage_breakdown_hourly WHERE upstream_account_id = 17)
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load Summary totals after startup recovery replay");
+    assert_eq!(after, before);
+
+    let summary_proof_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND target IN (?3, ?4, ?5)
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count complete Summary proofs after automatic replay");
+    assert_eq!(
+        summary_proof_count,
+        SUMMARY_PROJECTION_ARCHIVE_REPLAY_TARGETS.len() as i64
     );
 
     cleanup_temp_test_dir(&temp_dir);

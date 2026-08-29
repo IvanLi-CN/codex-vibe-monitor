@@ -960,8 +960,8 @@ async fn load_historical_rollup_startup_candidates(
             batches.coverage_start_at,
             batches.coverage_end_at
         FROM archive_batches AS batches
-        WHERE batches.status = ?2
-          AND batches.id > ?3
+        WHERE batches.status = ?4
+          AND batches.id > ?5
           AND (
                 (batches.dataset = 'codex_invocations' AND (
                     batches.historical_rollups_materialized_at IS NULL
@@ -971,15 +971,34 @@ async fn load_historical_rollup_startup_candidates(
                         WHERE replay.target = ?1
                           AND replay.dataset = batches.dataset
                           AND replay.file_path = batches.file_path
+                          AND replay.archive_sha256 = batches.sha256
+                    )
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM hourly_rollup_archive_replay AS replay
+                        WHERE replay.target = ?2
+                          AND replay.dataset = batches.dataset
+                          AND replay.file_path = batches.file_path
+                          AND replay.archive_sha256 = batches.sha256
+                    )
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM hourly_rollup_archive_replay AS replay
+                        WHERE replay.target = ?3
+                          AND replay.dataset = batches.dataset
+                          AND replay.file_path = batches.file_path
+                          AND replay.archive_sha256 = batches.sha256
                     )
                 ))
                 OR (batches.dataset = 'forward_proxy_attempts'
                     AND batches.historical_rollups_materialized_at IS NULL)
           )
         ORDER BY batches.id ASC
-        LIMIT ?4
+        LIMIT ?6
         "#,
     )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(cursor_id)
@@ -1935,6 +1954,138 @@ mod tests {
             Instant::now(),
             Some(Duration::from_secs(1)),
         ));
+    }
+
+    #[tokio::test]
+    async fn startup_candidates_include_materialized_invocation_archive_missing_global_summary_proof()
+     {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            "DROP TRIGGER IF EXISTS trg_completed_invocation_archive_requires_summary_proof",
+        )
+        .execute(&pool)
+        .await
+        .expect("remove publication guard for legacy fixture");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (
+                'codex_invocations',
+                '2026-08',
+                '/legacy/missing-global-summary-proof.sqlite.gz',
+                'legacy-summary-proof',
+                1,
+                'completed',
+                '2026-08-01 00:00:00',
+                '2026-08-01 01:00:00',
+                datetime('now')
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed materialized legacy invocation archive");
+        for target in [
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay \
+                 (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', \
+                         '/legacy/missing-global-summary-proof.sqlite.gz', \
+                         'legacy-summary-proof')",
+            )
+            .bind(target)
+            .execute(&pool)
+            .await
+            .expect("seed retained summary proof");
+        }
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("upgrade legacy archive schema");
+
+        let candidates = load_historical_rollup_startup_candidates(&pool, 0)
+            .await
+            .expect("load startup candidates");
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].file_path,
+            "/legacy/missing-global-summary-proof.sqlite.gz"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_invocation_archive_requires_summary_publication_proof() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (
+                'codex_invocations',
+                '2026-08',
+                '/staged/missing-summary-proof.sqlite.gz',
+                'staged-summary-proof',
+                1,
+                'materializing',
+                '2026-08-01 00:00:00',
+                '2026-08-01 01:00:00',
+                datetime('now')
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed staged invocation archive");
+
+        let error = sqlx::query(
+            "UPDATE archive_batches SET status = 'completed' \
+             WHERE dataset = 'codex_invocations' \
+               AND file_path = '/staged/missing-summary-proof.sqlite.gz'",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("publication must require every Summary proof");
+        assert!(
+            error
+                .to_string()
+                .contains("requires Summary publication proof")
+        );
     }
 
     #[tokio::test]

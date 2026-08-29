@@ -3434,6 +3434,55 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .context("failed to add hourly rollup archive replay identity column")?;
     }
 
+    // Invocation archives become Summary-visible only after their bounded source coverage and
+    // the three Summary rollup proofs have been committed in the same transaction. Historical
+    // rows remain readable for automatic recovery; the guard applies to future publication.
+    sqlx::query("DROP TRIGGER IF EXISTS trg_completed_invocation_archive_requires_summary_proof")
+        .execute(pool)
+        .await
+        .context("failed to replace completed invocation archive publication guard")?;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER trg_completed_invocation_archive_requires_summary_proof
+        BEFORE UPDATE OF status ON archive_batches
+        WHEN NEW.dataset = 'codex_invocations'
+          AND NEW.status = 'completed'
+          AND OLD.status <> 'completed'
+          AND (
+              NEW.coverage_start_at IS NULL
+              OR NEW.coverage_end_at IS NULL
+              OR NEW.historical_rollups_materialized_at IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'invocation_rollup_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_stats_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_usage_breakdown_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'completed codex_invocations archive requires Summary publication proof');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure completed invocation archive publication guard")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS hourly_rollup_archive_progress (

@@ -1085,6 +1085,11 @@ pub(crate) const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 11] = [
     HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
     HOURLY_ROLLUP_TARGET_STICKY_KEYS,
 ];
+pub(crate) const SUMMARY_PROJECTION_ARCHIVE_REPLAY_TARGETS: [&str; 3] = [
+    HOURLY_ROLLUP_TARGET_INVOCATIONS,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+];
 pub(crate) const PERF_STAGE_TOTAL: &str = "total";
 pub(crate) const PERF_STAGE_REQUEST_READ: &str = "requestRead";
 pub(crate) const PERF_STAGE_REQUEST_PARSE: &str = "requestParse";
@@ -3223,7 +3228,7 @@ pub(crate) async fn archive_old_invocations(
                 }
             }
             upsert_invocation_rollups(tx.as_mut(), &group).await?;
-            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            stage_invocation_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx.as_mut(),
                 spec.dataset,
@@ -3236,6 +3241,20 @@ pub(crate) async fn archive_old_invocations(
                 spec.dataset,
                 &materialized_rows,
                 &[],
+            )
+            .await?;
+            for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+                mark_hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    target,
+                    spec.dataset,
+                    &archive_outcome.file_path,
+                )
+                .await?;
+            }
+            finalize_invocation_archive_batch_publication_tx(
+                tx.as_mut(),
+                &archive_outcome.file_path,
             )
             .await?;
             let commit_started = Instant::now();
