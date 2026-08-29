@@ -31655,12 +31655,16 @@ mod request_compression_query_tests {
         .await;
         let payload_value = "x".repeat(SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES / 2 - 1_024);
         let payload = format!(r#"{{"model":"{payload_value}"}}"#);
+        let first_occurred_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(2));
+        let second_occurred_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(1));
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('paged-summary-live-1', datetime('now', '-2 minute'), 'proxy', 'success', 1, 0.1, ?1, '', 'full'),
-                    ('paged-summary-live-2', datetime('now', '-1 minute'), 'proxy', 'success', 2, 0.2, ?1, '', 'full')",
+             VALUES ('paged-summary-live-1', ?1, 'proxy', 'success', 1, 0.1, ?3, '', 'full'),
+                    ('paged-summary-live-2', ?2, 'proxy', 'success', 2, 0.2, ?3, '', 'full')",
         )
+        .bind(first_occurred_at)
+        .bind(second_occurred_at)
         .bind(&payload)
         .execute(&state.pool)
         .await
