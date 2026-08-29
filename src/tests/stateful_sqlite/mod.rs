@@ -40,6 +40,7 @@ mod prompt_cache_conversation_queries;
 mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
 mod proxy_pool_roundtrip_and_retry_servers;
+mod record_budget;
 mod request_preparation_and_handshake_failures;
 #[expect(
     clippy::await_holding_lock,
