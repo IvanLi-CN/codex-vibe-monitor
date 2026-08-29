@@ -7141,6 +7141,41 @@ const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
 // only after listener readiness, but still needs a finite cancellation-friendly work budget.
 pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
+
+#[cfg(test)]
+tokio::task_local! {
+    static SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize;
+}
+
+fn summary_projection_exact_record_limit() -> usize {
+    #[cfg(test)]
+    {
+        SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT
+            .try_with(|limit| *limit)
+            .unwrap_or(SUMMARY_PROJECTION_MAX_EXACT_RECORDS)
+    }
+
+    #[cfg(not(test))]
+    {
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn with_summary_projection_test_exact_record_limit<T>(
+    limit: usize,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT
+        .scope(limit, future)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) fn summary_projection_test_invocation() -> ApiInvocation {
+    invocation_cost_audit_tests::sample_invocation(None)
+}
+
 // Account and archive metadata are admission-controlled independently from exact invocation
 // rows.  A refresh which cannot represent the durable cardinality fails closed and keeps the
 // previous projection, rather than publishing a partial aggregate.
@@ -8468,11 +8503,19 @@ async fn admit_summary_projection_live_tail_account_ids(
         pool,
         InvocationSourceScope::All,
         account_rollup_live_cursor,
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+        summary_projection_exact_record_limit(),
     )
     .await
     .map(Some)
     .map_err(|error| anyhow!("summary projection account live-tail id hydration failed: {error:?}"))
+}
+
+#[cfg(test)]
+pub(crate) async fn admit_summary_projection_live_tail_account_ids_for_test(
+    pool: &Pool<Sqlite>,
+    account_rollup_live_cursor: Option<i64>,
+) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
+    admit_summary_projection_live_tail_account_ids(pool, account_rollup_live_cursor).await
 }
 
 async fn load_summary_projection_live_account_totals(
@@ -9632,7 +9675,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         }
     }
     bounded_query.push_str(&format!(" LIMIT ?{bind_index}"));
-    let archive_read_limit = (SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64;
+    let archive_read_limit = (summary_projection_exact_record_limit() + 1) as i64;
     let mut archive_query = sqlx::query_as::<_, SummaryProjectionArchiveRow>(&bounded_query);
     for range in &exact_ranges {
         archive_query = archive_query
@@ -9644,7 +9687,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         .fetch_all(archive_pool)
         .await?;
     let rows_seen = rows.len();
-    if !archive_has_materialized_rollups && rows_seen > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if !archive_has_materialized_rollups && rows_seen > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection unmaterialized archive exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded"
         ));
@@ -9712,7 +9755,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
             resident_current_record_bytes,
         )?;
         *exact_record_budget = exact_record_budget.saturating_add(1);
-        if *exact_record_budget > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        if *exact_record_budget > summary_projection_exact_record_limit() {
             return Err(anyhow!(
                 "summary projection exact-record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS}) exceeded by unmaterialized archive data"
             ));
@@ -10048,11 +10091,11 @@ async fn load_summary_projection_archive_account_ids(
     )
     .bind(lower)
     .bind(upper)
-    .bind((SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1) as i64)
+    .bind((summary_projection_exact_record_limit() + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection archive account discovery failed")?;
-    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if rows.len() > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection archive account discovery exceeded bounded account budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
@@ -10376,7 +10419,7 @@ async fn load_summary_projection_archive_manifest_accounts(
             }
         }
         query.push(")");
-        let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS.saturating_sub(accounts.len());
+        let remaining = summary_projection_exact_record_limit().saturating_sub(accounts.len());
         query
             .push(" LIMIT ")
             .push_bind((remaining.saturating_add(1)) as i64);
@@ -11153,7 +11196,7 @@ async fn build_summary_projection_once(
         },
         live_high_watermark_id,
         None,
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+        summary_projection_exact_record_limit() + 1,
         false,
         SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES,
         &mut live_preview_cache,
@@ -11204,7 +11247,7 @@ async fn build_summary_projection_once(
     {
         state.config.list_limit_max.saturating_add(1)
     } else {
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1
+        summary_projection_exact_record_limit() + 1
     };
     let recent_admission = match query_summary_projection_live_rows_with_budget(
         pool,
@@ -11264,7 +11307,7 @@ async fn build_summary_projection_once(
             })
         })
         .transpose()?;
-    recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
+    recent_rows.truncate(summary_projection_exact_record_limit());
     let mut current_records_by_invoke_id = HashMap::<String, SummaryProjectionRecord>::new();
     let mut current_record_bytes = 0_usize;
     let mut current_account_ranks = HashMap::<Option<i64>, usize>::new();
@@ -11313,7 +11356,7 @@ async fn build_summary_projection_once(
             current_records_by_invoke_id.insert(invoke_id, record);
         }
     }
-    if current_records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if current_records_by_invoke_id.len() > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection current index exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
@@ -11395,7 +11438,7 @@ async fn build_summary_projection_once(
         .values()
         .map(HashSet::len)
         .sum::<usize>();
-    if cached_archive_account_id_count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if cached_archive_account_id_count > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection archive account cache exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
@@ -11436,7 +11479,7 @@ async fn build_summary_projection_once(
         .values()
         .map(HashSet::len)
         .sum::<usize>();
-    if cached_archive_account_id_count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if cached_archive_account_id_count > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection archive account manifest exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
@@ -11523,7 +11566,7 @@ async fn build_summary_projection_once(
             continue;
         }
         let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
-        if records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        if records_by_invoke_id.len() >= summary_projection_exact_record_limit() {
             unavailable_exact_live_buckets.insert(bucket);
             continue;
         }
@@ -11594,7 +11637,7 @@ async fn build_summary_projection_once(
             if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
                 known_account_ids.extend(account_ids.iter().copied());
             }
-            if known_account_ids.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+            if known_account_ids.len() > summary_projection_exact_record_limit() {
                 return Err(anyhow!(
                     "summary projection archive account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
                 ));
@@ -11603,7 +11646,7 @@ async fn build_summary_projection_once(
         }
         let row_count = archive_row_counts.get(archive.file_path()).copied();
         if !archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
+            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
         {
             return Err(anyhow!(
                 "summary projection unmaterialized archive account discovery exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
@@ -11620,7 +11663,7 @@ async fn build_summary_projection_once(
                 .unwrap_or_default(),
         );
         if archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
+            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
             && replay_coverage.account_stats
             && replay_coverage.usage_breakdown
         {
@@ -11630,7 +11673,7 @@ async fn build_summary_projection_once(
             continue;
         }
         if archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
+            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
         {
             return Err(anyhow!(
                 "summary projection cannot prove account coverage for a large materialized archive without complete replay coverage"
@@ -11687,12 +11730,12 @@ async fn build_summary_projection_once(
         known_account_ids.extend(account_ids.iter().copied());
         cached_archive_account_id_count =
             cached_archive_account_id_count.saturating_add(account_ids.len());
-        if cached_archive_account_id_count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        if cached_archive_account_id_count > summary_projection_exact_record_limit() {
             return Err(anyhow!(
                 "summary projection archive account cache exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
-        if known_account_ids.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+        if known_account_ids.len() > summary_projection_exact_record_limit() {
             return Err(anyhow!(
                 "summary projection archive account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
@@ -11924,7 +11967,7 @@ async fn build_summary_projection_once(
             // exact; the cutoff below will fail closed for any request which touches it.
             continue;
         }
-        let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+        let remaining = summary_projection_exact_record_limit()
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
         let exact_live_admission = match query_summary_projection_live_rows_with_budget(
@@ -12022,7 +12065,7 @@ async fn build_summary_projection_once(
             .filter_map(|record| record.row.upstream_account_id)
             .filter(|account_id| *account_id > 0),
     );
-    if records_by_invoke_id.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if records_by_invoke_id.len() > summary_projection_exact_record_limit() {
         return Err(anyhow!(
             "summary projection exact archive/live replacement exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
@@ -12063,7 +12106,7 @@ async fn build_summary_projection_once(
         if !archive.has_materialized_historical_rollups()
             && archive_row_counts
                 .get(archive.file_path())
-                .is_some_and(|count| *count > SUMMARY_PROJECTION_MAX_EXACT_RECORDS as i64)
+                .is_some_and(|count| *count > summary_projection_exact_record_limit() as i64)
         {
             return Err(anyhow!(
                 "summary projection exact archive boundary exceeds bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
@@ -12512,7 +12555,7 @@ async fn build_summary_projection_once(
         };
         let is_new_rolling_record = !records_by_invoke_id.contains_key(&row.invoke_id);
         if is_new_rolling_record
-            && records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+            && records_by_invoke_id.len() >= summary_projection_exact_record_limit()
         {
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
             unavailable_exact_live_buckets.insert(bucket);
@@ -12592,8 +12635,8 @@ async fn build_summary_projection_once(
             .cmp(&right.occurred_at)
             .then_with(|| left.row.id.cmp(&right.row.id))
     });
-    if current_records.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
-        let first_retained = current_records.len() - SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
+    if current_records.len() > summary_projection_exact_record_limit() {
+        let first_retained = current_records.len() - summary_projection_exact_record_limit();
         recent_index_complete = false;
         let newly_pruned_at = current_records[..first_retained]
             .iter()
@@ -12868,7 +12911,7 @@ async fn build_summary_projection_once(
                 pool,
                 InvocationSourceScope::All,
                 rollup_live_cursor,
-                SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+                summary_projection_exact_record_limit(),
             )
             .await
             .map_err(|error| {
@@ -12936,7 +12979,7 @@ async fn build_summary_projection_once(
                     InvocationSourceScope::All,
                     None,
                     Some(live_tail_ids),
-                    SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+                    summary_projection_exact_record_limit(),
                 )
                 .await;
             match unmaterialized_archive_totals {
@@ -17958,7 +18001,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         range,
         high_watermark_id,
         None,
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+        summary_projection_exact_record_limit() + 1,
         false,
         SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES,
         preview_cache,
@@ -28796,6 +28839,32 @@ mod request_compression_query_tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
+    async fn exact_record_limit_test_override_is_task_scoped_and_defaults_to_production_limit() {
+        assert_eq!(
+            summary_projection_exact_record_limit(),
+            SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+        );
+
+        let (first, second) = tokio::join!(
+            with_summary_projection_test_exact_record_limit(8, async {
+                tokio::task::yield_now().await;
+                summary_projection_exact_record_limit()
+            }),
+            with_summary_projection_test_exact_record_limit(13, async {
+                tokio::task::yield_now().await;
+                summary_projection_exact_record_limit()
+            }),
+        );
+
+        assert_eq!(first, 8);
+        assert_eq!(second, 13);
+        assert_eq!(
+            summary_projection_exact_record_limit(),
+            SUMMARY_PROJECTION_MAX_EXACT_RECORDS
+        );
+    }
+
+    #[tokio::test]
     async fn summary_projection_paged_manifests_include_minimum_legacy_id() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -30596,7 +30665,7 @@ mod request_compression_query_tests {
             &state.pool,
             InvocationSourceScope::All,
             0,
-            SUMMARY_PROJECTION_MAX_EXACT_RECORDS,
+            summary_projection_exact_record_limit(),
         )
         .await
         .expect("admit bounded live tail");
@@ -30702,35 +30771,6 @@ mod request_compression_query_tests {
         assert_eq!(response.total_count, 1);
         assert_eq!(response.total_tokens, 17);
         assert_eq!(response.total_cost, 1.25);
-    }
-
-    #[tokio::test]
-    async fn summary_account_live_tail_admission_fails_closed_above_budget() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        sqlx::query(
-            r#"WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001)
-               INSERT INTO codex_invocations
-               (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
-               SELECT 'account-live-tail-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full'
-               FROM rows"#,
-        )
-        .execute(&state.pool)
-        .await
-        .expect("insert account live-tail overflow fixture");
-
-        let error = admit_summary_projection_live_tail_account_ids(&state.pool, Some(0))
-            .await
-            .expect_err("account live-tail overflow must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("summary projection account live-tail id hydration failed"),
-            "account live-tail overflow must report its bounded admission: {error:#}"
-        );
-        assert!(error.to_string().contains("budget exceeded"));
     }
 
     #[tokio::test]
@@ -31650,41 +31690,6 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_hydrates_when_historical_live_rows_exceed_exact_budget() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        sqlx::query(
-            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001) \
-             INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             SELECT 'historical-summary-' || value, datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full' FROM rows",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("insert large historical fixture");
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("hourly-backed projection should not retain epoch-zero history");
-        assert!(state.subscription_hub.summary_projection().await.is_some());
-        state.pool.close().await;
-
-        let Json(current) = fetch_summary(
-            State(state),
-            Query(SummaryQuery {
-                window: Some("current".to_string()),
-                limit: Some(1),
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect("a quiet historical account must have an exact memory-only current response");
-        assert_eq!(current.total_count, 1);
-        assert_eq!(current.total_tokens, 1);
-    }
-
-    #[tokio::test]
     async fn summary_projection_live_aggregate_admission_fails_closed_at_its_bound() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -31754,162 +31759,6 @@ mod request_compression_query_tests {
                 .expect("bounded account aggregate");
         assert_eq!(accounts.get(&42).map(|totals| totals.total_count), Some(1));
         assert_eq!(accounts.get(&43).map(|totals| totals.total_count), None);
-    }
-
-    #[tokio::test]
-    async fn summary_projection_live_horizon_overflow_publishes_local_unavailability() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        sqlx::query(
-            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001) \
-             INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             SELECT 'horizon-summary-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{}', '', 'full' FROM rows",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("insert large in-horizon fixture");
-
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("in-horizon overflow must publish a projection with a local gap");
-        assert!(state.subscription_hub.summary_projection().await.is_some());
-        state.pool.close().await;
-
-        let Json(current) = fetch_summary(
-            State(state.clone()),
-            Query(SummaryQuery {
-                window: Some("current".to_string()),
-                limit: Some(1),
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect("current prefix remains exact despite an older unproven rank");
-        assert_eq!(current.total_count, 1);
-        let error = fetch_summary(
-            State(state),
-            Query(SummaryQuery {
-                window: Some("1d".to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect_err("the overflowing live hour must remain unavailable");
-        assert!(matches!(error, ApiError::Unavailable(_)));
-    }
-
-    #[tokio::test]
-    async fn summary_projection_fails_closed_for_mixed_recent_index_overflow() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        sqlx::query(
-            r#"WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 49999)
-               INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
-               SELECT 'mixed-overflow-current-' || value, datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full' FROM rows"#,
-        )
-        .execute(&state.pool)
-        .await
-        .expect("insert exact-horizon fixture rows");
-        sqlx::query(
-            r#"INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level)
-               VALUES ('mixed-overflow-older-1', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full'),
-                      ('mixed-overflow-older-2', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{"upstreamAccountId":42}', '', 'full')"#,
-        )
-        .execute(&state.pool)
-        .await
-        .expect("insert legal rolling rows outside the exact horizon");
-        for dataset in [
-            "codex_invocations_summary_rollup_v2_live_cursor",
-            "invocation_account_activity_v2_repair_live_cursor",
-        ] {
-            sqlx::query(
-                r#"INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
-                   VALUES (?1, 49999, datetime('now'))
-                   ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = excluded.updated_at"#,
-            )
-            .bind(dataset)
-            .execute(&state.pool)
-            .await
-            .expect("record lagging rollup cursor");
-        }
-
-        let mut old_runtime_overlay = invocation_cost_audit_tests::sample_invocation(None);
-        old_runtime_overlay.id = 0;
-        old_runtime_overlay.invoke_id = "mixed-overflow-old-runtime-overlay".to_string();
-        old_runtime_overlay.occurred_at = (Utc::now() - ChronoDuration::days(8))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        old_runtime_overlay.created_at = old_runtime_overlay.occurred_at.clone();
-        old_runtime_overlay.source = SOURCE_PROXY.to_string();
-        old_runtime_overlay.status = Some("success".to_string());
-        old_runtime_overlay.upstream_account_id = Some(42);
-        old_runtime_overlay.total_tokens = Some(1);
-        old_runtime_overlay.cost = Some(0.1);
-        state
-            .proxy_runtime_invocations
-            .upsert_terminal(old_runtime_overlay);
-
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("hydrate bounded mixed-overflow projection with an older runtime overlay");
-        let projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("hydrated projection");
-        assert!(!projection.recent_index_complete);
-        assert!(
-            projection
-                .recent_index_overflow_at
-                .is_some_and(|overflow_at| overflow_at > Utc::now() - ChronoDuration::days(4)),
-            "the durable -3d omission must remain the strictest boundary instead of being relaxed by the -8d runtime overlay"
-        );
-        state.pool.close().await;
-
-        for upstream_account_id in [None, Some(42)] {
-            let error = fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some("7d".to_string()),
-                    limit: None,
-                    time_zone: Some("UTC".to_string()),
-                    upstream_account_id,
-                }),
-            )
-            .await
-            .expect_err(
-                "an unretained unrolled live row must not produce a truncated rolling total",
-            );
-            assert!(
-                matches!(error, ApiError::Unavailable(_)),
-                "rolling overflow must fail closed for {upstream_account_id:?}: {error:?}"
-            );
-        }
-
-        for upstream_account_id in [None, Some(42)] {
-            let Json(response) = fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some("1d".to_string()),
-                    limit: None,
-                    time_zone: Some("UTC".to_string()),
-                    upstream_account_id,
-                }),
-            )
-            .await
-            .expect("a range newer than the strictest overflow boundary remains exact in memory");
-            assert_eq!(
-                response.total_count, 49_999,
-                "safe range for {upstream_account_id:?}"
-            );
-        }
     }
 
     #[test]
@@ -32877,6 +32726,9 @@ mod request_compression_query_tests {
 
     #[tokio::test]
     async fn summary_projection_fails_closed_when_unmaterialized_archive_exceeds_budget() {
+        const TEST_EXACT_RECORD_LIMIT: usize = 8;
+
+        with_summary_projection_test_exact_record_limit(TEST_EXACT_RECORD_LIMIT, async {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -32895,12 +32747,13 @@ mod request_compression_query_tests {
         .await
         .expect("create archive fixture table");
         sqlx::query(
-            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < 50001) \
+            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1) \
              INSERT INTO codex_invocations (id, invoke_id, occurred_at, source, model, payload, \
              input_tokens, output_tokens, total_tokens, cost, status) \
              SELECT value, 'archive-summary-' || value, datetime('now', '-1 minute'), 'proxy', \
              'gpt-5', '{}', 1, 1, 2, 0.1, 'success' FROM rows",
         )
+        .bind((TEST_EXACT_RECORD_LIMIT + 1) as i64)
         .execute(&pool)
         .await
         .expect("insert unmaterialized archive fixture");
@@ -32931,7 +32784,7 @@ mod request_compression_query_tests {
         .await
         .expect_err("unmaterialized archive overflow must fail closed");
         assert!(error.to_string().contains("exact-record budget"));
-        assert!(records.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
+        assert!(records.len() <= TEST_EXACT_RECORD_LIMIT);
 
         let mut materialized_records = HashMap::new();
         let mut materialized_budget = 0;
@@ -32969,6 +32822,8 @@ mod request_compression_query_tests {
         .await
         .expect("materialized archive outside protected boundaries must stay bounded");
         assert!(materialized_records.is_empty());
+        })
+        .await;
     }
 
     #[tokio::test]
