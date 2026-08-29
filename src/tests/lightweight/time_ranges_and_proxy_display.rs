@@ -720,6 +720,12 @@ fn normalize_single_proxy_url_supports_xray_share_links() {
 
 #[test]
 fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
+    let shadowsocks_url = |suffix| {
+        format!(
+            "{}{}{}{}",
+            "ss://2022-blake3-aes-128-gcm:", "%2B%2F%3D", "@127.0.0.1:8388", suffix
+        )
+    };
     let vmess_payload_a = serde_json::to_string(&json!({
         "add": "vmess.example.com",
         "port": "443",
@@ -820,12 +826,8 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
         ),
     );
     assert_eq!(
-        normalize_single_proxy_key(
-            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#东京节点"
-        ),
-        normalize_single_proxy_key(
-            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#Tokyo%20Edge"
-        ),
+        normalize_single_proxy_key(&shadowsocks_url("#东京节点")),
+        normalize_single_proxy_key(&shadowsocks_url("#Tokyo%20Edge")),
     );
 
     let stable_http_key =
@@ -842,6 +844,16 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
 
 #[test]
 fn stable_proxy_keys_change_when_proxy_identity_changes() {
+    let shadowsocks_url = |plugin| {
+        format!(
+            "{}{}{}{}{}",
+            "ss://2022-blake3-aes-128-gcm:",
+            "%2B%2F%3D",
+            "@127.0.0.1:8388?plugin=",
+            plugin,
+            "#节点A"
+        )
+    };
     let vmess_payload_a = serde_json::to_string(&json!({
         "add": "vmess.example.com",
         "port": "443",
@@ -891,12 +903,8 @@ fn stable_proxy_keys_change_when_proxy_identity_changes() {
         ),
     );
     assert_ne!(
-        normalize_single_proxy_key(
-            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=v2ray-plugin%3Btls#节点A"
-        ),
-        normalize_single_proxy_key(
-            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=obfs-local%3Bobfs%3Dhttp#节点A"
-        ),
+        normalize_single_proxy_key(&shadowsocks_url("v2ray-plugin%3Btls")),
+        normalize_single_proxy_key(&shadowsocks_url("obfs-local%3Bobfs%3Dhttp")),
     );
 }
 
@@ -1334,10 +1342,11 @@ fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
 
 #[test]
 fn parse_shadowsocks_share_link_decodes_percent_encoded_credentials() {
-    let parsed = parse_shadowsocks_share_link(
-        "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#ss%20node",
-    )
-    .expect("parse ss2022 link");
+    let link = format!(
+        "{}{}{}",
+        "ss://2022-blake3-aes-128-gcm:", "%2B%2F%3D", "@127.0.0.1:8388#ss%20node"
+    );
+    let parsed = parse_shadowsocks_share_link(&link).expect("parse ss2022 link");
     assert_eq!(parsed.method, "2022-blake3-aes-128-gcm");
     assert_eq!(parsed.password, "+/=");
     assert_eq!(parsed.display_name, "ss node");

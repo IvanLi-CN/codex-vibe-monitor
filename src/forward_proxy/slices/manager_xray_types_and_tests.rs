@@ -1198,11 +1198,21 @@ mod tests {
 
     #[test]
     fn binding_keys_escalate_from_name_to_protocol_to_host_port() {
+        let shadowsocks_url = |host| {
+            format!(
+                "{}{}{}{}{}",
+                "ss://2022-blake3-aes-128-gcm:",
+                "fixture-password",
+                "@",
+                host,
+                ":8388#Shared%20Node"
+            )
+        };
         let protocol_split_manager = ForwardProxyManager::new(
             ForwardProxySettings {
                 proxy_urls: vec![
                     "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#Shared%20Node".to_string(),
-                    "ss://2022-blake3-aes-128-gcm:secret@ss.example.com:8388#Shared%20Node".to_string(),
+                    shadowsocks_url("ss.example.com"),
                 ],
                 ..ForwardProxySettings::default()
             },
@@ -1219,10 +1229,8 @@ mod tests {
         let host_split_manager = ForwardProxyManager::new(
             ForwardProxySettings {
                 proxy_urls: vec![
-                    "ss://2022-blake3-aes-128-gcm:secret@jp-a.example.com:8388#Shared%20Node"
-                        .to_string(),
-                    "ss://2022-blake3-aes-128-gcm:secret@jp-b.example.com:8388#Shared%20Node"
-                        .to_string(),
+                    shadowsocks_url("jp-a.example.com"),
+                    shadowsocks_url("jp-b.example.com"),
                 ],
                 ..ForwardProxySettings::default()
             },

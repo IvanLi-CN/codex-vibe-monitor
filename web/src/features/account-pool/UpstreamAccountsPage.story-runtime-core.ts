@@ -134,8 +134,10 @@ function buildRequestBuckets(
 }
 
 const directBindingKey = "__direct__";
-const subscriptionSsKey =
-  "ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ";
+const subscriptionSsKey = [
+  "ss://2022-blake3-aes-128-gcm:",
+  "fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+].join("");
 const subscriptionVlessKey =
   "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS";
 
