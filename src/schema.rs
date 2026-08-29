@@ -1321,6 +1321,89 @@ async fn legacy_raw_blob_link_seed_completed(
         != 0)
 }
 
+fn legacy_archive_segment_id_range(part_key: &str) -> Option<(i64, i64)> {
+    let encoded = part_key.strip_prefix("part-")?;
+    let (lower, remainder) = encoded.split_once('-')?;
+    let (upper, _) = remainder.split_once('-')?;
+    let lower = i64::from_str_radix(lower, 16).ok()?;
+    let upper = i64::from_str_radix(upper, 16).ok()?;
+    (lower > 0 && upper >= lower).then_some((lower, upper))
+}
+
+async fn classify_legacy_invocation_detail_archive_mirrors(pool: &Pool<Sqlite>) -> Result<()> {
+    const CLASSIFICATION_CHUNK_SIZE: i64 = 512;
+    let mut after_id = 0_i64;
+
+    loop {
+        let candidates = sqlx::query_as::<_, (i64, String)>(
+            r#"
+            SELECT id, part_key
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+              AND status = 'completed'
+              AND summary_source_kind = 'unknown'
+              AND layout = 'segment_v1'
+              AND part_key IS NOT NULL
+              AND id > ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(after_id)
+        .bind(CLASSIFICATION_CHUNK_SIZE)
+        .fetch_all(pool)
+        .await?;
+        let Some(last_id) = candidates.last().map(|(id, _)| *id) else {
+            break;
+        };
+        after_id = last_id;
+
+        let ranges = candidates
+            .into_iter()
+            .filter_map(|(id, part_key)| {
+                legacy_archive_segment_id_range(&part_key)
+                    .map(|(lower_id, upper_id)| (id, lower_id, upper_id))
+            })
+            .collect::<Vec<_>>();
+        if ranges.is_empty() {
+            continue;
+        }
+
+        let mut query = sqlx::QueryBuilder::<Sqlite>::new(
+            "WITH candidates(id, lower_id, upper_id) AS (VALUES ",
+        );
+        for (index, (id, lower_id, upper_id)) in ranges.into_iter().enumerate() {
+            if index > 0 {
+                query.push(", ");
+            }
+            query
+                .push("(")
+                .push_bind(id)
+                .push(", ")
+                .push_bind(lower_id)
+                .push(", ")
+                .push_bind(upper_id)
+                .push(")");
+        }
+        query.push(
+            ") \
+             UPDATE archive_batches \
+             SET summary_source_kind = 'live_mirror' \
+             WHERE summary_source_kind = 'unknown' \
+               AND id IN ( \
+                    SELECT id FROM candidates \
+                    WHERE ( \
+                        SELECT COUNT(*) FROM codex_invocations AS live \
+                        WHERE live.id BETWEEN lower_id AND upper_id \
+                    ) = upper_id - lower_id + 1 \
+               )",
+        );
+        query.build().execute(pool).await?;
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let schema_lock = ensure_schema_lock(pool);
     let _schema_guard = schema_lock.lock_owned().await;
@@ -1941,6 +2024,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             coverage_start_epoch INTEGER,
             coverage_end_epoch INTEGER,
             archive_expires_at TEXT,
+            summary_source_kind TEXT NOT NULL DEFAULT 'unknown',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(dataset, month_key, file_path)
         )
@@ -1970,6 +2054,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("archive_expires_at", "TEXT"),
         ("upstream_activity_manifest_refreshed_at", "TEXT"),
         ("historical_rollups_materialized_at", "TEXT"),
+        ("summary_source_kind", "TEXT NOT NULL DEFAULT 'unknown'"),
     ] {
         if !archive_batch_columns.contains(column) {
             let statement = format!("ALTER TABLE archive_batches ADD COLUMN {column} {ty}");
@@ -1979,6 +2064,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .with_context(|| format!("failed to add archive_batches column {column}"))?;
         }
     }
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_summary_source_classification
+        ON archive_batches (dataset, status, summary_source_kind, layout, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary archive source classification index")?;
+
+    // A detail-prune archive duplicates records still retained in the live table. Segment keys
+    // encode the exact inclusive ID bounds in hexadecimal; only a contiguous live range proves
+    // that every archived record remains live. Unknown legacy manifests stay fail-closed.
+    classify_legacy_invocation_detail_archive_mirrors(pool)
+        .await
+        .context("failed to classify legacy invocation detail archive mirrors")?;
 
     // Archive writers retain the established text bounds for compatibility, while read-side
     // coverage planners use these normalized epochs for indexed range lookups.
@@ -2111,6 +2213,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_rollup_materialization")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_summary_source_coverage
+        ON archive_batches (
+            dataset,
+            status,
+            summary_source_kind,
+            coverage_end_epoch,
+            coverage_start_epoch,
+            id
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary archive source coverage index")?;
 
     sqlx::query(
         r#"
@@ -3433,6 +3552,105 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await
             .context("failed to add hourly rollup archive replay identity column")?;
     }
+
+    // An authoritative invocation archive becomes Summary-visible only after its bounded source
+    // coverage and the three Summary rollup proofs commit in the same transaction. Live-detail
+    // mirrors never enter Summary source coverage and therefore do not require these proofs.
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS trg_insert_authoritative_invocation_archive_requires_summary_proof",
+    )
+    .execute(pool)
+    .await
+    .context("failed to replace authoritative invocation archive insert guard")?;
+    sqlx::query(
+        "DROP TRIGGER IF EXISTS trg_update_authoritative_invocation_archive_requires_summary_proof",
+    )
+    .execute(pool)
+    .await
+    .context("failed to replace authoritative invocation archive update guard")?;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER trg_insert_authoritative_invocation_archive_requires_summary_proof
+        BEFORE INSERT ON archive_batches
+        WHEN NEW.dataset = 'codex_invocations'
+          AND NEW.status = 'completed'
+          AND NEW.summary_source_kind = 'authoritative'
+          AND (
+              NEW.coverage_start_at IS NULL
+              OR NEW.coverage_end_at IS NULL
+              OR NEW.historical_rollups_materialized_at IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'invocation_rollup_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_stats_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_usage_breakdown_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'completed codex_invocations archive requires Summary publication proof');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure authoritative invocation archive insert guard")?;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER trg_update_authoritative_invocation_archive_requires_summary_proof
+        BEFORE UPDATE OF status, summary_source_kind ON archive_batches
+        WHEN NEW.dataset = 'codex_invocations'
+          AND NEW.status = 'completed'
+          AND NEW.summary_source_kind = 'authoritative'
+          AND (OLD.status <> 'completed' OR OLD.summary_source_kind <> 'authoritative')
+          AND (
+              NEW.coverage_start_at IS NULL
+              OR NEW.coverage_end_at IS NULL
+              OR NEW.historical_rollups_materialized_at IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'invocation_rollup_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_stats_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+              OR NOT EXISTS (
+                  SELECT 1 FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = 'upstream_account_usage_breakdown_hourly'
+                    AND replay.dataset = NEW.dataset
+                    AND replay.file_path = NEW.file_path
+                    AND replay.archive_sha256 = NEW.sha256
+              )
+          )
+        BEGIN
+            SELECT RAISE(ABORT, 'completed codex_invocations archive requires Summary publication proof');
+        END
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure authoritative invocation archive update guard")?;
 
     sqlx::query(
         r#"

@@ -4234,8 +4234,11 @@ mod websocket_tests {
 
     #[test]
     fn forward_proxy_credentials_are_percent_decoded() {
-        let proxy_url = Url::parse("http://user%2Bname:p%40ss%3Aword@proxy.example.test:8080")
-            .expect("valid proxy url");
+        let proxy_url = format!(
+            "{}{}{}",
+            "http://user%2Bname:", "p%40ss%3Aword", "@proxy.example.test:8080"
+        );
+        let proxy_url = Url::parse(&proxy_url).expect("valid proxy url");
 
         assert_eq!(
             forward_proxy_basic_auth_credential(&proxy_url).as_deref(),

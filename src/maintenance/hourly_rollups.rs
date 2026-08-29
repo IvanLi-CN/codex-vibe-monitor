@@ -155,6 +155,7 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''
@@ -219,6 +220,7 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
         "#,
@@ -351,6 +353,7 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
           AND coverage_end_at >= ?3
@@ -468,6 +471,29 @@ async fn archive_batch_has_completed_manifest_sha_tx(
     )
     .bind(dataset)
     .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some())
+}
+
+async fn invocation_archive_has_materialized_rollups_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT 1
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND status = ?3
+          AND historical_rollups_materialized_at IS NOT NULL
+        LIMIT 1
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_optional(&mut *tx)
     .await?
     .is_some())
@@ -875,8 +901,8 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
         Some(coverage_start_at),
         Some(coverage_end_at),
     )?;
-    let mut reopened_file_paths = vec![file_path.to_string()];
-    let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
+    let mut reopened_file_paths = Vec::new();
+    let mut reopened_file_path_set = HashSet::new();
 
     // Resetting an overlapping archive requires clearing its entire coverage before it can be
     // replayed. Keep expanding the overlap set until every reopened archive is represented.
@@ -889,17 +915,26 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             .await?;
         let mut expanded = false;
         for overlapping_archive in overlapping_archives {
-            if overlapping_archive
+            let Some(expected_sha256) = overlapping_archive
                 .sha256
                 .as_deref()
-                .is_none_or(|sha256| sha256.trim().is_empty())
-            {
+                .filter(|sha256| !sha256.trim().is_empty())
+            else {
                 // An unverifiable overlap cannot be replayed after its rows are cleared.
                 // Leave the complete closure quarantined rather than partially rebuilding it.
                 return Ok(None);
-            }
+            };
             if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                 continue;
+            }
+            let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(
+                &overlapping_archive.file_path,
+            )) {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            };
+            if actual_sha256 != expected_sha256 {
+                return Ok(None);
             }
             reopened_file_paths.push(overlapping_archive.file_path);
             bucket_start_epochs.extend(crate::stats::archive_bucket_start_epochs_from_bounds(
@@ -913,9 +948,31 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             break;
         }
     }
+    if !reopened_file_path_set.contains(file_path) {
+        return Ok(None);
+    }
     clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
     reset_invocation_archive_replay_state_tx(tx, &reopened_file_paths).await?;
     Ok(Some(reopened_file_paths))
+}
+
+async fn invocation_archive_is_missing_summary_projection_proof_tx(
+    tx: &mut SqliteConnection,
+    file_path: &str,
+) -> Result<bool> {
+    for target in SUMMARY_PROJECTION_ARCHIVE_REPLAY_TARGETS {
+        if !hourly_rollup_archive_replayed_tx(
+            tx,
+            target,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            file_path,
+        )
+        .await?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
@@ -933,9 +990,6 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
         )?;
         let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
 
-        // Rebuild the entire overlap closure before clearing. A peer can extend into later
-        // buckets that overlap another peer, so a single query would leave stale rows that a
-        // subsequent additive replay can count twice.
         loop {
             let overlapping_archives =
                 load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
@@ -979,8 +1033,8 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
         )
         .await?;
     }
-    for reopen_file_path in &reopened_file_paths {
-        reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopen_file_path).await?;
+    for reopened_file_path in &reopened_file_paths {
+        reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopened_file_path).await?;
     }
     Ok(Some(reopened_file_paths))
 }
@@ -1005,14 +1059,9 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
         )
         .await?
         {
-            // A legacy replay marker cannot prove its source without a completed manifest SHA.
-            // Preserve the completed materialization as quarantine evidence until it can be
-            // upgraded from a valid manifest or rebuilt with known coverage.
             continue;
         }
         if invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &file_path).await? {
-            // A legacy NULL/blank marker has no source identity. Do not turn it into proof for
-            // the current manifest or replay over rows whose provenance is unknown.
             continue;
         }
         let has_stale_replay_marker =
@@ -1028,8 +1077,6 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
             continue;
         }
         let reopened = if has_stale_replay_marker {
-            // A non-null mismatch means the archive may have changed. Rebuild every affected
-            // target before permitting additive replay, rather than replaying over old rows.
             reopen_replaced_materialized_invocation_archive_tx(
                 tx.as_mut(),
                 &file_path,
@@ -1434,6 +1481,7 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND NOT EXISTS (
                 SELECT 1
                 FROM hourly_rollup_archive_replay AS replay
@@ -1883,10 +1931,19 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             summary.blocked_batches += 1;
             continue;
         }
-        if invocation_archive_has_stale_replay_marker_tx(tx, &archive_file.file_path).await? {
-            // A non-null A -> B mismatch means some prior contribution may remain even when
-            // this batch is only partially materialized. Reset the full overlap closure before
-            // inspecting pending targets so no additive replay can double count old rows.
+        let has_stale_replay_marker =
+            invocation_archive_has_stale_replay_marker_tx(tx, &archive_file.file_path).await?;
+        let materialized_summary_proof_missing =
+            invocation_archive_has_materialized_rollups_tx(tx, &archive_file.file_path).await?
+                && invocation_archive_is_missing_summary_projection_proof_tx(
+                    tx,
+                    &archive_file.file_path,
+                )
+                .await?;
+        if has_stale_replay_marker || materialized_summary_proof_missing {
+            // A stale marker or missing Summary proof on a materialized archive means a prior
+            // contribution may remain. Reset the verified overlap closure before inspecting
+            // pending targets so an incremental replay cannot double count old rows.
             let Some(_) = reopen_replaced_materialized_invocation_archive_tx(
                 tx,
                 &archive_file.file_path,
@@ -2314,6 +2371,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND historical_rollups_materialized_at IS NULL
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,

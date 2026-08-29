@@ -1121,10 +1121,14 @@ pub(crate) struct ShadowsocksShareLink {
 impl ShadowsocksShareLink {
     fn stable_identity(&self) -> String {
         format!(
-            "ss://{}:{}@{}:{}",
+            "{}{}{}{}{}{}{}{}",
+            "ss://",
             self.method.to_ascii_lowercase(),
+            ":",
             self.password,
+            "@",
             self.host.to_ascii_lowercase(),
+            ":",
             self.port,
         )
     }

@@ -3869,7 +3869,7 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
 
     let batch = sqlx::query(
         r#"
-        SELECT file_path, row_count, status
+        SELECT file_path, row_count, status, summary_source_kind
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
         "#,
@@ -3880,7 +3880,18 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
     let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
     assert!(file_path.exists());
     assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+    assert_eq!(
+        batch.get::<String, _>("summary_source_kind"),
+        SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR
+    );
     assert_eq!(batch.get::<i64, _>("row_count"), 1);
+    assert!(
+        crate::stats::load_completed_invocation_archive_paths(&pool)
+            .await
+            .expect("load Summary archive sources")
+            .is_empty(),
+        "a detail-prune archive duplicates a retained live row and must not become a Summary source"
+    );
 
     let archive_db_path = temp_dir.join("retention-prune-archive.sqlite");
     inflate_gzip_sqlite_file(&file_path, &archive_db_path).expect("inflate prune archive");
@@ -4237,9 +4248,9 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     assert_eq!(rollup.get::<i64, _>("total_tokens"), 100);
     assert_f64_close(rollup.get::<f64, _>("total_cost"), 0.5);
 
-    let batches = sqlx::query_as::<_, (String, i64, String, String)>(
+    let batches = sqlx::query_as::<_, (String, i64, String, String, String)>(
         r#"
-        SELECT file_path, row_count, status, layout
+        SELECT file_path, row_count, status, layout, summary_source_kind
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
         ORDER BY file_path ASC
@@ -4249,12 +4260,16 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     .await
     .expect("load invocation archive batches");
     assert_eq!(batches.len(), 2);
-    for (file_path, row_count, status, layout) in batches {
+    for (file_path, row_count, status, layout, summary_source_kind) in batches {
         let file_path = PathBuf::from(file_path);
         assert!(file_path.exists());
         assert!(row_count >= 1);
         assert_eq!(status, ARCHIVE_STATUS_COMPLETED);
         assert_eq!(layout, ARCHIVE_LAYOUT_SEGMENT_V1);
+        assert_eq!(
+            summary_source_kind,
+            SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+        );
     }
 
     cleanup_temp_test_dir(&temp_dir);
@@ -5086,6 +5101,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             coverage_start_at: None,
             coverage_end_at: None,
             archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
             layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
             codec: ARCHIVE_FILE_CODEC_GZIP,
             writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
@@ -5185,6 +5201,7 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             coverage_start_at: None,
             coverage_end_at: None,
             archive_expires_at: None,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
             layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
             codec: ARCHIVE_FILE_CODEC_GZIP,
             writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,

@@ -1418,7 +1418,7 @@ pub(crate) async fn load_completed_archive_paths_for_dataset(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     dataset: &str,
 ) -> Result<Vec<ArchiveBatchPathRow>> {
-    sqlx::query_as::<_, ArchiveBatchPathRow>(
+    let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT
             file_path,
@@ -1429,16 +1429,20 @@ pub(crate) async fn load_completed_archive_paths_for_dataset(
             NULL AS needs_overall,
             NULL AS needs_failures
         FROM archive_batches
-        WHERE dataset = ?1
-          AND status = ?2
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        WHERE dataset =
         "#,
-    )
-    .bind(dataset)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(executor)
-    .await
-    .map_err(Into::into)
+    );
+    query.push_bind(dataset).push(" AND status = ");
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        query.push(" AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'");
+    }
+    query.push(" ORDER BY month_key ASC, created_at ASC, id ASC");
+    query
+        .build_query_as::<ArchiveBatchPathRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) async fn load_invocation_archives_missing_rollup_target(
@@ -1483,6 +1487,7 @@ async fn load_invocation_archives_missing_rollup_target_with_limit(
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
     query.push(
         r#"
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND NOT EXISTS(
             SELECT 1
             FROM hourly_rollup_archive_replay AS replay
@@ -1610,6 +1615,11 @@ async fn load_completed_archive_paths_for_dataset_in_range_with_limit(
         "#,
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        // Detail mirrors preserve payload observability while the canonical invocation remains
+        // live. They are not Summary sources and must not consume archive admission capacity.
+        query.push(" AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'");
+    }
 
     if let Some((start, end)) = range {
         let start_bound = db_occurred_at_upper_bound(start);
@@ -1719,6 +1729,7 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND (
             NOT EXISTS(
                 SELECT 1
@@ -2421,6 +2432,7 @@ pub(crate) async fn load_replayed_invocation_archives_for_month_keys(
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
     query.push(
         r#"
+         AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
          AND EXISTS(
             SELECT 1
             FROM hourly_rollup_archive_replay AS replay

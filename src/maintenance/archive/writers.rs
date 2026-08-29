@@ -655,6 +655,7 @@ pub(crate) async fn archive_rows_into_month_batch(
         coverage_start_at: None,
         coverage_end_at: None,
         archive_expires_at: None,
+        summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
         layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
         codec: ARCHIVE_FILE_CODEC_GZIP,
         writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
@@ -871,6 +872,7 @@ pub(crate) async fn archive_rows_into_segment_batch(
         coverage_start_at: None,
         coverage_end_at: None,
         archive_expires_at: None,
+        summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
         layout: ARCHIVE_LAYOUT_SEGMENT_V1,
         codec: config.invocation_archive_codec.as_str(),
         writer_version: ARCHIVE_WRITER_VERSION_SEGMENT_V1,
@@ -907,6 +909,55 @@ pub(crate) async fn upsert_archive_batch_manifest(
     tx: &mut sqlx::SqliteConnection,
     batch: &ArchiveBatchOutcome,
 ) -> Result<()> {
+    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_COMPLETED).await
+}
+
+pub(crate) async fn stage_invocation_archive_batch_manifest(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+) -> Result<()> {
+    if batch.dataset != HOURLY_ROLLUP_DATASET_INVOCATIONS
+        || batch.summary_source_kind != SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+    {
+        bail!(
+            "only an authoritative codex_invocations archive can enter Summary publication staging"
+        );
+    }
+    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_MATERIALIZING).await
+}
+
+pub(crate) async fn finalize_invocation_archive_batch_publication_tx(
+    tx: &mut sqlx::SqliteConnection,
+    file_path: &str,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET status = ?1
+        WHERE dataset = ?2
+          AND file_path = ?3
+          AND status = ?4
+          AND summary_source_kind = ?5
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .bind(ARCHIVE_STATUS_MATERIALIZING)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() != 1 {
+        bail!("staged invocation archive was not available for publication: {file_path}");
+    }
+    Ok(())
+}
+
+async fn upsert_archive_batch_manifest_with_status(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+    status: &str,
+) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -926,9 +977,10 @@ pub(crate) async fn upsert_archive_batch_manifest(
             coverage_start_at,
             coverage_end_at,
             archive_expires_at,
+            summary_source_kind,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, datetime('now'))
         ON CONFLICT(dataset, month_key, file_path) DO UPDATE SET
             day_key = excluded.day_key,
             part_key = excluded.part_key,
@@ -952,6 +1004,7 @@ pub(crate) async fn upsert_archive_batch_manifest(
                 ELSE MAX(archive_batches.coverage_end_at, excluded.coverage_end_at)
             END,
             archive_expires_at = excluded.archive_expires_at,
+            summary_source_kind = excluded.summary_source_kind,
             created_at = datetime('now')
         "#,
     )
@@ -962,7 +1015,7 @@ pub(crate) async fn upsert_archive_batch_manifest(
     .bind(&batch.file_path)
     .bind(&batch.sha256)
     .bind(batch.row_count)
-    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(status)
     .bind(batch.layout)
     .bind(batch.codec)
     .bind(batch.writer_version)
@@ -971,6 +1024,7 @@ pub(crate) async fn upsert_archive_batch_manifest(
     .bind(batch.coverage_start_at.as_deref())
     .bind(batch.coverage_end_at.as_deref())
     .bind(batch.archive_expires_at.as_deref())
+    .bind(batch.summary_source_kind)
     .execute(&mut *tx)
     .await?;
     let deduped_upstream_last_activity =

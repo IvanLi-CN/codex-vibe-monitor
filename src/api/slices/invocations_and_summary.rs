@@ -9192,7 +9192,8 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
     query
         .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
         .push(" AND status = ")
-        .push_bind(ARCHIVE_STATUS_COMPLETED);
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(" AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'");
     if !represented_archive_paths.is_empty() {
         query.push(" AND file_path NOT IN (");
         let mut separated = query.separated(", ");
@@ -9219,6 +9220,7 @@ async fn load_summary_projection_current_archive_admission(
          historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
          FROM archive_batches \
          WHERE dataset = ?1 AND status = ?2 \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
            AND (coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL OR coverage_end_epoch >= ?3) \
          ORDER BY coverage_end_epoch DESC, id DESC \
          LIMIT ?4",
@@ -10331,6 +10333,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
          AND batches.status = 'completed' \
+         AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
          AND ( \
                NOT EXISTS ( \
                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
@@ -10537,7 +10540,8 @@ async fn summary_projection_completed_manifest_high_watermark(
 ) -> Result<Option<i64>> {
     sqlx::query_scalar::<_, Option<i64>>(
         "SELECT MAX(id) FROM archive_batches \
-         WHERE dataset = 'codex_invocations' AND status = 'completed'",
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
     )
     .fetch_one(pool)
     .await
@@ -10561,6 +10565,7 @@ async fn summary_projection_overflowed_boundary_manifests_have_complete_rollups(
              SELECT 1 FROM archive_batches AS batches \
              WHERE batches.dataset = 'codex_invocations' \
                AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
                AND batches.id <= ?6 \
                AND ( \
                     batches.coverage_start_at IS NULL \
@@ -10620,6 +10625,7 @@ async fn summary_projection_overflowed_all_time_manifests_have_complete_rollups(
              SELECT 1 FROM archive_batches AS batches \
              WHERE batches.dataset = 'codex_invocations' \
                AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
                AND batches.id <= ?1 \
                AND ( \
                     batches.coverage_start_at IS NULL \
@@ -10685,7 +10691,8 @@ async fn load_summary_projection_boundary_manifest_page(
                 upstream_activity_manifest_refreshed_at \
          FROM archive_batches \
          WHERE dataset = 'codex_invocations' \
-           AND status = 'completed'",
+           AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
     );
     if let Some(after_id) = after_id {
         query.push(" AND id > ").push_bind(after_id);
@@ -28879,7 +28886,8 @@ mod request_compression_query_tests {
                  file_path TEXT NOT NULL, \
                  coverage_start_at TEXT, \
                  coverage_end_at TEXT, \
-                 upstream_activity_manifest_refreshed_at TEXT \
+                 upstream_activity_manifest_refreshed_at TEXT, \
+                 summary_source_kind TEXT NOT NULL DEFAULT 'unknown' \
              )",
         )
         .execute(&pool)
@@ -29959,6 +29967,136 @@ mod request_compression_query_tests {
             error
                 .to_string()
                 .contains("paged boundary raw archive admission exceeded")
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_overflowed_boundary_mirrors_do_not_block_proof_paging() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        let source_path = "/authoritative/complete-summary-proof.sqlite.gz";
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (
+                'codex_invocations',
+                '2026-08',
+                ?1,
+                'complete-summary-proof',
+                1,
+                'completed',
+                '2026-08-01 00:00:00',
+                '2026-08-01 01:00:00',
+                datetime('now')
+            )
+            "#,
+        )
+        .bind(source_path)
+        .execute(&pool)
+        .await
+        .expect("seed legacy source before proof promotion");
+        for target in SUMMARY_PROJECTION_ARCHIVE_REPLAY_TARGETS {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay \
+                 (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', ?2, 'complete-summary-proof')",
+            )
+            .bind(target)
+            .bind(source_path)
+            .execute(&pool)
+            .await
+            .expect("seed authoritative Summary proof");
+        }
+        sqlx::query(
+            "UPDATE archive_batches SET summary_source_kind = 'authoritative' WHERE file_path = ?1",
+        )
+        .bind(source_path)
+        .execute(&pool)
+        .await
+        .expect("promote proof-complete archive to authoritative source");
+
+        let mut tx = pool
+            .begin()
+            .await
+            .expect("begin mirror fixture transaction");
+        for index in 0..=SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+            sqlx::query(
+                r#"
+                INSERT INTO archive_batches (
+                    dataset,
+                    month_key,
+                    file_path,
+                    sha256,
+                    row_count,
+                    status,
+                    summary_source_kind,
+                    coverage_start_at,
+                    coverage_end_at,
+                    historical_rollups_materialized_at
+                )
+                VALUES (
+                    'codex_invocations',
+                    '2026-08',
+                    ?1,
+                    ?2,
+                    1,
+                    'completed',
+                    'live_mirror',
+                    '2026-08-01 00:00:00',
+                    '2026-08-01 01:00:00',
+                    datetime('now')
+                )
+                "#,
+            )
+            .bind(format!("/mirror/summary-detail-{index}.sqlite.gz"))
+            .bind(format!("mirror-{index}"))
+            .execute(tx.as_mut())
+            .await
+            .expect("seed non-Summary detail mirror");
+        }
+        tx.commit().await.expect("commit mirror fixture");
+
+        let admitted = crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
+            &pool,
+            None,
+            SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
+        )
+        .await
+        .expect("load Summary archive admission");
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].file_path(), source_path);
+
+        let range = ExactUtcRange {
+            start: Utc
+                .with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
+                .single()
+                .expect("valid range start"),
+            end: Utc
+                .with_ymd_and_hms(2026, 8, 2, 0, 0, 0)
+                .single()
+                .expect("valid range end"),
+        };
+        assert_eq!(
+            summary_projection_overflowed_boundary_manifests_have_complete_rollups(&pool, range)
+                .await
+                .expect("load bounded source proof"),
+            Some(1),
         );
     }
 

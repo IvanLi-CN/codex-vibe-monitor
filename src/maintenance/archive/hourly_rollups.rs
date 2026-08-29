@@ -6045,6 +6045,7 @@ mod retention_breakdown_materialization_tests {
                 coverage_start_at TEXT,
                 coverage_end_at TEXT,
                 historical_rollups_materialized_at TEXT,
+                summary_source_kind TEXT NOT NULL DEFAULT 'unknown',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             "#,
