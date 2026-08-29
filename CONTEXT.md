@@ -72,6 +72,34 @@ selection. It is hydrated and reconciled outside the HTTP request path; it never
 stands for an approximate aggregate or a request-time SQLite/file fallback.
 _Avoid_: partial summary, zero fallback, request-time summary rebuild
 
+**Canonical Source Record Admission**:
+The bounded background acceptance of raw durable record text required to construct
+an exact Summary Projection. It describes source work and coverage proof, not
+resident Projection memory.
+_Avoid_: resident payload budget, request-time source fallback
+
+**Resident Preview Byte Budget**:
+The shared cap on compact preview values retained by rolling and current Summary
+views. Raw source payload text that is not retained is outside this budget.
+_Avoid_: source scan quota, raw payload cap
+
+**Range-Local Unavailable**:
+The exact-unavailable result for only a Summary selection whose required source
+coverage cannot be proven. Disjoint selections may remain available from the same
+Projection.
+_Avoid_: partial response, global hydration failure
+
+**Exact Boundary**:
+The temporal or current-rank source limit that separates proven coverage from an
+unavailable Summary selection.
+_Avoid_: approximate rollup edge, request-time repair
+
+**Recoverable Projection State**:
+A published Summary Projection that records an exact source-coverage gap as
+range-local unavailable until a later hydration proves coverage. It never
+represents incomplete coverage as a fresh result.
+_Avoid_: fabricated success, permanent global outage
+
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a
 background refresh is unavailable. Its retention does not permit a stale or
