@@ -28817,7 +28817,8 @@ mod request_compression_query_tests {
                  file_path TEXT NOT NULL, \
                  coverage_start_at TEXT, \
                  coverage_end_at TEXT, \
-                 upstream_activity_manifest_refreshed_at TEXT \
+                 upstream_activity_manifest_refreshed_at TEXT, \
+                 summary_source_kind TEXT NOT NULL DEFAULT 'unknown' \
              )",
         )
         .execute(&pool)

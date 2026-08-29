@@ -3267,6 +3267,12 @@ async fn materialize_historical_rollups_replays_usage_breakdown_when_account_tar
     .fetch_one(&pool)
     .await
     .expect("load invocation archive path");
+    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2")
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&invocation_archive_path)
+        .execute(&pool)
+        .await
+        .expect("clear automatic publication proofs to mimic pre-upgrade replay state");
     for target in [
         HOURLY_ROLLUP_TARGET_INVOCATIONS,
         HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
@@ -3735,29 +3741,6 @@ async fn bootstrap_hourly_rollups_repairs_legacy_account_replay_markers_when_bre
     .execute(&pool)
     .await
     .expect("seed healthy breakdown rollup row");
-
-    sqlx::query(
-        r#"
-        INSERT INTO hourly_rollup_archive_replay (
-            target,
-            dataset,
-            file_path,
-            archive_sha256,
-            replayed_at
-        )
-        SELECT ?1, ?2, batches.file_path, batches.sha256, datetime('now')
-        FROM archive_batches AS batches
-        WHERE batches.dataset = ?2
-          AND batches.status = 'completed'
-          AND batches.file_path = ?3
-        "#,
-    )
-    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&invocation_archive_path)
-    .execute(&pool)
-    .await
-    .expect("seed healthy breakdown replay marker");
 
     sqlx::query(
         r#"
@@ -4418,14 +4401,28 @@ async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() 
     .expect("capture original global and account totals");
     assert_eq!(before, (1, 1, 1, 1, 1, 1, 1, 1, 1, 1));
 
-    sqlx::query(
-        "UPDATE archive_batches SET sha256 = 'replacement-archive-sha' WHERE dataset = ?1 AND file_path = ?2",
-    )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&archive_file_path)
-    .execute(&pool)
-    .await
-    .expect("publish replacement archive manifest SHA");
+    let replacement_db_path = temp_dir.join("stale-replay-sha-full-rebuild.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &replacement_db_path)
+        .expect("inflate replacement invocation archive");
+    let replacement_pool = SqlitePool::connect(&test_sqlite_url_for_path(&replacement_db_path))
+        .await
+        .expect("open replacement invocation archive sqlite");
+    sqlx::query("PRAGMA user_version = 1")
+        .execute(&replacement_pool)
+        .await
+        .expect("rewrite replacement invocation archive metadata");
+    replacement_pool.close().await;
+    deflate_sqlite_file_to_gzip(&replacement_db_path, &archive_path)
+        .expect("compress replacement invocation archive");
+    let replacement_sha =
+        sha256_hex_file(&archive_path).expect("hash replacement invocation archive");
+    sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE dataset = ?2 AND file_path = ?3")
+        .bind(&replacement_sha)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&archive_file_path)
+        .execute(&pool)
+        .await
+        .expect("publish replacement archive manifest SHA");
     sqlx::query(
         r#"
         DELETE FROM upstream_account_usage_breakdown_hourly
@@ -4489,10 +4486,11 @@ async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() 
     assert_eq!(after, before);
 
     let replacement_marker_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2 AND archive_sha256 = 'replacement-archive-sha'",
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2 AND archive_sha256 = ?3",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_file_path)
+    .bind(&replacement_sha)
     .fetch_one(&pool)
     .await
     .expect("count replacement replay markers");
@@ -4671,15 +4669,31 @@ async fn partial_materialization_rebuilds_stale_sha_before_any_additive_replay()
     .expect("capture original rollup totals");
     assert_eq!(before, (1, 1, 1));
 
+    let replacement_db_path = temp_dir.join("partial-materialization-stale-sha.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &replacement_db_path)
+        .expect("inflate replacement invocation archive");
+    let replacement_pool = SqlitePool::connect(&test_sqlite_url_for_path(&replacement_db_path))
+        .await
+        .expect("open replacement invocation archive sqlite");
+    sqlx::query("PRAGMA user_version = 1")
+        .execute(&replacement_pool)
+        .await
+        .expect("rewrite replacement invocation archive metadata");
+    replacement_pool.close().await;
+    deflate_sqlite_file_to_gzip(&replacement_db_path, &archive_path)
+        .expect("compress replacement invocation archive");
+    let replacement_sha =
+        sha256_hex_file(&archive_path).expect("hash replacement invocation archive");
     sqlx::query(
         r#"
         UPDATE archive_batches
-        SET sha256 = 'replacement-archive-sha',
+        SET sha256 = ?1,
             historical_rollups_materialized_at = NULL
-        WHERE dataset = ?1
-          AND file_path = ?2
+        WHERE dataset = ?2
+          AND file_path = ?3
         "#,
     )
+    .bind(&replacement_sha)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_file_path)
     .execute(&pool)
@@ -4816,15 +4830,31 @@ async fn stale_archive_rebuild_clears_full_coverage_of_reopened_overlaps() {
             .expect("capture original overlapping rollup total");
     assert_eq!(before, 3);
 
+    let replacement_db_path = temp_dir.join("stale-replay-sha-overlap-first.sqlite");
+    inflate_gzip_sqlite_file(&first_archive_path, &replacement_db_path)
+        .expect("inflate replacement overlapping invocation archive");
+    let replacement_pool = SqlitePool::connect(&test_sqlite_url_for_path(&replacement_db_path))
+        .await
+        .expect("open replacement overlapping invocation archive sqlite");
+    sqlx::query("PRAGMA user_version = 1")
+        .execute(&replacement_pool)
+        .await
+        .expect("rewrite replacement overlapping invocation archive metadata");
+    replacement_pool.close().await;
+    deflate_sqlite_file_to_gzip(&replacement_db_path, &first_archive_path)
+        .expect("compress replacement overlapping invocation archive");
+    let replacement_sha = sha256_hex_file(&first_archive_path)
+        .expect("hash replacement overlapping invocation archive");
     sqlx::query(
         r#"
         UPDATE archive_batches
-        SET sha256 = 'replacement-archive-sha',
+        SET sha256 = ?1,
             historical_rollups_materialized_at = NULL
-        WHERE dataset = ?1
-          AND file_path = ?2
+        WHERE dataset = ?2
+          AND file_path = ?3
         "#,
     )
+    .bind(&replacement_sha)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(first_archive_path.to_string_lossy().to_string())
     .execute(&pool)
@@ -5088,6 +5118,7 @@ async fn startup_account_marker_repair_requires_a_nonblank_completed_manifest_sh
             row_count INTEGER NOT NULL,
             status TEXT NOT NULL,
             historical_rollups_materialized_at TEXT,
+            summary_source_kind TEXT NOT NULL DEFAULT 'unknown',
             created_at TEXT NOT NULL
         )
         "#,
@@ -5855,6 +5886,16 @@ async fn bootstrap_hourly_rollups_reopens_partially_populated_usage_breakdown_hi
     .execute(&pool)
     .await
     .expect("drop second breakdown bucket to mimic partial backfill");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&invocation_archive_path)
+    .execute(&pool)
+    .await
+    .expect("invalidate the usage breakdown proof after removing its rollup data");
 
     sqlx::query(
         r#"
@@ -6007,6 +6048,16 @@ async fn bootstrap_hourly_rollups_reopens_same_bucket_partial_usage_breakdown_gr
     .execute(&pool)
     .await
     .expect("drop one same-bucket breakdown group to mimic partial backfill");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&invocation_archive_path)
+    .execute(&pool)
+    .await
+    .expect("invalidate the usage breakdown proof after removing one breakdown group");
 
     sqlx::query(
         r#"

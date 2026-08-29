@@ -875,14 +875,6 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
     .expect("recreate the pre-identity replay table");
 
     sqlx::query(
-        "INSERT INTO archive_batches \
-         (dataset, month_key, file_path, sha256, row_count, status) \
-         VALUES ('codex_invocations', '2026-08', 'legacy-replay.sqlite.gz', 'legacy-replay-sha', 1, 'completed')",
-    )
-    .execute(&pool)
-    .await
-        .expect("seed completed manifest for legacy replay");
-    sqlx::query(
         "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path) \
          VALUES ('invocation_hourly', 'codex_invocations', 'legacy-replay.sqlite.gz')",
     )
@@ -893,6 +885,14 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
     ensure_schema(&pool)
         .await
         .expect("first startup migrates the legacy replay table without promoting it");
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status) \
+         VALUES ('codex_invocations', '2026-08', 'legacy-replay.sqlite.gz', 'legacy-replay-sha', 1, 'completed')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed completed manifest after the replay table migration");
     let columns: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('hourly_rollup_archive_replay')")
             .fetch_all(&pool)
