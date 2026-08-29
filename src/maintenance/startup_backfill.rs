@@ -3,6 +3,8 @@ use std::future::Future;
 
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
+const STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT: u64 = 128;
+const STARTUP_LEGACY_DETAIL_MIRROR_BUDGET_SECS: u64 = 6;
 const COVERAGE_REPAIR_RETRY_DELAYS_SECS: [u64; 4] = [15, 60, 5 * 60, 15 * 60];
 
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
@@ -26,6 +28,7 @@ pub(crate) enum StartupBackfillTask {
     UpstreamActivityArchives,
     PoolUpstreamNodeHealthArchives,
     AccountActivityV2Coverage,
+    LegacyDetailMirrors,
     HistoricalRollups,
 }
 
@@ -443,6 +446,7 @@ impl StartupBackfillTask {
             Self::UpstreamActivityArchives,
             Self::PoolUpstreamNodeHealthArchives,
             Self::AccountActivityV2Coverage,
+            Self::LegacyDetailMirrors,
             Self::HistoricalRollups,
         ]
     }
@@ -466,6 +470,7 @@ impl StartupBackfillTask {
                 STARTUP_BACKFILL_TASK_POOL_UPSTREAM_NODE_HEALTH_ARCHIVES
             }
             Self::AccountActivityV2Coverage => STARTUP_BACKFILL_TASK_ACCOUNT_ACTIVITY_V2_COVERAGE,
+            Self::LegacyDetailMirrors => STARTUP_BACKFILL_TASK_LEGACY_DETAIL_MIRRORS,
             Self::HistoricalRollups => STARTUP_BACKFILL_TASK_HISTORICAL_ROLLUPS,
         }
     }
@@ -485,6 +490,7 @@ impl StartupBackfillTask {
             Self::UpstreamActivityArchives => "upstream activity archives",
             Self::PoolUpstreamNodeHealthArchives => "pool upstream node health archives",
             Self::AccountActivityV2Coverage => "account activity v2 coverage repair",
+            Self::LegacyDetailMirrors => "legacy invocation detail mirrors",
             Self::HistoricalRollups => "historical rollup materialization",
         }
     }
@@ -2166,6 +2172,51 @@ pub(crate) async fn run_startup_backfill_task(
         StartupBackfillTask::AccountActivityV2Coverage => Err(anyhow!(
             "account activity v2 coverage repair must use its dedicated scheduler path"
         )),
+        StartupBackfillTask::LegacyDetailMirrors => {
+            let window = reconcile_legacy_detail_mirrors_startup_window(
+                &state.pool,
+                cursor_id,
+                Duration::from_secs(STARTUP_LEGACY_DETAIL_MIRROR_BUDGET_SECS),
+            )
+            .await?;
+            let retry_soon = window.hit_budget
+                || (window.inspected_path_count > 0
+                    && window.candidate_count
+                        >= STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT as usize);
+            info!(
+                task = StartupBackfillTask::LegacyDetailMirrors.log_label(),
+                candidate_limit = STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT,
+                elapsed_budget_ms = Duration::from_secs(STARTUP_LEGACY_DETAIL_MIRROR_BUDGET_SECS)
+                    .as_millis() as u64,
+                candidate_count = window.candidate_count,
+                inspected_path_count = window.inspected_path_count,
+                changed_path_count = window.changed_path_count,
+                hit_budget = window.hit_budget,
+                wrapped = window.wrapped,
+                "startup legacy detail mirror reconciliation pass completed"
+            );
+            Ok((
+                StartupBackfillRunState {
+                    next_cursor_id: window.next_cursor_id,
+                    scanned: window.inspected_path_count as u64,
+                    updated: window.changed_path_count as u64,
+                    hit_scan_limit: retry_soon,
+                    retry_soon,
+                    force_idle: window.candidate_count == 0,
+                    source_unavailable: false,
+                    samples: Vec::new(),
+                },
+                format!(
+                    "candidate_count={} inspected_path_count={} changed_path_count={} hit_budget={} wrapped={} next_cursor_id={}",
+                    window.candidate_count,
+                    window.inspected_path_count,
+                    window.changed_path_count,
+                    window.hit_budget,
+                    window.wrapped,
+                    window.next_cursor_id,
+                ),
+            ))
+        }
         StartupBackfillTask::HistoricalRollups => {
             let window = materialize_historical_rollups_startup_window(
                 &state.pool,

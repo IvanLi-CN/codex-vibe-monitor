@@ -4614,6 +4614,179 @@ async fn startup_summary_proof_recovery_reopens_materialized_archive_and_replays
 }
 
 #[tokio::test]
+async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_identity() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("sparse-legacy-detail-mirror").await;
+    let archive_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 45) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let occurred_at = format_naive(
+        archive_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_rows = [
+        SeedInvocationArchiveBatchRow {
+            id: 41,
+            invoke_id: "sparse-legacy-detail-mirror-41",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        },
+        SeedInvocationArchiveBatchRow {
+            id: 43,
+            invoke_id: "sparse-legacy-detail-mirror-43",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        },
+    ];
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "sparse-legacy-detail-mirror",
+        &archive_rows,
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    for row in archive_rows {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, source, status, total_tokens, cost,
+                t_upstream_ttfb_ms, payload, detail_level, failure_class, is_actionable,
+                raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, '{}', ?3)
+            "#,
+        )
+        .bind(row.id)
+        .bind(row.invoke_id)
+        .bind(&occurred_at)
+        .bind(row.source)
+        .bind(row.status)
+        .bind(row.total_tokens)
+        .bind(row.cost)
+        .bind(row.ttfb_ms)
+        .bind(row.payload)
+        .bind(row.detail_level)
+        .bind(row.failure_class)
+        .bind(row.is_actionable)
+        .execute(&pool)
+        .await
+        .expect("retain canonical live mirror record");
+    }
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET layout = ?1,
+            part_key = ?2,
+            coverage_start_at = ?3,
+            coverage_end_at = ?4
+        WHERE dataset = ?5 AND file_path = ?6
+        "#,
+    )
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind("part-0000000000000029-000000000000002b-0123456789abcdef")
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("record sparse legacy segment metadata");
+
+    let mirror_recovery =
+        reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
+            .await
+            .expect("classify sparse legacy detail mirror before rollup replay");
+    let recovered = materialize_historical_rollups_startup_window(&pool, 0, Duration::from_secs(6))
+        .await
+        .expect("recover sparse legacy detail mirror without replaying it");
+    let source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load reconciled source role");
+
+    assert_eq!(mirror_recovery.changed_path_count, 1);
+    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    assert_eq!(recovered.summary.materialized_invocation_batches, 0);
+
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1 WHERE dataset = ?2 AND file_path = ?3",
+    )
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("restore unresolved source role for mismatch probe");
+    sqlx::query("UPDATE codex_invocations SET invoke_id = ?1 WHERE id = ?2")
+        .bind("sparse-legacy-detail-mirror-mismatch")
+        .bind(43_i64)
+        .execute(&pool)
+        .await
+        .expect("mismatch one retained live identity");
+    let rejected = reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
+        .await
+        .expect("reject non-mirror archive identity");
+    let rejected_source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load rejected source role");
+
+    assert_eq!(rejected.changed_path_count, 0);
+    assert_eq!(rejected_source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN);
+
+    fs::remove_file(&archive_path).expect("make archived source unavailable");
+    let unreadable =
+        reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
+            .await
+            .expect("leave unreadable archive unresolved without failing the window");
+    let unreadable_source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load unreadable source role");
+
+    assert_eq!(unreadable.changed_path_count, 0);
+    assert_eq!(unreadable_source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn partial_materialization_rebuilds_stale_sha_before_any_additive_replay() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("partial-materialization-stale-sha").await;

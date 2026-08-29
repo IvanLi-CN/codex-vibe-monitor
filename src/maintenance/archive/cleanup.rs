@@ -908,12 +908,17 @@ pub(crate) struct HistoricalRollupPendingArchiveBatchRow {
 
 const STARTUP_HISTORICAL_ROLLUP_CANDIDATE_LIMIT: i64 = 32;
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: usize = 16;
+const LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT: i64 = 128;
+const LEGACY_DETAIL_MIRROR_IDENTITY_PAGE_SIZE: i64 = 400;
 
 #[derive(Debug, FromRow)]
 struct HistoricalRollupStartupCandidateRow {
     id: i64,
     dataset: String,
     file_path: String,
+    sha256: String,
+    row_count: i64,
+    summary_source_kind: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -947,6 +952,16 @@ pub(crate) struct HistoricalRollupStartupPendingHint {
     pub(crate) inspected_path_count: usize,
 }
 
+#[derive(Debug)]
+pub(crate) struct LegacyDetailMirrorRecoveryWindowResult {
+    pub(crate) next_cursor_id: i64,
+    pub(crate) candidate_count: usize,
+    pub(crate) inspected_path_count: usize,
+    pub(crate) changed_path_count: usize,
+    pub(crate) hit_budget: bool,
+    pub(crate) wrapped: bool,
+}
+
 async fn load_historical_rollup_startup_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
@@ -957,6 +972,9 @@ async fn load_historical_rollup_startup_candidates(
             batches.id,
             batches.dataset,
             batches.file_path,
+            batches.sha256,
+            batches.row_count,
+            batches.summary_source_kind,
             batches.coverage_start_at,
             batches.coverage_end_at
         FROM archive_batches AS batches
@@ -1008,6 +1026,199 @@ async fn load_historical_rollup_startup_candidates(
     .fetch_all(pool)
     .await
     .context("failed to load historical rollup startup keyset candidates")
+}
+
+async fn legacy_invocation_archive_is_live_detail_mirror(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+) -> Result<bool> {
+    if candidate.row_count < 0 {
+        return Ok(false);
+    }
+    let archive_path = Path::new(&candidate.file_path);
+    if crate::maintenance::sha256_hex_file(archive_path)
+        .ok()
+        .as_deref()
+        != Some(candidate.sha256.as_str())
+    {
+        return Ok(false);
+    }
+    let archive = crate::stats::ArchiveBatchPathRow::with_coverage(
+        candidate.file_path.clone(),
+        candidate.coverage_start_at.clone(),
+        candidate.coverage_end_at.clone(),
+    );
+    let archive_opened =
+        crate::stats::open_invocation_archive_batch_pool(&archive, "legacy-detail-mirror-recovery")
+            .await;
+    let Ok(Some((archive_pool, _temp_cleanup))) = archive_opened else {
+        return Ok(false);
+    };
+
+    let mut after_id = i64::MIN;
+    let mut matched_rows = 0_i64;
+    let mut identities_match = true;
+    let mut archive_readable = true;
+    loop {
+        let archive_rows = match sqlx::query_as::<_, (i64, String)>(
+            "SELECT id, invoke_id FROM codex_invocations WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        )
+        .bind(after_id)
+        .bind(LEGACY_DETAIL_MIRROR_IDENTITY_PAGE_SIZE)
+        .fetch_all(&archive_pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(_) => {
+                archive_readable = false;
+                break;
+            }
+        };
+        let Some(last_id) = archive_rows.last().map(|(id, _)| *id) else {
+            break;
+        };
+        after_id = last_id;
+
+        let mut live_query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
+        );
+        {
+            let mut ids = live_query.separated(", ");
+            for (id, _) in &archive_rows {
+                ids.push_bind(id);
+            }
+        }
+        live_query.push(")");
+        let live_rows = live_query
+            .build_query_as::<(i64, String)>()
+            .fetch_all(pool)
+            .await?;
+        if live_rows.len() != archive_rows.len() {
+            identities_match = false;
+            break;
+        }
+        let live_invoke_ids = live_rows.into_iter().collect::<HashMap<_, _>>();
+        if archive_rows
+            .iter()
+            .any(|(id, invoke_id)| live_invoke_ids.get(id) != Some(invoke_id))
+        {
+            identities_match = false;
+            break;
+        }
+        matched_rows += archive_rows.len() as i64;
+    }
+    archive_pool.close().await;
+    if !archive_readable {
+        return Ok(false);
+    }
+    Ok(identities_match
+        && matched_rows == candidate.row_count
+        && crate::maintenance::sha256_hex_file(archive_path)
+            .ok()
+            .as_deref()
+            == Some(candidate.sha256.as_str()))
+}
+
+async fn load_legacy_detail_mirror_recovery_candidates(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+        r#"
+        SELECT
+            id,
+            dataset,
+            file_path,
+            sha256,
+            row_count,
+            summary_source_kind,
+            coverage_start_at,
+            coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND summary_source_kind = ?2
+          AND id > ?3
+        ORDER BY id ASC
+        LIMIT ?4
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+    .bind(cursor_id)
+    .bind(LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT)
+    .fetch_all(pool)
+    .await
+    .context("failed to load legacy detail mirror recovery candidates")
+}
+
+pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+    max_elapsed: Duration,
+) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(pool, cursor_id).await?;
+    let mut wrapped = false;
+    if candidates.is_empty() && cursor_id > 0 {
+        candidates = load_legacy_detail_mirror_recovery_candidates(pool, 0).await?;
+        wrapped = !candidates.is_empty();
+    }
+    if candidates.is_empty() {
+        return Ok(LegacyDetailMirrorRecoveryWindowResult {
+            next_cursor_id: 0,
+            candidate_count: 0,
+            inspected_path_count: 0,
+            changed_path_count: 0,
+            hit_budget: false,
+            wrapped,
+        });
+    }
+
+    let started_at = Instant::now();
+    let mut next_cursor_id = cursor_id;
+    let mut inspected_path_count = 0_usize;
+    let mut hit_budget = false;
+    let mut proven_mirrors = Vec::new();
+    for candidate in candidates.iter() {
+        if started_at.elapsed() >= max_elapsed {
+            hit_budget = true;
+            break;
+        }
+        if legacy_invocation_archive_is_live_detail_mirror(pool, candidate).await? {
+            proven_mirrors.push(candidate);
+        }
+        inspected_path_count += 1;
+        next_cursor_id = candidate.id;
+    }
+
+    let mut changed_path_count = 0_usize;
+    if !proven_mirrors.is_empty() {
+        let mut tx = pool.begin().await?;
+        for candidate in proven_mirrors {
+            changed_path_count += sqlx::query(
+                "UPDATE archive_batches SET summary_source_kind = ?1 \
+                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+            )
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
+            .bind(candidate.id)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected() as usize;
+        }
+        tx.commit().await?;
+    }
+
+    Ok(LegacyDetailMirrorRecoveryWindowResult {
+        next_cursor_id,
+        candidate_count: candidates.len(),
+        inspected_path_count,
+        changed_path_count,
+        hit_budget,
+        wrapped,
+    })
 }
 
 pub(crate) async fn count_historical_rollup_startup_pending_hint(
@@ -1067,6 +1278,32 @@ pub(crate) async fn materialize_historical_rollups_startup_window(
         .iter()
         .take(STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT)
     {
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate.summary_source_kind == SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN
+            && legacy_invocation_archive_is_live_detail_mirror(pool, candidate).await?
+        {
+            // The segment range is only a fast legacy hint. A SHA-bound archive/live identity
+            // comparison is the exact proof that this manifest is a detail mirror, even when
+            // unrelated invocation IDs leave holes inside that encoded interval.
+            let classified = sqlx::query(
+                "UPDATE archive_batches SET summary_source_kind = ?1 \
+                 WHERE id = ?2 AND status = ?3 AND summary_source_kind = ?4 AND sha256 = ?5",
+            )
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
+            .bind(candidate.id)
+            .bind(ARCHIVE_STATUS_COMPLETED)
+            .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?
+            .rows_affected();
+            if classified > 0 {
+                changed_path_count += 1;
+            }
+            skipped_archive_batches += 1;
+            next_cursor_id = candidate.id;
+            continue;
+        }
         let candidate_summary = if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
             replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
                 tx.as_mut(),
