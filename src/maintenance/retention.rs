@@ -790,6 +790,7 @@ pub(crate) struct ArchiveBatchOutcome {
     pub(crate) coverage_start_at: Option<String>,
     pub(crate) coverage_end_at: Option<String>,
     pub(crate) archive_expires_at: Option<String>,
+    pub(crate) summary_source_kind: &'static str,
     pub(crate) layout: &'static str,
     pub(crate) codec: &'static str,
     pub(crate) writer_version: &'static str,
@@ -1042,6 +1043,9 @@ pub(crate) struct HistoricalRollupBackfillSnapshot {
 }
 
 pub(crate) const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
+pub(crate) const SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE: &str = "authoritative";
+pub(crate) const SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR: &str = "live_mirror";
+pub(crate) const SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN: &str = "unknown";
 pub(crate) const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
 pub(crate) const HOURLY_ROLLUP_DATASET_UPSTREAM_HOST_NETWORK_DIRECT: &str =
     "upstream_host_network_direct";
@@ -2950,6 +2954,7 @@ pub(crate) async fn prune_old_invocation_details(
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
                 Some(config.invocation_archive_ttl_days),
             )?;
+            archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             let Some(admission) =
@@ -3177,6 +3182,7 @@ pub(crate) async fn archive_old_invocations(
                     &format_utc_iso(Utc::now()),
                     config.invocation_archive_ttl_days,
                 )?);
+            archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
             let prepare_elapsed = prepare_started.elapsed();
             let Some(admission) = acquire_retention_write_admission("invocation_archive").await
             else {

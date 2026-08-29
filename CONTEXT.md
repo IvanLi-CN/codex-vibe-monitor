@@ -114,6 +114,24 @@ A completed invocation archive with Archive Publication Proof. It may supply
 durable Summary rollups without request-time archive access.
 _Avoid_: merely completed archive, readable archive, best-effort replay
 
+**Authoritative Archive Source**:
+An invocation archive whose records have left `codex_invocations`. It must carry
+Archive Publication Proof before becoming completed and is eligible to supply
+Summary coverage.
+_Avoid_: detail mirror, optional replay source, completed file only
+
+**Live Detail Mirror**:
+An archive emitted while pruning invocation payload details even though each
+canonical invocation remains in `codex_invocations`. It preserves observability
+only and is never a Summary, rollup-repair, or archive-admission source.
+_Avoid_: historical Summary source, second canonical copy, proof backlog
+
+**Unknown Legacy Archive Source**:
+A pre-role manifest whose source relationship cannot be proven automatically.
+It remains fail-closed as a potential authoritative source until bounded
+reconciliation proves it is a Live Detail Mirror.
+_Avoid_: assumed mirror, skipped source, marker-only classification
+
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a
 background refresh is unavailable. Its retention does not permit a stale or

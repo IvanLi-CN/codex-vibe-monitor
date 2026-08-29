@@ -5374,6 +5374,7 @@ async fn same_path_invocation_archive_append_preserves_coverage_for_stale_rebuil
         coverage_start_at: Some(appended_occurred_at.clone()),
         coverage_end_at: Some(appended_occurred_at.clone()),
         archive_expires_at: None,
+        summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
         layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
         codec: ARCHIVE_FILE_CODEC_GZIP,
         writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,

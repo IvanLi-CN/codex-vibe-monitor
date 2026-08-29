@@ -963,7 +963,9 @@ async fn load_historical_rollup_startup_candidates(
         WHERE batches.status = ?4
           AND batches.id > ?5
           AND (
-                (batches.dataset = 'codex_invocations' AND (
+                (batches.dataset = 'codex_invocations'
+                    AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+                    AND (
                     batches.historical_rollups_materialized_at IS NULL
                     OR NOT EXISTS (
                         SELECT 1
@@ -1225,6 +1227,7 @@ pub(crate) async fn load_latest_materialized_legacy_invocation_rollup_bucket_epo
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND historical_rollups_materialized_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
           AND coverage_end_at < ?2
@@ -1968,12 +1971,6 @@ mod tests {
             .await
             .expect("current schema");
         sqlx::query(
-            "DROP TRIGGER IF EXISTS trg_completed_invocation_archive_requires_summary_proof",
-        )
-        .execute(&pool)
-        .await
-        .expect("remove publication guard for legacy fixture");
-        sqlx::query(
             r#"
             INSERT INTO archive_batches (
                 dataset,
@@ -1982,6 +1979,7 @@ mod tests {
                 sha256,
                 row_count,
                 status,
+                summary_source_kind,
                 coverage_start_at,
                 coverage_end_at,
                 historical_rollups_materialized_at
@@ -1993,6 +1991,7 @@ mod tests {
                 'legacy-summary-proof',
                 1,
                 'completed',
+                'unknown',
                 '2026-08-01 00:00:00',
                 '2026-08-01 01:00:00',
                 datetime('now')
@@ -2052,6 +2051,7 @@ mod tests {
                 sha256,
                 row_count,
                 status,
+                summary_source_kind,
                 coverage_start_at,
                 coverage_end_at,
                 historical_rollups_materialized_at
@@ -2063,6 +2063,7 @@ mod tests {
                 'staged-summary-proof',
                 1,
                 'materializing',
+                'authoritative',
                 '2026-08-01 00:00:00',
                 '2026-08-01 01:00:00',
                 datetime('now')
@@ -2085,6 +2086,149 @@ mod tests {
             error
                 .to_string()
                 .contains("requires Summary publication proof")
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_authoritative_invocation_archive_publication_requires_summary_proof() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+
+        let error = sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                file_path,
+                sha256,
+                row_count,
+                status,
+                summary_source_kind,
+                coverage_start_at,
+                coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (
+                'codex_invocations',
+                '2026-08',
+                '/authoritative/missing-summary-proof.sqlite.gz',
+                'missing-summary-proof',
+                1,
+                'completed',
+                'authoritative',
+                '2026-08-01 00:00:00',
+                '2026-08-01 01:00:00',
+                datetime('now')
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect_err("direct authoritative publication must require every Summary proof");
+        assert!(
+            error
+                .to_string()
+                .contains("requires Summary publication proof")
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_segment_mirror_classification_requires_contiguous_live_id_coverage() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for id in [41_i64, 42_i64, 43_i64] {
+            sqlx::query(
+                "INSERT INTO codex_invocations \
+                 (id, invoke_id, occurred_at, source, status, payload, raw_response) \
+                 VALUES (?1, ?2, '2026-08-01 00:00:00', 'xy', 'success', '{}', '')",
+            )
+            .bind(id)
+            .bind(format!("legacy-mirror-{id}"))
+            .execute(&pool)
+            .await
+            .expect("seed retained live invocation");
+        }
+        for (file_path, part_key) in [
+            (
+                "/legacy/proven-live-mirror.sqlite.gz",
+                "part-0000000000000029-000000000000002a-0123456789abcdef",
+            ),
+            (
+                "/legacy/ambiguous-source.sqlite.gz",
+                "part-000000000000002b-000000000000002c-0123456789abcdef",
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO archive_batches (
+                    dataset,
+                    month_key,
+                    part_key,
+                    file_path,
+                    sha256,
+                    row_count,
+                    status,
+                    layout,
+                    coverage_start_at,
+                    coverage_end_at,
+                    historical_rollups_materialized_at
+                )
+                VALUES (
+                    'codex_invocations',
+                    '2026-08',
+                    ?1,
+                    ?2,
+                    ?3,
+                    1,
+                    'completed',
+                    'segment_v1',
+                    '2026-08-01 00:00:00',
+                    '2026-08-01 01:00:00',
+                    datetime('now')
+                )
+                "#,
+            )
+            .bind(part_key)
+            .bind(file_path)
+            .bind(format!("legacy-{part_key}"))
+            .execute(&pool)
+            .await
+            .expect("seed legacy segment manifest");
+        }
+
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("classify legacy segment manifests");
+        let states = sqlx::query_as::<_, (String, String)>(
+            "SELECT file_path, summary_source_kind FROM archive_batches ORDER BY file_path",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("load classified archive source kinds");
+        assert_eq!(
+            states,
+            vec![
+                (
+                    "/legacy/ambiguous-source.sqlite.gz".to_string(),
+                    "unknown".to_string(),
+                ),
+                (
+                    "/legacy/proven-live-mirror.sqlite.gz".to_string(),
+                    "live_mirror".to_string(),
+                ),
+            ]
         );
     }
 

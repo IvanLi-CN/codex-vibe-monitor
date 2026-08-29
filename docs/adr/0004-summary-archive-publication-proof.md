@@ -20,11 +20,18 @@ ordering is insufficient because a future writer can bypass it.
 - Publish new invocation archives through an internal materializing state, then
   use a database finalization constraint to permit `completed` only after that
   proof exists in the same transaction as the source deletion.
+- Persist the Summary source role on every invocation manifest. An
+  `authoritative` archive replaces deleted live records and requires publication
+  proof; a `live_mirror` archive only preserves detail-prune observability for
+  records that remain live and is excluded from Summary admission and rollup
+  repair. `unknown` legacy manifests remain fail-closed potential sources.
 - A normal application update automatically reconciles legacy completed
   archives in the bounded historical-rollup scheduler through source-identity
-  and full bucket-closure verification or rebuild. It never promotes a
-  materialized timestamp or a hand-written marker into proof, and it requires
-  no operator command.
+  and full bucket-closure verification or rebuild. It classifies a legacy
+  `segment_v1` manifest as `live_mirror` only when its encoded inclusive ID
+  range is continuously retained in `codex_invocations`; every ambiguous
+  manifest stays `unknown`. It never promotes a materialized timestamp or a
+  hand-written marker into proof, and it requires no operator command.
 
 ## Considered Options
 
@@ -35,6 +42,6 @@ ordering is insufficient because a future writer can bypass it.
 
 ## Consequences
 
-The normal release path owns both schema protection and legacy recovery. P1
-durability remains ahead of the bounded, pressure-aware reconciliation work,
-while Summary HTTP and SSE remain memory-only readers.
+The normal release path owns schema protection, source-role classification, and
+legacy recovery. P1 durability remains ahead of the bounded, pressure-aware
+reconciliation work, while Summary HTTP and SSE remain memory-only readers.

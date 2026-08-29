@@ -155,6 +155,7 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
           AND batches.sha256 IS NOT NULL
           AND TRIM(batches.sha256) <> ''
@@ -219,6 +220,7 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
         "#,
@@ -351,6 +353,7 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
         FROM archive_batches
         WHERE dataset = ?1
           AND status = ?2
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND coverage_start_at IS NOT NULL
           AND coverage_end_at IS NOT NULL
           AND coverage_end_at >= ?3
@@ -1478,6 +1481,7 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND NOT EXISTS (
                 SELECT 1
                 FROM hourly_rollup_archive_replay AS replay
@@ -2367,6 +2371,7 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND historical_rollups_materialized_at IS NULL
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,

@@ -116,6 +116,7 @@
 ## 归档与维护约束
 
 - 所有删除动作都必须遵守 `导出成功 -> Summary-eligible manifest 成功 -> 删除源数据`。`codex_invocations` manifest 只有在 Archive Publication Proof 完整时才能最终化为 `completed`。
+- `codex_invocations` detail prune 产生的 archive 必须标记为 `live_mirror`：它的 canonical record 仍保留在 live SQLite，仅用于 payload observability，不得成为 Summary/rollup repair/archive admission source。超过 retention 上限并删除 live record 的 archive 必须标记为 `authoritative` 并满足 Archive Publication Proof；无法自动证明角色的 legacy manifest 保持 `unknown`，按 potential source fail closed。
 - `archive_batches` 至少记录：`dataset`、`month_key`、`file_path`、`sha256`、`row_count`、`created_at`、`status`。
 - 所有 retention 主库写入必须通过统一写协调器，优先级低于 P1 terminal、同步代理写和 P2 derived。文件压缩、hash 与 archive 准备在主库写 permit 外执行。
 - 正常 maintenance 只有在更高优先级无等待且 pressure gate 开放时才可提交；连续饥饿时每 15 秒最多公平提交一个微事务。fairness 不得绕过 pressure cooldown。
