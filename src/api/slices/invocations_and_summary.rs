@@ -11110,6 +11110,15 @@ async fn build_summary_projection_once(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(pool).await?;
+    // An all-time live-only rebuild has a separate aggregate admission bound. Resolve that
+    // bounded ID snapshot before hydrating the recent index so an all-time overflow can keep
+    // current exact at the configured request limit without materializing an unnecessary 50k
+    // candidate prefix.
+    let live_history_admission = if all_time_was_fully_rebuilt && !has_any_completed_archive {
+        summary_projection_live_history_within_aggregate_budget(pool).await?
+    } else {
+        None
+    };
     let live_high_watermark_id = load_summary_projection_live_high_watermark(pool).await?;
     let mut live_preview_cache = HashMap::<i64, UpstreamAccountInvocationPreviewRow>::new();
     let live_admission = query_summary_projection_live_rows_with_budget(
@@ -11166,6 +11175,14 @@ async fn build_summary_projection_once(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
+    let recent_candidate_limit = if live_history_admission.is_none()
+        && all_time_was_fully_rebuilt
+        && !has_any_completed_archive
+    {
+        state.config.list_limit_max.saturating_add(1)
+    } else {
+        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1
+    };
     let recent_admission = match query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
@@ -11178,7 +11195,7 @@ async fn build_summary_projection_once(
         },
         live_high_watermark_id,
         None,
-        SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
+        recent_candidate_limit,
         false,
         SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES.saturating_sub(exact_record_bytes),
         &mut live_preview_cache,
@@ -12782,11 +12799,6 @@ async fn build_summary_projection_once(
         // With no completed archives, the canonical live rows are authoritative even when a
         // stale hourly rollup exists. Once archives are present, the rollup is the historical
         // prefix and only rows beyond the shared live cursor are an exact live tail.
-        let live_history_admission = if !has_any_completed_archive {
-            summary_projection_live_history_within_aggregate_budget(pool).await?
-        } else {
-            None
-        };
         if !has_any_completed_archive && live_history_admission.is_none() {
             // A durable live table beyond the aggregate admission bound cannot be scanned during
             // hydration. Keep rolling/current projections available and fail closed for all-time
