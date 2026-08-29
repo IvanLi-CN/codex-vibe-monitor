@@ -9,7 +9,7 @@ use anyhow::anyhow;
 use chrono::{TimeZone, Timelike};
 use chrono_tz::TZ_VARIANTS;
 use flate2::read::GzDecoder;
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::{
@@ -7153,7 +7153,11 @@ const SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE: usize = 512;
 // wide retention horizon with a compact-coverage gap from turning a background rebuild into an
 // uninterruptible hour-by-hour allocation and CPU sweep.
 const SUMMARY_PROJECTION_MAX_EXACT_BUCKETS: usize = 4_096;
-const SUMMARY_PROJECTION_MAX_CANONICAL_BYTES: usize = 64 * 1024 * 1024;
+const SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES: usize = 64 * 1024 * 1024;
+// Live source admission is independent from the resident preview budget. Each source record
+// and packed hydration page remains bounded, while multiple pages may be admitted in one build.
+const SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES: usize = 64 * 1024 * 1024;
+const SUMMARY_PROJECTION_MAX_SOURCE_PAGE_BYTES: usize = 64 * 1024 * 1024;
 // Rollup tables are compact but can still become unbounded when account/model cardinality
 // grows. Count and size-limit their background hydration before materializing rows in memory.
 const SUMMARY_PROJECTION_MAX_ROLLUP_ROWS: usize = 200_000;
@@ -7484,9 +7488,12 @@ pub(crate) struct SummaryProjection {
     // scoped so global rolling summaries remain available when their own compact bucket is
     // complete.
     unavailable_exact_live_account_ranges: HashMap<i64, Vec<ExactUtcRange>>,
-    // A resident-current byte overflow has no ordering proof, so every global `current`
-    // selection must remain unavailable until a complete bounded source can be built.
+    // Archive/runtime failures without an ordering proof remain a coarse unavailable state.
     current_source_unavailable: bool,
+    // Live source admission preserves the first unproven global/account rank. Requests below
+    // that boundary remain exact even when an older candidate could not be admitted.
+    current_source_unavailable_from_rank: Option<usize>,
+    current_account_source_unavailable_from_rank: HashMap<i64, usize>,
     // Archive manifests are not replayed in the resident current index. Their latest durable
     // coverage end is enough to prove that an individual newest-N prefix is unaffected. Keep
     // the proof separate from a resident-byte failure so `current?limit=1` is not rejected
@@ -7746,10 +7753,23 @@ impl SummaryProjection {
             && matches!(window, SummaryWindow::Current(_))
             && (self.current_source_unavailable
                 || (upstream_account_id.is_none()
-                    && requested_current_limit.is_some_and(|limit| {
-                        self.current_archive_may_affect_global_current(limit)
-                    }))
-                || (upstream_account_id.is_some() && self.current_account_source_unavailable))
+                    && (self
+                        .current_source_unavailable_from_rank
+                        .is_some_and(|rank| {
+                            requested_current_limit.is_some_and(|limit| limit >= rank)
+                        })
+                        || requested_current_limit.is_some_and(|limit| {
+                            self.current_archive_may_affect_global_current(limit)
+                        })))
+                || (upstream_account_id.is_some()
+                    && (self.current_account_source_unavailable
+                        || upstream_account_id.is_some_and(|account_id| {
+                            self.current_account_source_unavailable_from_rank
+                                .get(&account_id)
+                                .is_some_and(|rank| {
+                                    requested_current_limit.is_some_and(|limit| limit >= *rank)
+                                })
+                        }))))
         {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection current source is unavailable"
@@ -8207,9 +8227,9 @@ fn ensure_summary_projection_resident_record_bytes(
     let resident_record_bytes = rolling_record_bytes
         .checked_add(current_record_bytes)
         .ok_or_else(|| anyhow!("summary projection resident record byte accounting overflowed"))?;
-    if resident_record_bytes > SUMMARY_PROJECTION_MAX_CANONICAL_BYTES {
+    if resident_record_bytes > SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES {
         return Err(anyhow!(
-            "summary projection resident record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_CANONICAL_BYTES})"
+            "summary projection resident record bytes exceeded bounded budget ({SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES})"
         ));
     }
     Ok(())
@@ -8218,8 +8238,6 @@ fn ensure_summary_projection_resident_record_bytes(
 fn summary_projection_resident_record_budget_exceeded(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("resident record bytes exceeded bounded budget")
-        || message.contains("canonical record byte budget exceeded before preview fetch")
-        || message.contains("archive byte budget exceeded before preview fetch")
 }
 
 fn summary_projection_archive_row_bytes(row: &SummaryProjectionArchiveRow) -> usize {
@@ -8859,6 +8877,7 @@ fn summary_projection_archive_coverage_range(
 fn summary_projection_archive_raw_admission_exceeded(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     summary_projection_resident_record_budget_exceeded(error)
+        || message.contains("archive byte budget exceeded before preview fetch")
         // The shared archive reader names this bounded admission error after its
         // raw/unmaterialized mode. Materialized archives use the same reader for exact rolling
         // repairs and newest-N candidates, where it must make only that selection unavailable.
@@ -9568,7 +9587,7 @@ async fn merge_summary_projection_archive_records_with_coverage(
         archive_pool,
         &exact_ranges,
         &columns,
-        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(resident_current_record_bytes),
+        SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES.saturating_sub(resident_current_record_bytes),
     )
     .await?;
     let mut bind_index = 1usize;
@@ -11015,6 +11034,8 @@ async fn build_summary_projection_once(
     let current_archive_admission_exceeded =
         current_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES;
     let mut current_source_unavailable = false;
+    let mut current_source_unavailable_from_rank = None::<usize>;
+    let mut current_account_source_unavailable_from_rank = HashMap::<i64, usize>::new();
     // All-time aggregation needs manifest-level key proof, while rolling windows only need the
     // bounded exact horizon below. An oversized, fully materialized history is validated in
     // fixed manifest pages against one immutable high-watermark; it never needs an unbounded
@@ -11089,7 +11110,8 @@ async fn build_summary_projection_once(
     let rollup_live_cursor = load_summary_projection_rollup_live_cursor(pool).await?;
     let account_rollup_live_cursor =
         load_summary_projection_account_rollup_live_cursor(pool).await?;
-    let rows = query_summary_projection_live_rows_with_budget(
+    let mut live_preview_cache = HashMap::<i64, UpstreamAccountInvocationPreviewRow>::new();
+    let live_admission = query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -11099,7 +11121,8 @@ async fn build_summary_projection_once(
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
-        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
+        SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES,
+        &mut live_preview_cache,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "bounded_exact_horizon",
@@ -11107,15 +11130,13 @@ async fn build_summary_projection_once(
         },
     )
     .await?;
-    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
-        return Err(anyhow!(
-            "summary projection live exact horizon exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-        ));
-    }
+    let initial_live_admission_gaps = live_admission.gaps;
+    let initial_live_admission_overflow = live_admission.overflow;
     // `invoke_id` is the durable identity used by the archive preview contract.  In particular,
     // an archive replay can carry a different timestamp from the richer persisted live row; a
     // `(invoke_id, occurred_at)` key would double count it or overwrite live detail.
-    let mut records_by_invoke_id = rows
+    let mut records_by_invoke_id = live_admission
+        .rows
         .into_iter()
         .filter_map(|row| {
             summary_projection_live_record_from_preview(
@@ -11143,7 +11164,7 @@ async fn build_summary_projection_once(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    let mut recent_rows = match query_summary_projection_live_rows_with_budget(
+    let recent_admission = match query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
         ExactUtcRange {
@@ -11156,7 +11177,8 @@ async fn build_summary_projection_once(
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
-        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(exact_record_bytes),
+        SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES.saturating_sub(exact_record_bytes),
+        &mut live_preview_cache,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "bounded_recent_index",
@@ -11165,32 +11187,49 @@ async fn build_summary_projection_once(
     )
     .await
     {
-        Ok(rows) => rows,
-        Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
-            // The rolling view is already exact and resident. Refuse only `current` instead of
-            // briefly materializing a second near-cap view or dropping the rolling snapshot.
-            current_source_unavailable = true;
-            Vec::new()
-        }
+        Ok(admission) => admission,
         Err(error) => return Err(error),
     };
-    let mut recent_index_complete = recent_rows.len() <= SUMMARY_PROJECTION_MAX_EXACT_RECORDS;
-    let mut recent_index_overflow_at = if recent_index_complete {
-        None
-    } else {
-        let overflow_row = recent_rows
-            .get(SUMMARY_PROJECTION_MAX_EXACT_RECORDS)
-            .expect("recent index overflow includes the first omitted row");
-        Some(
-            parse_to_utc_datetime(&overflow_row.occurred_at).ok_or_else(|| {
+    let recent_live_admission_gaps = recent_admission.gaps;
+    let recent_live_admission_overflow = recent_admission.overflow;
+    let mut recent_rows = recent_admission.rows;
+    for candidate in recent_live_admission_gaps
+        .iter()
+        .chain(recent_live_admission_overflow.iter())
+    {
+        current_source_unavailable_from_rank = Some(
+            current_source_unavailable_from_rank
+                .map(|rank| rank.min(candidate.global_rank))
+                .unwrap_or(candidate.global_rank),
+        );
+        if let Some(account_id) = candidate
+            .upstream_account_id
+            .filter(|account_id| *account_id > 0)
+        {
+            current_account_source_unavailable_from_rank
+                .entry(account_id)
+                .and_modify(|rank| *rank = (*rank).min(candidate.account_rank))
+                .or_insert(candidate.account_rank);
+        }
+    }
+    let mut recent_index_complete = recent_live_admission_overflow.is_none();
+    let mut recent_index_overflow_at = recent_live_admission_overflow
+        .as_ref()
+        .map(|candidate| {
+            parse_to_utc_datetime(&candidate.occurred_at).ok_or_else(|| {
                 anyhow!("summary projection recent index overflow had an invalid occurred_at")
-            })?,
-        )
-    };
+            })
+        })
+        .transpose()?;
     recent_rows.truncate(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
     let mut current_records_by_invoke_id = HashMap::<String, SummaryProjectionRecord>::new();
     let mut current_record_bytes = 0_usize;
-    for row in recent_rows {
+    let mut current_account_ranks = HashMap::<Option<i64>, usize>::new();
+    for (global_index, row) in recent_rows.into_iter().enumerate() {
+        let account_rank = current_account_ranks
+            .entry(row.upstream_account_id)
+            .or_default();
+        *account_rank += 1;
         if let Some((invoke_id, record)) = summary_projection_live_record_from_preview(
             row,
             rollup_live_cursor,
@@ -11213,7 +11252,18 @@ async fn build_summary_projection_once(
                 if !summary_projection_resident_record_budget_exceeded(&error) {
                     return Err(error);
                 }
-                current_source_unavailable = true;
+                let global_rank = global_index + 1;
+                current_source_unavailable_from_rank = Some(
+                    current_source_unavailable_from_rank
+                        .map(|rank| rank.min(global_rank))
+                        .unwrap_or(global_rank),
+                );
+                if let Some(account_id) = record.row.upstream_account_id.filter(|id| *id > 0) {
+                    current_account_source_unavailable_from_rank
+                        .entry(account_id)
+                        .and_modify(|rank| *rank = (*rank).min(*account_rank))
+                        .or_insert(*account_rank);
+                }
                 continue;
             }
             current_record_bytes = next_current_record_bytes;
@@ -11362,6 +11412,24 @@ async fn build_summary_projection_once(
     let mut unavailable_unmaterialized_archive_current_ranges = Vec::<ExactUtcRange>::new();
     let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
     let mut unavailable_exact_live_account_buckets = HashMap::<i64, BTreeSet<i64>>::new();
+    for candidate in initial_live_admission_gaps
+        .into_iter()
+        .chain(initial_live_admission_overflow)
+    {
+        let Some(bucket) = summary_projection_live_candidate_bucket(&candidate) else {
+            continue;
+        };
+        unavailable_exact_live_buckets.insert(bucket);
+        if let Some(account_id) = candidate
+            .upstream_account_id
+            .filter(|account_id| *account_id > 0)
+        {
+            unavailable_exact_live_account_buckets
+                .entry(account_id)
+                .or_default()
+                .insert(bucket);
+        }
+    }
     let mut historical_global_covered_terminal_invoke_ids = HashSet::<String>::new();
     let mut current_complete_archive_paths = HashSet::<String>::new();
     // Only rows which can appear in a legal global or account `current` response need the
@@ -11452,6 +11520,7 @@ async fn build_summary_projection_once(
             &mut unavailable_exact_live_buckets,
             &mut unavailable_exact_live_account_buckets,
             &mut historical_global_covered_terminal_invoke_ids,
+            &mut live_preview_cache,
         )
         .await?;
     }
@@ -11814,14 +11883,15 @@ async fn build_summary_projection_once(
         let remaining = SUMMARY_PROJECTION_MAX_EXACT_RECORDS
             .saturating_sub(records_by_invoke_id.len())
             .saturating_add(1);
-        let exact_live_rows = match query_summary_projection_live_rows_with_budget(
+        let exact_live_admission = match query_summary_projection_live_rows_with_budget(
             pool,
             InvocationSourceScope::All,
             range,
             None,
             remaining,
             false,
-            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES.saturating_sub(current_record_bytes),
+            SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES.saturating_sub(current_record_bytes),
+            &mut live_preview_cache,
             UpstreamAccountActivityPreviewReadTelemetry {
                 route: "summary_projection",
                 builder: "exact_replacement_bucket",
@@ -11830,17 +11900,10 @@ async fn build_summary_projection_once(
         )
         .await
         {
-            Ok(rows) => rows,
-            Err(error) if summary_projection_resident_record_budget_exceeded(&error) => {
-                summary_projection_mark_unavailable_archive_ranges(
-                    &mut unavailable_exact_live_buckets,
-                    [range],
-                )?;
-                continue;
-            }
+            Ok(admission) => admission,
             Err(error) => return Err(error),
         };
-        if exact_live_rows.len() >= remaining {
+        if exact_live_admission.overflow.is_some() || !exact_live_admission.gaps.is_empty() {
             // A rolling window whose partial boundary includes this dense hour cannot be exact
             // within the finite record budget. Keep the independently admitted `current` prefix
             // and unaffected ranges available, while making only this range explicitly
@@ -11851,7 +11914,7 @@ async fn build_summary_projection_once(
             )?;
             continue;
         }
-        for row in exact_live_rows {
+        for row in exact_live_admission.rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
                 continue;
             };
@@ -12406,9 +12469,9 @@ async fn build_summary_projection_once(
         if is_new_rolling_record
             && records_by_invoke_id.len() >= SUMMARY_PROJECTION_MAX_EXACT_RECORDS
         {
-            return Err(anyhow!(
-                "summary projection runtime overlay exceeded bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-            ));
+            let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+            unavailable_exact_live_buckets.insert(bucket);
+            continue;
         }
         let record = SummaryProjectionRecord {
             row,
@@ -13288,6 +13351,8 @@ async fn build_summary_projection_once(
         unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges,
         current_source_unavailable,
+        current_source_unavailable_from_rank,
+        current_account_source_unavailable_from_rank,
         current_archive_latest_coverage_end,
         current_archive_has_unknown_coverage,
         current_archive_admission_exceeded,
@@ -17581,22 +17646,39 @@ async fn load_summary_projection_live_text_columns(
     Ok(text_columns)
 }
 
-async fn ensure_summary_projection_live_text_budget<'e, E>(
-    executor: E,
-    text_columns: &[&str],
-    source_scope: InvocationSourceScope,
-    range: ExactUtcRange,
-    upstream_account_id: Option<Option<i64>>,
-    in_progress_only: bool,
-    limit: usize,
-    max_resident_bytes: usize,
-) -> Result<Option<i64>, anyhow::Error>
-where
-    E: sqlx::Executor<'e, Database = Sqlite>,
-{
-    // Keep the scalar preflight conservative and bounded to the same newest prefix that the
-    // preview query will materialize. Payload covers JSON-derived preview fields; the optional
-    // columns cover legacy schemas where model/error text is stored outside payload.
+#[derive(Debug, Clone, FromRow)]
+struct SummaryProjectionLiveCandidateRow {
+    id: i64,
+    occurred_at: String,
+    upstream_account_id: Option<i64>,
+    source_bytes: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SummaryProjectionLiveCandidate {
+    id: i64,
+    occurred_at: String,
+    upstream_account_id: Option<i64>,
+    source_bytes: usize,
+    global_rank: usize,
+    account_rank: usize,
+}
+
+#[derive(Debug, Default)]
+struct SummaryProjectionLiveAdmission {
+    rows: Vec<UpstreamAccountInvocationPreviewRow>,
+    gaps: Vec<SummaryProjectionLiveCandidate>,
+    overflow: Option<SummaryProjectionLiveCandidate>,
+}
+
+fn summary_projection_live_candidate_bucket(
+    candidate: &SummaryProjectionLiveCandidate,
+) -> Option<i64> {
+    parse_to_utc_datetime(&candidate.occurred_at)
+        .map(|occurred_at| align_bucket_epoch(occurred_at.timestamp(), 3_600, 0))
+}
+
+fn summary_projection_live_source_row_bytes_sql(text_columns: &[&str]) -> String {
     let row_bytes = text_columns
         .iter()
         .map(|column| {
@@ -17610,15 +17692,64 @@ where
         })
         .collect::<Vec<_>>()
         .join(" + ");
+    format!("512 + {row_bytes}")
+}
+
+fn pack_summary_projection_live_candidates(
+    mut candidates: Vec<SummaryProjectionLiveCandidate>,
+    limit: usize,
+) -> (
+    Vec<Vec<SummaryProjectionLiveCandidate>>,
+    Vec<SummaryProjectionLiveCandidate>,
+    Option<SummaryProjectionLiveCandidate>,
+) {
+    let admitted_limit = limit.saturating_sub(1);
+    let overflow = candidates.get(admitted_limit).cloned();
+    candidates.truncate(admitted_limit);
+    let mut pages = Vec::<Vec<SummaryProjectionLiveCandidate>>::new();
+    let mut page = Vec::new();
+    let mut page_bytes = 0_usize;
+    let mut gaps = Vec::new();
+    for candidate in candidates {
+        if candidate.source_bytes > SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES {
+            gaps.push(candidate);
+            continue;
+        }
+        let exceeds_page = !page.is_empty()
+            && page_bytes.saturating_add(candidate.source_bytes)
+                > SUMMARY_PROJECTION_MAX_SOURCE_PAGE_BYTES;
+        let exceeds_chunk = page.len() >= DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE;
+        if exceeds_page || exceeds_chunk {
+            pages.push(std::mem::take(&mut page));
+            page_bytes = 0;
+        }
+        page_bytes = page_bytes.saturating_add(candidate.source_bytes);
+        page.push(candidate);
+    }
+    if !page.is_empty() {
+        pages.push(page);
+    }
+    (pages, gaps, overflow)
+}
+
+async fn query_summary_projection_live_candidates(
+    pool: &Pool<Sqlite>,
+    text_columns: &[&str],
+    source_scope: InvocationSourceScope,
+    range: ExactUtcRange,
+    upstream_account_id: Option<Option<i64>>,
+    in_progress_only: bool,
+    limit: usize,
+) -> Result<Vec<SummaryProjectionLiveCandidate>, anyhow::Error> {
+    let row_bytes = summary_projection_live_source_row_bytes_sql(text_columns);
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT COALESCE(SUM(row_bytes), 0), MAX(row_id) FROM (SELECT id AS row_id, ",
-    );
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, occurred_at, ");
     query
-        .push("512 + ")
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id, ")
         .push(row_bytes.as_str())
-        .push(" AS row_bytes FROM codex_invocations WHERE occurred_at >= ");
+        .push(" AS source_bytes FROM codex_invocations WHERE occurred_at >= ");
     query
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -17634,28 +17765,34 @@ where
             .push(" AND ")
             .push(resolved_upstream_account_id_sql.as_str());
         match upstream_account_id {
-            Some(upstream_account_id) => {
-                query.push(" = ").push_bind(upstream_account_id);
-            }
-            None => {
-                query.push(" IS NULL");
-            }
-        }
+            Some(upstream_account_id) => query.push(" = ").push_bind(upstream_account_id),
+            None => query.push(" IS NULL"),
+        };
     }
     query
         .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
-        .push_bind(limit as i64)
-        .push(")");
-    let (estimated_bytes, max_id) = query
-        .build_query_as::<(i64, Option<i64>)>()
-        .fetch_one(executor)
+        .push_bind(limit as i64);
+    let rows = query
+        .build_query_as::<SummaryProjectionLiveCandidateRow>()
+        .fetch_all(pool)
         .await?;
-    if estimated_bytes > max_resident_bytes as i64 {
-        return Err(anyhow!(
-            "summary projection canonical record byte budget exceeded before preview fetch ({estimated_bytes} > {max_resident_bytes})"
-        ));
-    }
-    Ok(max_id)
+    let mut account_ranks = HashMap::<Option<i64>, usize>::new();
+    Ok(rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let account_rank = account_ranks.entry(row.upstream_account_id).or_default();
+            *account_rank += 1;
+            SummaryProjectionLiveCandidate {
+                id: row.id,
+                occurred_at: row.occurred_at,
+                upstream_account_id: row.upstream_account_id,
+                source_bytes: usize::try_from(row.source_bytes).unwrap_or(usize::MAX),
+                global_rank: index + 1,
+                account_rank: *account_rank,
+            }
+        })
+        .collect())
 }
 
 async fn query_summary_projection_live_rows_with_budget(
@@ -17665,38 +17802,85 @@ async fn query_summary_projection_live_rows_with_budget(
     upstream_account_id: Option<Option<i64>>,
     limit: usize,
     in_progress_only: bool,
-    max_resident_bytes: usize,
+    _max_resident_bytes: usize,
+    preview_cache: &mut HashMap<i64, UpstreamAccountInvocationPreviewRow>,
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
-) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, anyhow::Error> {
+) -> Result<SummaryProjectionLiveAdmission, anyhow::Error> {
     let text_columns = load_summary_projection_live_text_columns(pool).await?;
-    let mut connection = pool.acquire().await?;
-    let max_id = ensure_summary_projection_live_text_budget(
-        &mut *connection,
+    let candidates = query_summary_projection_live_candidates(
+        pool,
         &text_columns,
         source_scope,
         range,
         upstream_account_id,
         in_progress_only,
         limit,
-        max_resident_bytes,
     )
     .await?;
-    let mut rows = query_live_upstream_account_activity_preview_rows_with_limit_executor(
-        &mut *connection,
-        source_scope,
-        range,
-        upstream_account_id,
-        Some(limit),
-        max_id,
-        in_progress_only,
-        telemetry,
-    )
-    .await
-    .map_err(|error| anyhow!("summary projection live preview fetch failed: {error:?}"))?;
+    let (pages, mut gaps, overflow) = pack_summary_projection_live_candidates(candidates, limit);
+    let pages_to_fetch = pages
+        .into_iter()
+        .map(|page| {
+            let uncached_ids = page
+                .iter()
+                .filter(|candidate| !preview_cache.contains_key(&candidate.id))
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>();
+            (page, uncached_ids)
+        })
+        .collect::<Vec<_>>();
+    let page_results = futures_util::stream::iter(pages_to_fetch.into_iter().map(
+        |(page, uncached_ids)| async move {
+            let fetched_rows = if uncached_ids.is_empty() {
+                Vec::new()
+            } else {
+                query_live_upstream_account_activity_preview_rows_by_ids(
+                    pool,
+                    source_scope,
+                    &uncached_ids,
+                    telemetry,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("summary projection live preview fetch failed: {error:?}")
+                })?
+            };
+            Ok::<_, anyhow::Error>((page, fetched_rows))
+        },
+    ))
+    .buffer_unordered(8)
+    .try_collect::<Vec<_>>()
+    .await?;
+    let mut rows = Vec::new();
+    for (page, fetched_rows) in page_results {
+        for row in fetched_rows {
+            preview_cache.insert(row.id, row);
+        }
+        let mut page_rows = Vec::with_capacity(page.len());
+        for candidate in page {
+            if let Some(row) = preview_cache.get(&candidate.id) {
+                page_rows.push(row.clone());
+            } else {
+                gaps.push(candidate);
+            }
+        }
+        rows.extend(page_rows);
+    }
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    let mut connection = pool.acquire().await?;
     restore_summary_projection_persisted_statuses(&mut connection, &mut rows)
         .await
         .context("summary projection live status hydration failed")?;
-    Ok(rows)
+    Ok(SummaryProjectionLiveAdmission {
+        rows,
+        gaps,
+        overflow,
+    })
 }
 
 async fn mark_summary_projection_uncovered_historical_live_ranges(
@@ -17710,15 +17894,17 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     unavailable_global_buckets: &mut BTreeSet<i64>,
     unavailable_account_buckets: &mut HashMap<i64, BTreeSet<i64>>,
     global_covered_terminal_invoke_ids: &mut HashSet<String>,
+    preview_cache: &mut HashMap<i64, UpstreamAccountInvocationPreviewRow>,
 ) -> Result<()> {
-    let rows = query_summary_projection_live_rows_with_budget(
+    let admission = query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
         range,
         None,
         SUMMARY_PROJECTION_MAX_EXACT_RECORDS + 1,
         false,
-        SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
+        SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES,
+        preview_cache,
         UpstreamAccountActivityPreviewReadTelemetry {
             route: "summary_projection",
             builder: "historical_terminal_coverage",
@@ -17726,7 +17912,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         },
     )
     .await?;
-    if rows.len() > SUMMARY_PROJECTION_MAX_EXACT_RECORDS {
+    if admission.overflow.is_some() {
         // The source cannot be fully inspected within the resident-record contract. Its whole
         // finite horizon must fail closed rather than letting a missing terminal disappear from
         // a later rolling or calendar reduction.
@@ -17736,7 +17922,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         );
     }
 
-    for row in rows {
+    for row in admission.rows {
         if matches!(
             normalized_runtime_text(Some(row.status.as_str())).as_str(),
             "pending" | "running"
@@ -17770,6 +17956,22 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             && hourly_rollup_totals.contains_key(&(bucket, Some(account_id)))
             && hourly_rollup_usage.contains_key(&(bucket, Some(account_id)));
         if !account_covered {
+            unavailable_account_buckets
+                .entry(account_id)
+                .or_default()
+                .insert(bucket);
+        }
+    }
+    for candidate in admission.gaps {
+        let Some(occurred_at) = parse_to_utc_datetime(&candidate.occurred_at) else {
+            continue;
+        };
+        let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+        unavailable_global_buckets.insert(bucket);
+        if let Some(account_id) = candidate
+            .upstream_account_id
+            .filter(|account_id| *account_id > 0)
+        {
             unavailable_account_buckets
                 .entry(account_id)
                 .or_default()
@@ -17825,6 +18027,22 @@ async fn query_live_upstream_account_activity_preview_rows_by_ids(
     ids: &[i64],
     telemetry: UpstreamAccountActivityPreviewReadTelemetry,
 ) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    let mut connection = pool.acquire().await?;
+    query_live_upstream_account_activity_preview_rows_by_ids_connection(
+        &mut connection,
+        source_scope,
+        ids,
+        telemetry,
+    )
+    .await
+}
+
+async fn query_live_upstream_account_activity_preview_rows_by_ids_connection(
+    connection: &mut SqliteConnection,
+    source_scope: InvocationSourceScope,
+    ids: &[i64],
+    telemetry: UpstreamAccountActivityPreviewReadTelemetry,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -17847,7 +18065,7 @@ async fn query_live_upstream_account_activity_preview_rows_by_ids(
         rows.extend(
             query
                 .build_query_as::<UpstreamAccountInvocationPreviewRow>()
-                .fetch_all(pool)
+                .fetch_all(&mut *connection)
                 .await?,
         );
     }
@@ -31195,41 +31413,62 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_rejects_oversized_live_payload_before_preview_fetch() {
+    async fn summary_projection_pages_live_source_text_beyond_resident_preview_budget() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
-        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        let payload_value = "x".repeat(SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES / 2 - 1_024);
+        let payload = format!(r#"{{"model":"{payload_value}"}}"#);
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('oversized-summary-live', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, ?1, '', 'full')",
+             VALUES ('paged-summary-live-1', datetime('now', '-2 minute'), 'proxy', 'success', 1, 0.1, ?1, '', 'full'),
+                    ('paged-summary-live-2', datetime('now', '-1 minute'), 'proxy', 'success', 2, 0.2, ?1, '', 'full')",
         )
-        .bind(oversized_payload)
+        .bind(&payload)
         .execute(&state.pool)
         .await
-        .expect("insert oversized live payload");
+        .expect("insert paged live payloads");
 
-        let error = hydrate_summary_snapshots(state.as_ref())
+        hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect_err("oversized live payload must fail before preview materialization");
-        assert!(
-            error
-                .to_string()
-                .contains("canonical record byte budget exceeded before preview fetch"),
-            "live byte preflight must reject oversized payloads: {error:#}"
-        );
+            .expect("source pages may exceed one resident preview budget");
+        assert!(state.subscription_hub.summary_projection().await.is_some());
+        state.pool.close().await;
+
+        for (window, limit) in [
+            ("current", Some(50)),
+            ("1d", None),
+            ("7d", None),
+            ("30d", None),
+            ("today", None),
+            ("all", None),
+        ] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit,
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("summary must remain exact from the published projection");
+            assert_eq!(response.total_count, 2, "{window} total count");
+            assert_eq!(response.total_tokens, 3, "{window} total tokens");
+        }
     }
 
     #[tokio::test]
-    async fn summary_projection_rejects_oversized_account_plan_type_before_preview_fetch() {
+    async fn summary_projection_localizes_oversized_live_source_record() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
         let now = format_utc_iso(Utc::now());
-        let oversized_plan_type = "p".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        let oversized_plan_type = "p".repeat(SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES + 1);
         sqlx::query(
             "INSERT INTO pool_upstream_accounts \
              (id, kind, provider, display_name, status, enabled, plan_type, created_at, updated_at) \
@@ -31243,21 +31482,55 @@ mod request_compression_query_tests {
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('oversized-summary-plan', datetime('now', '-1 minute'), 'proxy', 'success', 1, 0.1, '{\"upstreamAccountId\":987654}', '', 'full')",
+             VALUES ('oversized-summary-plan', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{\"upstreamAccountId\":987654}', '', 'full'),
+                    ('safe-summary-plan', datetime('now', '-1 minute'), 'proxy', 'success', 2, 0.2, '{}', '', 'full')",
         )
         .execute(&state.pool)
         .await
         .expect("insert oversized plan type live row");
 
-        let error = hydrate_summary_snapshots(state.as_ref())
+        hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect_err("oversized plan type must fail before preview materialization");
-        assert!(
-            error
-                .to_string()
-                .contains("canonical record byte budget exceeded before preview fetch"),
-            "plan type byte preflight must reject oversized text: {error:#}"
-        );
+            .expect("oversized source record must become a local admission gap");
+        assert!(state.subscription_hub.summary_projection().await.is_some());
+        state.pool.close().await;
+
+        let Json(current) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("current prefix below the unproven rank remains exact");
+        assert_eq!(current.total_count, 1);
+        let account_error = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(987654),
+            }),
+        )
+        .await
+        .expect_err("the account current prefix reaches its first unproven rank");
+        assert!(matches!(account_error, ApiError::Unavailable(_)));
+        let error = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect_err("a rolling range intersecting the admission gap must be unavailable");
+        assert!(matches!(error, ApiError::Unavailable(_)));
     }
 
     #[tokio::test]
@@ -31278,7 +31551,7 @@ mod request_compression_query_tests {
         .execute(&archive_pool)
         .await
         .expect("create archive payload fixture");
-        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_CANONICAL_BYTES + 1);
+        let oversized_payload = "x".repeat(SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES + 1);
         sqlx::query(
             "INSERT INTO codex_invocations \
              (id, invoke_id, occurred_at, source, payload, total_tokens, cost, status) \
@@ -31307,7 +31580,7 @@ mod request_compression_query_tests {
             &archive_pool,
             &[range],
             &columns,
-            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES,
+            SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES,
         )
         .await
         .expect_err("oversized archive payload must fail before preview materialization");
@@ -31441,7 +31714,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_fails_closed_when_live_horizon_exceeds_exact_budget() {
+    async fn summary_projection_live_horizon_overflow_publishes_local_unavailability() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -31455,14 +31728,36 @@ mod request_compression_query_tests {
         .await
         .expect("insert large in-horizon fixture");
 
-        let error = hydrate_summary_snapshots(state.as_ref())
+        hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect_err("in-horizon overflow must not truncate silently");
-        assert!(
-            error.to_string().contains("exact horizon exceeded"),
-            "in-horizon overflow must fail closed with an explicit bound: {error:#}"
-        );
-        assert!(state.subscription_hub.summary_projection().await.is_none());
+            .expect("in-horizon overflow must publish a projection with a local gap");
+        assert!(state.subscription_hub.summary_projection().await.is_some());
+        state.pool.close().await;
+
+        let Json(current) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(1),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("current prefix remains exact despite an older unproven rank");
+        assert_eq!(current.total_count, 1);
+        let error = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("1d".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect_err("the overflowing live hour must remain unavailable");
+        assert!(matches!(error, ApiError::Unavailable(_)));
     }
 
     #[tokio::test]
@@ -31576,7 +31871,7 @@ mod request_compression_query_tests {
 
     #[test]
     fn summary_projection_resident_record_views_share_the_canonical_byte_budget() {
-        let half_budget = SUMMARY_PROJECTION_MAX_CANONICAL_BYTES / 2;
+        let half_budget = SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES / 2;
         ensure_summary_projection_resident_record_bytes(half_budget, half_budget)
             .expect("the two resident views may exactly fill their shared budget");
 
@@ -31591,6 +31886,36 @@ mod request_compression_query_tests {
     }
 
     #[test]
+    fn summary_projection_live_source_admission_packs_bounded_pages_and_gaps_records() {
+        let candidate =
+            |id: i64, source_bytes: usize, global_rank: usize| SummaryProjectionLiveCandidate {
+                id,
+                occurred_at: format!("2026-01-01 00:00:{id:02}"),
+                upstream_account_id: Some(42),
+                source_bytes,
+                global_rank,
+                account_rank: global_rank,
+            };
+        let (pages, gaps, overflow) = pack_summary_projection_live_candidates(
+            vec![
+                candidate(1, SUMMARY_PROJECTION_MAX_SOURCE_PAGE_BYTES / 2 + 1, 1),
+                candidate(2, SUMMARY_PROJECTION_MAX_SOURCE_PAGE_BYTES / 2 + 1, 2),
+                candidate(3, SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES + 1, 3),
+            ],
+            4,
+        );
+        assert_eq!(
+            pages.len(),
+            2,
+            "two admitted records require two source pages"
+        );
+        assert_eq!(pages.iter().map(Vec::len).sum::<usize>(), 2);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].global_rank, 3);
+        assert!(overflow.is_none());
+    }
+
+    #[test]
     fn summary_projection_resident_byte_overflow_is_local_to_the_affected_range() {
         let now = Utc::now();
         let affected_range = ExactUtcRange {
@@ -31598,8 +31923,8 @@ mod request_compression_query_tests {
             end: now - ChronoDuration::days(3) + ChronoDuration::hours(1),
         };
         let error = ensure_summary_projection_resident_record_bytes(
-            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES / 2 + 1,
-            SUMMARY_PROJECTION_MAX_CANONICAL_BYTES / 2,
+            SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES / 2 + 1,
+            SUMMARY_PROJECTION_MAX_RESIDENT_PREVIEW_BYTES / 2,
         )
         .expect_err("combined resident views must reject the overflowing boundary");
         assert!(summary_projection_resident_record_budget_exceeded(&error));
