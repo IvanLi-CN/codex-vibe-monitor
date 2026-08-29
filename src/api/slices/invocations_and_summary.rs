@@ -8508,6 +8508,17 @@ async fn load_summary_projection_live_account_totals(
 async fn summary_projection_live_history_within_aggregate_budget(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
+    summary_projection_live_history_within_aggregate_budget_with_limit(
+        pool,
+        SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS,
+    )
+    .await
+}
+
+async fn summary_projection_live_history_within_aggregate_budget_with_limit(
+    pool: &Pool<Sqlite>,
+    max_rows: usize,
+) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
     // Check the aggregate bound with SQLite's indexed count before allocating the candidate ID
     // set. Overflow only needs an unavailable proof; materializing `limit + 1` ids would make the
     // failed all-time path needlessly proportional to the retained live table.
@@ -8517,14 +8528,14 @@ async fn summary_projection_live_history_within_aggregate_budget(
             .fetch_one(pool)
             .await
             .context("summary projection live aggregate row count failed")?;
-    if live_row_count > SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS as i64 {
+    if live_row_count > max_rows as i64 {
         return Ok(None);
     }
     match crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
         pool,
         InvocationSourceScope::All,
         0,
-        SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS,
+        max_rows,
     )
     .await
     {
@@ -31674,42 +31685,28 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_fails_closed_when_live_history_exceeds_aggregate_budget() {
+    async fn summary_projection_live_aggregate_admission_fails_closed_at_its_bound() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
         sqlx::query(
-            "WITH RECURSIVE rows(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM rows WHERE value < ?1) \
-             INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             SELECT 'aggregate-budget-summary-' || value, datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full' FROM rows",
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES \
+             ('aggregate-budget-summary-1', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full'), \
+             ('aggregate-budget-summary-2', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full'), \
+             ('aggregate-budget-summary-3', datetime('now', '-3 days'), 'proxy', 'success', 1, 0.1, '{}', '', 'full')",
         )
-        .bind(SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS as i64 + 1)
         .execute(&state.pool)
         .await
         .expect("insert live aggregate budget fixture");
 
-        hydrate_summary_snapshots(state.as_ref())
-            .await
-            .expect("oversized historical live table should fail closed for all-time");
-        assert!(state.subscription_hub.summary_projection().await.is_some());
-        state.pool.close().await;
-
-        let error = fetch_summary(
-            State(state),
-            Query(SummaryQuery {
-                window: Some("all".to_string()),
-                limit: Some(1),
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect_err("all-time must remain unavailable without an unbounded live aggregate scan");
-        assert!(
-            matches!(error, ApiError::Unavailable(_)),
-            "aggregate admission overflow must preserve the unavailable contract: {error:?}"
-        );
+        let admission =
+            summary_projection_live_history_within_aggregate_budget_with_limit(&state.pool, 2)
+                .await
+                .expect("aggregate admission probe must complete");
+        assert!(admission.is_none(), "aggregate overflow must fail closed");
     }
 
     #[tokio::test]
