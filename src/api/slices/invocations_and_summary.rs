@@ -7150,9 +7150,9 @@ tokio::task_local! {
 fn summary_projection_exact_record_limit() -> usize {
     #[cfg(test)]
     {
-        return SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT
+        SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT
             .try_with(|limit| *limit)
-            .unwrap_or(SUMMARY_PROJECTION_MAX_EXACT_RECORDS);
+            .unwrap_or(SUMMARY_PROJECTION_MAX_EXACT_RECORDS)
     }
 
     #[cfg(not(test))]
