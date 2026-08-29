@@ -61,15 +61,17 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 历史全小时由 durable rollup 服务；任一 window 的未完整覆盖边界、live tail、account-lag 与 archive overlap 必须由精确记录补齐，并且 source partition 合并不得遗漏或重复。
 - 最近索引超过固定预算时，Projection 必须保留首个省略 live 行的时间边界；任何覆盖该边界或更早时间的 rolling/calendar 全局或 account 请求必须 `unavailable`，不得以截断索引或请求期回源返回 totals；边界之后、完整保留的窗口继续从内存精确响应。
 - `current` 的 newest-N 视图可以与 rolling/archive 的精确边界视图分开索引，但两者实际持有的 preview 行字符串必须共同受同一常驻字节上限约束；超过上限时不得以第二份副本扩大内存预算。
+- Canonical source-record admission 与 resident preview capacity 必须分离。hydration 可以通过有限、有序的后台 source page 检查累计超过 shared resident preview-byte budget 的 raw source text；只有保留在 Projection 中的 compact preview value 消耗常驻预算。admission 必须保留精确 temporal 与 current-rank proof，服从 hydration deadline/cancellation，且绝不能移入 HTTP/SSE。
 - `current` 只能在每个请求 scope 的 newest-N 候选来源均已被有界 admission 证明时返回成功；一个可能进入该前缀、但未被常驻 Projection 收录的 archive 记录必须使对应 global 或 account `current` 请求 `unavailable`，不得返回较短的 200。确认早于 selected cutoff 的 archive 不得阻断不受影响的 global `current`。
+- 当 source-record admission 无法为某个 record 或 page 建立精确 coverage 时，hydration 必须发布所有独立已证明的 exact selection，并将受影响的 temporal/current-rank boundary 保留为 range-local `unavailable`。相交的 rolling/calendar selection，或可能包含该记录的 `current` prefix，必须 fail closed；不相交 selection 继续可用。不得发布 partial snapshot 或使整个 cold Projection 失败。
 - archive 的不可读或未回放证明必须为 `current` 保留精确 manifest 时间端点；小时 bucket 扩展只用于 rolling/calendar 的 aggregate gap，不得把同小时但早于 selected cutoff 的 archive 放大为 `current` 不可用。materialized archive 的 partial raw boundary gap 只替换受影响的精确边界，不能否定已完整覆盖的 durable rollup interior；replay coverage 必须匹配当前 manifest identity，除非受控兼容标记明确定义为 materialized coverage。
 - raw all-time fallback 的 global 与 account replay proof 必须同时匹配当前 archive SHA；同一路径的 stale SHA marker 不是 coverage proof，不能抑制该 archive 的精确 raw replay。half-open manifest range 的 `end == current` selected cutoff 表示 archive 在选中前缀之前结束，不能阻断 global `current`。
 - all-time account aggregate 的 normal 与 paged archive admission 都必须以 `upstream_activity_manifest_refreshed_at` 证明 account ID manifest 已完整；仅观察到部分 account ID、matching rollup 或 replay marker 不得让未列 archive account 以新鲜零值或 partial response 通过。完成的 replay marker 必须持久化当前 completed manifest SHA，缺少该 identity proof 时 usage breakdown 仍视为未回放并走 exact-or-unavailable 路径。
-- 所有具有有限 manifest coverage 的 raw replay 与 compact-rollup proof 都必须把 inclusive final-row timestamp 归一为同一 exclusive range；`coverage_start_at == coverage_end_at` 的单行 manifest 仍是有界 source，不能退化为无 coverage 的 legacy manifest。raw current-candidate admission 的 record-budget 溢出只能使受影响 selection 或 range `unavailable`，不得中止可由完整 durable rollup 服务的其他 Projection snapshot。
+- 所有具有有限 manifest coverage 的 raw replay 与 compact-rollup proof 都必须把 inclusive final-row timestamp 归一为同一 exclusive range；`coverage_start_at == coverage_end_at` 的单行 manifest 仍是有界 source，不能退化为无 coverage 的 legacy manifest。raw current-candidate source-admission failure 必须保留其 current-rank proof，且只能使受影响 selection 或 range `unavailable`，不得中止可由完整 durable rollup 服务的其他 Projection snapshot。
 - 共享常驻字节预算无法同时容纳某个 rolling/archive 精确边界与独立 newest-N 视图时，必须回退该精确边界为范围局部 `unavailable`；已经完整证明的 `current` 和不相交的合法窗口继续从内存精确响应。
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
 - 仅为 `current` newest-N 候选而读取的 archive record 若在 current-index admission 中被裁剪，且该 record 已由相同 global/account totals 与 usage compact rollup 完整证明，则其裁剪不得写入 rolling/calendar 的遗漏时间边界；没有该完整 scope proof 的裁剪仍必须 fail closed。
-- archive manifest 或历史容量超过固定内存 admission 预算时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
+- archive manifest 或历史 source capacity 超过 bounded source admission 或 shared resident preview capacity 时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
 - hydration、archive 读取和 reconcile 必须有 deadline、取消点、coalescing 与受控重试，不得在请求路径执行。
@@ -145,6 +147,8 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 ## 验收标准（Acceptance Criteria）
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
+- Given 多个各自可 admission 的 live canonical source record，其累计 raw text 超过 shared resident preview-byte budget、但保留的 preview value 仍可容纳，When Summary Projection hydrate，Then 合法 `current`/`1d`/rolling selection 精确且可用；关闭 SQLite 后，每个 HTTP read 的 SQLite/file I/O 均为零。
+- Given 一个 source record 或 page 无法建立精确 coverage，When 它与 rolling/calendar exact boundary 相交或可能进入请求的 `current` prefix，Then 只有该 selection 为 `unavailable`；同一已发布 Projection 的不相交 exact selection 保持可用，且不返回 partial response。
 - Given 同一路径的 unmaterialized archive 被替换且 global/account replay marker 保留旧 SHA，When hydration 构建 all-time Projection，Then 两个 scope 都回放当前 archive 的精确 raw 数据，后续 HTTP 读取在关闭 SQLite 后仍不执行 SQL 或文件 I/O。
 - Given refresh 在 SummaryCurrent 读取期间发布新 Projection 并清除已被其包含的 terminal overlay，When 旧 Projection 仍被选作该帧基线，Then 该帧保留对应 overlay；任一帧不得遗漏已接受 terminal。
 - Given 不可读 archive 的 exclusive coverage end 恰等于 global current 的 selected cutoff，When 请求该 current rank，Then archive 不阻断该响应，且响应继续只读内存 Projection。
