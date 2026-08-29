@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.6",
+  "base_stable_version": "2.68.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-29T14:44:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "abf008537b695ecff443c7fc7832defdc2885590",
+  "pr_number": 872,
+  "pr_title": "fix(summary): isolate detail archive mirrors",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.6",
+  "target_sha": "a4be36e07fb5aa2c00a226c2eba8ba72943c0b5c",
+  "type_label": "type:patch"
+}
