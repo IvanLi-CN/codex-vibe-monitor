@@ -4745,6 +4745,11 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     .execute(&pool)
     .await
     .expect("restore unresolved source role for mismatch probe");
+    let budget_exhausted = reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::ZERO)
+        .await
+        .expect("defer an unstarted mirror proof at its elapsed budget");
+    assert!(budget_exhausted.hit_budget);
+    assert_eq!(budget_exhausted.inspected_path_count, 0);
     sqlx::query("UPDATE codex_invocations SET invoke_id = ?1 WHERE id = ?2")
         .bind("sparse-legacy-detail-mirror-mismatch")
         .bind(43_i64)
@@ -4770,7 +4775,7 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     let unreadable =
         reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
             .await
-            .expect("leave unreadable archive unresolved without failing the window");
+            .expect_err("surface an unreadable archive to the startup task");
     let unreadable_source_kind: String = sqlx::query_scalar(
         "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
     )
@@ -4780,7 +4785,11 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     .await
     .expect("load unreadable source role");
 
-    assert_eq!(unreadable.changed_path_count, 0);
+    assert!(
+        unreadable
+            .to_string()
+            .contains("failed to open legacy detail archive for sha256")
+    );
     assert_eq!(unreadable_source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN);
 
     cleanup_temp_test_dir(&temp_dir);
