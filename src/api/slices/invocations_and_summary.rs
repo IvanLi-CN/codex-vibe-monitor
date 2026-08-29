@@ -8508,6 +8508,18 @@ async fn load_summary_projection_live_account_totals(
 async fn summary_projection_live_history_within_aggregate_budget(
     pool: &Pool<Sqlite>,
 ) -> Result<Option<crate::stats::BoundedLiveInvocationIds>> {
+    // Check the aggregate bound with SQLite's indexed count before allocating the candidate ID
+    // set. Overflow only needs an unavailable proof; materializing `limit + 1` ids would make the
+    // failed all-time path needlessly proportional to the retained live table.
+    let live_row_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations WHERE id > ?1")
+            .bind(0_i64)
+            .fetch_one(pool)
+            .await
+            .context("summary projection live aggregate row count failed")?;
+    if live_row_count > SUMMARY_PROJECTION_MAX_LIVE_AGGREGATE_ROWS as i64 {
+        return Ok(None);
+    }
     match crate::stats::load_live_invocation_ids_after_id_bounded_snapshot(
         pool,
         InvocationSourceScope::All,
