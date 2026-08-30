@@ -145,7 +145,21 @@ safe_failure_signature() {
         return
         ;;
     esac
-    printf 'sqlite_error_code=%s' "$sqlite_code"
+    for signature_word in $line; do
+      normalized="${signature_word,,}"
+      normalized="${normalized//[^a-z]/}"
+      case "$normalized" in
+        error|returned|from|database|code|sqlite|sql|syntax|near|table|column|index|trigger|view|function|schema|malformed|missing|ambiguous|qualified|identifier|expression|query|select|insert|update|delete|create|drop|alter|pragma|transaction|begin|commit|rollback|constraint|foreign|key|unique|not|null|check|unsafe|use|virtual|json|jsonb|locked|busy|readonly|open|unable|cannot|attempt|file|disk|image|corrupt|permission|denied|row|rows|failed)
+          signature+=("$normalized")
+          ;;
+      esac
+      (( ${#signature[@]} >= 16 )) && break
+    done
+    if (( ${#signature[@]} > 0 )); then
+      printf 'sqlite_error_code=%s phrase=%s' "$sqlite_code" "${signature[*]}"
+    else
+      printf 'sqlite_error_code=%s' "$sqlite_code"
+    fi
     return
   fi
   line="$(grep -Eim1 'no such table:[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$log_path" || true)"
