@@ -100,6 +100,31 @@ range-local unavailable until a later hydration proves coverage. It never
 represents incomplete coverage as a fresh result.
 _Avoid_: fabricated success, permanent global outage
 
+**Bootstrap Projection**:
+The first immutable Summary Projection published after startup. It contains the
+exact `current` legal prefix and every independently proven rolling/calendar
+selection, but deliberately does not wait for all-time archive reconciliation.
+_Avoid_: partial all-time response, global cold-start failure
+
+**Projection Generation Fence**:
+The stable live ID, rollup cursor, and archive manifest high-watermark observed
+for one background Projection pass. A later generation never extends an older
+coverage claim; it starts a new bounded reconciliation from its own fence.
+_Avoid_: mixed-source snapshot, implicit catch-up
+
+**All-Time Coverage Checkpoint**:
+The durable per-scope seek cursor for bounded manifest-proof reconciliation at a
+Projection Generation Fence. It advances only after a whole page has exact
+materialization and replay evidence, and a restart resumes from its committed
+cursor.
+_Avoid_: full-history startup retry, in-memory-only progress
+
+**Exact-Ready**:
+The state in which a requested Summary selection has all required source and
+boundary proof in the published Projection. `all` becomes Exact-Ready only after
+its own coverage checkpoint and final exact aggregate complete.
+_Avoid_: approximate readiness, coupled rolling availability
+
 **Archive Publication Proof**:
 The durable certificate that an immutable `codex_invocations` archive has
 finite coverage and a current manifest identity whose required Summary rollups

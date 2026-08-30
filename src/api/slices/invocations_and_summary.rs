@@ -7137,10 +7137,24 @@ const SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF: Duration = Duration::
 // phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
 // serving ceiling; mutations still use the separate debounce below.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
-// Initial projection construction may need to fold a bounded, valid historical horizon. It runs
-// only after listener readiness, but still needs a finite cancellation-friendly work budget.
-pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(120);
+// Startup publishes the independently exact current and rolling selections before background
+// all-time reconciliation. The initial budget therefore remains a bounded readiness gate rather
+// than a deadline for a full-history scan.
+pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum SummaryProjectionBuildMode {
+    Bootstrap,
+    Rolling,
+    AllTime,
+}
+
+impl SummaryProjectionBuildMode {
+    const fn includes_all_time(self) -> bool {
+        matches!(self, Self::AllTime)
+    }
+}
 
 #[cfg(test)]
 tokio::task_local! {
@@ -9943,21 +9957,58 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
     state: &AppState,
     deadline: Duration,
 ) -> Result<()> {
-    refresh_summary_snapshots_with_deadline(state, true, Some(deadline), false).await
+    refresh_summary_snapshots_with_deadline(
+        state,
+        SummaryProjectionBuildMode::Bootstrap,
+        Some(deadline),
+        false,
+    )
+    .await
 }
 
 async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
-    let include_all_time = state.subscription_hub.has_summary_all_time_owner().await;
-    refresh_summary_snapshots_with_mode(state, include_all_time).await
+    refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
+    if !state.subscription_hub.has_summary_all_time_owner().await {
+        return Ok(());
+    }
+    let coverage = tokio::time::timeout(
+        SUMMARY_PROJECTION_BUILD_DEADLINE,
+        advance_summary_all_time_coverage_checkpoint(&state.pool),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "summary all-time coverage checkpoint exceeded {SUMMARY_PROJECTION_BUILD_DEADLINE:?}"
+        )
+    })?;
+    let coverage = match coverage {
+        Ok(coverage) => coverage,
+        Err(error) => {
+            warn!(error = ?error, "summary all-time coverage checkpoint deferred; keeping fresh rolling projection");
+            return Ok(());
+        }
+    };
+    if !coverage.is_complete() {
+        debug!(
+            "summary all-time coverage checkpoint remains incomplete; keeping fresh rolling projection"
+        );
+        return Ok(());
+    }
+    if let Err(error) =
+        refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::AllTime).await
+    {
+        warn!(error = ?error, "summary all-time reconciliation deferred; keeping fresh rolling projection");
+    }
+    Ok(())
 }
 
 pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
-    include_all_time: bool,
+    mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
     refresh_summary_snapshots_with_deadline(
         state,
-        include_all_time,
+        mode,
         Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
         true,
     )
@@ -9966,7 +10017,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
 
 async fn refresh_summary_snapshots_with_deadline(
     state: &AppState,
-    include_all_time: bool,
+    mode: SummaryProjectionBuildMode,
     deadline: Option<Duration>,
     coalesce_if_in_flight: bool,
 ) -> Result<()> {
@@ -10017,9 +10068,10 @@ async fn refresh_summary_snapshots_with_deadline(
         .await
         .read_model
         .settled_terminal_sequence;
+    let build_started_at = Instant::now();
     let build = build_summary_projection(
         state,
-        include_all_time,
+        mode,
         previous_all_time,
         durable_terminal_sequence_watermark,
     );
@@ -10046,6 +10098,11 @@ async fn refresh_summary_snapshots_with_deadline(
         .subscription_hub
         .store_summary_projection(projection)
         .await;
+    debug!(
+        ?mode,
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build published"
+    );
     Ok(())
 }
 
@@ -10549,6 +10606,223 @@ async fn summary_projection_completed_manifest_high_watermark(
     .context("summary projection completed manifest high-watermark hydration failed")
 }
 
+pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL: &str = "global";
+pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT: &str = "account";
+
+#[derive(Debug, Clone, Copy, sqlx::FromRow)]
+pub(crate) struct SummaryAllTimeCoverageCheckpointRow {
+    pub(crate) manifest_high_watermark_id: i64,
+    pub(crate) next_manifest_id: i64,
+    pub(crate) completed: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SummaryAllTimeCoverageProgress {
+    global_complete: bool,
+    account_complete: bool,
+}
+
+impl SummaryAllTimeCoverageProgress {
+    pub(crate) const fn is_complete(self) -> bool {
+        self.global_complete && self.account_complete
+    }
+}
+
+pub(crate) async fn load_summary_all_time_coverage_checkpoint(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+) -> Result<Option<SummaryAllTimeCoverageCheckpointRow>> {
+    sqlx::query_as::<_, SummaryAllTimeCoverageCheckpointRow>(
+        "SELECT manifest_high_watermark_id, next_manifest_id, completed \
+         FROM summary_all_time_coverage_checkpoint WHERE scope = ?1",
+    )
+    .bind(scope)
+    .fetch_optional(pool)
+    .await
+    .context("summary all-time coverage checkpoint hydration failed")
+}
+
+async fn store_summary_all_time_coverage_checkpoint(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+    manifest_high_watermark_id: i64,
+    next_manifest_id: i64,
+    completed: bool,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO summary_all_time_coverage_checkpoint \
+         (scope, manifest_high_watermark_id, next_manifest_id, completed, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, datetime('now')) \
+         ON CONFLICT(scope) DO UPDATE SET \
+           manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
+           next_manifest_id = excluded.next_manifest_id, \
+           completed = excluded.completed, updated_at = excluded.updated_at",
+    )
+    .bind(scope)
+    .bind(manifest_high_watermark_id)
+    .bind(next_manifest_id)
+    .bind(i64::from(completed))
+    .execute(pool)
+    .await
+    .context("summary all-time coverage checkpoint persistence failed")?;
+    Ok(())
+}
+
+async fn summary_all_time_coverage_page_is_exact(
+    pool: &Pool<Sqlite>,
+    page: &SummaryProjectionBoundaryManifestPage,
+) -> Result<(bool, bool)> {
+    if page.archives.is_empty() {
+        return Ok((true, true));
+    }
+    let paths = page
+        .archives
+        .iter()
+        .map(|archive| archive.file_path().to_string())
+        .collect::<Vec<_>>();
+    let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+    let mut global_complete = true;
+    let mut account_complete = true;
+    for archive in &page.archives {
+        let replay = replay_coverage
+            .get(archive.file_path())
+            .copied()
+            .unwrap_or_default();
+        global_complete &= archive.has_materialized_historical_rollups() && replay.overall;
+        account_complete &= archive.has_materialized_historical_rollups()
+            && page
+                .account_manifest_refreshed_paths
+                .contains(archive.file_path())
+            && replay.account_stats
+            && replay.usage_breakdown;
+        if !global_complete && !account_complete {
+            break;
+        }
+    }
+    Ok((global_complete, account_complete))
+}
+
+async fn advance_summary_all_time_coverage_checkpoint_scope(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+    high_watermark_id: i64,
+) -> Result<bool> {
+    let checkpoint = load_summary_all_time_coverage_checkpoint(pool, scope).await?;
+    let (next_manifest_id, completed) = match checkpoint {
+        Some(checkpoint)
+            if checkpoint.manifest_high_watermark_id == high_watermark_id
+                && checkpoint.completed != 0 =>
+        {
+            return Ok(true);
+        }
+        Some(checkpoint) if checkpoint.manifest_high_watermark_id == high_watermark_id => {
+            (checkpoint.next_manifest_id, false)
+        }
+        _ => (0, false),
+    };
+    if completed {
+        return Ok(true);
+    }
+    let page = load_summary_projection_boundary_manifest_page(
+        pool,
+        None,
+        (next_manifest_id > 0).then_some(next_manifest_id),
+        high_watermark_id,
+    )
+    .await?;
+    if page.archives.is_empty() {
+        store_summary_all_time_coverage_checkpoint(
+            pool,
+            scope,
+            high_watermark_id,
+            next_manifest_id,
+            true,
+        )
+        .await?;
+        debug!(scope, "summary all-time coverage checkpoint completed");
+        return Ok(true);
+    }
+    let (global_complete, account_complete) =
+        summary_all_time_coverage_page_is_exact(pool, &page).await?;
+    let page_complete = match scope {
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL => global_complete,
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT => account_complete,
+        _ => {
+            return Err(anyhow!(
+                "unknown summary all-time coverage checkpoint scope"
+            ));
+        }
+    };
+    if !page_complete {
+        debug!(
+            scope,
+            manifest_count = page.archives.len(),
+            "summary all-time coverage checkpoint waiting for exact page proof"
+        );
+        return Ok(false);
+    }
+    let next_after_id = page
+        .next_after_id
+        .expect("non-empty summary all-time coverage page has a seek cursor");
+    store_summary_all_time_coverage_checkpoint(
+        pool,
+        scope,
+        high_watermark_id,
+        next_after_id,
+        false,
+    )
+    .await?;
+    debug!(
+        scope,
+        manifest_count = page.archives.len(),
+        "summary all-time coverage checkpoint advanced"
+    );
+    Ok(false)
+}
+
+pub(crate) async fn advance_summary_all_time_coverage_checkpoint(
+    pool: &Pool<Sqlite>,
+) -> Result<SummaryAllTimeCoverageProgress> {
+    let manifest_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    )
+    .fetch_one(pool)
+    .await
+    .context("summary all-time coverage checkpoint count failed")?;
+    if manifest_count <= SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES as i64 {
+        return Ok(SummaryAllTimeCoverageProgress {
+            global_complete: true,
+            account_complete: true,
+        });
+    }
+    let Some(high_watermark_id) =
+        summary_projection_completed_manifest_high_watermark(pool).await?
+    else {
+        return Ok(SummaryAllTimeCoverageProgress {
+            global_complete: true,
+            account_complete: true,
+        });
+    };
+    let global_complete = advance_summary_all_time_coverage_checkpoint_scope(
+        pool,
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL,
+        high_watermark_id,
+    )
+    .await?;
+    let account_complete = advance_summary_all_time_coverage_checkpoint_scope(
+        pool,
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT,
+        high_watermark_id,
+    )
+    .await?;
+    Ok(SummaryAllTimeCoverageProgress {
+        global_complete,
+        account_complete,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SummaryProjectionOverflowedBoundaryCoverage {
     high_watermark_id: i64,
@@ -10950,7 +11224,7 @@ struct PreviousSummaryProjectionAllTime {
 /// is swapped atomically in the subscription hub only after the complete baseline is available.
 async fn build_summary_projection(
     state: &AppState,
-    include_all_time: bool,
+    mode: SummaryProjectionBuildMode,
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -10962,7 +11236,7 @@ async fn build_summary_projection(
         return build_summary_projection_once(
             state,
             &state.pool,
-            include_all_time,
+            mode,
             previous_all_time,
             durable_terminal_sequence_watermark,
         )
@@ -10996,7 +11270,7 @@ async fn build_summary_projection(
     let build = build_summary_projection_once(
         state,
         &snapshot_pool,
-        include_all_time,
+        mode,
         previous_all_time,
         durable_terminal_sequence_watermark,
     )
@@ -11016,7 +11290,7 @@ async fn build_summary_projection(
 async fn build_summary_projection_once(
     state: &AppState,
     pool: &Pool<Sqlite>,
-    include_all_time: bool,
+    mode: SummaryProjectionBuildMode,
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
@@ -11041,11 +11315,11 @@ async fn build_summary_projection_once(
         all_time_account_persisted_live_terminal_invoke_ids:
             previous_all_time_account_persisted_live_terminal_invoke_ids,
     } = previous_all_time.unwrap_or_default();
-    let all_time_was_fully_rebuilt = summary_projection_manifest_admission_retry_is_due(
-        previous_all_time_manifest_admission_blocked_at,
-        Instant::now(),
-    ) && (include_all_time
-        || previous_all_time_refreshed_at.is_none());
+    let all_time_was_fully_rebuilt = mode.includes_all_time()
+        && summary_projection_manifest_admission_retry_is_due(
+            previous_all_time_manifest_admission_blocked_at,
+            Instant::now(),
+        );
     // Materialized hourly rollups are the canonical historical baseline. Raw live preview rows
     // are limited to the moving exact tail; older live rows are represented by their durable
     // hourly rollups. Archive boundary rows use the wider finite range below so supported 7d/
@@ -11225,14 +11499,7 @@ async fn build_summary_projection_once(
             "summary projection current limit exceeds bounded record budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
         ));
     }
-    let recent_candidate_limit = if live_history_admission.is_none()
-        && all_time_was_fully_rebuilt
-        && !has_any_completed_archive
-    {
-        state.config.list_limit_max.saturating_add(1)
-    } else {
-        summary_projection_exact_record_limit() + 1
-    };
+    let recent_candidate_limit = state.config.list_limit_max.saturating_add(1);
     let recent_admission = match query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
@@ -29648,6 +29915,89 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate summary projection fixture");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("hydrate summary projection fixture all-time coverage");
+    }
+
+    #[tokio::test]
+    async fn summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = db_occurred_at_lower_bound(Utc::now());
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-bootstrap-rolling', ?1, 'proxy', 'success', 17, 1.25, \
+                     '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .bind(occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert bootstrap summary fixture");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create summary projection interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
+        );
+        let state_for_hydration = state.clone();
+        let hydration = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(
+                state_for_hydration.as_ref(),
+                Duration::from_millis(500),
+            )
+            .await
+        });
+        tokio::pin!(hydration);
+
+        tokio::select! {
+            result = &mut hydration => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("run bootstrap hydration")
+                    .expect("bootstrap hydration must publish the rolling projection");
+            }
+            _ = interleave.wait_for_writer() => {
+                interleave.resume_build();
+                let _ = hydration.await;
+                clear_summary_projection_test_interleave();
+                panic!("startup hydration must publish rolling coverage without waiting for all-time reconciliation");
+            }
+        }
+
+        state.pool.close().await;
+        for window in ["current", "1d", "7d", "30d", "today"] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: Some(50),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("bootstrap projection must serve rolling Summary from memory");
+            assert_eq!(response.total_count, 1, "{window} response");
+            assert_eq!(response.total_tokens, 17, "{window} response");
+        }
+        let all_time = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(matches!(all_time, Err(ApiError::Unavailable(_))));
     }
 
     #[tokio::test]
@@ -30934,7 +31284,7 @@ mod request_compression_query_tests {
         )
         .await;
         hydrate_summary_projection_fixture(&state).await;
-        refresh_summary_snapshots_with_mode(state.as_ref(), false)
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
             .await
             .expect("rolling-only refresh preserves prior all-time projection");
         state.pool.close().await;
@@ -31986,6 +32336,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("source pages may exceed one resident preview budget");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("source pages may reconcile all-time coverage after bootstrap");
         assert!(state.subscription_hub.summary_projection().await.is_some());
         state.pool.close().await;
 

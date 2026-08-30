@@ -7,6 +7,7 @@
 - [ADR 0002: Exact Summary projection contract](../../adr/0002-exact-summary-projection-contract.md)
 - [ADR 0003: Durable invocation classification](../../adr/0003-durable-invocation-classification.md)
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
+- [ADR 0005: Staged Summary projection recovery](../../adr/0005-staged-summary-projection-recovery.md)
 
 ## 背景 / 问题陈述
 
@@ -21,6 +22,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 ### Goals
 
 - 让 Summary Projection 对所有已支持的合法选择提供精确、内存优先的 `StatsResponse`，并以 durable rollup 加精确边界记录承接大历史。
+- 让启动期先发布独立 Exact-Ready 的 `current` 与 rolling/calendar Projection；全历史 coverage 以 durable checkpoint 微批收敛，且其超时、压力或重启不得撤销近期发布。
 - 将 terminal invocation classification 物化为统一、versioned durable fact，使 Summary、hourly rollup 与全量 aggregate 对同一记录给出同一成功/失败语义。
 - 将 `SQLite Pressure Defer` 与真实 `BUSY`/`LOCKED` 失败分开，使 defer 只有一次 due/event wake，不制造轮询或无动作写入。
 - 把长期 legacy migration 改为 cursor/seek 驱动的可取消微批，以保持 P1 优先级与可恢复 backlog。
@@ -157,6 +159,7 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - Given legacy `unknown` detail mirror 数量超过通用 backfill 的单次候选页、且该队列受 pressure defer，When 正常启动 Summary，Then Summary Startup Recovery Gate 先完成其稳定 high-watermark 内的有界 exact identity sweep，再发布完整 Projection；一个不可读或不匹配 archive 保持 `unknown`，但不得阻止后续独立 mirror 的证明，且关闭 SQLite 后已发布的合法 current/1d/rolling HTTP read 仍为零 SQL/文件 I/O。
 - Given 新 invocation archive 在 Summary rollup 或任一 required SHA-bound proof 写入前失败，When 它尝试最终化为 `completed`，Then 数据库拒绝该状态转换、事务回滚且 live source 不被删除；后续正常启动只处理遗留 completed archive 的验证式 reconciliation。
 - Given 多个各自可 admission 的 live canonical source record，其累计 raw text 超过 shared resident preview-byte budget、但保留的 preview value 仍可容纳，When Summary Projection hydrate，Then 合法 `current`/`1d`/rolling selection 精确且可用；关闭 SQLite 后，每个 HTTP read 的 SQLite/file I/O 均为零。
+- Given 全历史 manifest 或聚合 reconciliation 超过启动期预算，When 正常版本启动，Then Bootstrap Projection 在 30 秒内发布 Exact-Ready 的合法 `current`/`1d`/`7d`/`30d`/`today`，而 `all` 保持 `unavailable` 直到独立 coverage checkpoint 和最终精确聚合完成；任何 handler 不执行 SQLite 或 archive/file I/O。
 - Given 一个 source record 或 page 无法建立精确 coverage，When 它与 rolling/calendar exact boundary 相交或可能进入请求的 `current` prefix，Then 只有该 selection 为 `unavailable`；同一已发布 Projection 的不相交 exact selection 保持可用，且不返回 partial response。
 - Given 同一路径的 unmaterialized archive 被替换且 global/account replay marker 保留旧 SHA，When hydration 构建 all-time Projection，Then 两个 scope 都回放当前 archive 的精确 raw 数据，后续 HTTP 读取在关闭 SQLite 后仍不执行 SQL 或文件 I/O。
 - Given refresh 在 SummaryCurrent 读取期间发布新 Projection 并清除已被其包含的 terminal overlay，When 旧 Projection 仍被选作该帧基线，Then 该帧保留对应 overlay；任一帧不得遗漏已接受 terminal。

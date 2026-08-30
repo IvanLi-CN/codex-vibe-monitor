@@ -22788,6 +22788,117 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         .await
         .expect("hydrate rolling summary projection beyond manifest admission");
 
+    let Json(current) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("bootstrap must publish the exact current prefix before all-time reconciliation");
+    assert_eq!(current.total_count, 1);
+
+    let first_checkpoint = advance_summary_all_time_coverage_checkpoint(&state.pool)
+        .await
+        .expect("advance the first all-time coverage page");
+    assert!(
+        !first_checkpoint.is_complete(),
+        "one bounded page must not claim a 4097-manifest generation is complete"
+    );
+    let global_checkpoint = load_summary_all_time_coverage_checkpoint(
+        &state.pool,
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL,
+    )
+    .await
+    .expect("load global all-time coverage checkpoint")
+    .expect("persist global all-time coverage checkpoint");
+    assert!(global_checkpoint.next_manifest_id > 0);
+    assert_eq!(global_checkpoint.completed, 0);
+
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+         VALUES ('codex_invocations', '2026-01', '/tmp/summary-manifest-admission-generation.sqlite.gz', \
+                 'summary-manifest-admission-generation', 1, 'completed', ?1, ?2, datetime('now'), datetime('now'), datetime('now'))",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .execute(&state.pool)
+    .await
+    .expect("append a later all-time manifest generation");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', '/tmp/summary-manifest-admission-generation.sqlite.gz', \
+                     'summary-manifest-admission-generation')",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record replay proof for the next manifest generation");
+    }
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = total_count + 1, success_count = success_count + 1, \
+         total_tokens = total_tokens + 17, total_cost = total_cost + 1.25 \
+         WHERE bucket_start_epoch = ?1 AND source = 'proxy'",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("extend the global compact rollup for the next generation");
+    sqlx::query(
+        "UPDATE upstream_account_stats_hourly SET total_count = total_count + 1, success_count = success_count + 1, \
+         total_tokens = total_tokens + 17, total_cost = total_cost + 1.25 \
+         WHERE bucket_start_epoch = ?1 AND source = 'proxy' AND upstream_account_id = 42",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("extend the account compact rollup for the next generation");
+    let reset_progress = advance_summary_all_time_coverage_checkpoint(&state.pool)
+        .await
+        .expect("reset coverage checkpoint at the later manifest high-watermark");
+    assert!(!reset_progress.is_complete());
+    let reset_checkpoint = load_summary_all_time_coverage_checkpoint(
+        &state.pool,
+        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL,
+    )
+    .await
+    .expect("load reset global all-time coverage checkpoint")
+    .expect("persist reset global all-time coverage checkpoint");
+    assert!(
+        reset_checkpoint.manifest_high_watermark_id > global_checkpoint.manifest_high_watermark_id
+    );
+    assert!(
+        reset_checkpoint.next_manifest_id <= global_checkpoint.next_manifest_id,
+        "a newer generation restarts from a committed page instead of extending stale coverage"
+    );
+    let mut coverage_complete = false;
+    for _ in 0..16 {
+        coverage_complete = advance_summary_all_time_coverage_checkpoint(&state.pool)
+            .await
+            .expect("advance bounded all-time coverage checkpoint")
+            .is_complete();
+        if coverage_complete {
+            break;
+        }
+    }
+    assert!(
+        coverage_complete,
+        "paged all-time coverage must converge from its stored seek cursor"
+    );
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("build exact all-time projection after coverage reconciliation");
+
     // A rolling-only refresh must retain the fully hydrated all-time snapshot without reopening
     // its large manifest set.
     sqlx::query(
@@ -22797,7 +22908,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .execute(&state.pool)
     .await
     .expect("remove the admitted manifest fixture before rolling-only refresh");
-    refresh_summary_snapshots_with_mode(state.as_ref(), false)
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
         .await
         .expect("rolling refresh retains the exact all-time snapshot");
     assert!(
@@ -22835,9 +22946,12 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         )
         .await
         .expect("serve the exact all-time snapshot without SQLite");
-        assert_eq!(response.total_count, MANIFEST_COUNT + 1);
-        assert_eq!(response.total_tokens, MANIFEST_COUNT * 17 + 23);
-        assert_eq!(response.total_cost, MANIFEST_COUNT as f64 * 1.25 + 2.5);
+        assert_eq!(response.total_count, MANIFEST_COUNT + 2);
+        assert_eq!(response.total_tokens, (MANIFEST_COUNT + 1) * 17 + 23);
+        assert_eq!(
+            response.total_cost,
+            (MANIFEST_COUNT + 1) as f64 * 1.25 + 2.5
+        );
     }
 }
 
@@ -23194,7 +23308,9 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             .expect("legacy manifest replacement must not block the snapshot reader")
             .expect("commit legacy manifest replacement");
     });
-    let hydration = refresh_summary_snapshots_with_mode(state.as_ref(), false).await;
+    let hydration =
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await;
     replacement.await.expect("run legacy manifest replacement");
     clear_summary_projection_test_interleave();
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");

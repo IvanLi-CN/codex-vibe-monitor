@@ -3714,6 +3714,21 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure hourly_rollup_live_progress table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_all_time_coverage_checkpoint (
+            scope TEXT PRIMARY KEY,
+            manifest_high_watermark_id INTEGER NOT NULL,
+            next_manifest_id INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_all_time_coverage_checkpoint table existence")?;
+
     if has_existing_invocation_rollup_hourly_rows {
         let reconciliation_complete = sqlx::query_scalar::<_, i64>(
             "SELECT COALESCE((SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1), 0)",
