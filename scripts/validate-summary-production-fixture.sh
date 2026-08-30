@@ -6,16 +6,17 @@ set -euo pipefail
 fixture_dir="${SUMMARY_PRODUCTION_FIXTURE_DIR:-/workspace/production-fixture}"
 database_path="$fixture_dir/codex_vibe_monitor.db"
 archive_dir="$fixture_dir/archives"
+fixture_target_dir="$fixture_dir/.cargo-target"
 port="${SUMMARY_PRODUCTION_FIXTURE_PORT:-18080}"
 timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_TIMEOUT_SECS:-1800}"
 fixture_wait_seconds="${SUMMARY_PRODUCTION_FIXTURE_WAIT_SECS:-4800}"
-cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-/tmp/codex-vibe-monitor-summary-target}"
+cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-$fixture_target_dir}"
 app_log="$fixture_dir/summary-projection-validation.log"
 app_pid=""
 
 if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ||
-  ! "$fixture_wait_seconds" =~ ^[0-9]+$ ||
-  "$cargo_target_dir" != /tmp/* || "$cargo_target_dir" == *..* ]]; then
+  ! "$fixture_wait_seconds" =~ ^[0-9]+$ || "$cargo_target_dir" == *..* ||
+  ( "$cargo_target_dir" != /tmp/* && "$cargo_target_dir" != "$fixture_target_dir" ) ]]; then
   printf 'summary_fixture_invalid_configuration\n' >&2
   exit 64
 fi
@@ -53,8 +54,10 @@ classify_app_exit() {
     printf 'terminal_journal_directory_failure'
   elif grep -Eiq 'archive.*permission denied|permission denied.*archive' "$log_path"; then
     printf 'archive_fixture_permission_failure'
-  elif grep -Eiq 'failed to create.*target|failed to create.*workspace' "$log_path"; then
-    printf 'workspace_write_failure'
+  elif grep -Eiq 'failed to create.*target' "$log_path"; then
+    printf 'cargo_target_directory_failure'
+  elif grep -Eiq 'failed to create.*workspace' "$log_path"; then
+    printf 'cargo_workspace_directory_failure'
   elif grep -Eiq 'permission denied' "$log_path"; then
     printf 'filesystem_permission_failure'
   elif grep -Eiq 'database disk image is malformed|SQLITE_CORRUPT|file is not a database' "$log_path"; then
