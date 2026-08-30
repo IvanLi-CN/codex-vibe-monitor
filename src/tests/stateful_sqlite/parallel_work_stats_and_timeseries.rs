@@ -22070,6 +22070,65 @@ async fn exact_fallback_warm_invalidates_non_proxy_stream_duration_replacement()
 }
 
 #[tokio::test]
+async fn restart_schema_refreshes_existing_objects_across_primed_pool_connections() {
+    let temp_dir = make_temp_test_dir("existing-schema-objects-across-pool");
+    let database_path = temp_dir.join("projection.db");
+    fs::File::create(&database_path).expect("create projection database");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&test_sqlite_url_for_path(&database_path))
+        .await
+        .expect("open projection database");
+    crate::ensure_schema(&pool)
+        .await
+        .expect("initialize the replacement fence");
+    let schema_before = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load schema before restart");
+
+    let mut connections = Vec::new();
+    for _ in 0..5 {
+        let mut connection = pool.acquire().await.expect("acquire schema connection");
+        let trigger_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .expect("prime the replacement fence schema cache");
+        assert_eq!(trigger_count, 1);
+        connections.push(connection);
+    }
+    drop(connections);
+
+    crate::ensure_schema(&pool)
+        .await
+        .expect("restart schema initialization must refresh existing schema objects");
+
+    let trigger_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_timeseries_minute_projection_non_proxy_terminal_replacement'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count refreshed replacement fence");
+    assert_eq!(trigger_count, 1);
+    let schema_after = sqlx::query_as::<_, (String, String, String, Option<String>)>(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load schema after restart");
+    assert_eq!(
+        schema_after, schema_before,
+        "schema refresh must preserve every installed object"
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn restart_schema_installs_durable_non_proxy_replacement_fence_before_projection_supervisor()
 {
     let _projection_write_guard = TIMESERIES_MINUTE_PROJECTION_WRITE_TEST_LOCK.lock().await;

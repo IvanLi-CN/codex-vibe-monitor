@@ -1526,8 +1526,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
 
+    let mut prompt_cache_key_index_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin prompt cache key index refresh")?;
     sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_occurred_at")
-        .execute(pool)
+        .execute(prompt_cache_key_index_tx.as_mut())
         .await
         .context("failed to drop stale idx_codex_invocations_prompt_cache_key_occurred_at")?;
 
@@ -1540,9 +1544,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(prompt_cache_key_index_tx.as_mut())
     .await
     .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+    prompt_cache_key_index_tx
+        .commit()
+        .await
+        .context("failed to commit prompt cache key index refresh")?;
 
     sqlx::query(
         r#"
@@ -1709,8 +1717,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
 
+    let mut prompt_cache_key_filter_index_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin prompt cache key filter index refresh")?;
     sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at")
-        .execute(pool)
+        .execute(prompt_cache_key_filter_index_tx.as_mut())
         .await
         .context(
             "failed to drop stale idx_codex_invocations_prompt_cache_key_filter_occurred_at",
@@ -1728,9 +1740,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(prompt_cache_key_filter_index_tx.as_mut())
     .await
     .context("failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at")?;
+    prompt_cache_key_filter_index_tx
+        .commit()
+        .await
+        .context("failed to commit prompt cache key filter index refresh")?;
 
     sqlx::query(
         r#"
@@ -1877,20 +1893,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure idx_prompt_cache_working_set_live_proxy_sort_anchor")?;
 
-    for trigger_name in [
-        "trg_codex_invocations_live_insert",
-        "trg_codex_invocations_live_update",
-        "trg_codex_invocations_live_delete",
-        "trg_codex_invocations_prompt_cache_working_set_insert",
-        "trg_codex_invocations_prompt_cache_working_set_update",
-        "trg_codex_invocations_prompt_cache_working_set_delete",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(pool)
-            .await
-            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
-    }
-
     rebuild_invocation_in_progress_live_triggers(pool)
         .await
         .context("failed to rebuild invocation_in_progress_live triggers at startup")?;
@@ -1907,13 +1909,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             &invocation_in_progress_live_prompt_cache_key_expr("NEW")
         ),
     );
-    sqlx::query(&prompt_cache_insert_trigger_sql)
-        .execute(pool)
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
-        )?;
-
     let prompt_cache_update_trigger_sql = format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
@@ -1930,13 +1925,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             &invocation_in_progress_live_prompt_cache_key_expr("NEW")
         ),
     );
-    sqlx::query(&prompt_cache_update_trigger_sql)
-        .execute(pool)
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
-        )?;
-
     let prompt_cache_delete_trigger_sql = format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
@@ -1949,12 +1937,42 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             &invocation_in_progress_live_prompt_cache_key_expr("OLD")
         ),
     );
+    let mut prompt_cache_trigger_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin prompt cache working set trigger refresh")?;
+    for trigger_name in [
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(prompt_cache_trigger_tx.as_mut())
+            .await
+            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    }
+    sqlx::query(&prompt_cache_insert_trigger_sql)
+        .execute(prompt_cache_trigger_tx.as_mut())
+        .await
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
+        )?;
+    sqlx::query(&prompt_cache_update_trigger_sql)
+        .execute(prompt_cache_trigger_tx.as_mut())
+        .await
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
+        )?;
     sqlx::query(&prompt_cache_delete_trigger_sql)
-        .execute(pool)
+        .execute(prompt_cache_trigger_tx.as_mut())
         .await
         .context(
             "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete",
         )?;
+    prompt_cache_trigger_tx
+        .commit()
+        .await
+        .context("failed to commit prompt cache working set trigger refresh")?;
 
     rebuild_invocation_in_progress_live_table(pool)
         .await
@@ -2816,10 +2834,14 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // is intentionally P2 and can start later, while direct non-proxy terminal corrections must
     // synchronously publish only a constant-size recovery marker instead of mutating every
     // projection row in a terminal write transaction.
+    let mut replacement_trigger_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin non-proxy terminal replacement trigger refresh")?;
     sqlx::query(
         "DROP TRIGGER IF EXISTS trg_timeseries_minute_projection_non_proxy_terminal_replacement",
     )
-    .execute(pool)
+    .execute(replacement_trigger_tx.as_mut())
     .await
     .context("failed to refresh non-proxy terminal replacement projection trigger")?;
     sqlx::query(
@@ -2866,9 +2888,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(replacement_trigger_tx.as_mut())
     .await
     .context("failed to ensure non-proxy terminal replacement projection trigger")?;
+    replacement_trigger_tx
+        .commit()
+        .await
+        .context("failed to commit non-proxy terminal replacement trigger refresh")?;
 
     sqlx::query(
         r#"
@@ -3556,16 +3582,20 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // An authoritative invocation archive becomes Summary-visible only after its bounded source
     // coverage and the three Summary rollup proofs commit in the same transaction. Live-detail
     // mirrors never enter Summary source coverage and therefore do not require these proofs.
+    let mut archive_guard_trigger_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin authoritative invocation archive guard refresh")?;
     sqlx::query(
         "DROP TRIGGER IF EXISTS trg_insert_authoritative_invocation_archive_requires_summary_proof",
     )
-    .execute(pool)
+    .execute(archive_guard_trigger_tx.as_mut())
     .await
     .context("failed to replace authoritative invocation archive insert guard")?;
     sqlx::query(
         "DROP TRIGGER IF EXISTS trg_update_authoritative_invocation_archive_requires_summary_proof",
     )
-    .execute(pool)
+    .execute(archive_guard_trigger_tx.as_mut())
     .await
     .context("failed to replace authoritative invocation archive update guard")?;
     sqlx::query(
@@ -3606,7 +3636,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(archive_guard_trigger_tx.as_mut())
     .await
     .context("failed to ensure authoritative invocation archive insert guard")?;
     sqlx::query(
@@ -3648,9 +3678,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         END
         "#,
     )
-    .execute(pool)
+    .execute(archive_guard_trigger_tx.as_mut())
     .await
     .context("failed to ensure authoritative invocation archive update guard")?;
+    archive_guard_trigger_tx
+        .commit()
+        .await
+        .context("failed to commit authoritative invocation archive guard refresh")?;
 
     sqlx::query(
         r#"
@@ -4918,6 +4952,10 @@ async fn ensure_proxy_raw_payload_blob_link_schema(pool: &Pool<Sqlite>) -> Resul
     .await
     .context("failed to ensure proxy raw payload blob link migrations")?;
 
+    let mut raw_blob_trigger_tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin proxy raw blob trigger refresh")?;
     for trigger in [
         "proxy_raw_blob_link_invocation_insert",
         "proxy_raw_blob_link_invocation_update",
@@ -4928,7 +4966,7 @@ async fn ensure_proxy_raw_payload_blob_link_schema(pool: &Pool<Sqlite>) -> Resul
         "proxy_raw_blob_prune_unlinked",
     ] {
         sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger}"))
-            .execute(pool)
+            .execute(raw_blob_trigger_tx.as_mut())
             .await
             .with_context(|| format!("failed to replace proxy raw blob trigger {trigger}"))?;
     }
@@ -4952,19 +4990,19 @@ async fn ensure_proxy_raw_payload_blob_link_schema(pool: &Pool<Sqlite>) -> Resul
     sqlx::query(&format!(
         "CREATE TRIGGER proxy_raw_blob_link_invocation_insert AFTER INSERT ON codex_invocations BEGIN {link_invocation} END"
     ))
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create invocation raw blob insert trigger")?;
     sqlx::query(&format!(
         "CREATE TRIGGER proxy_raw_blob_link_invocation_update AFTER UPDATE OF request_raw_path, request_raw_codec, request_raw_size, response_raw_path, response_raw_codec, response_raw_size ON codex_invocations BEGIN DELETE FROM proxy_raw_payload_blob_links WHERE owner_kind = 'invocation' AND owner_id = NEW.id; {link_invocation} END"
     ))
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create invocation raw blob update trigger")?;
     sqlx::query(
         "CREATE TRIGGER proxy_raw_blob_link_invocation_delete AFTER DELETE ON codex_invocations BEGIN DELETE FROM proxy_raw_payload_blob_links WHERE owner_kind = 'invocation' AND owner_id = OLD.id; END",
     )
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create invocation raw blob delete trigger")?;
 
@@ -4980,27 +5018,31 @@ async fn ensure_proxy_raw_payload_blob_link_schema(pool: &Pool<Sqlite>) -> Resul
     sqlx::query(&format!(
         "CREATE TRIGGER proxy_raw_blob_link_attempt_insert AFTER INSERT ON pool_upstream_request_attempts BEGIN {link_attempt} END"
     ))
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create attempt raw blob insert trigger")?;
     sqlx::query(&format!(
         "CREATE TRIGGER proxy_raw_blob_link_attempt_update AFTER UPDATE OF response_raw_path, response_raw_codec, response_raw_size ON pool_upstream_request_attempts BEGIN DELETE FROM proxy_raw_payload_blob_links WHERE owner_kind = 'attempt' AND owner_id = NEW.id; {link_attempt} END"
     ))
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create attempt raw blob update trigger")?;
     sqlx::query(
         "CREATE TRIGGER proxy_raw_blob_link_attempt_delete AFTER DELETE ON pool_upstream_request_attempts BEGIN DELETE FROM proxy_raw_payload_blob_links WHERE owner_kind = 'attempt' AND owner_id = OLD.id; END",
     )
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create attempt raw blob delete trigger")?;
     sqlx::query(
         "CREATE TRIGGER proxy_raw_blob_prune_unlinked AFTER DELETE ON proxy_raw_payload_blob_links BEGIN DELETE FROM proxy_raw_payload_blobs WHERE raw_path = OLD.raw_path AND NOT EXISTS (SELECT 1 FROM proxy_raw_payload_blob_links WHERE raw_path = OLD.raw_path); END",
     )
-    .execute(pool)
+    .execute(raw_blob_trigger_tx.as_mut())
     .await
     .context("failed to create proxy raw blob pruning trigger")?;
+    raw_blob_trigger_tx
+        .commit()
+        .await
+        .context("failed to commit proxy raw blob trigger refresh")?;
 
     seed_legacy_proxy_raw_payload_blob_links(pool).await?;
 
