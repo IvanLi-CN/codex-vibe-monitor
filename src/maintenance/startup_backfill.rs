@@ -1627,6 +1627,22 @@ async fn run_startup_backfill_task_if_due_outcome(
         return run_startup_backfill_coverage_repair_if_due(state, gate).await;
     }
 
+    // Cold Summary startup owns the first complete legacy mirror identity sweep. Letting the
+    // generic low-priority queue enter the same proof work before a Projection exists can spend
+    // the single background permit and delay the source classification that Summary requires.
+    if task == StartupBackfillTask::LegacyDetailMirrors
+        && state.subscription_hub.summary_projection().await.is_none()
+    {
+        return Ok(StartupBackfillTaskRunOutcome {
+            actionable: false,
+            failed: false,
+            deferred: false,
+            completed: false,
+            next_due: Utc::now()
+                + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        });
+    }
+
     // This admission is deliberately before progress lookup: a pressure defer must remain a
     // scheduler-only decision, not turn into a SQLite read, progress write, or task-run audit.
     let _permit = match gate.try_begin_background("startup_backfill") {

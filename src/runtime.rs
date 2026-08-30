@@ -2,6 +2,8 @@ use super::*;
 
 const STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const STARTUP_HOT_READ_HYDRATION_RETRY_MAX: Duration = Duration::from_secs(30);
+const SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_RECOVERY_WINDOW: Duration = Duration::from_secs(6);
+const SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
     state: Arc<AppState>,
@@ -56,20 +58,31 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     );
 
     tokio::spawn(async move {
-        let summary_handle = tokio::spawn(hydrate_summary_at_startup(
-            state.clone(),
-            summary_deadline,
-            summary_start_delay,
-        ));
-        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state));
+        let summary_state = state.clone();
+        let summary_handle = tokio::spawn(async move {
+            let hydrated = hydrate_summary_at_startup(
+                summary_state.clone(),
+                summary_deadline,
+                summary_start_delay,
+            )
+            .await;
+            if hydrated {
+                spawn_summary_snapshot_maintenance(summary_state);
+            }
+            hydrated
+        });
+        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state.clone()));
         let (summary_result, system_status_result) =
             tokio::join!(summary_handle, system_status_handle);
 
-        if let Err(error) = summary_result {
-            warn!(
-                ?error,
-                "summary projection startup hydration worker ended unexpectedly"
-            );
+        match summary_result {
+            Ok(true) | Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "summary projection startup hydration worker ended unexpectedly"
+                );
+            }
         }
         if let Err(error) = system_status_result {
             warn!(
@@ -84,22 +97,43 @@ async fn hydrate_summary_at_startup(
     state: Arc<AppState>,
     summary_deadline: Duration,
     summary_start_delay: Option<Duration>,
-) {
+) -> bool {
     if let Some(delay) = summary_start_delay {
         tokio::select! {
-            _ = state.shutdown.cancelled() => return,
+            _ = state.shutdown.cancelled() => return false,
             _ = tokio::time::sleep(delay) => {}
+        }
+    }
+
+    loop {
+        let recovery = tokio::select! {
+            _ = state.shutdown.cancelled() => return false,
+            result = reconcile_legacy_detail_mirrors_for_summary_startup(state.as_ref()) => result,
+        };
+        match recovery {
+            Ok(true) => break,
+            Ok(false) => return false,
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "summary startup legacy detail mirror recovery failed; retrying before projection hydration"
+                );
+            }
+        }
+        tokio::select! {
+            _ = state.shutdown.cancelled() => return false,
+            _ = tokio::time::sleep(SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_RECOVERY_RETRY_DELAY) => {}
         }
     }
 
     let mut retry_delay = STARTUP_HOT_READ_HYDRATION_RETRY_INITIAL;
     loop {
         tokio::select! {
-            _ = state.shutdown.cancelled() => return,
+            _ = state.shutdown.cancelled() => return false,
             result = hydrate_summary_snapshots_with_deadline(state.as_ref(), summary_deadline) => match result {
                 Ok(()) => {
                     info!("summary projection startup hydration completed");
-                    return;
+                    return true;
                 }
                 Err(error) => {
                     warn!(?error, "summary projection startup hydration failed; retaining unavailable or last-good response");
@@ -112,12 +146,66 @@ async fn hydrate_summary_at_startup(
             "summary projection startup hydration deferred behind bounded pressure backoff"
         );
         tokio::select! {
-            _ = state.shutdown.cancelled() => return,
+            _ = state.shutdown.cancelled() => return false,
             _ = tokio::time::sleep(retry_delay) => {}
         }
         retry_delay = retry_delay
             .saturating_mul(2)
             .min(STARTUP_HOT_READ_HYDRATION_RETRY_MAX);
+    }
+}
+
+async fn reconcile_legacy_detail_mirrors_for_summary_startup(state: &AppState) -> Result<bool> {
+    let Some(high_watermark_id) =
+        summary_startup_legacy_detail_mirror_high_watermark(&state.pool).await?
+    else {
+        return Ok(true);
+    };
+    let started_at = Instant::now();
+    let mut cursor_id = 0_i64;
+    let mut inspected_path_count = 0_usize;
+    let mut changed_path_count = 0_usize;
+    let mut unavailable_path_count = 0_usize;
+
+    loop {
+        let window = tokio::select! {
+            _ = state.shutdown.cancelled() => return Ok(false),
+            result = reconcile_legacy_detail_mirrors_for_summary_startup_window(
+                &state.pool,
+                cursor_id,
+                high_watermark_id,
+                SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_RECOVERY_WINDOW,
+            ) => result?,
+        };
+        inspected_path_count += window.inspected_path_count;
+        changed_path_count += window.changed_path_count;
+        unavailable_path_count += window.unavailable_path_count;
+
+        if window.completed {
+            info!(
+                high_watermark_id,
+                inspected_path_count,
+                changed_path_count,
+                unavailable_path_count,
+                elapsed_ms = started_at.elapsed().as_millis() as u64,
+                "summary startup legacy detail mirror recovery completed"
+            );
+            return Ok(true);
+        }
+
+        if window.inspected_path_count == 0 && window.hit_budget {
+            warn!(
+                high_watermark_id,
+                cursor_id,
+                "summary startup legacy detail mirror recovery deferred an oversized proof"
+            );
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return Ok(false),
+                _ = tokio::time::sleep(SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_RECOVERY_RETRY_DELAY) => {}
+            }
+        }
+
+        cursor_id = window.next_cursor_id;
     }
 }
 
@@ -852,7 +940,6 @@ where
         startup_started_at,
     ));
     log_startup_phase("http_ready", http_ready_started_at);
-    spawn_summary_snapshot_maintenance(state.clone());
     spawn_system_status_snapshot_maintenance(state.clone());
 
     let startup_backfill_stage =

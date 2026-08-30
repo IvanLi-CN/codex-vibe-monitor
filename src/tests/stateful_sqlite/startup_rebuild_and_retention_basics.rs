@@ -1165,6 +1165,127 @@ async fn startup_summary_hydration_retries_after_an_in_flight_refresh() {
 }
 
 #[tokio::test]
+async fn startup_backfill_defers_legacy_mirror_work_until_cold_summary_is_published() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18080").expect("valid upstream URL"),
+    )
+    .await;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30));
+
+    // Closing the pool turns this into a zero-SQL assertion. Cold startup mirror recovery owns
+    // the first proof sweep, so the generic queue must defer before it asks SQLite for progress.
+    state.pool.close().await;
+    let ran = run_startup_backfill_task_if_due_with_gate(
+        &state,
+        StartupBackfillTask::LegacyDetailMirrors,
+        &gate,
+    )
+    .await
+    .expect("cold Summary ownership should defer the generic legacy mirror task without SQLite");
+
+    assert!(!ran);
+    assert_eq!(gate.snapshot().background_skips, 0);
+}
+
+#[tokio::test]
+async fn startup_summary_hydration_recovers_legacy_mirror_before_memory_only_publish() {
+    let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
+        "startup-summary-legacy-mirror-recovery",
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &state.pool,
+        &state.config,
+        "startup-summary-legacy-mirror",
+        &[SeedInvocationArchiveBatchRow {
+            id: 41,
+            invoke_id: "startup-summary-legacy-mirror-41",
+            occurred_at: occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some("{}"),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, source, status, total_tokens, cost,
+            t_upstream_ttfb_ms, payload, detail_level, failure_class, is_actionable,
+            raw_response, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, '{}', ?3)
+        "#,
+    )
+    .bind(41_i64)
+    .bind("startup-summary-legacy-mirror-41")
+    .bind(&occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind(120.0_f64)
+    .bind("{}")
+    .bind(DETAIL_LEVEL_FULL)
+    .bind("none")
+    .bind(0_i64)
+    .execute(&state.pool)
+    .await
+    .expect("retain canonical live identity for the legacy detail mirror");
+
+    let hydration_handle =
+        publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
+            state.clone(),
+            Instant::now(),
+            Duration::from_secs(4),
+        );
+    tokio::time::timeout(Duration::from_secs(8), hydration_handle)
+        .await
+        .expect("startup mirror recovery and Summary hydration must finish")
+        .expect("startup hydration coordinator should join");
+
+    let source_kind: String = sqlx::query_scalar(
+        "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered archive source role");
+    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    assert!(state.subscription_hub.summary_projection().await.is_some());
+
+    state.pool.close().await;
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(50),
+            time_zone: Some("Asia/Shanghai".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the recovered Summary projection without SQLite or archive access");
+    assert_eq!(summary.total_count, 1);
+    assert_eq!(summary.total_tokens, 12);
+
+    state.shutdown.cancel();
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_system_status_hydrates_while_summary_hydration_is_delayed() {
     let state = test_state_with_openai_base(
         Url::parse("http://127.0.0.1:18080").expect("valid upstream url"),

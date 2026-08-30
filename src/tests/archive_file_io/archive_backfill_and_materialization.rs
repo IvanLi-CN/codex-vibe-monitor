@@ -4736,15 +4736,100 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
     assert_eq!(recovered.summary.materialized_invocation_batches, 0);
 
+    let recovered_archive_path = temp_dir.join("sparse-legacy-detail-mirror-recovered.sqlite.gz");
+    fs::copy(&archive_path, &recovered_archive_path)
+        .expect("copy an independently provable legacy detail mirror");
+    let recovered_archive_file_path = recovered_archive_path.to_string_lossy().to_string();
     sqlx::query(
-        "UPDATE archive_batches SET summary_source_kind = ?1 WHERE dataset = ?2 AND file_path = ?3",
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            coverage_start_at, coverage_end_at, layout, part_key, created_at
+        )
+        SELECT
+            dataset, month_key, ?1, sha256, row_count, status,
+            coverage_start_at, coverage_end_at, layout, part_key, datetime('now')
+        FROM archive_batches
+        WHERE dataset = ?2 AND file_path = ?3
+        "#,
+    )
+    .bind(&recovered_archive_file_path)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed later independently provable legacy mirror manifest");
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1 \
+         WHERE dataset = ?2 AND file_path = ?3",
     )
     .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_file_path)
     .execute(&pool)
     .await
-    .expect("restore unresolved source role for mismatch probe");
+    .expect("restore the first source role for startup recovery");
+    fs::remove_file(&archive_path).expect("make the first legacy source unavailable");
+
+    let high_watermark = summary_startup_legacy_detail_mirror_high_watermark(&pool)
+        .await
+        .expect("capture a stable startup mirror high-watermark")
+        .expect("find legacy mirror candidates");
+    let summary_startup_recovery = reconcile_legacy_detail_mirrors_for_summary_startup_window(
+        &pool,
+        0,
+        high_watermark,
+        Duration::from_secs(6),
+    )
+    .await
+    .expect("a missing legacy source must not block later identity proofs");
+    let source_kinds = sqlx::query_as::<_, (String, String)>(
+        "SELECT file_path, summary_source_kind FROM archive_batches \
+         WHERE dataset = ?1 AND file_path IN (?2, ?3) ORDER BY file_path ASC",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .bind(&recovered_archive_file_path)
+    .fetch_all(&pool)
+    .await
+    .expect("load summary startup recovery source roles");
+
+    assert!(summary_startup_recovery.completed);
+    assert_eq!(summary_startup_recovery.unavailable_path_count, 1);
+    assert_eq!(summary_startup_recovery.changed_path_count, 1);
+    assert_eq!(
+        source_kinds,
+        vec![
+            (
+                archive_file_path.clone(),
+                SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN.to_string(),
+            ),
+            (
+                recovered_archive_file_path.clone(),
+                SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR.to_string(),
+            ),
+        ],
+        "the unreadable source stays fail-closed while the independent mirror leaves Summary admission"
+    );
+
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1 WHERE dataset = ?2 AND file_path = ?3",
+    )
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("exclude the unavailable source from the generic mismatch probe");
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = ?1 WHERE dataset = ?2 AND file_path = ?3",
+    )
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&recovered_archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("restore the independently proved source role for mismatch probing");
     let budget_exhausted = reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::ZERO)
         .await
         .expect("defer an unstarted mirror proof at its elapsed budget");
@@ -4763,7 +4848,7 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
         "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&archive_file_path)
+    .bind(&recovered_archive_file_path)
     .fetch_one(&pool)
     .await
     .expect("load rejected source role");
@@ -4771,7 +4856,7 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
     assert_eq!(rejected.changed_path_count, 0);
     assert_eq!(rejected_source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN);
 
-    fs::remove_file(&archive_path).expect("make archived source unavailable");
+    fs::remove_file(&recovered_archive_path).expect("make archived source unavailable");
     let unreadable =
         reconcile_legacy_detail_mirrors_startup_window(&pool, 0, Duration::from_secs(6))
             .await
@@ -4780,7 +4865,7 @@ async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_iden
         "SELECT summary_source_kind FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(&archive_file_path)
+    .bind(&recovered_archive_file_path)
     .fetch_one(&pool)
     .await
     .expect("load unreadable source role");

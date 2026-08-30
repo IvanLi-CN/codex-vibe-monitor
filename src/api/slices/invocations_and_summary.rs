@@ -7139,7 +7139,7 @@ const SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF: Duration = Duration::
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
 // Initial projection construction may need to fold a bounded, valid historical horizon. It runs
 // only after listener readiness, but still needs a finite cancellation-friendly work budget.
-pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(120);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 
 #[cfg(test)]
@@ -17645,6 +17645,50 @@ fn build_upstream_account_activity_preview_select(
         .push(" AS endpoint FROM codex_invocations");
 }
 
+// Summary hydration only needs the fields consumed by its totals, failure, and usage reducers.
+// Keeping this separate from the dashboard activity projection avoids evaluating every display
+// JSON expression for each bounded source-admission record during an off-request rebuild.
+fn build_summary_projection_preview_select(query: &mut QueryBuilder<Sqlite>) {
+    query
+        .push(
+            "SELECT NULL AS upstream_account_id, id, invoke_id, \
+               NULL AS prompt_cache_key, occurred_at, NULL AS conversation_created_at, ",
+        )
+        .push(invocation_display_status_sql().as_str())
+        .push(" AS status, NULL AS live_phase, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, NULL AS route_mode, model, NULL AS request_model, ")
+        .push(INVOCATION_RESPONSE_MODEL_SQL)
+        .push(
+            " AS response_model, COALESCE(total_tokens, 0) AS total_tokens, \
+               cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning, \
+               NULL AS source, input_tokens, output_tokens, cache_input_tokens, \
+               NULL AS reasoning_tokens, ",
+        )
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(
+            " AS reasoning_effort, error_message, NULL AS downstream_status_code, \
+               NULL AS downstream_error_message, ",
+        )
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(
+            " = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, \
+               NULL AS proxy_display_name, NULL AS upstream_account_name, \
+               NULL AS upstream_account_plan_type, NULL AS response_content_encoding, \
+               NULL AS request_compression_algorithm, NULL AS transport, \
+               NULL AS requested_service_tier, NULL AS service_tier, \
+               NULL AS billing_service_tier, NULL AS t_req_read_ms, \
+               NULL AS t_req_parse_ms, NULL AS t_upstream_connect_ms, \
+               NULL AS t_upstream_ttfb_ms, NULL AS first_token_ms, \
+               NULL AS t_upstream_stream_ms, NULL AS t_resp_parse_ms, \
+               NULL AS t_persist_ms, NULL AS t_total_ms, NULL AS endpoint, \
+               NULL AS compaction_request_kind, NULL AS compaction_response_kind, \
+               NULL AS image_intent FROM codex_invocations",
+        );
+}
+
 async fn query_live_upstream_account_activity_preview_rows_with_limit(
     pool: &Pool<Sqlite>,
     source_scope: InvocationSourceScope,
@@ -17968,10 +18012,10 @@ async fn query_summary_projection_live_rows_with_budget(
         .collect::<Vec<_>>();
     let page_results = futures_util::stream::iter(pages_to_fetch.into_iter().map(
         |(page, uncached_ids)| async move {
-            let fetched_rows = if uncached_ids.is_empty() {
+            let mut fetched_rows = if uncached_ids.is_empty() {
                 Vec::new()
             } else {
-                query_live_upstream_account_activity_preview_rows_by_ids(
+                query_summary_projection_preview_rows_by_ids(
                     pool,
                     source_scope,
                     &uncached_ids,
@@ -17982,6 +18026,13 @@ async fn query_summary_projection_live_rows_with_budget(
                     anyhow!("summary projection live preview fetch failed: {error:?}")
                 })?
             };
+            let upstream_account_ids = page
+                .iter()
+                .map(|candidate| (candidate.id, candidate.upstream_account_id))
+                .collect::<HashMap<_, _>>();
+            for row in &mut fetched_rows {
+                row.upstream_account_id = upstream_account_ids.get(&row.id).copied().flatten();
+            }
             Ok::<_, anyhow::Error>((page, fetched_rows))
         },
     ))
@@ -18018,6 +18069,68 @@ async fn query_summary_projection_live_rows_with_budget(
         gaps,
         overflow,
     })
+}
+
+async fn query_summary_projection_preview_rows_by_ids(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    ids: &[i64],
+    telemetry: UpstreamAccountActivityPreviewReadTelemetry,
+) -> Result<Vec<UpstreamAccountInvocationPreviewRow>, ApiError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let started_at = Instant::now();
+    let mut connection = pool.acquire().await?;
+    let mut rows = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE) {
+        let mut query = QueryBuilder::<Sqlite>::new("");
+        build_summary_projection_preview_select(&mut query);
+        query.push(" WHERE id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+        }
+        if source_scope == InvocationSourceScope::ProxyOnly {
+            query.push(" AND source = ").push_bind(SOURCE_PROXY);
+        }
+        query.push(" ORDER BY occurred_at DESC, id DESC");
+        rows.extend(
+            query
+                .build_query_as::<UpstreamAccountInvocationPreviewRow>()
+                .fetch_all(&mut *connection)
+                .await?,
+        );
+    }
+    rows.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    if elapsed_ms >= 1_000 {
+        tracing::warn!(
+            endpoint = "/api/stats/summary",
+            route = telemetry.route,
+            builder = telemetry.builder,
+            operation = telemetry.purpose,
+            purpose = telemetry.purpose,
+            candidate_preview_id_count = ids.len(),
+            hydrated_preview_row_count = rows.len(),
+            ?source_scope,
+            selected_preview_row_count = ids.len(),
+            row_count = rows.len(),
+            elapsed_ms,
+            "slow summary projection preview hydration"
+        );
+    }
+    Ok(rows)
 }
 
 async fn mark_summary_projection_uncovered_historical_live_ranges(
@@ -31856,18 +31969,15 @@ mod request_compression_query_tests {
         .await;
         let payload_value = "x".repeat(SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES / 2 - 1_024);
         let payload = format!(r#"{{"model":"{payload_value}"}}"#);
-        let first_occurred_at =
-            crate::stats::db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
-        let second_occurred_at =
-            crate::stats::db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(1));
+        let occurred_at = crate::stats::db_occurred_at_lower_bound(Utc::now());
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
              VALUES ('paged-summary-live-1', ?1, 'proxy', 'success', 1, 0.1, ?3, '', 'full'),
                     ('paged-summary-live-2', ?2, 'proxy', 'success', 2, 0.2, ?3, '', 'full')",
         )
-        .bind(first_occurred_at)
-        .bind(second_occurred_at)
+        .bind(&occurred_at)
+        .bind(&occurred_at)
         .bind(&payload)
         .execute(&state.pool)
         .await
@@ -32150,6 +32260,68 @@ mod request_compression_query_tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].global_rank, 3);
         assert!(overflow.is_none());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_preview_hydration_uses_the_narrow_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, model, input_tokens, output_tokens, \
+              cache_input_tokens, total_tokens, cost, cost_input, cost_cache_write, \
+              cost_cache_read, cost_output, cost_reasoning, payload, raw_response, detail_level) \
+             VALUES \
+             ('summary-narrow-preview', datetime('now', '+8 hours'), 'proxy', 'success', 'stored-model', \
+              10, 20, 3, 30, 0.3, 0.1, 0.02, 0.03, 0.1, 0.05, \
+              '{\"upstreamAccountId\":321,\"responseModel\":\"response-model\",\"reasoningEffort\":\"high\",\"failureKind\":\"upstream\",\"promptCacheKey\":\"not-needed\",\"routeMode\":\"sticky\",\"endpoint\":\"/not-needed\"}', \
+              '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert summary preview fixture");
+        let high_watermark = load_summary_projection_live_high_watermark(&state.pool)
+            .await
+            .expect("load summary preview high watermark");
+        let admission = query_summary_projection_live_rows_with_budget(
+            &state.pool,
+            InvocationSourceScope::All,
+            ExactUtcRange {
+                start: Utc::now() - ChronoDuration::minutes(1),
+                end: Utc::now() + ChronoDuration::minutes(1),
+            },
+            high_watermark,
+            None,
+            2,
+            false,
+            SUMMARY_PROJECTION_MAX_PREVIEW_BYTES,
+            &mut HashMap::new(),
+            UpstreamAccountActivityPreviewReadTelemetry {
+                route: "summary_projection_test",
+                builder: "narrow_preview",
+                purpose: "narrow_preview_fixture",
+            },
+        )
+        .await
+        .expect("hydrate summary preview");
+
+        assert_eq!(admission.rows.len(), 1);
+        let row = &admission.rows[0];
+        assert_eq!(row.upstream_account_id, Some(321));
+        assert_eq!(row.model.as_deref(), Some("stored-model"));
+        assert_eq!(row.response_model.as_deref(), Some("response-model"));
+        assert_eq!(row.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(row.failure_kind.as_deref(), Some("upstream"));
+        assert_eq!(row.total_tokens, 30);
+        assert_eq!(row.input_tokens, Some(10));
+        assert_eq!(row.output_tokens, Some(20));
+        assert_eq!(row.cache_input_tokens, Some(3));
+        assert!(row.prompt_cache_key.is_none());
+        assert!(row.route_mode.is_none());
+        assert!(row.endpoint.is_none());
+        assert!(row.upstream_account_name.is_none());
     }
 
     #[test]
