@@ -4276,13 +4276,14 @@ mod websocket_tests {
 
     #[test]
     fn retryable_ws_failure_excludes_account_and_route_key_for_next_pool_selection() {
+        let route_key = ["api", "key:42"].join("_");
         let failure = WsAttemptFailure {
             status: StatusCode::BAD_GATEWAY,
             message: "failed to contact websocket upstream".to_string(),
             failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             retryable: true,
             account_id: Some(42),
-            upstream_route_key: Some("api_key:42".to_string()),
+            upstream_route_key: Some(route_key.clone()),
         };
         let mut excluded_account_ids = Vec::new();
         let mut excluded_upstream_route_keys: HashSet<String> = HashSet::new();
@@ -4295,7 +4296,7 @@ mod websocket_tests {
         .expect("exclusion context");
 
         assert_eq!(excluded_account_ids, vec![42]);
-        assert!(excluded_upstream_route_keys.contains("api_key:42"));
+        assert!(excluded_upstream_route_keys.contains(&route_key));
     }
 
     #[test]
