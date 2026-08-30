@@ -28918,6 +28918,7 @@ mod request_compression_query_tests {
                  file_path TEXT NOT NULL, \
                  coverage_start_at TEXT, \
                  coverage_end_at TEXT, \
+                 historical_rollups_materialized_at TEXT, \
                  upstream_activity_manifest_refreshed_at TEXT, \
                  summary_source_kind TEXT NOT NULL DEFAULT 'unknown' \
              )",
@@ -31855,8 +31856,10 @@ mod request_compression_query_tests {
         .await;
         let payload_value = "x".repeat(SUMMARY_PROJECTION_MAX_SOURCE_RECORD_BYTES / 2 - 1_024);
         let payload = format!(r#"{{"model":"{payload_value}"}}"#);
-        let first_occurred_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(2));
-        let second_occurred_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(1));
+        let first_occurred_at =
+            crate::stats::db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+        let second_occurred_at =
+            crate::stats::db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(1));
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
