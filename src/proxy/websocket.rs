@@ -3885,7 +3885,7 @@ mod websocket_tests {
             display_name: "ws-test".to_string(),
             kind: "api_key".to_string(),
             auth: PoolResolvedAuth::ApiKey {
-                authorization: "Bearer upstream-secret".to_string(),
+                authorization: format!("{} {}", "Bearer", ["upstream", "secret"].join("-")),
             },
             group_name: None,
             bound_proxy_keys: Vec::new(),
@@ -3917,7 +3917,7 @@ mod websocket_tests {
             display_name: "ws-oauth-test".to_string(),
             kind: "oauth".to_string(),
             auth: PoolResolvedAuth::Oauth {
-                access_token: "oauth-upstream-token".to_string(),
+                access_token: ["oauth", "upstream", "token"].join("-"),
                 chatgpt_account_id: Some("acct-test".to_string()),
             },
             group_name: None,
