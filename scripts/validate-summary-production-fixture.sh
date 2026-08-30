@@ -63,6 +63,10 @@ classify_app_exit() {
     printf 'terminal_journal_directory_failure'
   elif grep -Eiq 'archive.*permission denied|permission denied.*archive' "$log_path"; then
     printf 'archive_fixture_permission_failure'
+  elif grep -Eiq 'failed to create database directory' "$log_path"; then
+    printf 'database_directory_failure'
+  elif grep -Eiq 'failed to create.*migration temp table|failed to create.*trigger' "$log_path"; then
+    printf 'schema_initialization_failure'
   elif grep -Eiq 'failed to create.*target' "$log_path"; then
     printf 'cargo_target_directory_failure'
   elif grep -Eiq 'failed to create.*workspace' "$log_path"; then
