@@ -41,7 +41,7 @@ classify_app_exit() {
     printf 'workspace_write_failure'
   elif grep -Eiq 'database disk image is malformed|SQLITE_CORRUPT|file is not a database' "$log_path"; then
     printf 'sqlite_corruption'
-  elif grep -Eiq 'unable to open database|cannot open.*database|SQLITE_CANTOPEN' "$log_path"; then
+  elif grep -Eiq 'failed to open sqlite database|unable to open database|cannot open.*database|SQLITE_CANTOPEN' "$log_path"; then
     printf 'sqlite_open_failure'
   elif grep -Eiq 'database is locked|SQLITE_BUSY' "$log_path"; then
     printf 'sqlite_busy'
@@ -54,6 +54,38 @@ classify_app_exit() {
   else
     printf 'startup_process_exit'
   fi
+}
+
+safe_failure_signature() {
+  local log_path="$1"
+  local line=""
+  local token=""
+  local normalized=""
+  local -a signature=()
+
+  [[ -f "$log_path" ]] || {
+    printf 'missing_log'
+    return
+  }
+  line="$(grep -Eim1 '(^error:|^Error:|failed|permission denied|cannot|could not|panic)' "$log_path" || true)"
+  [[ -n "$line" ]] || {
+    printf 'no_classified_error'
+    return
+  }
+  for token in $line; do
+    normalized="${token,,}"
+    normalized="${normalized//[^a-z]/}"
+    case "$normalized" in
+      error|failed|to|open|sqlite|database|permission|denied|unable|could|not|find|cargo|toml|target|path|directory|schema|migration|connection|read|write|file|such|no|invalid|configuration|bind|address|already|in|use|returned|from|io|os|panic|create|workspace|lock|locked|corrupt|malformed)
+        signature+=("$normalized")
+        ;;
+      *)
+        signature+=('<redacted>')
+        ;;
+    esac
+    (( ${#signature[@]} >= 24 )) && break
+  done
+  printf '%s' "${signature[*]}"
 }
 
 http_status() {
@@ -107,8 +139,9 @@ while :; do
   elapsed_seconds="$((now - started_at))"
   if ! kill -0 "$app_pid" 2>/dev/null; then
     reason="$(classify_app_exit "$app_log")"
-    printf 'summary_fixture_process_exited elapsed_s=%s reason=%s\n' \
-      "$elapsed_seconds" "$reason" >&2
+    signature="$(safe_failure_signature "$app_log")"
+    printf 'summary_fixture_process_exited elapsed_s=%s reason=%s signature=%s\n' \
+      "$elapsed_seconds" "$reason" "$signature" >&2
     exit 1
   fi
 
