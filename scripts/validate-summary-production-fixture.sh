@@ -203,6 +203,23 @@ safe_failure_signature() {
   printf '%s' "${signature[*]}"
 }
 
+last_startup_phase() {
+  local log_path="$1"
+  local phase="none"
+  local candidate=""
+
+  [[ -f "$log_path" ]] || {
+    printf 'none'
+    return
+  }
+  for candidate in db_connect schema runtime_init http_ready; do
+    if grep -Eiq "phase=[\"']?${candidate}[\"']?" "$log_path"; then
+      phase="$candidate"
+    fi
+  done
+  printf '%s' "$phase"
+}
+
 http_status() {
   local path="$1"
   local status=""
@@ -251,8 +268,9 @@ while :; do
   if ! kill -0 "$app_pid" 2>/dev/null; then
     reason="$(classify_app_exit "$app_log")"
     signature="$(safe_failure_signature "$app_log")"
-    printf 'summary_fixture_process_exited elapsed_s=%s reason=%s signature=%s\n' \
-      "$elapsed_seconds" "$reason" "$signature" >&2
+    phase="$(last_startup_phase "$app_log")"
+    printf 'summary_fixture_process_exited elapsed_s=%s phase=%s reason=%s signature=%s\n' \
+      "$elapsed_seconds" "$phase" "$reason" "$signature" >&2
     exit 1
   fi
 
