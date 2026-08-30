@@ -81,7 +81,13 @@ classify_app_exit() {
     printf 'sqlite_busy'
   elif grep -Eiq 'attempt to write a readonly database|readonly database|SQLITE_READONLY' "$log_path"; then
     printf 'sqlite_write_failure'
-  elif grep -Eiq 'no such table|no such column|SQLITE_ERROR|error returned from database' "$log_path"; then
+  elif grep -Eiq 'no such table' "$log_path"; then
+    printf 'sqlite_missing_table'
+  elif grep -Eiq 'no such column' "$log_path"; then
+    printf 'sqlite_missing_column'
+  elif grep -Eiq 'constraint failed' "$log_path"; then
+    printf 'sqlite_constraint_failure'
+  elif grep -Eiq 'SQLITE_ERROR|error returned from database' "$log_path"; then
     printf 'sqlite_query_failure'
   elif grep -Eiq 'error: could not compile|could not compile|rustc.*error' "$log_path"; then
     printf 'source_build_failure'
@@ -109,6 +115,20 @@ safe_failure_signature() {
     printf 'missing_log'
     return
   }
+  line="$(grep -Eim1 'no such table:[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$log_path" || true)"
+  if [[ "$line" =~ no[[:space:]]such[[:space:]]table:[[:space:]]([A-Za-z_][A-Za-z0-9_]*) ]]; then
+    printf 'sqlite_missing_table=%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  line="$(grep -Eim1 'no such column:[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$log_path" || true)"
+  if [[ "$line" =~ no[[:space:]]such[[:space:]]column:[[:space:]]([A-Za-z_][A-Za-z0-9_]*) ]]; then
+    printf 'sqlite_missing_column=%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  if grep -Eiq 'constraint failed' "$log_path"; then
+    printf 'sqlite_constraint_failure'
+    return
+  fi
   line="$(grep -Eim1 '(^error:|^Error:|failed|permission denied|cannot|could not|panic)' "$log_path" || true)"
   [[ -n "$line" ]] || {
     printf 'no_classified_error'
