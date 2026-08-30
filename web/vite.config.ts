@@ -120,7 +120,7 @@ export function createAppViteConfig(mode: string): UserConfig {
             screenshots: [
               {
                 src: "social-preview.png",
-                sizes: "1200x630",
+                sizes: "1774x887",
                 type: "image/png",
                 form_factor: "wide",
                 label: "Codex Vibe Monitor dashboard preview",
