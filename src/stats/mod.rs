@@ -1148,12 +1148,26 @@ impl ArchiveBatchPathRow {
         coverage_start_at: Option<String>,
         coverage_end_at: Option<String>,
     ) -> Self {
+        Self::with_coverage_and_historical_rollups(
+            file_path,
+            coverage_start_at,
+            coverage_end_at,
+            None,
+        )
+    }
+
+    pub(crate) fn with_coverage_and_historical_rollups(
+        file_path: impl Into<String>,
+        coverage_start_at: Option<String>,
+        coverage_end_at: Option<String>,
+        historical_rollups_materialized_at: Option<String>,
+    ) -> Self {
         Self {
             file_path: file_path.into(),
             month_key: None,
             coverage_start_at,
             coverage_end_at,
-            historical_rollups_materialized_at: None,
+            historical_rollups_materialized_at,
             needs_overall: None,
             needs_failures: None,
         }
