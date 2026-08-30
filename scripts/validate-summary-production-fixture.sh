@@ -101,7 +101,7 @@ classify_app_exit() {
 safe_failure_signature() {
   local log_path="$1"
   local line=""
-  local token=""
+  local signature_word=""
   local normalized=""
   local -a signature=()
 
@@ -114,8 +114,8 @@ safe_failure_signature() {
     printf 'no_classified_error'
     return
   }
-  for token in $line; do
-    normalized="${token,,}"
+  for signature_word in $line; do
+    normalized="${signature_word,,}"
     normalized="${normalized//[^a-z]/}"
     case "$normalized" in
       error|failed|to|open|sqlite|database|permission|denied|unable|could|not|find|cargo|toml|target|path|directory|schema|migration|connection|read|write|file|such|no|invalid|configuration|bind|address|already|in|use|returned|from|io|os|panic|create|workspace|lock|locked|corrupt|malformed)
