@@ -16578,10 +16578,15 @@ async fn dashboard_activity_cached_snapshot_refreshes_terminal_recent_without_li
     }
 
     let base_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    let local_day_start = base_local
+        .date()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid local day start");
     let existing_persisted_at = format_naive(
         base_local
             .checked_sub_signed(ChronoDuration::minutes(2))
-            .expect("valid cached terminal persisted invocation time"),
+            .expect("valid cached terminal persisted invocation time")
+            .max(local_day_start),
     );
     sqlx::query(
         r#"
@@ -16633,7 +16638,8 @@ async fn dashboard_activity_cached_snapshot_refreshes_terminal_recent_without_li
     let terminal_existing_at = format_naive(
         base_local
             .checked_sub_signed(ChronoDuration::seconds(1))
-            .expect("valid cached terminal existing time"),
+            .expect("valid cached terminal existing time")
+            .max(local_day_start),
     );
     let terminal_only_at = format_naive(base_local);
     let terminal_invocation =
