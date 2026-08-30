@@ -47,8 +47,16 @@ classify_app_exit() {
 
   if [[ ! -f "$log_path" ]]; then
     printf 'missing_log'
-  elif grep -Eiq 'permission denied|failed to create.*target|failed to create.*workspace' "$log_path"; then
+  elif grep -Eiq 'failed to create proxy raw payload directory' "$log_path"; then
+    printf 'proxy_raw_directory_failure'
+  elif grep -Eiq 'failed to create.*terminal.*directory|terminal.*journal.*permission denied' "$log_path"; then
+    printf 'terminal_journal_directory_failure'
+  elif grep -Eiq 'archive.*permission denied|permission denied.*archive' "$log_path"; then
+    printf 'archive_fixture_permission_failure'
+  elif grep -Eiq 'failed to create.*target|failed to create.*workspace' "$log_path"; then
     printf 'workspace_write_failure'
+  elif grep -Eiq 'permission denied' "$log_path"; then
+    printf 'filesystem_permission_failure'
   elif grep -Eiq 'database disk image is malformed|SQLITE_CORRUPT|file is not a database' "$log_path"; then
     printf 'sqlite_corruption'
   elif grep -Eiq 'failed to open sqlite database|unable to open database|cannot open.*database|SQLITE_CANTOPEN' "$log_path"; then
@@ -127,7 +135,9 @@ http_status() {
     HTTP_BIND="127.0.0.1:$port" \
     OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:9/" \
     PROXY_USAGE_BACKFILL_ON_STARTUP=false \
+    PROXY_RAW_DIR=/tmp/codex-vibe-monitor-summary-fixture-raw \
     RETENTION_ENABLED=false \
+    XRAY_RUNTIME_DIR=/tmp/codex-vibe-monitor-summary-fixture-xray \
     MAX_PARALLEL_POLLS=1 \
     SHARED_CONNECTION_PARALLELISM=1 \
     CARGO_TARGET_DIR="$cargo_target_dir" \
