@@ -8,17 +8,27 @@ database_path="$fixture_dir/codex_vibe_monitor.db"
 archive_dir="$fixture_dir/archives"
 port="${SUMMARY_PRODUCTION_FIXTURE_PORT:-18080}"
 timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_TIMEOUT_SECS:-1800}"
+fixture_wait_seconds="${SUMMARY_PRODUCTION_FIXTURE_WAIT_SECS:-4800}"
 cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-/tmp/codex-vibe-monitor-summary-target}"
 app_log="$fixture_dir/summary-projection-validation.log"
 app_pid=""
 
-if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
-  printf 'summary_fixture_input_missing\n' >&2
-  exit 64
-fi
 if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ||
+  ! "$fixture_wait_seconds" =~ ^[0-9]+$ ||
   "$cargo_target_dir" != /tmp/* || "$cargo_target_dir" == *..* ]]; then
   printf 'summary_fixture_invalid_configuration\n' >&2
+  exit 64
+fi
+fixture_wait_started="$(date +%s)"
+while [[ ! -f "$fixture_dir/READY" ]]; do
+  if (( $(date +%s) - fixture_wait_started >= fixture_wait_seconds )); then
+    printf 'summary_fixture_input_timeout\n' >&2
+    exit 64
+  fi
+  sleep 1
+done
+if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
+  printf 'summary_fixture_input_missing\n' >&2
   exit 64
 fi
 mkdir -p "$cargo_target_dir"
