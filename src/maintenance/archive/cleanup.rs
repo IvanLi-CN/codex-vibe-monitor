@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::{StreamExt, stream};
 use sqlx::FromRow;
 use tracing::warn;
 
@@ -910,8 +911,10 @@ const STARTUP_HISTORICAL_ROLLUP_CANDIDATE_LIMIT: i64 = 32;
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: usize = 16;
 const LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT: i64 = 128;
 const LEGACY_DETAIL_MIRROR_IDENTITY_PAGE_SIZE: i64 = 400;
+const SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT: i64 = 512;
+const SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_PROOF_CONCURRENCY: usize = 4;
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct HistoricalRollupStartupCandidateRow {
     id: i64,
     dataset: String,
@@ -962,11 +965,30 @@ pub(crate) struct LegacyDetailMirrorRecoveryWindowResult {
     pub(crate) wrapped: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
+    pub(crate) next_cursor_id: i64,
+    pub(crate) candidate_count: usize,
+    pub(crate) inspected_path_count: usize,
+    pub(crate) changed_path_count: usize,
+    pub(crate) unavailable_path_count: usize,
+    pub(crate) hit_budget: bool,
+    pub(crate) completed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LegacyDetailMirrorProof {
     Proven,
     NotMirror,
     BudgetExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryStartupLegacyDetailMirrorProof {
+    Proven,
+    NotMirror,
+    BudgetExhausted,
+    Unavailable,
 }
 
 async fn load_historical_rollup_startup_candidates(
@@ -1205,6 +1227,8 @@ fn legacy_detail_mirror_sha256_with_budget(
 async fn load_legacy_detail_mirror_recovery_candidates(
     pool: &Pool<Sqlite>,
     cursor_id: i64,
+    high_watermark_id: Option<i64>,
+    candidate_limit: i64,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
     sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
         r#"
@@ -1220,19 +1244,65 @@ async fn load_legacy_detail_mirror_recovery_candidates(
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
-          AND summary_source_kind = ?2
+          AND COALESCE(summary_source_kind, 'unknown') = ?2
           AND id > ?3
+          AND (?4 IS NULL OR id <= ?4)
         ORDER BY id ASC
-        LIMIT ?4
+        LIMIT ?5
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
     .bind(cursor_id)
-    .bind(LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT)
+    .bind(high_watermark_id)
+    .bind(candidate_limit)
     .fetch_all(pool)
     .await
     .context("failed to load legacy detail mirror recovery candidates")
+}
+
+pub(crate) async fn summary_startup_legacy_detail_mirror_high_watermark(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<i64>> {
+    sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM archive_batches \
+         WHERE dataset = ?1 AND status = ?2 AND COALESCE(summary_source_kind, 'unknown') = ?3",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+    .fetch_one(pool)
+    .await
+    .context("failed to load summary startup legacy detail mirror high-watermark")
+}
+
+async fn update_summary_startup_proven_legacy_detail_mirrors(
+    pool: &Pool<Sqlite>,
+    proven_mirrors: Vec<HistoricalRollupStartupCandidateRow>,
+) -> Result<usize> {
+    if proven_mirrors.is_empty() {
+        return Ok(0);
+    }
+
+    let mut changed_path_count = 0_usize;
+    let mut tx = pool.begin().await?;
+    for candidate in proven_mirrors {
+        changed_path_count += sqlx::query(
+            "UPDATE archive_batches SET summary_source_kind = ?1 \
+             WHERE id = ?2 AND status = ?3 \
+               AND COALESCE(summary_source_kind, 'unknown') = ?4 AND sha256 = ?5",
+        )
+        .bind(SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR)
+        .bind(candidate.id)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN)
+        .bind(&candidate.sha256)
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected() as usize;
+    }
+    tx.commit().await?;
+    Ok(changed_path_count)
 }
 
 pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
@@ -1240,10 +1310,22 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
     cursor_id: i64,
     max_elapsed: Duration,
 ) -> Result<LegacyDetailMirrorRecoveryWindowResult> {
-    let mut candidates = load_legacy_detail_mirror_recovery_candidates(pool, cursor_id).await?;
+    let mut candidates = load_legacy_detail_mirror_recovery_candidates(
+        pool,
+        cursor_id,
+        None,
+        LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
+    )
+    .await?;
     let mut wrapped = false;
     if candidates.is_empty() && cursor_id > 0 {
-        candidates = load_legacy_detail_mirror_recovery_candidates(pool, 0).await?;
+        candidates = load_legacy_detail_mirror_recovery_candidates(
+            pool,
+            0,
+            None,
+            LEGACY_DETAIL_MIRROR_RECOVERY_CANDIDATE_LIMIT,
+        )
+        .await?;
         wrapped = !candidates.is_empty();
     }
     if candidates.is_empty() {
@@ -1279,8 +1361,6 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
             LegacyDetailMirrorProof::NotMirror => {}
             LegacyDetailMirrorProof::BudgetExhausted => {
                 hit_budget = true;
-                inspected_path_count += 1;
-                next_cursor_id = candidate.id;
                 break;
             }
         }
@@ -1315,6 +1395,105 @@ pub(crate) async fn reconcile_legacy_detail_mirrors_startup_window(
         changed_path_count,
         hit_budget,
         wrapped,
+    })
+}
+
+/// Reconciles one high-throughput, finite portion of the cold Summary startup source snapshot.
+///
+/// A failed identity read stays `unknown`: it remains conservative source evidence, but must not
+/// stop later, independently provable mirrors from leaving Summary archive admission. A
+/// budget-exhausted proof does not advance its cursor, so the next bounded window retries that
+/// same record instead of silently skipping it.
+pub(crate) async fn reconcile_legacy_detail_mirrors_for_summary_startup_window(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+    high_watermark_id: i64,
+    max_elapsed: Duration,
+) -> Result<SummaryStartupLegacyDetailMirrorRecoveryWindowResult> {
+    let candidates = load_legacy_detail_mirror_recovery_candidates(
+        pool,
+        cursor_id,
+        Some(high_watermark_id),
+        SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT,
+    )
+    .await?;
+    if candidates.is_empty() {
+        return Ok(SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
+            next_cursor_id: cursor_id,
+            candidate_count: 0,
+            inspected_path_count: 0,
+            changed_path_count: 0,
+            unavailable_path_count: 0,
+            hit_budget: false,
+            completed: true,
+        });
+    }
+
+    let started_at = Instant::now();
+    let candidate_count = candidates.len();
+    let mut proof_results = stream::iter(candidates.into_iter().enumerate().map(
+        |(index, candidate)| async move {
+            let proof = match legacy_invocation_archive_is_live_detail_mirror(
+                pool,
+                &candidate,
+                started_at,
+                max_elapsed,
+            )
+            .await
+            {
+                Ok(LegacyDetailMirrorProof::Proven) => {
+                    SummaryStartupLegacyDetailMirrorProof::Proven
+                }
+                Ok(LegacyDetailMirrorProof::NotMirror) => {
+                    SummaryStartupLegacyDetailMirrorProof::NotMirror
+                }
+                Ok(LegacyDetailMirrorProof::BudgetExhausted) => {
+                    SummaryStartupLegacyDetailMirrorProof::BudgetExhausted
+                }
+                // Missing, unreadable, corrupt, or concurrently replaced files remain
+                // fail-closed unknown sources. The next exact Summary build will account for
+                // their coverage rather than accepting a guessed mirror classification.
+                Err(_) => SummaryStartupLegacyDetailMirrorProof::Unavailable,
+            };
+            (index, candidate, proof)
+        },
+    ))
+    .buffer_unordered(SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_PROOF_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+    proof_results.sort_unstable_by_key(|(index, _, _)| *index);
+
+    let mut next_cursor_id = cursor_id;
+    let mut inspected_path_count = 0_usize;
+    let mut unavailable_path_count = 0_usize;
+    let mut hit_budget = false;
+    let mut proven_mirrors = Vec::new();
+    for (_, candidate, proof) in proof_results {
+        let candidate_id = candidate.id;
+        match proof {
+            SummaryStartupLegacyDetailMirrorProof::Proven => proven_mirrors.push(candidate),
+            SummaryStartupLegacyDetailMirrorProof::NotMirror => {}
+            SummaryStartupLegacyDetailMirrorProof::Unavailable => unavailable_path_count += 1,
+            SummaryStartupLegacyDetailMirrorProof::BudgetExhausted => {
+                hit_budget = true;
+                break;
+            }
+        }
+        inspected_path_count += 1;
+        next_cursor_id = candidate_id;
+    }
+
+    let changed_path_count =
+        update_summary_startup_proven_legacy_detail_mirrors(pool, proven_mirrors).await?;
+    Ok(SummaryStartupLegacyDetailMirrorRecoveryWindowResult {
+        next_cursor_id,
+        candidate_count,
+        inspected_path_count,
+        changed_path_count,
+        unavailable_path_count,
+        hit_budget,
+        completed: !hit_budget
+            && candidate_count < SUMMARY_STARTUP_LEGACY_DETAIL_MIRROR_CANDIDATE_LIMIT as usize,
     })
 }
 

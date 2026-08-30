@@ -143,6 +143,15 @@ It may classify an otherwise ambiguous legacy archive as a Live Detail Mirror;
 any missing, changed, unreadable, or replaced record leaves the archive unknown.
 _Avoid_: interval-density proof, count-only classification, Summary HTTP scan
 
+**Summary Startup Recovery Gate**:
+The bounded, cancellation-aware cold-start sweep that captures one stable
+unknown-legacy-manifest high-watermark, completes exact Live Detail Mirror
+identity attempts ahead of the first Summary Projection build, and persists only
+proven classifications. An unresolved source remains unknown; it cannot block an
+independent proof or be guessed into a mirror role. Periodic Summary maintenance
+starts only after this gate has allowed an exact Projection to publish.
+_Avoid_: generic-backfill starvation, global cold-start retry loop, inferred mirror
+
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a
 background refresh is unavailable. Its retention does not permit a stale or
