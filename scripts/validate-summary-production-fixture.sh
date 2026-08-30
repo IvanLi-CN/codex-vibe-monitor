@@ -109,12 +109,45 @@ safe_failure_signature() {
   local line=""
   local signature_word=""
   local normalized=""
+  local sqlite_code=""
   local -a signature=()
 
   [[ -f "$log_path" ]] || {
     printf 'missing_log'
     return
   }
+  line="$(grep -Eia 'error returned from database: \(code: [0-9]+\)' "$log_path" | tail -n1 || true)"
+  if [[ "$line" =~ \(code:[[:space:]]([0-9]+)\) ]]; then
+    sqlite_code="${BASH_REMATCH[1]}"
+    if [[ "$line" =~ error[[:space:]]in[[:space:]]trigger[[:space:]]([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      printf 'sqlite_error_code=%s trigger=%s' "$sqlite_code" "${BASH_REMATCH[1]}"
+      return
+    fi
+    if [[ "$line" =~ near[[:space:]]\"([A-Za-z_][A-Za-z0-9_]*)\" ]]; then
+      printf 'sqlite_error_code=%s near=%s' "$sqlite_code" "${BASH_REMATCH[1]}"
+      return
+    fi
+    case "$line" in
+      *'cannot start a transaction within a transaction'*)
+        printf 'sqlite_error_code=%s nested_transaction' "$sqlite_code"
+        return
+        ;;
+      *'cannot commit - no transaction is active'*)
+        printf 'sqlite_error_code=%s missing_transaction' "$sqlite_code"
+        return
+        ;;
+      *'unsafe use of'*)
+        printf 'sqlite_error_code=%s unsafe_sqlite_feature' "$sqlite_code"
+        return
+        ;;
+      *'database schema is locked'*)
+        printf 'sqlite_error_code=%s schema_locked' "$sqlite_code"
+        return
+        ;;
+    esac
+    printf 'sqlite_error_code=%s' "$sqlite_code"
+    return
+  fi
   line="$(grep -Eim1 'no such table:[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$log_path" || true)"
   if [[ "$line" =~ no[[:space:]]such[[:space:]]table:[[:space:]]([A-Za-z_][A-Za-z0-9_]*) ]]; then
     printf 'sqlite_missing_table=%s' "${BASH_REMATCH[1]}"
