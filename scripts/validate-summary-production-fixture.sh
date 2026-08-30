@@ -45,12 +45,20 @@ classify_app_exit() {
     printf 'sqlite_open_failure'
   elif grep -Eiq 'database is locked|SQLITE_BUSY' "$log_path"; then
     printf 'sqlite_busy'
+  elif grep -Eiq 'attempt to write a readonly database|readonly database|SQLITE_READONLY' "$log_path"; then
+    printf 'sqlite_write_failure'
+  elif grep -Eiq 'no such table|no such column|SQLITE_ERROR|error returned from database' "$log_path"; then
+    printf 'sqlite_query_failure'
   elif grep -Eiq 'error: could not compile|could not compile|rustc.*error' "$log_path"; then
     printf 'source_build_failure'
   elif grep -Eiq 'configuration|invalid .*environment|is not supported' "$log_path"; then
     printf 'runtime_configuration_failure'
   elif grep -Eiq 'migration|migrat' "$log_path"; then
     printf 'database_migration_failure'
+  elif grep -Eiq 'archive.*missing|failed to .*archive|archive.*failed' "$log_path"; then
+    printf 'archive_fixture_failure'
+  elif grep -Eiq 'summary projection.*hydration|summary.*projection.*failed' "$log_path"; then
+    printf 'summary_projection_failure'
   else
     printf 'startup_process_exit'
   fi
@@ -90,18 +98,12 @@ safe_failure_signature() {
 
 http_status() {
   local path="$1"
-  local status_line=""
+  local status=""
 
-  if ! { exec 3<>"/dev/tcp/127.0.0.1/$port"; } 2>/dev/null; then
-    printf '000'
-    return
-  fi
-  printf 'GET %s HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' "$path" >&3
-  IFS=$'\r' read -r status_line <&3 || true
-  exec 3>&-
-  exec 3<&-
-  if [[ "$status_line" =~ ^HTTP/[0-9.]+\ ([0-9]{3}) ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
+  status="$(curl --noproxy '*' --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --connect-timeout 1 --max-time 3 "http://127.0.0.1:$port$path" 2>/dev/null || true)"
+  if [[ "$status" =~ ^[0-9]{3}$ ]]; then
+    printf '%s' "$status"
   else
     printf '000'
   fi
