@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.8",
+  "base_stable_version": "2.68.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-30T02:00:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fb9404b67976debd0b6ad91b2bdb101bbd81c895",
+  "pr_number": 874,
+  "pr_title": "fix(summary): localize boundary admission gaps",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.8",
+  "target_sha": "d04f938ff0266235ba34ed35a0edb94664b2ddef",
+  "type_label": "type:patch"
+}
