@@ -35,7 +35,9 @@ if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
 fi
 if ! mkdir -p "$runtime_workspace" "$cargo_target_dir" ||
   ! tar --exclude='./production-fixture' --exclude='./production-fixture/*' \
-    -C /workspace -cf - . | tar -C "$runtime_workspace" -xf - ||
+    --exclude='./.codex-*' --exclude='./target' --exclude='./target/*' \
+    -C /workspace -cf - . | \
+    tar --no-same-owner --no-same-permissions -C "$runtime_workspace" -xf - ||
   [[ -e "$runtime_workspace/production-fixture" ]]; then
   printf 'summary_fixture_workspace_copy_failure\n' >&2
   exit 1
