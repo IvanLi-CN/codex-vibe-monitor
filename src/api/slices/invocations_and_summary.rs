@@ -7139,7 +7139,7 @@ const SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF: Duration = Duration::
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
 // Initial projection construction may need to fold a bounded, valid historical horizon. It runs
 // only after listener readiness, but still needs a finite cancellation-friendly work budget.
-pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
+pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(120);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 
 #[cfg(test)]

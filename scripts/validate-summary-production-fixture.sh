@@ -252,12 +252,12 @@ http_status() {
 app_pid="$!"
 
 summary_paths=(
-  'current?limit=50&timeZone=Asia%2FShanghai'
-  '1d?limit=50&timeZone=Asia%2FShanghai'
-  '7d?limit=50&timeZone=Asia%2FShanghai'
-  '30d?limit=50&timeZone=Asia%2FShanghai'
-  'today?limit=50&timeZone=Asia%2FShanghai'
-  'all?limit=50&timeZone=Asia%2FShanghai'
+  'current&limit=50&timeZone=Asia%2FShanghai'
+  '1d&limit=50&timeZone=Asia%2FShanghai'
+  '7d&limit=50&timeZone=Asia%2FShanghai'
+  '30d&limit=50&timeZone=Asia%2FShanghai'
+  'today&limit=50&timeZone=Asia%2FShanghai'
+  'all&limit=50&timeZone=Asia%2FShanghai'
 )
 summary_labels=(current one_day seven_days thirty_days today all_time)
 started_at="$(date +%s)"
