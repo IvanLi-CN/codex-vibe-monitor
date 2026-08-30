@@ -6,17 +6,18 @@ set -euo pipefail
 fixture_dir="${SUMMARY_PRODUCTION_FIXTURE_DIR:-/workspace/production-fixture}"
 database_path="$fixture_dir/codex_vibe_monitor.db"
 archive_dir="$fixture_dir/archives"
-fixture_target_dir="$fixture_dir/.cargo-target"
+runtime_workspace="${SUMMARY_PRODUCTION_FIXTURE_WORKSPACE:-/tmp/codex-vibe-monitor-summary-fixture-workspace}"
 port="${SUMMARY_PRODUCTION_FIXTURE_PORT:-18080}"
 timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_TIMEOUT_SECS:-1800}"
 fixture_wait_seconds="${SUMMARY_PRODUCTION_FIXTURE_WAIT_SECS:-4800}"
-cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-$fixture_target_dir}"
+cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-$runtime_workspace/target}"
 app_log="$fixture_dir/summary-projection-validation.log"
 app_pid=""
 
 if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ||
-  ! "$fixture_wait_seconds" =~ ^[0-9]+$ || "$cargo_target_dir" == *..* ||
-  ( "$cargo_target_dir" != /tmp/* && "$cargo_target_dir" != "$fixture_target_dir" ) ]]; then
+  ! "$fixture_wait_seconds" =~ ^[0-9]+$ || "$runtime_workspace" != /tmp/* ||
+  "$runtime_workspace" == *..* || "$cargo_target_dir" != "$runtime_workspace"/* ||
+  "$cargo_target_dir" == *..* ]]; then
   printf 'summary_fixture_invalid_configuration\n' >&2
   exit 64
 fi
@@ -32,7 +33,13 @@ if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
   printf 'summary_fixture_input_missing\n' >&2
   exit 64
 fi
-mkdir -p "$cargo_target_dir"
+if ! mkdir -p "$runtime_workspace" "$cargo_target_dir" ||
+  ! tar --exclude='./production-fixture' --exclude='./production-fixture/*' \
+    -C /workspace -cf - . | tar -C "$runtime_workspace" -xf - ||
+  [[ -e "$runtime_workspace/production-fixture" ]]; then
+  printf 'summary_fixture_workspace_copy_failure\n' >&2
+  exit 1
+fi
 
 cleanup() {
   if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
@@ -131,7 +138,7 @@ http_status() {
 }
 
 (
-  cd /workspace
+  cd "$runtime_workspace"
   exec env \
     DATABASE_PATH="$database_path" \
     ARCHIVE_DIR="$archive_dir" \
@@ -195,3 +202,11 @@ while :; do
   fi
   sleep 1
 done
+
+(
+  cd "$runtime_workspace"
+  cargo fmt --all -- --check
+  cargo check --locked --all-features
+  cargo clippy --locked --all-features -- -D warnings
+)
+printf 'summary_fixture_quality_gates_passed\n'
