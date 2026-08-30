@@ -29,6 +29,28 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+classify_app_exit() {
+  local log_path="$1"
+
+  if [[ ! -f "$log_path" ]]; then
+    printf 'missing_log'
+  elif grep -Eiq 'database disk image is malformed|SQLITE_CORRUPT|file is not a database' "$log_path"; then
+    printf 'sqlite_corruption'
+  elif grep -Eiq 'unable to open database|cannot open.*database|SQLITE_CANTOPEN' "$log_path"; then
+    printf 'sqlite_open_failure'
+  elif grep -Eiq 'database is locked|SQLITE_BUSY' "$log_path"; then
+    printf 'sqlite_busy'
+  elif grep -Eiq 'error: could not compile|could not compile|rustc.*error' "$log_path"; then
+    printf 'source_build_failure'
+  elif grep -Eiq 'configuration|invalid .*environment|is not supported' "$log_path"; then
+    printf 'runtime_configuration_failure'
+  elif grep -Eiq 'migration|migrat' "$log_path"; then
+    printf 'database_migration_failure'
+  else
+    printf 'startup_process_exit'
+  fi
+}
+
 http_status() {
   local path="$1"
   local status_line=""
@@ -78,7 +100,9 @@ while :; do
   now="$(date +%s)"
   elapsed_seconds="$((now - started_at))"
   if ! kill -0 "$app_pid" 2>/dev/null; then
-    printf 'summary_fixture_process_exited elapsed_s=%s\n' "$elapsed_seconds" >&2
+    reason="$(classify_app_exit "$app_log")"
+    printf 'summary_fixture_process_exited elapsed_s=%s reason=%s\n' \
+      "$elapsed_seconds" "$reason" >&2
     exit 1
   fi
 
