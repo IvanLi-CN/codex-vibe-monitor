@@ -119,9 +119,15 @@ safe_failure_signature() {
   line="$(grep -Eia 'error returned from database: \(code: [0-9]+\)' "$log_path" | tail -n1 || true)"
   if [[ "$line" =~ \(code:[[:space:]]([0-9]+)\) ]]; then
     sqlite_code="${BASH_REMATCH[1]}"
-    if [[ "$line" =~ error[[:space:]]in[[:space:]]trigger[[:space:]]([A-Za-z_][A-Za-z0-9_]*) ]]; then
-      printf 'sqlite_error_code=%s trigger=%s' "$sqlite_code" "${BASH_REMATCH[1]}"
-      return
+    if [[ "$line" =~ trigger[^A-Za-z_]*([A-Za-z_][A-Za-z0-9_]*) ]]; then
+      case "${BASH_REMATCH[1]}" in
+        failed|failure|error)
+          ;;
+        *)
+          printf 'sqlite_error_code=%s trigger=%s' "$sqlite_code" "${BASH_REMATCH[1]}"
+          return
+          ;;
+      esac
     fi
     if [[ "$line" =~ near[[:space:]]\"([A-Za-z_][A-Za-z0-9_]*)\" ]]; then
       printf 'sqlite_error_code=%s near=%s' "$sqlite_code" "${BASH_REMATCH[1]}"
