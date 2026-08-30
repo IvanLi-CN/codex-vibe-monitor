@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.10",
+  "base_stable_version": "2.68.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-30T16:40:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ea29f6b6a524da5f4ffd84ef962b21c66816f845",
+  "pr_number": 876,
+  "pr_title": "fix(summary): restore production-scale projection hydration",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.10",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.10",
+  "target_sha": "ac95b8f32b2f6bf771fa0700c55bea6acfa343c1",
+  "type_label": "type:patch"
+}
