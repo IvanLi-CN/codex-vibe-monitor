@@ -8,6 +8,7 @@ database_path="$fixture_dir/codex_vibe_monitor.db"
 archive_dir="$fixture_dir/archives"
 port="${SUMMARY_PRODUCTION_FIXTURE_PORT:-18080}"
 timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_TIMEOUT_SECS:-1800}"
+cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-/tmp/codex-vibe-monitor-summary-target}"
 app_log="$fixture_dir/summary-projection-validation.log"
 app_pid=""
 
@@ -15,10 +16,12 @@ if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
   printf 'summary_fixture_input_missing\n' >&2
   exit 64
 fi
-if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ]]; then
+if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ||
+  "$cargo_target_dir" != /tmp/* || "$cargo_target_dir" == *..* ]]; then
   printf 'summary_fixture_invalid_configuration\n' >&2
   exit 64
 fi
+mkdir -p "$cargo_target_dir"
 
 cleanup() {
   if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
@@ -34,6 +37,8 @@ classify_app_exit() {
 
   if [[ ! -f "$log_path" ]]; then
     printf 'missing_log'
+  elif grep -Eiq 'permission denied|failed to create.*target|failed to create.*workspace' "$log_path"; then
+    printf 'workspace_write_failure'
   elif grep -Eiq 'database disk image is malformed|SQLITE_CORRUPT|file is not a database' "$log_path"; then
     printf 'sqlite_corruption'
   elif grep -Eiq 'unable to open database|cannot open.*database|SQLITE_CANTOPEN' "$log_path"; then
@@ -81,6 +86,7 @@ http_status() {
     RETENTION_ENABLED=false \
     MAX_PARALLEL_POLLS=1 \
     SHARED_CONNECTION_PARALLELISM=1 \
+    CARGO_TARGET_DIR="$cargo_target_dir" \
     cargo run --locked -- --http-bind "127.0.0.1:$port"
 ) >"$app_log" 2>&1 &
 app_pid="$!"
