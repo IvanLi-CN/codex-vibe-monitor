@@ -94,6 +94,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     AfterRollupLoad,
     AfterAllTimeArchiveDiscovery,
     BeforeAllTimeArchiveScan,
+    BeforePagedBoundaryArchiveHydration,
 }
 
 #[cfg(test)]
@@ -13310,28 +13311,34 @@ async fn build_summary_projection_once(
                         .copied()
                         .unwrap_or_default(),
                 );
-                if summary_projection_archive_coverage_range(archive).is_some() {
-                    let replacement_ranges = if mode.includes_all_time() {
-                        vec![archive_range]
-                    } else {
-                        summary_projection_split_ranges_by_buckets(
-                            [archive_range],
-                            &protected_boundary_buckets,
-                        )
-                        .0
-                    };
-                    for replacement_range in replacement_ranges {
-                        summary_projection_mark_exact_replacement_buckets(
-                            archive.has_materialized_historical_rollups(),
-                            replay_coverage,
-                            replacement_range,
-                            &protected_boundary_buckets,
-                            &mut exact_global_total_rollup_buckets,
-                            &mut exact_account_total_rollup_buckets,
-                            &mut exact_global_usage_rollup_buckets,
-                            &mut exact_account_usage_rollup_buckets,
-                        )?;
-                    }
+                let mut paged_exact_global_total_buckets = HashSet::new();
+                let mut paged_exact_account_total_buckets = HashSet::new();
+                let mut paged_exact_global_usage_buckets = HashSet::new();
+                let mut paged_exact_account_usage_buckets = HashSet::new();
+                if mode.includes_all_time()
+                    && summary_projection_archive_coverage_range(archive).is_some()
+                {
+                    summary_projection_mark_exact_replacement_buckets(
+                        archive.has_materialized_historical_rollups(),
+                        replay_coverage,
+                        archive_range,
+                        &protected_boundary_buckets,
+                        &mut exact_global_total_rollup_buckets,
+                        &mut exact_account_total_rollup_buckets,
+                        &mut exact_global_usage_rollup_buckets,
+                        &mut exact_account_usage_rollup_buckets,
+                    )?;
+                } else if summary_projection_archive_coverage_range(archive).is_some() {
+                    summary_projection_mark_exact_replacement_buckets(
+                        archive.has_materialized_historical_rollups(),
+                        replay_coverage,
+                        archive_range,
+                        &protected_boundary_buckets,
+                        &mut paged_exact_global_total_buckets,
+                        &mut paged_exact_account_total_buckets,
+                        &mut paged_exact_global_usage_buckets,
+                        &mut paged_exact_account_usage_buckets,
+                    )?;
                 }
                 let account_ids = page_account_ids_by_file
                     .get(archive.file_path())
@@ -13339,23 +13346,18 @@ async fn build_summary_projection_once(
                 let account_manifest_complete = page
                     .account_manifest_refreshed_paths
                     .contains(archive.file_path());
-                if !account_manifest_complete {
-                    let replacement_ranges = if mode.includes_all_time() {
-                        vec![archive_range]
-                    } else {
-                        summary_projection_split_ranges_by_buckets(
-                            [archive_range],
-                            &protected_boundary_buckets,
-                        )
-                        .0
-                    };
-                    for replacement_range in replacement_ranges {
-                        summary_projection_mark_account_exact_replacement_buckets(
-                            archive.has_materialized_historical_rollups(),
-                            replacement_range,
-                            &mut exact_account_total_rollup_buckets,
-                        )?;
-                    }
+                if mode.includes_all_time() && !account_manifest_complete {
+                    summary_projection_mark_account_exact_replacement_buckets(
+                        archive.has_materialized_historical_rollups(),
+                        archive_range,
+                        &mut exact_account_total_rollup_buckets,
+                    )?;
+                } else if !account_manifest_complete {
+                    summary_projection_mark_account_exact_replacement_buckets(
+                        archive.has_materialized_historical_rollups(),
+                        archive_range,
+                        &mut paged_exact_account_total_buckets,
+                    )?;
                 }
                 let (account_replayed, usage_replayed) = if !account_manifest_complete {
                     // A stale account manifest invalidates account-scoped totals. Preserve the
@@ -13384,25 +13386,35 @@ async fn build_summary_projection_once(
                         raw_fallback_ranges,
                     )?;
                 } else {
-                    let (startup_ranges, deferred_ranges) =
-                        summary_projection_split_ranges_by_buckets(
-                            raw_fallback_ranges,
-                            &protected_boundary_buckets,
-                        );
-                    summary_projection_extend_exact_buckets_for_ranges(
-                        &mut exact_archive_buckets,
-                        startup_ranges,
-                    )?;
-                    // Bootstrap publishes from already-proven compact/live sources. A paged
-                    // archive fallback is deferred to all-time reconciliation and cannot make
-                    // the whole projection fail; mark only its exact range unavailable.
+                    // Paged metadata can prove that a raw source would be needed, but Bootstrap
+                    // and Rolling cannot open that source before publication. Preserve compact
+                    // coverage and publish an exact local gap for every unproven replacement.
+                    let mut raw_fallback_bucket_requirements = paged_exact_global_total_buckets;
+                    raw_fallback_bucket_requirements.extend(paged_exact_account_total_buckets);
+                    raw_fallback_bucket_requirements.extend(paged_exact_global_usage_buckets);
+                    raw_fallback_bucket_requirements.extend(paged_exact_account_usage_buckets);
+                    let mut unavailable_ranges = raw_fallback_ranges;
+                    for range in
+                        summary_projection_exact_bucket_ranges(&raw_fallback_bucket_requirements)
+                    {
+                        let range = ExactUtcRange {
+                            start: range.start.max(archive_range.start),
+                            end: range.end.min(archive_range.end),
+                        };
+                        if range.start < range.end {
+                            unavailable_ranges.push(range);
+                        }
+                    }
+                    let unavailable_ranges =
+                        summary_projection_merge_exact_ranges(unavailable_ranges);
                     summary_projection_mark_unavailable_archive_ranges_by_requirement(
                         &mut unavailable_unmaterialized_archive_buckets,
                         &mut unavailable_boundary_archive_ranges,
                         archive.has_materialized_historical_rollups(),
-                        &deferred_ranges,
-                        &HashSet::new(),
+                        &unavailable_ranges,
+                        &raw_fallback_bucket_requirements,
                     )?;
+                    unavailable_unmaterialized_archive_current_ranges.push(archive_range);
                 }
             }
             let Some(next_after_id) = page.next_after_id else {
@@ -13763,12 +13775,20 @@ async fn build_summary_projection_once(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build stage completed"
     );
-    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
+    if mode.includes_all_time()
+        && let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id
+    {
         info!(
             ?mode,
             stage = "paged_boundary_archive_hydration",
             "summary projection build stage started"
         );
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            pool,
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        )
+        .await?;
         let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
@@ -32511,7 +32531,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_overflowed_boundary_manifests_publish_local_unavailability() {
+    async fn summary_projection_bootstrap_never_runs_paged_boundary_raw_hydration() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -32555,9 +32575,74 @@ mod request_compression_query_tests {
             .expect("seed bounded boundary manifest");
         }
 
-        hydrate_summary_snapshots(state.as_ref())
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create paged boundary interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        );
+        let state_for_hydration = state.clone();
+        let hydration = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(
+                state_for_hydration.as_ref(),
+                Duration::from_secs(5),
+            )
             .await
-            .expect("bounded archive admission gaps must not abort projection hydration");
+        });
+        tokio::pin!(hydration);
+        tokio::select! {
+            result = &mut hydration => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("run bootstrap hydration")
+                    .expect("bounded archive admission gaps must not abort projection hydration");
+            }
+            _ = interleave.wait_for_writer() => {
+                interleave.resume_build();
+                let _ = hydration.await;
+                clear_summary_projection_test_interleave();
+                panic!("bootstrap must not enter paged boundary raw archive hydration");
+            }
+        }
+        assert_eq!(
+            interleave.build_attempts(),
+            0,
+            "bootstrap must publish before the paged raw archive stage",
+        );
+        let rolling_interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        );
+        let state_for_rolling = state.clone();
+        let rolling = tokio::spawn(async move {
+            refresh_summary_snapshots_with_mode(
+                state_for_rolling.as_ref(),
+                SummaryProjectionBuildMode::Rolling,
+            )
+            .await
+        });
+        tokio::pin!(rolling);
+        tokio::select! {
+            result = &mut rolling => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("run rolling hydration")
+                    .expect("rolling reconciliation must not open paged raw archives");
+            }
+            _ = rolling_interleave.wait_for_writer() => {
+                rolling_interleave.resume_build();
+                let _ = rolling.await;
+                clear_summary_projection_test_interleave();
+                panic!("rolling reconciliation must not enter paged boundary raw archive hydration");
+            }
+        }
+        assert_eq!(
+            rolling_interleave.build_attempts(),
+            0,
+            "rolling reconciliation must publish without the paged raw archive stage",
+        );
         let projection = state
             .subscription_hub
             .summary_projection()
@@ -32568,6 +32653,34 @@ mod request_compression_query_tests {
                 .unavailable_unmaterialized_archive_ranges
                 .is_empty(),
             "unreadable bounded boundary archives must retain an exact range proof"
+        );
+        let all_time_interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        );
+        let state_for_all_time = state.clone();
+        let all_time = tokio::spawn(async move {
+            refresh_summary_snapshots_with_mode(
+                state_for_all_time.as_ref(),
+                SummaryProjectionBuildMode::AllTime,
+            )
+            .await
+        });
+        tokio::pin!(all_time);
+        tokio::select! {
+            _ = all_time_interleave.wait_for_writer() => {
+                all_time_interleave.resume_build();
+                let _ = all_time.await;
+                clear_summary_projection_test_interleave();
+            }
+            _ = &mut all_time => {
+                clear_summary_projection_test_interleave();
+                panic!("all-time reconciliation must own paged boundary raw archive hydration");
+            }
+        }
+        assert_eq!(
+            all_time_interleave.build_attempts(),
+            1,
+            "only all-time reconciliation may enter the paged raw archive stage",
         );
         state.pool.close().await;
 
