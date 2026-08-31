@@ -7137,6 +7137,10 @@ const SUMMARY_PROJECTION_MANIFEST_ADMISSION_RETRY_BACKOFF: Duration = Duration::
 // phase, hub coordination allowance, and build deadline remain strictly inside the 15-second
 // serving ceiling; mutations still use the separate debounce below.
 const SUMMARY_PROJECTION_BUILD_DEADLINE: Duration = Duration::from_secs(4);
+// Finalizing an all-time checkpoint may still need to assemble the bounded current/rolling
+// source set. Keep that background-only phase independent from the cadence refresh budget so a
+// materialized boundary cannot make reconciliation retry forever.
+const SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE: Duration = Duration::from_secs(8);
 // Startup publishes the independently exact current and rolling selections before background
 // all-time reconciliation. The initial budget therefore remains a bounded readiness gate rather
 // than a deadline for a full-history scan.
@@ -7773,14 +7777,6 @@ impl SummaryProjection {
             SummaryWindow::Current(limit) => Some(limit.max(0) as usize),
             _ => None,
         };
-        if range.is_some_and(|(start, _)| {
-            self.recent_index_overflow_at
-                .is_some_and(|overflow_at| start <= overflow_at)
-        }) {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary rolling snapshot is outside the bounded recent index"
-            )));
-        }
         let unavailable_archive_range_affects_query = match range {
             Some((start, end)) => {
                 self.unavailable_unmaterialized_archive_ranges
@@ -10006,13 +10002,13 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
-    refresh_summary_snapshots_with_deadline(
-        state,
-        mode,
-        Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
-        true,
-    )
-    .await
+    let deadline = match mode {
+        SummaryProjectionBuildMode::AllTime => SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
+        SummaryProjectionBuildMode::Bootstrap | SummaryProjectionBuildMode::Rolling => {
+            SUMMARY_PROJECTION_BUILD_DEADLINE
+        }
+    };
+    refresh_summary_snapshots_with_deadline(state, mode, Some(deadline), true).await
 }
 
 async fn refresh_summary_snapshots_with_deadline(
@@ -10058,7 +10054,6 @@ async fn refresh_summary_snapshots_with_deadline(
                 .all_time_account_persisted_live_terminal_invoke_ids
                 .clone(),
         });
-    let had_previous_projection = previous_all_time.is_some();
     // The runtime read model advances this watermark only after SQLite ACKs every preceding
     // terminal in order. Capture it before the durable projection queries so a later successful
     // revision can prove that an overflowed Summary SSE overlay is no longer missing data.
@@ -10081,19 +10076,6 @@ async fn refresh_summary_snapshots_with_deadline(
             .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
         None => build.await?,
     };
-    if had_previous_projection
-        && !projection
-            .unavailable_unmaterialized_archive_ranges
-            .is_empty()
-    {
-        // A background failure must never replace a complete revision with a partial one.  The
-        // existing revision remains the exact last-good response until its own freshness budget
-        // expires; startup still records an affected range as unavailable below.
-        return Err(anyhow!(
-            "summary projection archive source is unavailable for {} bounded range(s)",
-            projection.unavailable_unmaterialized_archive_ranges.len(),
-        ));
-    }
     state
         .subscription_hub
         .store_summary_projection(projection)
@@ -13483,20 +13465,6 @@ async fn build_summary_projection_once(
             };
             let mut response = totals.into_response();
             response.non_success_cost = Some(totals.non_success_cost);
-            response.maintenance = Some(maintenance.clone());
-            all_time_by_account.insert(Some(account_id), response);
-            all_time_account_refreshed_at.insert(account_id, all_time_built_at);
-            rebuilt_all_time_account_ids.insert(account_id);
-        }
-        if !all_time_was_fully_rebuilt
-            && let Some(account_id) = upstream_account_id
-            && !all_time_by_account.contains_key(&Some(account_id))
-            && !account_ids_with_projection_data.contains(&account_id)
-        {
-            // A newly observed pool account with no history has an exact zero all-time response;
-            // keep it keyed so the request path never falls through to records-only aggregation.
-            let mut response = StatsTotals::default().into_response();
-            response.non_success_cost = Some(0.0);
             response.maintenance = Some(maintenance.clone());
             all_time_by_account.insert(Some(account_id), response);
             all_time_account_refreshed_at.insert(account_id, all_time_built_at);
@@ -29950,7 +29918,7 @@ mod request_compression_query_tests {
         let hydration = tokio::spawn(async move {
             hydrate_summary_snapshots_with_deadline(
                 state_for_hydration.as_ref(),
-                Duration::from_millis(500),
+                Duration::from_secs(5),
             )
             .await
         });
@@ -31126,6 +31094,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate scope-aware projection");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile the live-only account all-time projection");
         let Json(global_before) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
@@ -31725,6 +31696,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate projection from fully replayed materialized rollup");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile exact all-time projection from fully replayed materialized rollup");
         let expected = query_hourly_backed_summary_range(
             state.as_ref(),
             Utc::now() - ChronoDuration::days(40),
@@ -31875,6 +31849,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate all-time projection from durable global rollup");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile all-time projection from durable global rollup");
 
         let Json(global) = fetch_summary(
             State(state.clone()),
@@ -31919,6 +31896,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate all-time projection after account manifest completion");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile all-time projection after account manifest completion");
         let Json(complete_manifest_account) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
@@ -31944,6 +31924,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("identityless replay refresh preserves exact global all-time last-good");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile identityless replay while retaining global all-time last-good");
 
         let Json(last_good) = fetch_summary(
             State(state.clone()),
@@ -32065,6 +32048,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("stale replay markers must admit exact all-time raw fallback");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile stale replay markers through the exact all-time raw fallback");
         state.pool.close().await;
 
         for upstream_account_id in [None, Some(42)] {

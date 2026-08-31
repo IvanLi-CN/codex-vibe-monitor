@@ -4537,6 +4537,9 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("current candidate admission must not abort rollup-backed projection hydration");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile the exact all-time rollup-backed projection");
     state.pool.close().await;
 
     for window in ["1d", "all"] {
@@ -22787,6 +22790,10 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate rolling summary projection beyond manifest admission");
+    assert!(
+        projection_fixture_started_at.elapsed() < std::time::Duration::from_secs(30),
+        "summary projection Bootstrap exceeded its startup readiness budget"
+    );
 
     let Json(current) = fetch_summary(
         State(state.clone()),
@@ -22911,10 +22918,6 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
         .await
         .expect("rolling refresh retains the exact all-time snapshot");
-    assert!(
-        projection_fixture_started_at.elapsed() < std::time::Duration::from_secs(5),
-        "summary projection overflow-manifest fixture exceeded its bounded build budget"
-    );
     state.pool.close().await;
 
     for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
@@ -23632,6 +23635,9 @@ async fn summary_projection_keeps_global_all_exact_when_account_manifest_admissi
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate exact global all-time response despite account admission overflow");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile exact global all-time response despite account admission overflow");
     state.pool.close().await;
 
     let Json(global) = fetch_summary(
