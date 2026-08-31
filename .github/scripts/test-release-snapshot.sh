@@ -125,8 +125,11 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
     output_path = repo / "backfilled-snapshot.json"
     os.chdir(repo)
     try:
+        push_calls: list[tuple[str, ...]] = []
+
         def fake_git(*args: str, **kwargs: object):
             if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                push_calls.append(args)
                 return subprocess.CompletedProcess(["git", *args], 0, "", "")
             return original_git(*args, **kwargs)
 
@@ -143,9 +146,11 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
                 max_attempts=1,
                 target_only=True,
                 backend_test_image_digest=digest,
+                skip_publish=True,
             )
         )
         assert exit_code == 0
+        assert not push_calls
         stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
         assert stored is not None
         assert stored["backend_test_image_digest"] == digest

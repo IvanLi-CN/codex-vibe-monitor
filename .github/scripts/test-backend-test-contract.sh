@@ -46,6 +46,25 @@ if grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"
   exit 1
 fi
 
+manual_backfill_step="$(sed -n '/^      - name: Ensure immutable release snapshot for manual backfill$/,/^      - name: Select pending release target$/p' "$release_workflow")"
+if ! grep -Fq -- '--backend-test-image-digest "${{ steps.manual-backend-test-image.outputs.digest }}"' <<<"$manual_backfill_step"; then
+  echo 'manual snapshot backfill must bind the resolved backend-test image digest' >&2
+  exit 1
+fi
+
+pending_recovery_steps="$(sed -n '/^      - name: Set up Docker Buildx for pending release digest lookup$/,/^      - name: Load immutable release snapshot$/p' "$release_workflow")"
+for required in \
+  "if: github.event_name != 'workflow_dispatch' && steps.pending-target.outputs.target_sha != ''" \
+  'image="${REGISTRY}/${GITHUB_REPOSITORY,,}:backend-test-${TARGET_SHA}"' \
+  'python3 .github/scripts/release_snapshot.py ensure' \
+  '--backend-test-image-digest "${BACKEND_TEST_IMAGE_DIGEST}"' \
+  '--skip-publish'; do
+  if ! grep -Fq -- "$required" <<<"$pending_recovery_steps"; then
+    echo "automatic pending-release snapshot recovery is missing: $required" >&2
+    exit 1
+  fi
+done
+
 github_repository_fixture='IvanLi-CN/Codex-Vibe-Monitor'
 target_sha_fixture='deadbeef'
 manual_image="ghcr.io/$(printf '%s' "$github_repository_fixture" | tr '[:upper:]' '[:lower:]'):backend-test-${target_sha_fixture}"
