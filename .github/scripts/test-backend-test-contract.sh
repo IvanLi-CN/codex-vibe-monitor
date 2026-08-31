@@ -46,6 +46,19 @@ if grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"
   exit 1
 fi
 
+grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
+
+release_amd_smoke_build="$(sed -n '/^      - name: Build smoke image (linux\/amd64, load)$/,/^      - name: Smoke test image (linux\/amd64)$/p' "$release_workflow")"
+if ! grep -Fq 'target: runtime' <<<"$release_amd_smoke_build"; then
+  echo 'release amd64 smoke build must use the runtime image target' >&2
+  exit 1
+fi
+
+if ! grep -Fq -- '--target "runtime"' "$repo_root/.github/scripts/build-smoke-image-with-retry.sh"; then
+  echo 'release arm64 smoke build helper must use the runtime image target' >&2
+  exit 1
+fi
+
 manual_backfill_step="$(sed -n '/^      - name: Ensure immutable release snapshot for manual backfill$/,/^      - name: Select pending release target$/p' "$release_workflow")"
 if ! grep -Fq -- '--backend-test-image-digest "${{ steps.manual-backend-test-image.outputs.digest }}"' <<<"$manual_backfill_step"; then
   echo 'manual snapshot backfill must bind the resolved backend-test image digest' >&2

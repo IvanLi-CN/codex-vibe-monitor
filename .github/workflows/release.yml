@@ -428,6 +428,7 @@ jobs:
           platforms: ${{ env.PLATFORM_AMD64 }}
           push: false
           load: true
+          target: runtime
           tags: |
             ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
             ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
