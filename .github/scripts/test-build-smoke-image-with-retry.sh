@@ -89,7 +89,7 @@ BUILD_RETRY_BASE_DELAY_SECS="0" \
 bash "$script" >"$tmp_dir/transient.out" 2>"$tmp_dir/transient.err"
 
 [[ "$(cat "$attempt_file")" == "3" ]]
-grep -Fq -- '--target ci-smoke-runtime' "$args_file"
+grep -Fq -- '--target runtime' "$args_file"
 grep -q "transient failure for linux/arm64; retry in 0s (1/5)" "$tmp_dir/transient.err"
 grep -q "transient failure for linux/arm64; retry in 0s (2/5)" "$tmp_dir/transient.err"
 

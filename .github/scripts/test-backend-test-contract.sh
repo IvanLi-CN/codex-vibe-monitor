@@ -46,13 +46,15 @@ if grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"
   exit 1
 fi
 
+grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
+
 release_amd_smoke_build="$(sed -n '/^      - name: Build smoke image (linux\/amd64, load)$/,/^      - name: Smoke test image (linux\/amd64)$/p' "$release_workflow")"
-if ! grep -Fq 'target: ci-smoke-runtime' <<<"$release_amd_smoke_build"; then
+if ! grep -Fq 'target: runtime' <<<"$release_amd_smoke_build"; then
   echo 'release amd64 smoke build must use the runtime image target' >&2
   exit 1
 fi
 
-if ! grep -Fq -- '--target "ci-smoke-runtime"' "$repo_root/.github/scripts/build-smoke-image-with-retry.sh"; then
+if ! grep -Fq -- '--target "runtime"' "$repo_root/.github/scripts/build-smoke-image-with-retry.sh"; then
   echo 'release arm64 smoke build helper must use the runtime image target' >&2
   exit 1
 fi
