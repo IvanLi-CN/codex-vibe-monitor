@@ -9456,6 +9456,40 @@ fn summary_projection_unavailable_bucket_ranges(buckets: BTreeSet<i64>) -> Vec<E
     ranges
 }
 
+fn summary_projection_split_ranges_by_buckets(
+    ranges: impl IntoIterator<Item = ExactUtcRange>,
+    selected_buckets: &HashSet<i64>,
+) -> (Vec<ExactUtcRange>, Vec<ExactUtcRange>) {
+    let mut selected = Vec::new();
+    let mut deferred = Vec::new();
+    for range in ranges {
+        let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+        let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+        while bucket <= last_bucket {
+            let bucket_start = Utc
+                .timestamp_opt(bucket, 0)
+                .single()
+                .expect("valid summary archive bucket start");
+            let segment = ExactUtcRange {
+                start: range.start.max(bucket_start),
+                end: range.end.min(bucket_start + ChronoDuration::hours(1)),
+            };
+            if segment.start < segment.end {
+                if selected_buckets.contains(&bucket) {
+                    selected.push(segment);
+                } else {
+                    deferred.push(segment);
+                }
+            }
+            bucket = bucket.saturating_add(3_600);
+        }
+    }
+    (
+        summary_projection_merge_exact_ranges(selected),
+        summary_projection_merge_exact_ranges(deferred),
+    )
+}
+
 fn summary_projection_partial_rollup_ranges(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -13277,16 +13311,27 @@ async fn build_summary_projection_once(
                         .unwrap_or_default(),
                 );
                 if summary_projection_archive_coverage_range(archive).is_some() {
-                    summary_projection_mark_exact_replacement_buckets(
-                        archive.has_materialized_historical_rollups(),
-                        replay_coverage,
-                        archive_range,
-                        &protected_boundary_buckets,
-                        &mut exact_global_total_rollup_buckets,
-                        &mut exact_account_total_rollup_buckets,
-                        &mut exact_global_usage_rollup_buckets,
-                        &mut exact_account_usage_rollup_buckets,
-                    )?;
+                    let replacement_ranges = if mode.includes_all_time() {
+                        vec![archive_range]
+                    } else {
+                        summary_projection_split_ranges_by_buckets(
+                            [archive_range],
+                            &protected_boundary_buckets,
+                        )
+                        .0
+                    };
+                    for replacement_range in replacement_ranges {
+                        summary_projection_mark_exact_replacement_buckets(
+                            archive.has_materialized_historical_rollups(),
+                            replay_coverage,
+                            replacement_range,
+                            &protected_boundary_buckets,
+                            &mut exact_global_total_rollup_buckets,
+                            &mut exact_account_total_rollup_buckets,
+                            &mut exact_global_usage_rollup_buckets,
+                            &mut exact_account_usage_rollup_buckets,
+                        )?;
+                    }
                 }
                 let account_ids = page_account_ids_by_file
                     .get(archive.file_path())
@@ -13295,11 +13340,22 @@ async fn build_summary_projection_once(
                     .account_manifest_refreshed_paths
                     .contains(archive.file_path());
                 if !account_manifest_complete {
-                    summary_projection_mark_account_exact_replacement_buckets(
-                        archive.has_materialized_historical_rollups(),
-                        archive_range,
-                        &mut exact_account_total_rollup_buckets,
-                    )?;
+                    let replacement_ranges = if mode.includes_all_time() {
+                        vec![archive_range]
+                    } else {
+                        summary_projection_split_ranges_by_buckets(
+                            [archive_range],
+                            &protected_boundary_buckets,
+                        )
+                        .0
+                    };
+                    for replacement_range in replacement_ranges {
+                        summary_projection_mark_account_exact_replacement_buckets(
+                            archive.has_materialized_historical_rollups(),
+                            replacement_range,
+                            &mut exact_account_total_rollup_buckets,
+                        )?;
+                    }
                 }
                 let (account_replayed, usage_replayed) = if !account_manifest_complete {
                     // A stale account manifest invalidates account-scoped totals. Preserve the
@@ -13322,10 +13378,32 @@ async fn build_summary_projection_once(
                     &hourly_rollup_usage,
                     account_ids,
                 );
-                summary_projection_extend_exact_buckets_for_ranges(
-                    &mut exact_archive_buckets,
-                    raw_fallback_ranges,
-                )?;
+                if mode.includes_all_time() {
+                    summary_projection_extend_exact_buckets_for_ranges(
+                        &mut exact_archive_buckets,
+                        raw_fallback_ranges,
+                    )?;
+                } else {
+                    let (startup_ranges, deferred_ranges) =
+                        summary_projection_split_ranges_by_buckets(
+                            raw_fallback_ranges,
+                            &protected_boundary_buckets,
+                        );
+                    summary_projection_extend_exact_buckets_for_ranges(
+                        &mut exact_archive_buckets,
+                        startup_ranges,
+                    )?;
+                    // Bootstrap publishes from already-proven compact/live sources. A paged
+                    // archive fallback is deferred to all-time reconciliation and cannot make
+                    // the whole projection fail; mark only its exact range unavailable.
+                    summary_projection_mark_unavailable_archive_ranges_by_requirement(
+                        &mut unavailable_unmaterialized_archive_buckets,
+                        &mut unavailable_boundary_archive_ranges,
+                        archive.has_materialized_historical_rollups(),
+                        &deferred_ranges,
+                        &HashSet::new(),
+                    )?;
+                }
             }
             let Some(next_after_id) = page.next_after_id else {
                 break;
@@ -13753,7 +13831,7 @@ async fn build_summary_projection_once(
                 } else {
                     (None, None)
                 };
-                let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
+                let mut exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
                     archive.has_materialized_historical_rollups(),
                     Some(replay_coverage.overall),
                     account_replayed,
@@ -13764,6 +13842,13 @@ async fn build_summary_projection_once(
                     &hourly_rollup_usage,
                     account_ids,
                 );
+                if !mode.includes_all_time() {
+                    exact_ranges = summary_projection_split_ranges_by_buckets(
+                        exact_ranges,
+                        &protected_boundary_buckets,
+                    )
+                    .0;
+                }
                 if exact_ranges.is_empty() {
                     continue;
                 }
@@ -31342,11 +31427,13 @@ mod request_compression_query_tests {
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
+        let occurred_at = db_occurred_at_lower_bound(Utc::now());
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-generation-fence', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+             VALUES ('summary-generation-fence', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
         )
+        .bind(occurred_at)
         .execute(&state.pool)
         .await
         .expect("seed summary projection");
@@ -32864,11 +32951,13 @@ mod request_compression_query_tests {
             .await
             .expect("seed historical terminal batch");
         }
+        let current_occurred_at = db_occurred_at_lower_bound(Utc::now());
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-historical-overflow-current', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+             VALUES ('summary-historical-overflow-current', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
         )
+        .bind(current_occurred_at)
         .execute(&state.pool)
         .await
         .expect("seed current terminal");
