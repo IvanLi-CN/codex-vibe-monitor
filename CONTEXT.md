@@ -100,6 +100,40 @@ range-local unavailable until a later hydration proves coverage. It never
 represents incomplete coverage as a fresh result.
 _Avoid_: fabricated success, permanent global outage
 
+**Bootstrap Projection**:
+The first immutable Summary Projection published after startup. It contains the
+exact `current` legal prefix and every independently proven rolling/calendar
+selection, but deliberately does not wait for all-time archive reconciliation.
+_Avoid_: partial all-time response, global cold-start failure
+
+**Projection Generation Fence**:
+The stable live ID, global/account rollup cursors, archive manifest
+high-watermark, and settled terminal sequence observed for one background
+Projection pass. A later generation never extends an older coverage claim; it
+starts a new bounded reconciliation from its own fence.
+_Avoid_: mixed-source snapshot, implicit catch-up
+
+**Projection Freshness Renewal**:
+The in-memory extension of an already Exact-Ready Projection only after its
+current Projection Generation Fence still matches durable state. It does not
+publish new source data, weaken an unavailable boundary, or make an unready
+all-time selection ready.
+_Avoid_: stale-source renewal, hidden full refresh, broader stale budget
+
+**All-Time Coverage Checkpoint**:
+The durable generation-fenced state for bounded all-time reconciliation. It
+contains independent global/account manifest-proof cursors, rollup seek cursors
+and committed aggregate accumulators. A restart resumes from the last complete
+microbatch; a changed fence discards only that stale generation before the next
+bounded page begins.
+_Avoid_: full-history restart, mixed-generation aggregate, in-memory-only progress
+
+**Exact-Ready**:
+The state in which a requested Summary selection has all required source and
+boundary proof in the published Projection. `all` becomes Exact-Ready only after
+its own coverage checkpoint and final exact aggregate complete.
+_Avoid_: approximate readiness, coupled rolling availability
+
 **Archive Publication Proof**:
 The durable certificate that an immutable `codex_invocations` archive has
 finite coverage and a current manifest identity whose required Summary rollups

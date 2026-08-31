@@ -4537,6 +4537,9 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("current candidate admission must not abort rollup-backed projection hydration");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile the exact all-time rollup-backed projection");
     state.pool.close().await;
 
     for window in ["1d", "all"] {
@@ -9639,6 +9642,9 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate initial exact summary projection");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile initial exact all-time summary projection");
 
     let archived_at = format_naive(
         ((Utc::now() - ChronoDuration::days(10)) + ChronoDuration::minutes(5))
@@ -9663,10 +9669,9 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
     .await;
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt newly discovered archive");
 
-    assert!(
-        hydrate_summary_snapshots(state.as_ref()).await.is_err(),
-        "a refresh with an unreadable exact archive must not publish a partial revision"
-    );
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("an unreadable archive must publish unaffected rolling coverage");
 
     let Json(response) = fetch_summary(
         State(state),
@@ -22787,6 +22792,147 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate rolling summary projection beyond manifest admission");
+    assert!(
+        projection_fixture_started_at.elapsed() < std::time::Duration::from_secs(30),
+        "summary projection Bootstrap exceeded its startup readiness budget"
+    );
+
+    let Json(current) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("bootstrap must publish the exact current prefix before all-time reconciliation");
+    assert_eq!(current.total_count, 1);
+
+    state
+        .subscription_hub
+        .note_summary_http_interest(true)
+        .await;
+    refresh_summary_snapshots(state.as_ref())
+        .await
+        .expect("advance the first all-time staged checkpoint page");
+    let first_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COALESCE(manifest_high_watermark_id, 0), global_manifest_next_id, global_rollup_next_rowid \
+         FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("persist first staged all-time checkpoint");
+    assert!(
+        first_checkpoint.1 > 0,
+        "first manifest page commits its seek cursor"
+    );
+    assert!(
+        first_checkpoint.2 > 0,
+        "first global rollup page commits its seek cursor"
+    );
+
+    sqlx::query(
+        "INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+         VALUES ('codex_invocations', '2026-01', '/tmp/summary-manifest-admission-generation.sqlite.gz', \
+                 'summary-manifest-admission-generation', 1, 'completed', ?1, ?2, datetime('now'), datetime('now'), datetime('now'))",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(archive_start))
+    .execute(&state.pool)
+    .await
+    .expect("append a later all-time manifest generation");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             VALUES (?1, 'codex_invocations', '/tmp/summary-manifest-admission-generation.sqlite.gz', \
+                     'summary-manifest-admission-generation')",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record replay proof for the next manifest generation");
+    }
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = total_count + 1, success_count = success_count + 1, \
+         total_tokens = total_tokens + 17, total_cost = total_cost + 1.25 \
+         WHERE bucket_start_epoch = ?1 AND source = 'proxy'",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("extend the global compact rollup for the next generation");
+    sqlx::query(
+        "UPDATE upstream_account_stats_hourly SET total_count = total_count + 1, success_count = success_count + 1, \
+         total_tokens = total_tokens + 17, total_cost = total_cost + 1.25 \
+         WHERE bucket_start_epoch = ?1 AND source = 'proxy' AND upstream_account_id = 42",
+    )
+    .bind(bucket)
+    .execute(&state.pool)
+    .await
+    .expect("extend the account compact rollup for the next generation");
+    refresh_summary_snapshots(state.as_ref())
+        .await
+        .expect("restart staged checkpoint at the later manifest generation");
+    let reset_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COALESCE(manifest_high_watermark_id, 0), global_manifest_next_id, global_rollup_next_rowid \
+         FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load reset staged all-time checkpoint");
+    assert!(reset_checkpoint.0 > first_checkpoint.0);
+    assert!(
+        reset_checkpoint.1 <= first_checkpoint.1 && reset_checkpoint.2 <= first_checkpoint.2,
+        "a newer generation clears stale manifest and rollup cursors before resuming"
+    );
+    let mut completed = false;
+    // Staged proof pages contain only a bounded set of manifests, so convergence requires one
+    // refresh per page rather than a single monolithic pass over the full archive set.
+    for _ in 0..200 {
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("resume bounded staged all-time recovery");
+        let checkpoint = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT global_manifest_complete, account_manifest_complete, global_rollup_complete, account_rollup_complete \
+             FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load staged all-time completion state");
+        completed = checkpoint == (1, 1, 1, 1);
+        if completed {
+            break;
+        }
+    }
+    assert!(
+        completed,
+        "staged all-time recovery must converge from committed manifest and rollup cursors"
+    );
+    let Json(all_time) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("publish exact all-time projection after staged reconciliation");
+    assert_eq!(all_time.total_count, MANIFEST_COUNT + 2);
+    assert_eq!(all_time.total_tokens, (MANIFEST_COUNT + 1) * 17 + 23);
 
     // A rolling-only refresh must retain the fully hydrated all-time snapshot without reopening
     // its large manifest set.
@@ -22797,13 +22943,9 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .execute(&state.pool)
     .await
     .expect("remove the admitted manifest fixture before rolling-only refresh");
-    refresh_summary_snapshots_with_mode(state.as_ref(), false)
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
         .await
         .expect("rolling refresh retains the exact all-time snapshot");
-    assert!(
-        projection_fixture_started_at.elapsed() < std::time::Duration::from_secs(5),
-        "summary projection overflow-manifest fixture exceeded its bounded build budget"
-    );
     state.pool.close().await;
 
     for (window, upstream_account_id) in [("current", None), ("1d", None), ("1d", Some(42))] {
@@ -22835,9 +22977,12 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
         )
         .await
         .expect("serve the exact all-time snapshot without SQLite");
-        assert_eq!(response.total_count, MANIFEST_COUNT + 1);
-        assert_eq!(response.total_tokens, MANIFEST_COUNT * 17 + 23);
-        assert_eq!(response.total_cost, MANIFEST_COUNT as f64 * 1.25 + 2.5);
+        assert_eq!(response.total_count, MANIFEST_COUNT + 2);
+        assert_eq!(response.total_tokens, (MANIFEST_COUNT + 1) * 17 + 23);
+        assert_eq!(
+            response.total_cost,
+            (MANIFEST_COUNT + 1) as f64 * 1.25 + 2.5
+        );
     }
 }
 
@@ -23194,7 +23339,9 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
             .expect("legacy manifest replacement must not block the snapshot reader")
             .expect("commit legacy manifest replacement");
     });
-    let hydration = refresh_summary_snapshots_with_mode(state.as_ref(), false).await;
+    let hydration =
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await;
     replacement.await.expect("run legacy manifest replacement");
     clear_summary_projection_test_interleave();
     let hydration_error = hydration.expect_err("reject the mixed archive and SQLite snapshot");
@@ -23351,7 +23498,10 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
 
     hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect("publish initial exact all-time archive snapshot");
+        .expect("publish the initial exact rolling projection");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("publish initial exact all-time archive snapshot after reconciliation");
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
@@ -23404,7 +23554,9 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
             .expect("all-time archive replacement must not block the snapshot reader")
             .expect("commit all-time archive replacement");
     });
-    let hydration = hydrate_summary_snapshots(state.as_ref()).await;
+    let hydration =
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await;
     replacement.await.expect("run all-time archive replacement");
     clear_summary_projection_test_interleave();
     hydration.expect("retain the prior all-time aggregate without scanning a replaced archive");
@@ -23511,6 +23663,9 @@ async fn summary_projection_keeps_global_all_exact_when_account_manifest_admissi
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate exact global all-time response despite account admission overflow");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile exact global all-time response despite account admission overflow");
     state.pool.close().await;
 
     let Json(global) = fetch_summary(
