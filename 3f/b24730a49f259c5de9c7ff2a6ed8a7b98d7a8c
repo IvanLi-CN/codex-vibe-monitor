@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.11",
+  "base_stable_version": "2.68.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-31T15:24:32Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.11",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0e303553064ca34d8aabb328b78f5698315643d6",
+  "pr_number": 878,
+  "pr_title": "fix(summary): recover staged projection availability",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.11",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.11",
+  "target_sha": "3fb24730a49f259c5de9c7ff2a6ed8a7b98d7a8c",
+  "type_label": "type:patch"
+}
