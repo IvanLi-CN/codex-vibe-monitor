@@ -23043,6 +23043,80 @@ async fn summary_projection_keeps_30d_memory_exact_when_unreachable_rollups_exce
 }
 
 #[tokio::test]
+async fn summary_projection_paged_missing_compact_bucket_is_strictly_unavailable() {
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let bucket_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::hours(12)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align compact coverage fixture to a full hour");
+    let coverage_start = crate::stats::db_occurred_at_lower_bound(bucket_start);
+    let coverage_end = crate::db_occurred_at_upper_bound(bucket_start + ChronoDuration::hours(1));
+
+    sqlx::query(
+        "WITH RECURSIVE manifests(ordinal) AS ( \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 4097 \
+         ) \
+         INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+         SELECT 'codex_invocations', '2026-01', \
+                '/tmp/summary-paged-missing-compact-' || ordinal || '.sqlite.gz', \
+                'summary-paged-missing-compact-' || ordinal, 1, 'completed', ?1, ?2, \
+                datetime('now'), datetime('now'), datetime('now') \
+         FROM manifests",
+    )
+    .bind(&coverage_start)
+    .bind(&coverage_end)
+    .execute(&state.pool)
+    .await
+    .expect("insert paged manifests with a missing compact bucket");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+             WHERE file_path GLOB '/tmp/summary-paged-missing-compact-*.sqlite.gz'",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record complete replay markers without inventing a compact rollup key");
+    }
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("publish recent projection with a local compact-coverage gap");
+    state.pool.close().await;
+
+    let response = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(response, Err(ApiError::Unavailable(_))),
+        "a missing compact rollup key in a full internal hour must not return an undercounted 200"
+    );
+}
+
+#[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     let _identity_guard = SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("summary-paged-boundary-snapshot");

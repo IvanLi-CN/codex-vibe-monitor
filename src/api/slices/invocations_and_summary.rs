@@ -10223,6 +10223,29 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
                 }
                 Err(error) => return Err(error),
             }
+        } else {
+            // A proof page can establish that one or more immutable archives need raw
+            // replacement, but the checkpoint itself only advances compact proof cursors. Run
+            // that replacement on the AllTime reconciliation path: it is the sole background
+            // owner of paged raw archive hydration, and a deferred attempt leaves the already
+            // published rolling projection intact.
+            if let Err(error) =
+                refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::AllTime)
+                    .await
+            {
+                if error
+                    .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
+                    .is_some()
+                {
+                    debug!(
+                        "summary all-time paged raw recovery observed a generation change; rebuilding rolling projection"
+                    );
+                    refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling)
+                        .await?;
+                } else {
+                    warn!(error = ?error, "summary all-time paged raw recovery deferred; keeping fresh rolling projection");
+                }
+            }
         }
         return Ok(());
     }
@@ -13463,6 +13486,43 @@ async fn build_summary_projection_once(
                     global_bucket_requirements.extend(paged_exact_global_usage_buckets);
                     let mut account_bucket_requirements = paged_exact_account_total_buckets;
                     account_bucket_requirements.extend(paged_exact_account_usage_buckets);
+
+                    // A complete internal compact bucket with a missing rollup key is not a
+                    // boundary-only repair. It would make a rolling response undercount even
+                    // when neither request endpoint intersects the archive range, so retain a
+                    // strict range-local unavailable proof for that bucket.
+                    let global_compact_coverage_gaps =
+                        summary_projection_archive_exact_ranges_with_coverage(
+                            archive.has_materialized_historical_rollups(),
+                            Some(replay_coverage.overall),
+                            Some(true),
+                            Some(true),
+                            archive_range,
+                            &HashSet::new(),
+                            &hourly_rollup_totals,
+                            &hourly_rollup_usage,
+                            account_ids,
+                        );
+                    let account_compact_coverage_gaps =
+                        summary_projection_archive_exact_ranges_with_coverage(
+                            archive.has_materialized_historical_rollups(),
+                            Some(replay_coverage.overall),
+                            account_replayed,
+                            usage_replayed,
+                            archive_range,
+                            &HashSet::new(),
+                            &hourly_rollup_totals,
+                            &hourly_rollup_usage,
+                            account_ids,
+                        );
+                    summary_projection_extend_exact_buckets_for_ranges(
+                        &mut global_bucket_requirements,
+                        global_compact_coverage_gaps,
+                    )?;
+                    summary_projection_extend_exact_buckets_for_ranges(
+                        &mut account_bucket_requirements,
+                        account_compact_coverage_gaps,
+                    )?;
 
                     // The global aggregate can be exact even when the account manifest is
                     // stale. Check its dimensions independently so a missing account proof
@@ -32648,6 +32708,76 @@ mod request_compression_query_tests {
             }),
             "an old unknown archive partition must not poison a disjoint supported horizon"
         );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_staged_recovery_reaches_paged_raw_hydration() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let archive_bucket_start = Utc
+            .timestamp_opt(
+                align_bucket_epoch((Utc::now() - ChronoDuration::days(3)).timestamp(), 3_600, 0),
+                0,
+            )
+            .single()
+            .expect("valid staged recovery archive bucket");
+        let coverage_start = crate::stats::db_occurred_at_lower_bound(archive_bucket_start);
+        let coverage_end =
+            crate::db_occurred_at_upper_bound(archive_bucket_start + ChronoDuration::hours(1));
+        for index in 0..=SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+            sqlx::query(
+                "INSERT INTO archive_batches \
+                 (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+                  historical_rollups_materialized_at) \
+                 VALUES ('codex_invocations', '2026-08', ?1, ?2, 1, 'completed', ?3, ?4, datetime('now'))",
+            )
+            .bind(format!(
+                "/definitely/missing/summary-staged-recovery-{index}.sqlite.gz"
+            ))
+            .bind(format!("summary-staged-recovery-{index}"))
+            .bind(&coverage_start)
+            .bind(&coverage_end)
+            .execute(&state.pool)
+            .await
+            .expect("seed paged staged-recovery manifest");
+        }
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish rolling projection before all-time recovery");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create staged-recovery interleave gate");
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
+        );
+        let state_for_recovery = state.clone();
+        let recovery =
+            tokio::spawn(
+                async move { refresh_summary_snapshots(state_for_recovery.as_ref()).await },
+            );
+        tokio::pin!(recovery);
+        tokio::select! {
+            _ = interleave.wait_for_writer() => {
+                interleave.resume_build();
+                let _ = recovery.await;
+                clear_summary_projection_test_interleave();
+            }
+            result = &mut recovery => {
+                clear_summary_projection_test_interleave();
+                result.expect("run staged all-time recovery").expect("defer unavailable raw source without withdrawing rolling projection");
+                panic!("staged all-time recovery must own paged raw archive hydration");
+            }
+        }
+        state.pool.close().await;
     }
 
     #[tokio::test]
