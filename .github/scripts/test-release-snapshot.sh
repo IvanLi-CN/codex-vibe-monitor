@@ -175,6 +175,34 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
             assert "digest mismatch" in str(exc)
         else:
             raise AssertionError("non-empty backend-test digest conflicts must fail")
+
+        # Simulate the subsequent workflow fetch restoring the legacy remote note.
+        run(
+            "notes",
+            f"--ref={module.DEFAULT_NOTES_REF}",
+            "add",
+            "-f",
+            "-m",
+            json.dumps(legacy_snapshot),
+            target_sha,
+            cwd=repo,
+        )
+        restored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert restored is not None
+        assert not restored.get("backend_test_image_digest")
+
+        export_output = repo / "exported-snapshot.txt"
+        assert module.export_existing_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                notes_ref=module.DEFAULT_NOTES_REF,
+                snapshot_file=str(output_path),
+                resolve_publication_tags=False,
+                main_ref="",
+                github_output=str(export_output),
+            )
+        ) == 0
+        assert f"backend_test_image_digest={digest}" in export_output.read_text()
     finally:
         module.git = original_git
         os.chdir(original_cwd)
