@@ -22,6 +22,43 @@ assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
+with tempfile.TemporaryDirectory(prefix="release-receipt-") as tmp:
+    receipt_path = Path(tmp) / "receipt.json"
+    target_sha = "a" * 40
+    image_digest = "sha256:" + "b" * 64
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source": "production-copy",
+                "target_sha": target_sha,
+                "backend_test_image_digest": image_digest,
+                "fixture_contract_version": module.VALIDATION_FIXTURE_CONTRACT_VERSION,
+                "oracle_version": module.VALIDATION_ORACLE_VERSION,
+                "bootstrap_deadline_seconds": 30,
+                "all_time_deadline_seconds": 1800,
+                "bootstrap_elapsed_seconds": 2,
+                "all_time_elapsed_seconds": 11,
+                "oracle_sha256": "c" * 64,
+                "result": "pass",
+            }
+        )
+    )
+    assert module.validate_production_receipt(
+        str(receipt_path), target_sha=target_sha, backend_test_image_digest=image_digest
+    )["result"] == "pass"
+    invalid = json.loads(receipt_path.read_text())
+    invalid["target_sha"] = "d" * 40
+    receipt_path.write_text(json.dumps(invalid))
+    try:
+        module.validate_production_receipt(
+            str(receipt_path), target_sha=target_sha, backend_test_image_digest=image_digest
+        )
+    except module.SnapshotError:
+        pass
+    else:
+        raise AssertionError("receipt target binding must be hard-fail")
+
 
 def run(*args: str, cwd: Path) -> str:
     result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True)
@@ -383,6 +420,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Recover release assets for an existing tag",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
+            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_idempotent_version_snapshot["release_tag"] == "v0.1.1"
         assert manual_idempotent_version_snapshot["manual_version"] == "0.1.1"
@@ -405,6 +443,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish a new patch from the latest stable tag on this commit",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
+            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_bump_same_target_snapshot["base_stable_version"] == "0.1.1"
         assert manual_bump_same_target_snapshot["next_stable_version"] == "0.1.2"
@@ -421,6 +460,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish cleanup build for deployed stream root-cause diagnostics",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
+            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_bump_snapshot["snapshot_source"] == "manual-release-override"
         assert manual_bump_snapshot["release_enabled"] is True
@@ -444,6 +484,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish explicitly requested cleanup build",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
+            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_version_snapshot["manual_version"] == "0.2.0"
         assert manual_version_snapshot["manual_bump"] == ""
@@ -461,6 +502,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish release candidate for diagnostics",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
+            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_rc_snapshot["release_prerelease"] is True
         assert manual_rc_snapshot["release_tag"] == f"v0.2.1-rc.{sha1[:7]}"
@@ -488,6 +530,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
                     reason=case["reason"],
                     actor="release-maintainer",
                     triggered_at="2026-07-07T00:00:00Z",
+                    backend_test_image_digest="sha256:" + "b" * 64,
                 )
             except module.SnapshotError:
                 pass
@@ -507,6 +550,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
                 reason="tag conflict",
                 actor="release-maintainer",
                 triggered_at="2026-07-07T00:00:00Z",
+                backend_test_image_digest="sha256:" + "b" * 64,
             )
         except module.SnapshotError as exc:
             assert "already exists but points to" in str(exc)

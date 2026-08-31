@@ -8,6 +8,7 @@
 - [ADR 0003: Durable invocation classification](../../adr/0003-durable-invocation-classification.md)
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0005: Staged Summary projection recovery](../../adr/0005-staged-summary-projection-recovery.md)
+- [ADR 0006: Project-owned representative-scale validation gates](../../adr/0006-project-owned-representative-scale-gates.md)
 
 ## 背景 / 问题陈述
 
@@ -27,6 +28,18 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 将 `SQLite Pressure Defer` 与真实 `BUSY`/`LOCKED` 失败分开，使 defer 只有一次 due/event wake，不制造轮询或无动作写入。
 - 把长期 legacy migration 改为 cursor/seek 驱动的可取消微批，以保持 P1 优先级与可恢复 backlog。
 - 将 checkpoint 发布与手动部署后的只读 900 秒观察作为独立证据链，禁止自动化部署操作。
+- Representative-Scale Acceptance is a required validation contract for changes
+  that can affect Summary source coverage, archive admission, rollups, schema,
+  or the projection readiness boundary. It verifies exact response content, not
+  only HTTP status or process health.
+- Bootstrap readiness and all-time readiness are separate acceptance facts:
+  `current` and supported rolling/calendar selections must be Exact-Ready within
+  30 seconds, while `all` may remain Range-Local Unavailable until its exact
+  coverage checkpoint completes within 1800 seconds.
+- A production-copy receipt is data-blind and immutable with respect to its
+  commit, backend-test image digest, fixture/oracle versions, and thresholds.
+  Missing or mismatched evidence blocks the affected release without changing
+  the memory-only HTTP/SSE contract.
 
 ### Non-goals
 

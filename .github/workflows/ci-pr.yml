@@ -133,6 +133,8 @@ jobs:
             .github/scripts/verify_manifest_platforms.py
           bash -n .github/scripts/build-smoke-image-with-retry.sh
           bash -n .github/scripts/run-backend-tests.sh
+          bash -n .github/scripts/test-representative-scale-contract.sh
+          bash -n scripts/validate-summary-production-fixture.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
@@ -255,6 +257,8 @@ jobs:
           bash .github/scripts/test-build-smoke-image-with-retry.sh
           bash .github/scripts/test-release-snapshot.sh
           bash .github/scripts/test-live-quality-gates.sh
+          bash .github/scripts/test-backend-test-contract.sh
+          bash .github/scripts/test-representative-scale-contract.sh
 
       - name: Front-end lint
         run: bun run lint:web
@@ -618,6 +622,41 @@ jobs:
 
       - name: Run stateful SQLite backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-representative-scale:
+    name: Backend Tests (Representative Scale)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build candidate backend-test image (linux/amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: backend-test
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: codex-vibe-monitor:backend-test-pr-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Run deterministic representative-scale acceptance
+        shell: bash
+        env:
+          BACKEND_TEST_IMAGE: codex-vibe-monitor:backend-test-pr-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            "$BACKEND_TEST_IMAGE" \
+            --profile stateful-sqlite \
+            --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
 
   backend-tests-archive-file-io:
     needs: backend-test-archive

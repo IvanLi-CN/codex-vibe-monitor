@@ -1,23 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This script is intentionally data-blind: it verifies only bounded startup
-# timing and HTTP status codes against an isolated production-data copy.
+# This script is intentionally data-blind: it reads only an isolated production-data copy and
+# retains normalized response hashes, never raw records or response bodies, in its receipt.
 fixture_dir="${SUMMARY_PRODUCTION_FIXTURE_DIR:-/workspace/production-fixture}"
 database_path="$fixture_dir/codex_vibe_monitor.db"
 archive_dir="$fixture_dir/archives"
 runtime_workspace="${SUMMARY_PRODUCTION_FIXTURE_WORKSPACE:-/tmp/codex-vibe-monitor-summary-fixture-workspace}"
 port="${SUMMARY_PRODUCTION_FIXTURE_PORT:-18080}"
+bootstrap_timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_BOOTSTRAP_TIMEOUT_SECS:-30}"
 timeout_seconds="${SUMMARY_PRODUCTION_FIXTURE_TIMEOUT_SECS:-1800}"
 fixture_wait_seconds="${SUMMARY_PRODUCTION_FIXTURE_WAIT_SECS:-4800}"
 cargo_target_dir="${SUMMARY_PRODUCTION_FIXTURE_CARGO_TARGET_DIR:-$runtime_workspace/target}"
-app_log="$fixture_dir/summary-projection-validation.log"
+receipt_path="${SUMMARY_PRODUCTION_RECEIPT_PATH:-$runtime_workspace/production-copy-receipt.json}"
+target_sha="${TARGET_SHA:-}"
+backend_test_image_digest="${BACKEND_TEST_IMAGE_DIGEST:-}"
+fixture_contract_version="${FIXTURE_CONTRACT_VERSION:-summary-representative-scale-v1}"
+oracle_version="${ORACLE_VERSION:-summary-oracle-v1}"
+expected_oracle_sha256="${SUMMARY_PRODUCTION_FIXTURE_ORACLE_SHA256:-}"
+app_log="$runtime_workspace/.summary-projection-validation.log"
+summary_response_dir="$runtime_workspace/.summary-responses"
 app_pid=""
 
-if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$timeout_seconds" =~ ^[0-9]+$ ||
+if [[ ! "$port" =~ ^[0-9]{2,5}$ || ! "$bootstrap_timeout_seconds" =~ ^[0-9]+$ ||
+  ! "$timeout_seconds" =~ ^[0-9]+$ ||
   ! "$fixture_wait_seconds" =~ ^[0-9]+$ || "$runtime_workspace" != /tmp/* ||
   "$runtime_workspace" == *..* || "$cargo_target_dir" != "$runtime_workspace"/* ||
-  "$cargo_target_dir" == *..* ]]; then
+  "$cargo_target_dir" == *..* || "$receipt_path" == *..* ||
+  ! "$target_sha" =~ ^[0-9a-f]{40}$ ||
+  ! "$backend_test_image_digest" =~ ^sha256:[0-9a-f]{64}$ ||
+  ! "$expected_oracle_sha256" =~ ^[0-9a-f]{64}$ ||
+  -z "$fixture_contract_version" || -z "$oracle_version" ]]; then
   printf 'summary_fixture_invalid_configuration\n' >&2
   exit 64
 fi
@@ -33,7 +46,7 @@ if [[ ! -f "$database_path" || ! -d "$archive_dir" ]]; then
   printf 'summary_fixture_input_missing\n' >&2
   exit 64
 fi
-if ! mkdir -p "$runtime_workspace" "$cargo_target_dir" ||
+if ! mkdir -p "$runtime_workspace" "$cargo_target_dir" "$summary_response_dir" ||
   ! tar --exclude='./production-fixture' --exclude='./production-fixture/*' \
     --exclude='./.codex-*' --exclude='./target' --exclude='./target/*' \
     -C /workspace -cf - . | \
@@ -49,8 +62,43 @@ cleanup() {
     wait "$app_pid" 2>/dev/null || true
   fi
   rm -f "$app_log"
+  rm -rf "$summary_response_dir"
 }
 trap cleanup EXIT HUP INT TERM
+
+write_receipt() {
+  local result="$1"
+  local bootstrap_elapsed="$2"
+  local all_time_elapsed="$3"
+  local oracle_sha256="$4"
+  python3 - "$receipt_path" "$result" "$bootstrap_elapsed" "$all_time_elapsed" "$oracle_sha256" \
+    "$target_sha" "$backend_test_image_digest" "$fixture_contract_version" "$oracle_version" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path, result, bootstrap, all_time, oracle, target, image, fixture, oracle_version = sys.argv[1:]
+payload = {
+    "schema_version": 1,
+    "source": "production-copy",
+    "target_sha": target,
+    "backend_test_image_digest": image,
+    "fixture_contract_version": fixture,
+    "oracle_version": oracle_version,
+    "bootstrap_deadline_seconds": 30,
+    "all_time_deadline_seconds": 1800,
+    "bootstrap_elapsed_seconds": int(bootstrap) if bootstrap else None,
+    "all_time_elapsed_seconds": int(all_time) if all_time else None,
+    "oracle_sha256": oracle or None,
+    "result": result,
+}
+path_obj = Path(path)
+path_obj.parent.mkdir(parents=True, exist_ok=True)
+path_obj.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
 
 classify_app_exit() {
   local log_path="$1"
@@ -233,6 +281,38 @@ http_status() {
   fi
 }
 
+canonical_response_hash() {
+  python3 - "$summary_response_dir" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+hasher = hashlib.sha256()
+for path in sorted(root.glob("*.json")):
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    hasher.update(path.stem.encode("utf-8"))
+    hasher.update(b"\0")
+    hasher.update(canonical.encode("utf-8"))
+    hasher.update(b"\n")
+print(hasher.hexdigest())
+PY
+}
+
+capture_summary_response() {
+  local label="$1"
+  local path="$2"
+  local output="$summary_response_dir/${label}.json"
+  local status=""
+  status="$(curl --noproxy '*' --silent --show-error --output "$output" --write-out '%{http_code}' \
+    --connect-timeout 1 --max-time 10 "http://127.0.0.1:$port$path" 2>/dev/null || true)"
+  [[ "$status" == '200' && -s "$output" ]]
+}
+
 (
   cd "$runtime_workspace"
   exec env \
@@ -261,6 +341,10 @@ summary_paths=(
 )
 summary_labels=(current one_day seven_days thirty_days today all_time)
 started_at="$(date +%s)"
+bootstrap_elapsed_seconds=""
+all_time_elapsed_seconds=""
+bootstrap_ready=false
+oracle_sha256=""
 
 while :; do
   now="$(date +%s)"
@@ -271,30 +355,61 @@ while :; do
     phase="$(last_startup_phase "$app_log")"
     printf 'summary_fixture_process_exited elapsed_s=%s phase=%s reason=%s signature=%s\n' \
       "$elapsed_seconds" "$phase" "$reason" "$signature" >&2
+    write_receipt "environment_failure" "$bootstrap_elapsed_seconds" "$all_time_elapsed_seconds" ""
     exit 1
   fi
 
   health_status="$(http_status '/health')"
+  rolling_ready=true
   all_ready=true
   statuses=()
   for index in "${!summary_paths[@]}"; do
     status="$(http_status "/api/stats/summary?window=${summary_paths[$index]}")"
     statuses+=("${summary_labels[$index]}=$status")
     [[ "$status" == '200' ]] || all_ready=false
+    if (( index < 5 )) && [[ "$status" != '200' ]]; then
+      rolling_ready=false
+    fi
   done
 
-  if [[ "$health_status" == '200' && "$all_ready" == true ]]; then
-    printf 'summary_fixture_ready elapsed_s=%s health=%s %s\n' \
+  if [[ "$health_status" == '200' && "$rolling_ready" == true && "$bootstrap_ready" == false ]]; then
+    bootstrap_ready=true
+    bootstrap_elapsed_seconds="$elapsed_seconds"
+    printf 'summary_fixture_bootstrap_ready elapsed_s=%s health=%s %s\n' \
       "$elapsed_seconds" "$health_status" "${statuses[*]}"
-    exit 0
+  fi
+  if [[ "$health_status" == '200' && "$all_ready" == true ]]; then
+    all_time_elapsed_seconds="$elapsed_seconds"
+    for index in "${!summary_paths[@]}"; do
+      capture_summary_response "${summary_labels[$index]}" \
+        "/api/stats/summary?window=${summary_paths[$index]}" || all_ready=false
+    done
+    if [[ "$all_ready" == true ]]; then
+      oracle_sha256="$(canonical_response_hash)"
+      if [[ "$oracle_sha256" != "$expected_oracle_sha256" ]]; then
+        printf 'summary_fixture_oracle_mismatch elapsed_s=%s\n' "$elapsed_seconds" >&2
+        write_receipt "oracle_mismatch" "$bootstrap_elapsed_seconds" "$all_time_elapsed_seconds" "$oracle_sha256"
+        exit 1
+      fi
+      printf 'summary_fixture_ready elapsed_s=%s health=%s %s\n' \
+        "$elapsed_seconds" "$health_status" "${statuses[*]}"
+      break
+    fi
   fi
   if (( elapsed_seconds % 30 == 0 )); then
     printf 'summary_fixture_wait elapsed_s=%s health=%s %s\n' \
       "$elapsed_seconds" "$health_status" "${statuses[*]}"
   fi
+  if [[ "$bootstrap_ready" == false && elapsed_seconds -ge bootstrap_timeout_seconds ]]; then
+    printf 'summary_fixture_bootstrap_timeout elapsed_s=%s health=%s %s\n' \
+      "$elapsed_seconds" "$health_status" "${statuses[*]}" >&2
+    write_receipt "timeout" "" "" ""
+    exit 1
+  fi
   if (( elapsed_seconds >= timeout_seconds )); then
     printf 'summary_fixture_timeout elapsed_s=%s health=%s %s\n' \
       "$elapsed_seconds" "$health_status" "${statuses[*]}" >&2
+    write_receipt "timeout" "$bootstrap_elapsed_seconds" "" ""
     exit 1
   fi
   sleep 1
@@ -306,4 +421,5 @@ done
   cargo check --locked --all-features
   cargo clippy --locked --all-features -- -D warnings
 )
+write_receipt "pass" "$bootstrap_elapsed_seconds" "$all_time_elapsed_seconds" "$oracle_sha256"
 printf 'summary_fixture_quality_gates_passed\n'

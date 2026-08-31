@@ -29,7 +29,8 @@
           "Backend Tests (Stateful SQLite)": 15368,
           "Backend Tests (Archive / File I/O)": 15368,
           "Build Artifacts": 15368,
-          "Review Policy Gate": 15368
+          "Review Policy Gate": 15368,
+          "Backend Tests (Representative Scale)": 15368
         }
       }
     },
@@ -62,6 +63,7 @@
     "Records Overlay E2E",
     "Backend Tests (Lightweight)",
     "Backend Tests (Stateful SQLite)",
+    "Backend Tests (Representative Scale)",
     "Backend Tests (Archive / File I/O)",
     "Build Artifacts",
     "Review Policy Gate"
@@ -86,6 +88,7 @@
         "Records Overlay E2E",
         "Backend Tests (Lightweight)",
         "Backend Tests (Stateful SQLite)",
+        "Backend Tests (Representative Scale)",
         "Backend Tests (Archive / File I/O)",
         "Build Artifacts"
       ],
@@ -118,7 +121,8 @@
         "Release Snapshot"
       ],
       "auxiliary_jobs": [
-        "Backend Test Archive Producer"
+        "Backend Test Archive Producer",
+        "Publish Backend Test Image"
       ]
     }
   ],
