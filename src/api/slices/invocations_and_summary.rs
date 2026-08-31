@@ -7608,6 +7608,12 @@ pub(crate) struct SummaryProjection {
     // but newest-N admission can prove safety against the manifest's exact endpoint. Keep that
     // narrower proof separate so an older archive in the same hour does not reject `current`.
     unavailable_unmaterialized_archive_current_ranges: Vec<ExactUtcRange>,
+    // Account replay and account-manifest proof can lag the global compact rollup. A missing
+    // account manifest may conceal an archive-only account, so the exact gap applies to every
+    // account-scoped request without making the independently proven global response fail.
+    unavailable_unmaterialized_archive_account_ranges: Vec<ExactUtcRange>,
+    unavailable_boundary_archive_account_ranges: Vec<ExactUtcRange>,
+    unavailable_unmaterialized_archive_account_current_ranges: Vec<ExactUtcRange>,
     // An oversized persisted-live boundary affects only ranges that intersect that exact hour.
     // The independent `current` prefix remains exact and must stay available.
     unavailable_exact_live_ranges: Vec<ExactUtcRange>,
@@ -7663,17 +7669,25 @@ impl SummaryProjection {
         true
     }
 
-    fn current_selection_cutoff(&self, limit: usize) -> Option<DateTime<Utc>> {
+    fn current_selection_cutoff_for_scope(
+        &self,
+        upstream_account_id: Option<i64>,
+        limit: usize,
+    ) -> Option<DateTime<Utc>> {
         if limit == 0 {
             return None;
         }
-        let indexes = self.recent_indexes.get(&None)?;
+        let indexes = self.recent_indexes.get(&upstream_account_id)?;
         // A shorter resident prefix has no Nth cutoff. Clamping it to the oldest retained row
         // would incorrectly prove that an unrepresented archive cannot supply the missing rank.
         let index = *indexes.get(limit.saturating_sub(1))?;
         self.current_records
             .get(index)
             .map(|record| record.occurred_at)
+    }
+
+    fn current_selection_cutoff(&self, limit: usize) -> Option<DateTime<Utc>> {
+        self.current_selection_cutoff_for_scope(None, limit)
     }
 
     fn current_archive_may_affect_global_current(&self, limit: usize) -> bool {
@@ -7714,6 +7728,42 @@ impl SummaryProjection {
             .into_iter()
             .any(|partial| {
                 self.unavailable_boundary_archive_ranges
+                    .iter()
+                    .any(|unavailable| {
+                        unavailable.start < partial.end && partial.start < unavailable.end
+                    })
+            })
+    }
+
+    fn unavailable_archive_may_affect_account_current(
+        &self,
+        account_id: i64,
+        limit: usize,
+    ) -> bool {
+        if limit == 0
+            || self
+                .unavailable_unmaterialized_archive_account_current_ranges
+                .is_empty()
+        {
+            return false;
+        }
+        self.current_selection_cutoff_for_scope(Some(account_id), limit)
+            .is_none_or(|cutoff| {
+                self.unavailable_unmaterialized_archive_account_current_ranges
+                    .iter()
+                    .any(|range| range.end > cutoff)
+            })
+    }
+
+    fn unavailable_account_boundary_archive_may_affect_range(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> bool {
+        summary_projection_partial_rollup_ranges(start, end)
+            .into_iter()
+            .any(|partial| {
+                self.unavailable_boundary_archive_account_ranges
                     .iter()
                     .any(|unavailable| {
                         unavailable.start < partial.end && partial.start < unavailable.end
@@ -7886,6 +7936,23 @@ impl SummaryProjection {
         if unavailable_archive_range_affects_query {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection archive source is unavailable for the requested range"
+            )));
+        }
+        let unavailable_account_archive_range_affects_query =
+            upstream_account_id.is_some_and(|account_id| match range {
+                Some((start, end)) => {
+                    self.unavailable_unmaterialized_archive_account_ranges
+                        .iter()
+                        .any(|unavailable| unavailable.start < end && start < unavailable.end)
+                        || self.unavailable_account_boundary_archive_may_affect_range(start, end)
+                }
+                None => requested_current_limit.is_some_and(|limit| {
+                    self.unavailable_archive_may_affect_account_current(account_id, limit)
+                }),
+            });
+        if unavailable_account_archive_range_affects_query {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary projection account archive source is unavailable for the requested range"
             )));
         }
         if range.is_none()
@@ -12916,6 +12983,9 @@ async fn build_summary_projection_once(
     let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
     let mut unavailable_boundary_archive_ranges = Vec::<ExactUtcRange>::new();
     let mut unavailable_unmaterialized_archive_current_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_unmaterialized_archive_account_buckets = BTreeSet::<i64>::new();
+    let mut unavailable_boundary_archive_account_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_unmaterialized_archive_account_current_ranges = Vec::<ExactUtcRange>::new();
     let mut unavailable_unmaterialized_archive_exact_ranges = Vec::<ExactUtcRange>::new();
     if !paged_boundary_manifest_unknown_coverage_ranges.is_empty() {
         // A legacy manifest without exact bounds remains fail-closed, but its `month_key` still
@@ -13389,32 +13459,69 @@ async fn build_summary_projection_once(
                     // Paged metadata can prove that a raw source would be needed, but Bootstrap
                     // and Rolling cannot open that source before publication. Preserve compact
                     // coverage and publish an exact local gap for every unproven replacement.
-                    let mut raw_fallback_bucket_requirements = paged_exact_global_total_buckets;
-                    raw_fallback_bucket_requirements.extend(paged_exact_account_total_buckets);
-                    raw_fallback_bucket_requirements.extend(paged_exact_global_usage_buckets);
-                    raw_fallback_bucket_requirements.extend(paged_exact_account_usage_buckets);
-                    let mut unavailable_ranges = raw_fallback_ranges;
-                    for range in
-                        summary_projection_exact_bucket_ranges(&raw_fallback_bucket_requirements)
-                    {
-                        let range = ExactUtcRange {
-                            start: range.start.max(archive_range.start),
-                            end: range.end.min(archive_range.end),
-                        };
-                        if range.start < range.end {
-                            unavailable_ranges.push(range);
+                    let mut global_bucket_requirements = paged_exact_global_total_buckets;
+                    global_bucket_requirements.extend(paged_exact_global_usage_buckets);
+                    let mut account_bucket_requirements = paged_exact_account_total_buckets;
+                    account_bucket_requirements.extend(paged_exact_account_usage_buckets);
+
+                    // The global aggregate can be exact even when the account manifest is
+                    // stale. Check its dimensions independently so a missing account proof
+                    // does not poison a compact global rollup.
+                    let mut global_unavailable_ranges =
+                        summary_projection_archive_exact_ranges_with_coverage(
+                            archive.has_materialized_historical_rollups(),
+                            Some(replay_coverage.overall),
+                            Some(true),
+                            Some(true),
+                            archive_range,
+                            &exact_archive_buckets,
+                            &hourly_rollup_totals,
+                            &hourly_rollup_usage,
+                            account_ids,
+                        );
+                    let mut account_unavailable_ranges = raw_fallback_ranges;
+                    for (ranges, requirements) in [
+                        (&mut global_unavailable_ranges, &global_bucket_requirements),
+                        (
+                            &mut account_unavailable_ranges,
+                            &account_bucket_requirements,
+                        ),
+                    ] {
+                        for range in summary_projection_exact_bucket_ranges(requirements) {
+                            let range = ExactUtcRange {
+                                start: range.start.max(archive_range.start),
+                                end: range.end.min(archive_range.end),
+                            };
+                            if range.start < range.end {
+                                ranges.push(range);
+                            }
                         }
                     }
-                    let unavailable_ranges =
-                        summary_projection_merge_exact_ranges(unavailable_ranges);
+                    let global_unavailable_ranges =
+                        summary_projection_merge_exact_ranges(global_unavailable_ranges);
+                    let account_unavailable_ranges =
+                        summary_projection_merge_exact_ranges(account_unavailable_ranges);
                     summary_projection_mark_unavailable_archive_ranges_by_requirement(
                         &mut unavailable_unmaterialized_archive_buckets,
                         &mut unavailable_boundary_archive_ranges,
                         archive.has_materialized_historical_rollups(),
-                        &unavailable_ranges,
-                        &raw_fallback_bucket_requirements,
+                        &global_unavailable_ranges,
+                        &global_bucket_requirements,
                     )?;
-                    unavailable_unmaterialized_archive_current_ranges.push(archive_range);
+                    summary_projection_mark_unavailable_archive_ranges_by_requirement(
+                        &mut unavailable_unmaterialized_archive_account_buckets,
+                        &mut unavailable_boundary_archive_account_ranges,
+                        archive.has_materialized_historical_rollups(),
+                        &account_unavailable_ranges,
+                        &account_bucket_requirements,
+                    )?;
+                    if !global_unavailable_ranges.is_empty() {
+                        unavailable_unmaterialized_archive_current_ranges.push(archive_range);
+                    }
+                    if !account_unavailable_ranges.is_empty() {
+                        unavailable_unmaterialized_archive_account_current_ranges
+                            .push(archive_range);
+                    }
                 }
             }
             let Some(next_after_id) = page.next_after_id else {
@@ -14968,6 +15075,16 @@ async fn build_summary_projection_once(
         summary_projection_merge_exact_ranges(unavailable_boundary_archive_ranges);
     let unavailable_unmaterialized_archive_current_ranges =
         summary_projection_merge_exact_ranges(unavailable_unmaterialized_archive_current_ranges);
+    let unavailable_unmaterialized_archive_account_ranges =
+        summary_projection_unavailable_bucket_ranges(
+            unavailable_unmaterialized_archive_account_buckets,
+        );
+    let unavailable_boundary_archive_account_ranges =
+        summary_projection_merge_exact_ranges(unavailable_boundary_archive_account_ranges);
+    let unavailable_unmaterialized_archive_account_current_ranges =
+        summary_projection_merge_exact_ranges(
+            unavailable_unmaterialized_archive_account_current_ranges,
+        );
     let unavailable_exact_live_ranges =
         summary_projection_unavailable_bucket_ranges(unavailable_exact_live_buckets);
     let unavailable_exact_live_account_ranges = unavailable_exact_live_account_buckets
@@ -15040,6 +15157,9 @@ async fn build_summary_projection_once(
         unavailable_unmaterialized_archive_ranges,
         unavailable_boundary_archive_ranges,
         unavailable_unmaterialized_archive_current_ranges,
+        unavailable_unmaterialized_archive_account_ranges,
+        unavailable_boundary_archive_account_ranges,
+        unavailable_unmaterialized_archive_account_current_ranges,
         unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges,
         current_source_unavailable,

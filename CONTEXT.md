@@ -105,7 +105,8 @@ The first immutable Summary Projection published after startup. It contains the
 exact `current` legal prefix and every independently proven rolling/calendar
 selection. It may admit bounded archive-manifest metadata to establish exact
 coverage or a local gap, but leaves paged raw archive recovery to the All-Time
-Coverage Checkpoint.
+Coverage Checkpoint. A missing account-manifest proof is an account-scoped gap;
+it cannot invalidate an independently proven global compact response.
 _Avoid_: partial all-time response, global cold-start failure
 
 **Projection Generation Fence**:

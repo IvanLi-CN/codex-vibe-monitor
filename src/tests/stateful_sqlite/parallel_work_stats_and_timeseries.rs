@@ -23358,51 +23358,64 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     );
     state.pool.close().await;
 
-    for window in ["current", "1d"] {
-        for upstream_account_id in [None, Some(42)] {
-            let response = fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some(window.to_string()),
-                    limit: None,
-                    time_zone: Some("UTC".to_string()),
-                    upstream_account_id,
-                }),
-            )
-            .await;
-            if window == "current" {
-                assert!(
-                    matches!(response, Err(ApiError::Unavailable(_))),
-                    "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
-                );
-                continue;
-            }
-            let Json(response) =
-                response.expect("serve the exact paged-boundary response without SQLite");
-            assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
-            assert_eq!(
-                response.total_tokens, 20,
-                "{window} {upstream_account_id:?}"
-            );
-            assert_f64_close(response.total_cost, 0.20);
-            if window == "1d" {
-                let model = response
-                    .usage_breakdown
-                    .expect("paged boundary usage breakdown")
-                    .models
-                    .into_iter()
-                    .find(|model| {
-                        model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high")
-                    })
-                    .expect("paged boundary model/reasoning detail");
-                let model_cost = model.costs.expect("paged boundary model costs").unknown;
-                assert!(
-                    (model_cost - 0.20).abs() < 1e-6,
-                    "{window} {upstream_account_id:?}: expected model cost 0.20, got {model_cost}",
-                );
-            }
-        }
+    for upstream_account_id in [None, Some(42)] {
+        let response = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
+        );
     }
+
+    let Json(response) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the exact global paged-boundary response without SQLite");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 20);
+    assert_f64_close(response.total_cost, 0.20);
+    let model = response
+        .usage_breakdown
+        .expect("paged boundary global usage breakdown")
+        .models
+        .into_iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("paged boundary model/reasoning detail");
+    let model_cost = model.costs.expect("paged boundary model costs").unknown;
+    assert!(
+        (model_cost - 0.20).abs() < 1e-6,
+        "expected model cost 0.20, got {model_cost}",
+    );
+
+    let account_response = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(account_response, Err(ApiError::Unavailable(_))),
+        "a stale paged account manifest must retain an account-local unavailable proof"
+    );
     cleanup_temp_test_dir(&temp_dir);
 }
 
