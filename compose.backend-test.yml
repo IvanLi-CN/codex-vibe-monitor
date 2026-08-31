@@ -1,0 +1,7 @@
+services:
+  backend-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend-test
+    working_dir: /workspace
