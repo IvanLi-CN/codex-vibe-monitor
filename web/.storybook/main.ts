@@ -2,6 +2,8 @@ import type { StorybookConfig } from "@storybook/react-vite";
 import { mergeConfig, type PluginOption, type UserConfig } from "vite";
 import { createAppViteConfig } from "../vite.config.ts";
 
+const PWA_PLUGIN_NAME_MARKERS = ["vite-plugin-pwa", "codex-vibe-monitor-pwa-precache-contract"];
+
 function flattenPlugins(plugins: PluginOption[] | undefined): PluginOption[] {
   if (!plugins) return [];
   return plugins.flatMap((plugin) => (Array.isArray(plugin) ? flattenPlugins(plugin) : [plugin]));
@@ -29,7 +31,8 @@ function removePwaPlugins(config: UserConfig): UserConfig {
     ...config,
     plugins: flattenPlugins(config.plugins).filter((plugin) => {
       if (!plugin || typeof plugin !== "object" || !("name" in plugin)) return true;
-      return !String(plugin.name).includes("vite-plugin-pwa");
+      const pluginName = String(plugin.name);
+      return !PWA_PLUGIN_NAME_MARKERS.some((marker) => pluginName.includes(marker));
     }),
   };
 }
