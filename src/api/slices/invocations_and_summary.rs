@@ -13753,7 +13753,7 @@ async fn build_summary_projection_once(
                 } else {
                     (None, None)
                 };
-                let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
+                let mut exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
                     archive.has_materialized_historical_rollups(),
                     Some(replay_coverage.overall),
                     account_replayed,
@@ -13764,6 +13764,25 @@ async fn build_summary_projection_once(
                     &hourly_rollup_usage,
                     account_ids,
                 );
+                if !mode.includes_all_time() {
+                    let (startup_boundaries, deferred_ranges): (Vec<_>, Vec<_>) =
+                        exact_ranges.into_iter().partition(|range| {
+                            protected_boundary_buckets.contains(&align_bucket_epoch(
+                                range.start.timestamp(),
+                                3_600,
+                                0,
+                            ))
+                        });
+                    for range in deferred_ranges {
+                        unavailable_unmaterialized_archive_buckets.insert(align_bucket_epoch(
+                            range.start.timestamp(),
+                            3_600,
+                            0,
+                        ));
+                        unavailable_boundary_archive_ranges.push(range);
+                    }
+                    exact_ranges = startup_boundaries;
+                }
                 if exact_ranges.is_empty() {
                     continue;
                 }
