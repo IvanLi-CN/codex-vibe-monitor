@@ -11893,7 +11893,6 @@ async fn build_summary_projection_once(
             &mut unavailable_exact_live_buckets,
             &mut unavailable_exact_live_account_buckets,
             &mut historical_global_covered_terminal_invoke_ids,
-            &mut live_preview_cache,
         )
         .await?;
         info!(
@@ -18468,6 +18467,15 @@ async fn query_summary_projection_preview_rows_by_ids(
     Ok(rows)
 }
 
+#[derive(Debug, FromRow)]
+struct SummaryProjectionHistoricalLiveCoverageRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    status: Option<String>,
+    upstream_account_id: Option<i64>,
+}
+
 async fn mark_summary_projection_uncovered_historical_live_ranges(
     pool: &Pool<Sqlite>,
     range: ExactUtcRange,
@@ -18480,26 +18488,29 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     unavailable_global_buckets: &mut BTreeSet<i64>,
     unavailable_account_buckets: &mut HashMap<i64, BTreeSet<i64>>,
     global_covered_terminal_invoke_ids: &mut HashSet<String>,
-    preview_cache: &mut HashMap<i64, UpstreamAccountInvocationPreviewRow>,
 ) -> Result<()> {
-    let admission = query_summary_projection_live_rows_with_budget(
-        pool,
-        InvocationSourceScope::All,
-        range,
-        high_watermark_id,
-        None,
-        summary_projection_exact_record_limit() + 1,
-        false,
-        SUMMARY_PROJECTION_MAX_PREVIEW_BYTES,
-        preview_cache,
-        UpstreamAccountActivityPreviewReadTelemetry {
-            route: "summary_projection",
-            builder: "historical_terminal_coverage",
-            purpose: "summary_projection_historical_terminal_coverage",
-        },
-    )
-    .await?;
-    if admission.overflow.is_some() {
+    // Historical coverage only needs the terminal identity and compact-rollup proof.  Hydrating
+    // the full preview shape here re-reads large raw source fields solely to discard them, which
+    // can consume the complete startup deadline before the immutable projection is published.
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT id, invoke_id, occurred_at, status, ");
+    query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id FROM codex_invocations WHERE id <= ")
+        .push_bind(high_watermark_id)
+        .push(" AND occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(range.end))
+        .push(" ORDER BY occurred_at DESC, id DESC LIMIT ")
+        .push_bind((summary_projection_exact_record_limit() + 1) as i64);
+    let rows = query
+        .build_query_as::<SummaryProjectionHistoricalLiveCoverageRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection historical live coverage hydration failed")?;
+    if rows.len() > summary_projection_exact_record_limit() {
         // The source cannot be fully inspected within the resident-record contract. Its whole
         // finite horizon must fail closed rather than letting a missing terminal disappear from
         // a later rolling or calendar reduction.
@@ -18509,9 +18520,9 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         );
     }
 
-    for row in admission.rows {
+    for row in rows {
         if matches!(
-            normalized_runtime_text(Some(row.status.as_str())).as_str(),
+            normalized_runtime_text(row.status.as_deref()).as_str(),
             "pending" | "running"
         ) {
             continue;
@@ -18543,22 +18554,6 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             && hourly_rollup_totals.contains_key(&(bucket, Some(account_id)))
             && hourly_rollup_usage.contains_key(&(bucket, Some(account_id)));
         if !account_covered {
-            unavailable_account_buckets
-                .entry(account_id)
-                .or_default()
-                .insert(bucket);
-        }
-    }
-    for candidate in admission.gaps {
-        let Some(occurred_at) = parse_to_utc_datetime(&candidate.occurred_at) else {
-            continue;
-        };
-        let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-        unavailable_global_buckets.insert(bucket);
-        if let Some(account_id) = candidate
-            .upstream_account_id
-            .filter(|account_id| *account_id > 0)
-        {
             unavailable_account_buckets
                 .entry(account_id)
                 .or_default()
