@@ -224,6 +224,48 @@ It follows the operation's bounded error backoff and is distinct from a pressure
 defer.
 _Avoid_: pressure defer, successful no-op
 
+## Validation and delivery contracts
+
+**Project Test Entrypoint**:
+The repository-owned command contract for running its complete, resource-profiled
+backend validation. It names the stable test operation and its required result,
+without relying on a caller's shell or incidental machine setup.
+_Avoid_: ad hoc cargo command, CI-only test recipe
+
+**Runner Isolation**:
+The boundary that gives one validation run private resources, paths, capacity
+accounting, and cleanup. It does not redefine the project's test command or
+silently change its concurrency and coverage.
+_Avoid_: project toolchain, test semantics, host takeover
+
+**Toolchain Contract**:
+The pinned compiler, test runner, system libraries, and executable identity that
+make a Project Test Entrypoint reproducible across approved environments.
+_Avoid_: ambient PATH, latest tool, login-shell setup
+
+**Writable Test Workspace**:
+The private run area where validation may create build outputs, schema templates,
+temporary archives, and copied source inputs while the original checkout remains
+unchanged.
+_Avoid_: repository mutation, shared target directory, production data path
+
+**Representative-Scale Acceptance**:
+Validation using deterministic data with production-shaped cardinality and source
+boundaries to prove timing, memory, and exact response behavior. It is stronger
+than a small unit fixture but does not require raw production data in a PR.
+_Avoid_: smoke-only status check, production-data upload
+
+**Projection Readiness**:
+The per-selection state describing whether all required source and boundary proof
+is present in the published immutable Summary Projection. Process health alone
+does not imply Projection Readiness.
+_Avoid_: service started, global readiness flag, approximate response
+
+**Range-Local Unavailable**:
+An exact fail-closed result for only a Summary selection whose required source
+coverage is unproven; disjoint selections remain independently serviceable.
+_Avoid_: partial response, global hydration failure, request-time repair
+
 ## Dashboard 上游账号活动
 
 **统计卡片**:
