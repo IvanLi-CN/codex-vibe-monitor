@@ -40,6 +40,7 @@
 
 - `4tgau` 已经完成 crate-root / 生产模块边界和浅层测试入口模块化；更深测试切片治理与 runtime budget 需要新的长期主题承接。
 - 旧 `pool_failover_window_*` 与 `tests_part_*` 命名无法承载后续 nextest/profile-aware 分组与 owner-facing CI 诊断，因此必须退出长期真相源。
+- 项目级验收现固定为自有 `backend-test` target、确定性规模 fixture 与独立 exact oracle；PR 直接硬门禁，可信 main 发布不可变 amd64 digest，release 只接受绑定该 digest 的 data-blind production-copy receipt。
 
 ## References
 

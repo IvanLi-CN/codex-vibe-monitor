@@ -6,6 +6,9 @@
 
 - Implementation: 已完成全量 PR required-job 成本收敛候选；保持三个独立 backend profiles，并以当前 PR head 完成冷/热两轮三分钟预算验收
 - Lifecycle: active
+- Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset) invokes the profile runner with an isolated writable `/tmp` workspace.
+- Representative-scale acceptance: `src/tests/stateful_sqlite/representative_scale_acceptance.rs` is a deterministic, data-blind exact-oracle test selected by `--test-filter`; it crosses the retired 64 MiB aggregate source boundary and enforces 30-second bootstrap / 1800-second all-time budgets.
+- Release evidence: `scripts/validate-summary-production-fixture.sh` emits a bound production-copy receipt containing only canonical response hashes; `.github/scripts/release_snapshot.py validate-receipt` hard-fails missing, mismatched, or over-deadline receipts.
 - Catalog note: 三路 backend profile 合同保持不变；本轮收敛 Rust 编译缓存、Archive file fixture、PR smoke build 与非 backend required-job 资源边界
 
 ## Coverage / rollout summary

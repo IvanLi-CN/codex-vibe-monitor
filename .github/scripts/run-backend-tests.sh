@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH]
+Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH] [--test-filter EXPR]
 
 Profiles:
   lightweight
@@ -14,11 +14,15 @@ If --profile is omitted, all three profiles run sequentially.
 
 When --archive-file is set, run profiles from an existing cargo-nextest archive
 instead of building test binaries in this invocation.
+
+When --test-filter is set, replace the profile's default nextest filter while
+retaining the profile's schema-template and workspace contract.
 EOF
 }
 
 profile="all"
 archive_file=""
+test_filter_override=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -37,6 +41,15 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       archive_file="$2"
+      shift 2
+      ;;
+    --test-filter)
+      if [[ $# -lt 2 ]]; then
+        echo "::error::--test-filter requires a value." >&2
+        usage >&2
+        exit 1
+      fi
+      test_filter_override="$2"
       shift 2
       ;;
     -h|--help)
@@ -144,6 +157,10 @@ run_profile() {
       exit 1
       ;;
   esac
+
+  if [[ -n "$test_filter_override" ]]; then
+    filter_expr="$test_filter_override"
+  fi
 
   # Only the selected profile may consume its private current-schema template.
   # Caller-provided values must not leak fixture behavior across profiles.

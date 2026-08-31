@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0006: Project-owned representative-scale validation gates](../../adr/0006-project-owned-representative-scale-gates.md)
+
 ## 背景 / 问题陈述
 
 - 前序工作已将后端测试入口从 `include!()`、编号切片和 `#[path]` 聚合迁入 resource-profile 模块树；后续性能收敛必须以这一稳定分组为真相源。

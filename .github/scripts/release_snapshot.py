@@ -15,6 +15,8 @@ from typing import Any, Callable, Literal
 from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
+VALIDATION_FIXTURE_CONTRACT_VERSION = "summary-representative-scale-v1"
+VALIDATION_ORACLE_VERSION = "summary-oracle-v1"
 DEFAULT_NOTES_REF = "refs/notes/release-snapshots"
 ALLOWED_SNAPSHOT_SOURCES = {
     "ci-main",
@@ -96,6 +98,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Leave the generated snapshot in the local checkout and output file without pushing the notes ref.",
     )
+    ensure.add_argument(
+        "--backend-test-image-digest",
+        default=os.environ.get("BACKEND_TEST_IMAGE_DIGEST", ""),
+        help="Immutable GHCR digest of the trusted backend-test image.",
+    )
+
+    validate_receipt_cmd = subparsers.add_parser(
+        "validate-receipt", help="Validate a data-blind production-copy validation receipt."
+    )
+    validate_receipt_cmd.add_argument("--receipt", required=True)
+    validate_receipt_cmd.add_argument("--target-sha", required=True)
+    validate_receipt_cmd.add_argument("--backend-test-image-digest", required=True)
+    validate_receipt_cmd.add_argument("--fixture-contract-version", default=VALIDATION_FIXTURE_CONTRACT_VERSION)
+    validate_receipt_cmd.add_argument("--oracle-version", default=VALIDATION_ORACLE_VERSION)
 
     manual_override = subparsers.add_parser(
         "manual-override",
@@ -111,6 +127,11 @@ def parse_args() -> argparse.Namespace:
     manual_override.add_argument("--reason", required=True)
     manual_override.add_argument("--actor", required=True)
     manual_override.add_argument("--triggered-at", required=True)
+    manual_override.add_argument(
+        "--backend-test-image-digest",
+        required=True,
+        help="Immutable GHCR digest of the trusted backend-test image for this target.",
+    )
     manual_override.add_argument("--output", required=True)
 
     export_cmd = subparsers.add_parser("export", help="Export a stored release snapshot into GitHub outputs.")
@@ -205,6 +226,13 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
         raise SnapshotError("Release snapshot release_enabled must be boolean")
     if not isinstance(payload.get("release_prerelease"), bool):
         raise SnapshotError("Release snapshot release_prerelease must be boolean")
+
+    backend_test_image_digest = payload.get("backend_test_image_digest", "")
+    if backend_test_image_digest not in (None, "") and (
+        not isinstance(backend_test_image_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", backend_test_image_digest)
+    ):
+        raise SnapshotError("Release snapshot backend_test_image_digest must be a sha256 digest when present")
 
     pr_number = payload.get("pr_number")
     if pr_number is not None and not isinstance(pr_number, int):
@@ -646,6 +674,7 @@ def build_snapshot(
     api_root: str,
     snapshot_source: str = "ci-main",
     pr: dict[str, Any] | None = None,
+    backend_test_image_digest: str = "",
 ) -> dict[str, Any]:
     if pr is None:
         pr = load_pr_for_commit(api_root, repository, token, target_sha)
@@ -676,6 +705,7 @@ def build_snapshot(
         "tags_csv": "",
         "notes_ref": notes_ref,
         "snapshot_source": snapshot_source,
+        "backend_test_image_digest": backend_test_image_digest,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
 
@@ -700,6 +730,49 @@ def build_snapshot(
         snapshot["tags_csv"] = ",".join(immutable_release_tags(snapshot))
 
     return validate_snapshot(snapshot, expected_sha=target_sha)
+
+
+def validate_production_receipt(
+    receipt_path: str,
+    *,
+    target_sha: str,
+    backend_test_image_digest: str,
+    fixture_contract_version: str = VALIDATION_FIXTURE_CONTRACT_VERSION,
+    oracle_version: str = VALIDATION_ORACLE_VERSION,
+) -> dict[str, Any]:
+    path = Path(receipt_path)
+    if not path.is_file():
+        raise SnapshotError(f"Missing production-copy validation receipt: {receipt_path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SnapshotError(f"Production-copy validation receipt is not valid JSON: {receipt_path}") from exc
+    if not isinstance(payload, dict):
+        raise SnapshotError("Production-copy validation receipt must decode to an object")
+    required = {
+        "schema_version": 1,
+        "source": "production-copy",
+        "target_sha": target_sha,
+        "backend_test_image_digest": backend_test_image_digest,
+        "fixture_contract_version": fixture_contract_version,
+        "oracle_version": oracle_version,
+        "bootstrap_deadline_seconds": 30,
+        "all_time_deadline_seconds": 1800,
+        "result": "pass",
+    }
+    for key, expected in required.items():
+        if payload.get(key) != expected:
+            raise SnapshotError(f"Production-copy receipt {key} mismatch: expected {expected!r}")
+    oracle_sha256 = payload.get("oracle_sha256")
+    if not isinstance(oracle_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", oracle_sha256):
+        raise SnapshotError("Production-copy receipt oracle_sha256 must be a 64-char lowercase hex digest")
+    bootstrap_elapsed = payload.get("bootstrap_elapsed_seconds")
+    all_time_elapsed = payload.get("all_time_elapsed_seconds")
+    if not isinstance(bootstrap_elapsed, int) or bootstrap_elapsed > 30 or bootstrap_elapsed < 0:
+        raise SnapshotError("Production-copy receipt bootstrap elapsed time exceeded its deadline")
+    if not isinstance(all_time_elapsed, int) or all_time_elapsed > 1800 or all_time_elapsed < 0:
+        raise SnapshotError("Production-copy receipt all-time elapsed time exceeded its deadline")
+    return payload
 
 
 def normalize_manual_version(value: str) -> StableVersion:
@@ -730,7 +803,10 @@ def build_manual_override_snapshot(
     reason: str,
     actor: str,
     triggered_at: str,
+    backend_test_image_digest: str = "",
 ) -> dict[str, Any]:
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", backend_test_image_digest):
+        raise SnapshotError("Manual release override requires a valid backend-test image sha256 digest")
     manual_version = version.strip()
     manual_bump = bump.strip()
     if bool(manual_version) == bool(manual_bump):
@@ -802,6 +878,7 @@ def build_manual_override_snapshot(
         "tags_csv": "",
         "notes_ref": notes_ref,
         "snapshot_source": "manual-release-override",
+        "backend_test_image_digest": backend_test_image_digest,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "manual_version": manual_version,
         "manual_bump": manual_bump,
@@ -900,6 +977,7 @@ def export_snapshot(snapshot: dict[str, Any], github_output: str) -> None:
         "release_prerelease",
         "tags_csv",
         "snapshot_source",
+        "backend_test_image_digest",
         "manual_version",
         "manual_bump",
         "manual_reason",
@@ -935,6 +1013,13 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
         fetch_notes_ref(args.notes_ref)
         existing = read_snapshot(args.notes_ref, target_sha)
         if existing is not None:
+            requested_digest = getattr(args, "backend_test_image_digest", "")
+            existing_digest = existing.get("backend_test_image_digest", "")
+            if requested_digest and existing_digest != requested_digest:
+                raise SnapshotError(
+                    f"Release snapshot backend-test image digest mismatch for {target_sha}: "
+                    f"expected {requested_digest}, got {existing_digest or '<missing>'}"
+                )
             write_json(output_path, existing)
             return 0
 
@@ -969,6 +1054,7 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
                     api_root=args.api_root,
                     snapshot_source=getattr(args, "snapshot_source", "ci-main"),
                     pr=pr,
+                    backend_test_image_digest=getattr(args, "backend_test_image_digest", ""),
                 )
                 write_json(temp_note, snapshot)
                 git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(temp_note), commit)
@@ -1008,6 +1094,7 @@ def export_manual_override_snapshot(args: argparse.Namespace) -> int:
         reason=args.reason,
         actor=args.actor,
         triggered_at=args.triggered_at,
+        backend_test_image_digest=args.backend_test_image_digest,
     )
     write_json(Path(args.output), snapshot)
     return 0
@@ -1080,6 +1167,16 @@ def main() -> int:
             return export_existing_snapshot(args)
         if args.command == "next-pending":
             return export_next_pending(args)
+        if args.command == "validate-receipt":
+            validate_production_receipt(
+                args.receipt,
+                target_sha=normalize_sha(args.target_sha),
+                backend_test_image_digest=args.backend_test_image_digest,
+                fixture_contract_version=args.fixture_contract_version,
+                oracle_version=args.oracle_version,
+            )
+            print("production-copy receipt valid")
+            return 0
         raise SnapshotError(f"Unsupported command: {args.command}")
     except SnapshotError as exc:
         print(f"release_snapshot.py: {exc}", file=sys.stderr)

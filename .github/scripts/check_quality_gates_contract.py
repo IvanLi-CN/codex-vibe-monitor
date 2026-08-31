@@ -532,6 +532,12 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         and "test-live-quality-gates.sh" in self_tests_run,
         "ci-pr.yml.jobs.repository-tooling-checks: self-tests step drifted",
     )
+    if "Backend Tests (Representative Scale)" in expected_jobs:
+        require(
+            "test-backend-test-contract.sh" in self_tests_run
+            and "test-representative-scale-contract.sh" in self_tests_run,
+            "ci-pr.yml.jobs.repository-tooling-checks: representative-scale self-tests drifted",
+        )
 
     scripts_step = step_config(tooling_job, "Check quality-gates scripts", "ci-pr.yml.jobs.repository-tooling-checks")
     scripts_run = str(scripts_step.get("run", ""))
@@ -539,6 +545,16 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         "bash -n .github/scripts/build-smoke-image-with-retry.sh" in scripts_run,
         "ci-pr.yml.jobs.repository-tooling-checks: build smoke retry helper syntax check drifted",
     )
+
+    if "Backend Tests (Representative Scale)" in expected_jobs:
+        representative_job = named_job_config(workflow, "backend-tests-representative-scale", expected_jobs, "ci-pr.yml")
+        require(representative_job.get("name") == "Backend Tests (Representative Scale)", "ci-pr.yml representative-scale job name drifted")
+        build_step = step_config(representative_job, "Build candidate backend-test image (linux/amd64)", "ci-pr.yml.jobs.backend-tests-representative-scale")
+        require(build_step.get("uses") == "docker/build-push-action@v7", "ci-pr.yml representative-scale image build action drifted")
+        require(build_step.get("with", {}).get("target") == "backend-test", "ci-pr.yml representative-scale image target drifted")
+        run_step = step_config(representative_job, "Run deterministic representative-scale acceptance", "ci-pr.yml.jobs.backend-tests-representative-scale")
+        run_text = str(run_step.get("run", ""))
+        require("--profile stateful-sqlite" in run_text and "representative_scale_acceptance" in run_text, "ci-pr.yml representative-scale selector drifted")
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     require(
@@ -720,9 +736,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     )
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
-    require(
-        release_snapshot.get("needs")
-        == [
+    expected_release_needs = [
             "lint",
             "repository-tooling-checks",
             "frontend-tests",
@@ -732,7 +746,11 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             "backend-tests-lightweight",
             "backend-tests-stateful-sqlite",
             "backend-tests-archive-file-io",
-        ],
+        ]
+    if "Publish Backend Test Image" in auxiliary_jobs:
+        expected_release_needs.append("backend-test-image")
+    require(
+        release_snapshot.get("needs") == expected_release_needs,
         "ci-main.yml.jobs.release-snapshot.needs drifted",
     )
     if auxiliary_jobs:
@@ -764,6 +782,22 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-main.yml.jobs.{backend_job_id}",
             )
+        if "Publish Backend Test Image" in auxiliary_jobs:
+            image_job = job_config(workflow, "backend-test-image", "ci-main.yml")
+            require(image_job.get("name") == "Publish Backend Test Image", "ci-main.yml backend-test-image job name drifted")
+            require(
+                image_job.get("needs") == [
+                    "backend-tests-lightweight",
+                    "backend-tests-stateful-sqlite",
+                    "backend-tests-archive-file-io",
+                ],
+                "ci-main.yml backend-test-image needs drifted",
+            )
+            image_permissions = require_mapping(image_job.get("permissions"), "ci-main.yml.jobs.backend-test-image.permissions")
+            require(image_permissions.get("packages") == "write", "ci-main.yml backend-test-image must publish with packages: write")
+            image_build = step_config(image_job, "Build and publish immutable backend-test image (linux/amd64)", "ci-main.yml.jobs.backend-test-image")
+            require(image_build.get("id") == "build-backend-test-image", "ci-main.yml backend-test-image step id drifted")
+            require(image_build.get("with", {}).get("target") == "backend-test" and image_build.get("with", {}).get("push") is True, "ci-main.yml backend-test-image must push the backend-test target")
     release_snapshot_permissions = require_mapping(
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )
@@ -791,6 +825,11 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "release_snapshot.py ensure" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: snapshot writer must use release_snapshot.py ensure",
     )
+    if "Publish Backend Test Image" in auxiliary_jobs:
+        require(
+            "--backend-test-image-digest" in ensure_run,
+            "ci-main.yml.jobs.release-snapshot: release snapshot must bind the backend-test image digest",
+        )
     require(
         "RELEASE_SNAPSHOT_NOTES_REF" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
@@ -1009,6 +1048,11 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
+    if "backend_test_image_digest" in outputs:
+        require(
+            outputs.get("backend_test_image_digest") == "${{ steps.snapshot.outputs.backend_test_image_digest }}",
+            "release.yml.jobs.release-meta.outputs.backend_test_image_digest must be exported",
+        )
     for output_name in (
         "snapshot_source",
         "manual_version",
@@ -1048,6 +1092,21 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("release_snapshot.py manual-override" in override_run, "release.yml.jobs.release-meta: manual override must use release_snapshot.py manual-override")
     require("--reason" in override_run, "release.yml.jobs.release-meta: manual override must pass audit reason")
     require("--actor" in override_run, "release.yml.jobs.release-meta: manual override must pass actor")
+    if "backend_test_image_digest" in outputs:
+        require(
+            release_meta_permissions.get("packages") == "read",
+            "release.yml.jobs.release-meta.permissions.packages must stay read for trusted image lookup",
+        )
+        lookup_step = step_config(
+            release_meta,
+            "Resolve trusted backend-test image digest for manual release",
+            "release.yml.jobs.release-meta",
+        )
+        lookup_run = str(lookup_step.get("run", ""))
+        require("docker buildx imagetools inspect" in lookup_run, "release.yml manual release must resolve an immutable backend-test digest")
+        require("backend-test-${TARGET_SHA}" in lookup_run, "release.yml manual release digest lookup must bind target_sha")
+        require("sha256:[0-9a-f]{64}" in lookup_run, "release.yml manual release digest lookup must validate sha256 format")
+        require("--backend-test-image-digest" in override_run, "release.yml manual override must bind backend-test image digest")
     ensure_step = step_config(release_meta, "Ensure immutable release snapshot for manual backfill", "release.yml.jobs.release-meta")
     require(
         ensure_step.get("if") == "github.event_name == 'workflow_dispatch' && inputs.version == '' && inputs.bump == '' && inputs.reason == ''",
@@ -1162,6 +1221,14 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(publish_permissions.get("issues") == "write", "release.yml.jobs.release-publish.permissions.issues must stay write")
     require(publish_permissions.get("packages") == "write", "release.yml.jobs.release-publish.permissions.packages must stay write")
     require(publish_permissions.get("pull-requests") == "write", "release.yml.jobs.release-publish.permissions.pull-requests must stay write")
+    if "backend_test_image_digest" in outputs:
+        receipt_step = step_config(publish, "Validate production-copy receipt", "release.yml.jobs.release-publish")
+        receipt_env = require_mapping(receipt_step.get("env"), "release.yml.jobs.release-publish.steps['Validate production-copy receipt'].env")
+        require(receipt_env.get("RECEIPT_PATH") == "${{ vars.SUMMARY_PRODUCTION_RECEIPT_PATH }}", "release.yml production receipt path must come from the controlled runner variable")
+        require(receipt_env.get("TARGET_SHA") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml production receipt must bind target_sha")
+        require(receipt_env.get("BACKEND_TEST_IMAGE_DIGEST") == "${{ needs.release-meta.outputs.backend_test_image_digest }}", "release.yml production receipt must bind backend-test digest")
+        receipt_run = str(receipt_step.get("run", ""))
+        require("release_snapshot.py validate-receipt" in receipt_run and "exit 1" in receipt_run, "release.yml production receipt validation must hard-fail")
     publish_checkout = checkout_step(publish, "Checkout code", "release.yml.jobs.release-publish")
     require(publish_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.release-publish checkout ref drifted")
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
