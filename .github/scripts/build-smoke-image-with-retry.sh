@@ -48,6 +48,7 @@ for attempt in $(seq 1 "${retry_attempts}"); do
   if docker buildx build \
     --progress plain \
     --file "${dockerfile_path}" \
+    --target "ci-smoke-runtime" \
     --platform "${build_platform}" \
     --load \
     --tag "${smoke_tag}" \
