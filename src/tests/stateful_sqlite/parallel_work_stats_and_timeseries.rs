@@ -9642,6 +9642,9 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate initial exact summary projection");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("reconcile initial exact all-time summary projection");
 
     let archived_at = format_naive(
         ((Utc::now() - ChronoDuration::days(10)) + ChronoDuration::minutes(5))
@@ -9666,10 +9669,9 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
     .await;
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt newly discovered archive");
 
-    assert!(
-        hydrate_summary_snapshots(state.as_ref()).await.is_err(),
-        "a refresh with an unreadable exact archive must not publish a partial revision"
-    );
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("an unreadable archive must publish unaffected rolling coverage");
 
     let Json(response) = fetch_summary(
         State(state),
