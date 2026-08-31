@@ -3106,6 +3106,26 @@ impl SubscriptionHub {
         self.state.lock().await.summary_projection.clone()
     }
 
+    pub(crate) async fn renew_summary_projection_freshness_if_generation_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let guard = self.state.lock().await;
+        guard.summary_projection.as_ref().is_some_and(|projection| {
+            projection.renew_freshness_if_generation_matches(generation_fence)
+        })
+    }
+
+    pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
+        self.state
+            .lock()
+            .await
+            .summary_terminal_overlay
+            .iter()
+            .map(|delta| format!("{}\0{}", delta.invoke_id, delta.occurred_at))
+            .collect()
+    }
+
     pub(crate) async fn note_summary_http_interest(&self, all_time: bool) {
         let mut guard = self.state.lock().await;
         guard.summary_http_interest_at = Some(Instant::now());

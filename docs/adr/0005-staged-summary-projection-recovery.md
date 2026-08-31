@@ -29,6 +29,11 @@ recoverable.
 - Finalize and atomically swap all-time responses only after their checkpointed
   coverage is complete. A deadline, pressure defer, or finalization failure
   retains the current Bootstrap or last-good Projection.
+- A cadence may renew the rolling freshness of an already Exact-Ready
+  Projection only after the complete generation fence still matches. All-time
+  finalization performs the same bounded check while it runs, so historical
+  convergence cannot stale a published rolling response. A mismatch receives a
+  new bounded reconciliation; it never extends the older coverage claim.
 - Keep the resident preview-byte budget, source-admission limits, HTTP/SSE wire
   shape, and request-time zero SQLite/archive/file I/O contract unchanged.
 

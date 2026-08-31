@@ -107,10 +107,18 @@ selection, but deliberately does not wait for all-time archive reconciliation.
 _Avoid_: partial all-time response, global cold-start failure
 
 **Projection Generation Fence**:
-The stable live ID, rollup cursor, and archive manifest high-watermark observed
-for one background Projection pass. A later generation never extends an older
-coverage claim; it starts a new bounded reconciliation from its own fence.
+The stable live ID, global/account rollup cursors, archive manifest
+high-watermark, and settled terminal sequence observed for one background
+Projection pass. A later generation never extends an older coverage claim; it
+starts a new bounded reconciliation from its own fence.
 _Avoid_: mixed-source snapshot, implicit catch-up
+
+**Projection Freshness Renewal**:
+The in-memory extension of an already Exact-Ready Projection only after its
+current Projection Generation Fence still matches durable state. It does not
+publish new source data, weaken an unavailable boundary, or make an unready
+all-time selection ready.
+_Avoid_: stale-source renewal, hidden full refresh, broader stale budget
 
 **All-Time Coverage Checkpoint**:
 The durable per-scope seek cursor for bounded manifest-proof reconciliation at a
