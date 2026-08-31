@@ -51,6 +51,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+backend_test_workspace="${BACKEND_TEST_WORKSPACE:-/tmp/codex-vibe-monitor-backend-test}"
+if [[ "$backend_test_workspace" != /tmp/* || "$backend_test_workspace" == *..* ]]; then
+  echo "::error::BACKEND_TEST_WORKSPACE must be a path under /tmp without '..'." >&2
+  exit 64
+fi
+mkdir -p "$backend_test_workspace"
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  export CARGO_TARGET_DIR="$backend_test_workspace/target"
+fi
+if [[ "$CARGO_TARGET_DIR" != "$backend_test_workspace"/* || "$CARGO_TARGET_DIR" == *..* ]]; then
+  echo "::error::CARGO_TARGET_DIR must be inside BACKEND_TEST_WORKSPACE." >&2
+  exit 64
+fi
+mkdir -p "$CARGO_TARGET_DIR"
+
 start_epoch="$(date +%s)"
 schema_template_dir=""
 
@@ -78,7 +93,7 @@ fi
 prepare_schema_template() {
   local selected_profile="$1"
   cleanup_schema_template
-  schema_template_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-vibe-monitor-${selected_profile}-schema.XXXXXX")"
+  schema_template_dir="$(mktemp -d "$backend_test_workspace/${selected_profile}-schema.XXXXXX")"
   local template_path="$schema_template_dir/current-schema.db"
   case "$selected_profile" in
     stateful-sqlite)
