@@ -12053,40 +12053,6 @@ async fn build_summary_projection_once(
         exact_record_bytes = next_rolling_record_bytes;
         records_by_invoke_id.insert(record.row.invoke_id.clone(), record.clone());
     }
-    let historical_live_range = ExactUtcRange {
-        start: archive_start,
-        end: live_start,
-    };
-    if historical_live_range.start < historical_live_range.end {
-        info!(
-            ?mode,
-            stage = "historical_live_coverage",
-            "summary projection build stage started"
-        );
-        mark_summary_projection_uncovered_historical_live_ranges(
-            pool,
-            historical_live_range,
-            live_high_watermark_id,
-            rollup_live_cursor,
-            account_rollup_live_cursor,
-            &hourly_rollup_totals,
-            &hourly_rollup_usage,
-            &state
-                .subscription_hub
-                .summary_terminal_overlay_identities()
-                .await,
-            &mut unavailable_exact_live_buckets,
-            &mut unavailable_exact_live_account_buckets,
-            &mut historical_global_covered_terminal_invoke_ids,
-        )
-        .await?;
-        info!(
-            ?mode,
-            stage = "historical_live_coverage",
-            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
-            "summary projection build stage completed"
-        );
-    }
     // Rolling boundary ranges may need raw records even when an all-time compact rollup is
     // complete. Keep that narrower unavailability separate from all-time source proof.
     let mut all_time_source_unavailable_from_archive_ranges = false;
@@ -12479,6 +12445,10 @@ async fn build_summary_projection_once(
             record.usage_account_rollup_covered = false;
         }
     }
+    // A complete raw replacement has stronger proof than a lagging compact cursor. Preserve
+    // those bucket identities so the later historical coverage pass does not revoke an exact
+    // archive/live selection it has already admitted under this build's high-watermark.
+    let mut fully_admitted_historical_live_buckets = BTreeSet::<i64>::new();
     for range in exact_live_ranges {
         if recent_index_overflow_at.is_some_and(|overflow_at| range.start <= overflow_at) {
             // The recent index already proves that this range reaches omitted live history. Do
@@ -12521,9 +12491,11 @@ async fn build_summary_projection_once(
             )?;
             continue;
         }
+        let mut range_fully_admitted = true;
         for row in exact_live_admission.rows {
             let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
-                continue;
+                range_fully_admitted = false;
+                break;
             };
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
             let replacement_bytes = summary_projection_preview_row_bytes(&row);
@@ -12548,6 +12520,7 @@ async fn build_summary_projection_once(
                     &mut unavailable_exact_live_buckets,
                     [range],
                 )?;
+                range_fully_admitted = false;
                 break;
             }
             exact_record_bytes = next_rolling_record_bytes;
@@ -12577,6 +12550,49 @@ async fn build_summary_projection_once(
                 },
             );
         }
+        if range_fully_admitted {
+            let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+            let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+            while bucket <= last_bucket {
+                fully_admitted_historical_live_buckets.insert(bucket);
+                bucket = bucket.saturating_add(3_600);
+            }
+        }
+    }
+    let historical_live_range = ExactUtcRange {
+        start: archive_start,
+        end: live_start,
+    };
+    if historical_live_range.start < historical_live_range.end {
+        info!(
+            ?mode,
+            stage = "historical_live_coverage",
+            "summary projection build stage started"
+        );
+        mark_summary_projection_uncovered_historical_live_ranges(
+            pool,
+            historical_live_range,
+            live_high_watermark_id,
+            rollup_live_cursor,
+            account_rollup_live_cursor,
+            &hourly_rollup_totals,
+            &hourly_rollup_usage,
+            &fully_admitted_historical_live_buckets,
+            &state
+                .subscription_hub
+                .summary_terminal_overlay_identities()
+                .await,
+            &mut unavailable_exact_live_buckets,
+            &mut unavailable_exact_live_account_buckets,
+            &mut historical_global_covered_terminal_invoke_ids,
+        )
+        .await?;
+        info!(
+            ?mode,
+            stage = "historical_live_coverage",
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary projection build stage completed"
+        );
     }
     known_account_ids.extend(
         records_by_invoke_id
@@ -18689,6 +18705,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     account_rollup_live_cursor: Option<i64>,
     hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
     hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
+    fully_admitted_live_buckets: &BTreeSet<i64>,
     pending_terminal_identities: &HashSet<String>,
     unavailable_global_buckets: &mut BTreeSet<i64>,
     unavailable_account_buckets: &mut HashMap<i64, BTreeSet<i64>>,
@@ -18729,9 +18746,10 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             continue;
         };
         let bucket_start_epoch = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-        let globally_covered = row.max_id <= rollup_live_cursor
-            && hourly_rollup_totals.contains_key(&(bucket_start_epoch, None))
-            && hourly_rollup_usage.contains_key(&(bucket_start_epoch, None));
+        let globally_covered = fully_admitted_live_buckets.contains(&bucket_start_epoch)
+            || (row.max_id <= rollup_live_cursor
+                && hourly_rollup_totals.contains_key(&(bucket_start_epoch, None))
+                && hourly_rollup_usage.contains_key(&(bucket_start_epoch, None)));
         if globally_covered {
             globally_covered_buckets.insert(bucket_start_epoch);
         } else {
@@ -18767,9 +18785,10 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             continue;
         };
         let bucket_start_epoch = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-        let account_covered = account_rollup_live_cursor.is_some_and(|cursor| row.max_id <= cursor)
-            && hourly_rollup_totals.contains_key(&(bucket_start_epoch, Some(account_id)))
-            && hourly_rollup_usage.contains_key(&(bucket_start_epoch, Some(account_id)));
+        let account_covered = fully_admitted_live_buckets.contains(&bucket_start_epoch)
+            || (account_rollup_live_cursor.is_some_and(|cursor| row.max_id <= cursor)
+                && hourly_rollup_totals.contains_key(&(bucket_start_epoch, Some(account_id)))
+                && hourly_rollup_usage.contains_key(&(bucket_start_epoch, Some(account_id))));
         if !account_covered {
             unavailable_account_buckets
                 .entry(account_id)
