@@ -18831,6 +18831,13 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         .unwrap_or_default()
         .chunks(250)
     {
+        let selected_identities = identities
+            .iter()
+            .filter_map(|identity| identity.split_once('\0'))
+            .collect::<Vec<_>>();
+        if selected_identities.is_empty() {
+            continue;
+        }
         let mut identity_query = QueryBuilder::<Sqlite>::new(
             "SELECT id, invoke_id, occurred_at, status FROM codex_invocations WHERE id <= ",
         );
@@ -18841,10 +18848,7 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             .push(" AND occurred_at < ")
             .push_bind(db_occurred_at_upper_bound(range.end))
             .push(" AND (");
-        for (index, identity) in identities.iter().enumerate() {
-            let Some((invoke_id, occurred_at)) = identity.split_once('\0') else {
-                continue;
-            };
+        for (index, &(invoke_id, occurred_at)) in selected_identities.iter().enumerate() {
             if index > 0 {
                 identity_query.push(" OR ");
             }
