@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import struct
 import sys
 import zlib
@@ -16,14 +17,22 @@ WEB_DIR = Path(__file__).resolve().parents[1]
 PUBLIC_DIR = WEB_DIR / "public"
 DIST_DIR = WEB_DIR / "dist"
 BACKGROUND = (0xFB, 0xFD, 0xFF)
-INSTALL_ICON_ASSETS = (
+INSTALL_ICON_SPECS = {
+    "apple_touch": ("apple-touch-icon", ".png"),
+    "favicon": ("favicon", ".svg"),
+    "icon_192": ("icon-192", ".png"),
+    "icon_512": ("icon-512", ".png"),
+    "maskable_192": ("maskable-192", ".png"),
+    "maskable_512": ("maskable-512", ".png"),
+}
+LEGACY_INSTALL_ICON_NAMES = {
     "apple-touch-icon.png",
     "favicon.svg",
     "icon-192.png",
     "icon-512.png",
     "maskable-192.png",
     "maskable-512.png",
-)
+}
 
 
 def read_png(path: Path) -> tuple[int, int, list[tuple[int, int, int, int]]]:
@@ -125,47 +134,86 @@ def assert_regular(path: Path, expected_size: int) -> None:
     assert any(alpha < 16 for _, _, _, alpha in pixels), f"{path}: regular icon lost transparency"
 
 
-def install_icon_version() -> str:
-    digest = hashlib.sha256()
-    for asset in INSTALL_ICON_ASSETS:
-        digest.update((PUBLIC_DIR / asset).read_bytes())
-    return digest.hexdigest()[:12]
+def find_install_icon_assets() -> dict[str, Path]:
+    assets = {}
+    for key, (prefix, extension) in INSTALL_ICON_SPECS.items():
+        pattern = re.compile(rf"{re.escape(prefix)}-[0-9a-f]{{12}}{re.escape(extension)}")
+        candidates = sorted(
+            path for path in PUBLIC_DIR.iterdir() if path.is_file() and pattern.fullmatch(path.name)
+        )
+        assert len(candidates) == 1, (
+            f"expected one content-hashed {prefix}{extension} asset, found "
+            f"{', '.join(path.name for path in candidates)}"
+        )
+        assets[key] = candidates[0]
+    for legacy_name in LEGACY_INSTALL_ICON_NAMES:
+        assert not (PUBLIC_DIR / legacy_name).exists(), f"legacy stable icon remains: {legacy_name}"
+    return assets
 
 
-def assert_build_contract(version: str) -> None:
+def assert_content_hash(path: Path) -> None:
+    match = re.search(r"-([0-9a-f]{12})\.[^.]+$", path.name)
+    assert match, f"{path}: filename is not content-hashed"
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    assert match.group(1) == actual, f"{path}: filename hash does not match its bytes"
+
+
+def assert_build_contract(assets: dict[str, Path]) -> None:
     assert DIST_DIR.is_dir(), "build output is missing; run the PWA build before this checker"
     manifest = json.loads((DIST_DIR / "site.webmanifest").read_text())
-    expected_icons = {
-        f"icon-192.png?v={version}",
-        f"icon-512.png?v={version}",
-        f"favicon.svg?v={version}",
-        f"maskable-192.png?v={version}",
-        f"maskable-512.png?v={version}",
-    }
+    assert manifest["id"] == "./", "built manifest identity changed"
+    assert manifest["scope"] == "./", "built manifest scope changed"
+    assert manifest["start_url"] == "./#/dashboard", "built manifest start_url changed"
+    expected_icons = {path.name for key, path in assets.items() if key != "apple_touch"}
     actual_icons = {icon["src"] for icon in manifest["icons"]}
     assert actual_icons == expected_icons, "built manifest icon URLs do not match the generated assets"
-    for shortcut in manifest["shortcuts"]:
-        assert shortcut["icons"][0]["src"] == f"icon-192.png?v={version}", (
-            "built shortcut icon URL is not content-versioned"
-        )
+    expected_purposes = {
+        assets["icon_192"].name: "any",
+        assets["icon_512"].name: "any",
+        assets["favicon"].name: "any",
+        assets["maskable_192"].name: "maskable",
+        assets["maskable_512"].name: "maskable",
+    }
+    assert {icon["src"]: icon["purpose"] for icon in manifest["icons"]} == expected_purposes, (
+        "built manifest icon purposes do not match the asset roles"
+    )
+    for icon in manifest["icons"]:
+        assert "?" not in icon["src"], "built manifest icon URL still uses a query-string version"
+        assert icon["src"] in expected_icons, "built manifest references an unknown icon"
+    assert {shortcut["icons"][0]["src"] for shortcut in manifest["shortcuts"]} == {
+        assets["icon_192"].name
+    }, "built shortcut icon URL is not content-hashed"
 
     built_html = (DIST_DIR / "index.html").read_text()
-    assert f"apple-touch-icon.png?v={version}" in built_html, "built Apple touch URL is stale"
+    assert assets["favicon"].name in built_html, "built favicon URL is stale"
+    assert assets["apple_touch"].name in built_html, "built Apple touch URL is stale"
+    assert 'rel="manifest"' in built_html and "site.webmanifest" in built_html, (
+        "built HTML does not expose the generated manifest"
+    )
+    assert "apple-touch-icon.png" not in built_html, "built HTML retains the legacy stable Apple touch URL"
     worker = (DIST_DIR / "sw.js").read_text()
-    assert "ignoreURLParametersMatching" in worker, "built service worker does not match versioned icon URLs offline"
-    for asset in INSTALL_ICON_ASSETS:
-        assert asset in worker, f"Workbox precache omits {asset}"
+    assert not re.search(r'"url":"[^"]*site\.webmanifest', worker), (
+        "service worker precaches the manifest"
+    )
+    assert not re.search(r'"url":"[^"]*version\.json', worker), (
+        "service worker precaches version metadata"
+    )
+    for path in assets.values():
+        assert path.name in worker, f"Workbox precache omits {path.name}"
 
 
 def main() -> None:
-    assert_regular(PUBLIC_DIR / "icon-192.png", 192)
-    assert_regular(PUBLIC_DIR / "icon-512.png", 512)
-    assert_maskable(PUBLIC_DIR / "maskable-192.png", 192)
-    assert_maskable(PUBLIC_DIR / "maskable-512.png", 512)
-    assert_maskable(PUBLIC_DIR / "apple-touch-icon.png", 180)
+    assets = find_install_icon_assets()
+    for path in assets.values():
+        assert_content_hash(path)
+    assert_regular(assets["icon_192"], 192)
+    assert_regular(assets["icon_512"], 512)
+    assert_maskable(assets["maskable_192"], 192)
+    assert_maskable(assets["maskable_512"], 512)
+    assert_maskable(assets["apple_touch"], 180)
 
-    regular_hash = hashlib.sha256((PUBLIC_DIR / "icon-512.png").read_bytes()).digest()
-    maskable_hash = hashlib.sha256((PUBLIC_DIR / "maskable-512.png").read_bytes()).digest()
+    regular_hash = hashlib.sha256(assets["icon_512"].read_bytes()).digest()
+    maskable_hash = hashlib.sha256(assets["maskable_512"].read_bytes()).digest()
     assert regular_hash != maskable_hash, "regular and maskable icons share bytes"
 
     regular_svg = (WEB_DIR.parent / "docs" / "readme-assets" / "brand" / "codex-vibe-monitor-app-icon.svg").read_text()
@@ -173,13 +221,23 @@ def main() -> None:
 
     config = (WEB_DIR / "vite.config.ts").read_text()
     assert 'purpose: "any"' in config and 'purpose: "maskable"' in config, "manifest purposes are incomplete"
-    assert 'maskable-192.png' in config and 'maskable-512.png' in config, "maskable assets are not declared"
-    assert 'versionedIcon("icon-192.png")' in config, "shortcut icon is not content-versioned"
+    assert "findInstallIconAsset" in config and "installIconFiles" in config, (
+        "Vite does not resolve content-hashed install assets"
+    )
+    assert 'id: "./"' in config and 'scope: "./"' in config and 'start_url: "./#/dashboard"' in config, (
+        "manifest identity contract is incomplete"
+    )
+    assert "versionedIcon" not in config and "?v=" not in config, "Vite still uses query-versioned icons"
     service_worker = (WEB_DIR / "src" / "pwa" / "sw.ts").read_text()
-    assert "ignoreURLParametersMatching" in service_worker, "service worker does not match versioned icon URLs offline"
+    assert "site.webmanifest" in service_worker and "NetworkOnly" in service_worker, (
+        "service worker does not revalidate the manifest"
+    )
+    assert "ignoreURLParametersMatching" not in service_worker, "service worker still matches query-versioned icons"
     index = (WEB_DIR / "index.html").read_text()
-    assert "%INSTALL_ICON_VERSION%" in index, "HTML install links are not content-versioned"
-    assert_build_contract(install_icon_version())
+    assert "%INSTALL_FAVICON%" in index and "%INSTALL_APPLE_TOUCH_ICON%" in index, (
+        "HTML install links are not content-hashed"
+    )
+    assert_build_contract(assets)
 
 
 if __name__ == "__main__":

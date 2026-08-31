@@ -59,6 +59,15 @@ services:
 - `X-Forwarded-*` 这类头只应该由受信任网关产生；不要把应用端口直接开放到公网后再指望这些头有安全意义。
 - 如果你希望 GitHub / Slack / 飞书这类分享卡片稳定拿到主视觉图，直接显式配置 `PUBLIC_ORIGIN`，不要只依赖代理头让爬虫猜协议和域名。
 
+## PWA 静态资源缓存
+
+应用会为 PWA 更新链路返回以下缓存策略：
+
+- `index.html`、`site.webmanifest`、`sw.js`、`version.json` 使用 `no-cache, max-age=0, must-revalidate`，以便浏览器和 service worker 重新校验。
+- 内容哈希的安装图标使用 `public, max-age=31536000, immutable`。图标更新会生成新 URL，网关或 CDN 必须保留哈希文件，不能把新 URL 改写回旧稳定文件名。
+
+Android Chrome/WebAPK 和支持 manifest 图标更新的 Chromium Desktop 会沿用稳定安装身份发现新图标；已有 iOS/iPadOS Web Clip 无法被网站强制替换其已保存图标。
+
 ## Readiness 与健康检查
 
 应用的 `GET /health` 表示 readiness，而不是“进程活着”：

@@ -13,14 +13,18 @@ declare let self: ServiceWorkerGlobalScope & {
   __WB_MANIFEST: Array<{ url: string; revision: string | null }>;
 };
 
-const manifestEntries = self.__WB_MANIFEST.filter((entry) =>
-  typeof entry === "string" ? !entry.endsWith("version.json") : !entry.url.endsWith("version.json"),
-);
+function isRuntimeMetadataPath(pathname: string): boolean {
+  const filename = pathname.slice(pathname.lastIndexOf("/") + 1);
+  return filename === "site.webmanifest" || filename === "version.json";
+}
+
+const manifestEntries = self.__WB_MANIFEST.filter((entry) => {
+  const pathname = (typeof entry === "string" ? entry : entry.url).split(/[?#]/, 1)[0];
+  return !isRuntimeMetadataPath(pathname);
+});
 
 cleanupOutdatedCaches();
-precacheAndRoute(manifestEntries, {
-  ignoreURLParametersMatching: [/^v$/],
-});
+precacheAndRoute(manifestEntries);
 
 const navigationHandler = createHandlerBoundToURL(`${import.meta.env.BASE_URL}index.html`);
 
@@ -30,7 +34,8 @@ registerRoute(
   }),
 );
 
-registerRoute(({ url }) => url.pathname.endsWith("/version.json"), new NetworkOnly());
+// Metadata must be revalidated so a new manifest can point installed clients at new icon URLs.
+registerRoute(({ url }) => isRuntimeMetadataPath(url.pathname), new NetworkOnly());
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") {

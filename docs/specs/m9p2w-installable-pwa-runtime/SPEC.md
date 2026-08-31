@@ -42,7 +42,7 @@
 
 - 应用必须生成 base-aware manifest，包含稳定 identity、icons、theme color、`start_url=./#/dashboard`、`scope=./` 与高价值 shortcuts。
 - install icon 必须从 `scripts/export_brand_assets.py` 的 product mark 单一几何源导出：透明 regular `purpose: "any"` 保留品牌构图；不透明 `#FBFDFF` maskable 与 180px Apple touch 采用独立资源。maskable/Apple 的重要前景最大边为画布 58%-62%，且位于中心半径 40% 的安全圆；图源不得预烘焙系统圆角、描边、阴影或外框。
-- regular、maskable、Apple touch、favicon 与 shortcut 的字节变化必须同步更新 manifest、HTML 和 precache 可见引用。每一代安装资源使用内容派生版本 URL，`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
+- regular、maskable、Apple touch、favicon 与 shortcut 的字节变化必须同步更新 manifest、HTML 和 precache 可见引用。每一代安装资源使用内容哈希文件名，manifest URL、HTML fallback URL 与 precache 引用必须指向同一代文件；`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
 - 主界面头栏不得放置常驻 install/status button；当浏览器满足安装条件时，应改为自动弹出明确的 install prompt 或 manual guidance。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
@@ -53,6 +53,14 @@
 - service worker 必须采用 prompt-style update；waiting worker 只能在用户明确确认后接管，禁止 mid-session 自动 takeover。
 - update banner 必须使用统一版本 vocabulary，至少展示当前前端版本与待切换版本。
 - `version.json` 必须从网络真相读取，不能被旧 worker 的静态 precache 吞掉。
+- `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 必须允许浏览器和网关重新校验；内容哈希安装图标使用 `public, max-age=31536000, immutable`，图标内容变化必须产生新文件名。service worker 不得把 manifest 或版本元数据放进 precache。
+- manifest 身份 `id=./`、`scope=./` 与 `start_url=./#/dashboard` 必须保持稳定。manifest 是 Chromium 安装元数据的权威来源；`apple-touch-icon` 只服务无法使用 manifest 的旧式 iOS/iPadOS Web Clip 路径，不得覆盖 Chromium manifest 合同。
+
+### Platform update semantics
+
+- Chromium Desktop（Chrome / Edge）与 Android Chrome/WebAPK 必须继续使用同一个稳定 manifest identity。发布新图标时同时发布新内容哈希 URL、可重新校验的 manifest 和新 service worker；这会让支持 manifest 更新的浏览器把安装元数据收敛到同一个已安装应用，而不是创建第二个应用或要求日常重装。
+- Android Chrome 的 WebAPK 更新由 Chrome 的 manifest 检查和设备调度完成，可能等待应用窗口关闭、充电或 Wi-Fi；图标变化必须体现在 `icons` 字段或其 URL 变化中，不能只覆盖同名文件。Chromium Desktop 的图标更新能力依赖浏览器版本；当前 Chrome manifest 更新流程支持图标 URL 变化，旧版本或其他浏览器可能只更新非图标字段。
+- 已存在的 iOS/iPadOS Web Clips，以及不实现 manifest 安装元数据更新的其他浏览器，不能被网站强制迁移其已保存的主屏图标。它们只能在用户再次添加时读取当前 Apple touch fallback；产品不把“重装”作为正常更新机制，也不承诺能远程替换旧 Web Clip 图标。
 
 ### Offline model
 
@@ -202,3 +210,9 @@ PR: include
 - `web/src/features/dashboard/DashboardWorkingConversationsSection.tsx`
 - `web/playwright.pwa.config.ts`
 - `web/tests/pwa/installable-runtime.spec.ts`
+
+平台行为参考：
+
+- [How Chrome handles updates to the web app manifest](https://web.dev/articles/manifest-updates)
+- [A better way to update your web apps](https://developer.chrome.com/blog/improvements-to-web-app-updates)
+- [Turn a website into an app in Safari on iPhone](https://support.apple.com/guide/iphone/iphea86e5236/ios)
