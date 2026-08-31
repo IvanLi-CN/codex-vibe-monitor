@@ -271,7 +271,7 @@ pub(crate) struct StatsResponse {
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageCostBreakdownResponse {
     pub(crate) input: f64,
@@ -282,7 +282,7 @@ pub(crate) struct UsageCostBreakdownResponse {
     pub(crate) unknown: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageBreakdownModelResponse {
     pub(crate) model: String,
@@ -295,7 +295,7 @@ pub(crate) struct UsageBreakdownModelResponse {
     pub(crate) costs: Option<UsageCostBreakdownResponse>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageBreakdownResponse {
     pub(crate) cache_write_tokens: i64,

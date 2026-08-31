@@ -7464,6 +7464,16 @@ pub(crate) struct SummaryProjectionGenerationFence {
     durable_terminal_sequence_watermark: u64,
 }
 
+impl SummaryProjectionGenerationFence {
+    fn durable_sources_match(self, other: Self) -> bool {
+        self.live_high_watermark_id == other.live_high_watermark_id
+            && self.rollup_live_cursor == other.rollup_live_cursor
+            && self.account_rollup_live_cursor == other.account_rollup_live_cursor
+            && self.completed_manifest_high_watermark_id
+                == other.completed_manifest_high_watermark_id
+    }
+}
+
 impl SummaryProjectionFreshness {
     fn rolling_at(&self, built_at: Option<Instant>) -> Option<Instant> {
         built_at
@@ -11057,9 +11067,13 @@ struct SummaryAllTimeProjectionCheckpointRow {
     account_manifest_complete: i64,
     global_rollup_next_rowid: i64,
     account_rollup_next_rowid: i64,
+    usage_rollup_next_rowid: i64,
     global_rollup_complete: i64,
     account_rollup_complete: i64,
+    usage_rollup_complete: i64,
     account_unavailable: i64,
+    global_usage_unavailable: i64,
+    account_usage_unavailable: i64,
     global_total_count: i64,
     global_success_count: i64,
     global_failure_count: i64,
@@ -11081,13 +11095,18 @@ impl SummaryAllTimeProjectionCheckpointRow {
     }
 
     fn global_ready(&self) -> bool {
-        self.global_manifest_complete != 0 && self.global_rollup_complete != 0
+        self.global_manifest_complete != 0
+            && self.global_rollup_complete != 0
+            && self.usage_rollup_complete != 0
+            && self.global_usage_unavailable == 0
     }
 
     fn account_ready(&self) -> bool {
         self.account_unavailable == 0
             && self.account_manifest_complete != 0
             && self.account_rollup_complete != 0
+            && self.usage_rollup_complete != 0
+            && self.account_usage_unavailable == 0
     }
 
     fn global_totals(&self) -> StatsTotals {
@@ -11195,7 +11214,8 @@ async fn load_summary_all_time_projection_checkpoint(
                 manifest_high_watermark_id, durable_terminal_sequence_watermark, \
                 global_manifest_next_id, account_manifest_next_id, global_manifest_complete, \
                 account_manifest_complete, global_rollup_next_rowid, account_rollup_next_rowid, \
-                global_rollup_complete, account_rollup_complete, account_unavailable, \
+                usage_rollup_next_rowid, global_rollup_complete, account_rollup_complete, \
+                usage_rollup_complete, global_usage_unavailable, account_usage_unavailable, account_unavailable, \
                 global_total_count, global_success_count, global_failure_count, global_total_tokens, \
                 global_total_cost, global_non_success_cost \
          FROM summary_all_time_projection_checkpoint WHERE scope = ?1",
@@ -11545,7 +11565,13 @@ async fn advance_summary_all_time_projection_checkpoint(
 ) -> Result<SummaryAllTimeProjectionCheckpointRow> {
     let generation_fence = load_summary_projection_generation_fence(state).await?;
     let checkpoint = match load_summary_all_time_projection_checkpoint(&state.pool).await? {
-        Some(checkpoint) if checkpoint.generation_fence() == generation_fence => checkpoint,
+        Some(checkpoint)
+            if checkpoint
+                .generation_fence()
+                .durable_sources_match(generation_fence) =>
+        {
+            checkpoint
+        }
         Some(_) => {
             debug!(
                 "summary all-time projection checkpoint generation changed; restarting staged recovery"
@@ -11567,6 +11593,17 @@ async fn advance_summary_all_time_projection_checkpoint(
         .await?
         .expect("summary all-time projection checkpoint exists after global rollup advance");
     advance_summary_all_time_projection_account_rollup(&state.pool, &checkpoint).await?;
+    // Usage is independently bounded by the existing rollup reader. Mark it ready only after
+    // the complete exact usage snapshot has been proven; an over-budget snapshot remains
+    // unavailable instead of publishing totals without model/cache detail.
+    let usage_ready = match load_summary_projection_rollup_usage(&state.pool).await {
+        Ok(_) => (1_i64, 0_i64, 0_i64),
+        Err(error) if error.to_string().contains("budget") => (1_i64, 1_i64, 1_i64),
+        Err(error) => return Err(error),
+    };
+    sqlx::query("UPDATE summary_all_time_projection_checkpoint SET usage_rollup_complete = ?1, global_usage_unavailable = ?2, account_usage_unavailable = ?3, updated_at = datetime('now') WHERE scope = ?4")
+        .bind(usage_ready.0).bind(usage_ready.1).bind(usage_ready.2)
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE).execute(&state.pool).await?;
     let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
         .await?
         .expect("summary all-time projection checkpoint exists after account rollup advance");
@@ -11627,6 +11664,11 @@ async fn publish_summary_all_time_projection_checkpoint(
     let published_at = Instant::now();
     let mut account_ids = HashSet::new();
 
+    let hourly_rollup_usage = if checkpoint.global_ready() || checkpoint.account_ready() {
+        load_summary_projection_rollup_usage(&state.pool).await?
+    } else {
+        HashMap::new()
+    };
     if checkpoint.global_ready() {
         summary_all_time_projection_checkpoint_live_tail_count(
             &state.pool,
@@ -11663,7 +11705,14 @@ async fn publish_summary_all_time_projection_checkpoint(
             }
             totals = totals.add(summary_projection_all_time_record_totals(record));
         }
+        let mut usage = UsageBreakdownAccumulator::default();
+        for (key, value) in &hourly_rollup_usage {
+            if key.1.is_none() {
+                usage.merge_response(value);
+            }
+        }
         let mut response = totals.into_response();
+        response.usage_breakdown = Some(usage.into_response());
         response.non_success_cost = Some(totals.non_success_cost);
         response.maintenance = next.maintenance.clone();
         let in_progress = next
@@ -11748,7 +11797,14 @@ async fn publish_summary_all_time_projection_checkpoint(
             ));
         }
         for (account_id, totals) in account_totals {
+            let mut usage = UsageBreakdownAccumulator::default();
+            for (key, value) in &hourly_rollup_usage {
+                if key.1 == Some(account_id) {
+                    usage.merge_response(value);
+                }
+            }
             let mut response = totals.into_response();
+            response.usage_breakdown = Some(usage.into_response());
             response.non_success_cost = Some(totals.non_success_cost);
             response.maintenance = next.maintenance.clone();
             let in_progress = next
