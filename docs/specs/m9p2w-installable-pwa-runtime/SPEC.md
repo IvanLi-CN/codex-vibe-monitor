@@ -174,8 +174,6 @@
 
 ### Application Icon Contract
 
-PR: include
-
 ![Codex Vibe Monitor application icon comparison](./assets/pwa-application-icon-comparison.png)
 
 - source_type: deterministic generated contact sheet from the locked pre-change asset and the candidate build
