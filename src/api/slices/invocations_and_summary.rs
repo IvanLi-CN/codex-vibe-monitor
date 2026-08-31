@@ -18826,11 +18826,13 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     // SSE retains identities, not buckets. Query only the bounded terminal overlay currently in
     // memory so a freshly published compact bucket can consume an already-persisted delta without
     // retaining every historical identity.
-    for identities in (terminal_count > summary_projection_exact_record_limit() as i64)
-        .then(|| pending_terminal_identities.iter().collect::<Vec<_>>())
-        .unwrap_or_default()
-        .chunks(250)
-    {
+    let pending_terminal_identity_refs =
+        if terminal_count > summary_projection_exact_record_limit() as i64 {
+            pending_terminal_identities.iter().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+    for identities in pending_terminal_identity_refs.chunks(250) {
         let selected_identities = identities
             .iter()
             .filter_map(|identity| identity.split_once('\0'))
