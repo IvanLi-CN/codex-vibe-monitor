@@ -11276,6 +11276,12 @@ async fn build_summary_projection_once(
     previous_all_time: Option<PreviousSummaryProjectionAllTime>,
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
+    let build_started_at = Instant::now();
+    debug!(
+        ?mode,
+        stage = "rollup_load",
+        "summary projection build stage started"
+    );
     let end = Utc::now() + ChronoDuration::seconds(1);
     let PreviousSummaryProjectionAllTime {
         mut all_time_by_account,
@@ -11318,6 +11324,12 @@ async fn build_summary_projection_once(
         load_summary_projection_rollup_totals_in_range(pool, Some(rollup_range)).await?;
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(pool, Some(rollup_range)).await?;
+    debug!(
+        ?mode,
+        stage = "rollup_load",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     #[cfg(test)]
     pause_summary_projection_test_interleave(
         pool,
@@ -11427,6 +11439,11 @@ async fn build_summary_projection_once(
     };
     let live_high_watermark_id = load_summary_projection_live_high_watermark(pool).await?;
     let mut live_preview_cache = HashMap::<i64, UpstreamAccountInvocationPreviewRow>::new();
+    debug!(
+        ?mode,
+        stage = "live_exact_admission",
+        "summary projection build stage started"
+    );
     let live_admission = query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
@@ -11447,6 +11464,12 @@ async fn build_summary_projection_once(
         },
     )
     .await?;
+    debug!(
+        ?mode,
+        stage = "live_exact_admission",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     let initial_live_admission_gaps = live_admission.gaps;
     let initial_live_admission_overflow = live_admission.overflow;
     // `invoke_id` is the durable identity used by the archive preview contract.  In particular,
@@ -11482,6 +11505,11 @@ async fn build_summary_projection_once(
         ));
     }
     let recent_candidate_limit = state.config.list_limit_max.saturating_add(1);
+    debug!(
+        ?mode,
+        stage = "current_index_admission",
+        "summary projection build stage started"
+    );
     let recent_admission = match query_summary_projection_live_rows_with_budget(
         pool,
         InvocationSourceScope::All,
@@ -11509,6 +11537,12 @@ async fn build_summary_projection_once(
         Ok(admission) => admission,
         Err(error) => return Err(error),
     };
+    debug!(
+        ?mode,
+        stage = "current_index_admission",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     let recent_live_admission_gaps = recent_admission.gaps;
     let recent_live_admission_overflow = recent_admission.overflow;
     let mut recent_rows = recent_admission.rows;
@@ -11635,6 +11669,11 @@ async fn build_summary_projection_once(
         start: archive_start,
         end,
     };
+    debug!(
+        ?mode,
+        stage = "boundary_manifest_admission",
+        "summary projection build stage started"
+    );
     let boundary_archive_admission =
         crate::stats::load_completed_invocation_archive_paths_in_range_bounded(
             pool,
@@ -11642,6 +11681,12 @@ async fn build_summary_projection_once(
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
         .await?;
+    debug!(
+        ?mode,
+        stage = "boundary_manifest_admission",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     let (archives, paged_boundary_manifest_high_watermark_id) = if boundary_archive_admission.len()
         > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES
     {
@@ -11831,6 +11876,11 @@ async fn build_summary_projection_once(
         end: live_start,
     };
     if historical_live_range.start < historical_live_range.end {
+        debug!(
+            ?mode,
+            stage = "historical_live_coverage",
+            "summary projection build stage started"
+        );
         mark_summary_projection_uncovered_historical_live_ranges(
             pool,
             historical_live_range,
@@ -11846,6 +11896,12 @@ async fn build_summary_projection_once(
             &mut live_preview_cache,
         )
         .await?;
+        debug!(
+            ?mode,
+            stage = "historical_live_coverage",
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary projection build stage completed"
+        );
     }
     // Rolling boundary ranges may need raw records even when an all-time compact rollup is
     // complete. Keep that narrower unavailability separate from all-time source proof.
@@ -11855,6 +11911,11 @@ async fn build_summary_projection_once(
     // resident concurrently. Immutable completed archives reuse the cached account set on later
     // refreshes; only a new path pays the discovery pass.
     let mut archive_actual_coverage_ranges = archive_coverage_ranges_by_file.clone();
+    debug!(
+        ?mode,
+        stage = "archive_account_discovery",
+        "summary projection build stage started"
+    );
     for archive in &archives {
         let Some(archive_range) = summary_projection_archive_overlap_range(
             archive,
@@ -11981,6 +12042,12 @@ async fn build_summary_projection_once(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
+    debug!(
+        ?mode,
+        stage = "archive_account_discovery",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     // All-time materialized coverage is checked after loading its complete compact rollup map.
     // Replay markers alone do not prove the per-hour global/account key exists, while a bounded
     // manifest plus materialization and the actual key do. Do not pre-classify either scope from
@@ -12082,6 +12149,11 @@ async fn build_summary_projection_once(
         // Page only bounded manifest metadata while planning the finite exact buckets. The raw
         // archives themselves are opened later one at a time after live boundary records have
         // been admitted; each page retains its actual replay/materialization proof.
+        debug!(
+            ?mode,
+            stage = "boundary_manifest_page_planning",
+            "summary projection build stage started"
+        );
         let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
@@ -12180,6 +12252,12 @@ async fn build_summary_projection_once(
             };
             after_id = Some(next_after_id);
         }
+        debug!(
+            ?mode,
+            stage = "boundary_manifest_page_planning",
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary projection build stage completed"
+        );
     }
     let mut exact_bucket_requirements = exact_archive_buckets
         .difference(&protected_boundary_buckets)
@@ -12329,6 +12407,11 @@ async fn build_summary_projection_once(
     }
     let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
     let mut exact_record_budget = records_by_invoke_id.len();
+    debug!(
+        ?mode,
+        stage = "boundary_archive_hydration",
+        "summary projection build stage started"
+    );
     for archive in archives {
         let Some(archive_range) = summary_projection_archive_overlap_range(
             &archive,
@@ -12466,7 +12549,18 @@ async fn build_summary_projection_once(
             unavailable_unmaterialized_archive_current_ranges.push(archive_range);
         }
     }
+    debug!(
+        ?mode,
+        stage = "boundary_archive_hydration",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
+        debug!(
+            ?mode,
+            stage = "paged_boundary_archive_hydration",
+            "summary projection build stage started"
+        );
         let mut after_id = None;
         loop {
             let page = load_summary_projection_boundary_manifest_page(
@@ -12656,6 +12750,12 @@ async fn build_summary_projection_once(
             };
             after_id = Some(next_after_id);
         }
+        debug!(
+            ?mode,
+            stage = "paged_boundary_archive_hydration",
+            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+            "summary projection build stage completed"
+        );
     }
     // Archive rows are merged after the first live-record pass. Apply the same bucket-wide
     // coverage decision once every exact archive/live contribution is present.
