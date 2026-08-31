@@ -7150,6 +7150,17 @@ const SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE: Duration = Duration::fr
 pub(crate) const SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE: Duration = Duration::from_secs(30);
 const SUMMARY_PROJECTION_MAX_EXACT_RECORDS: usize = 50_000;
 
+#[derive(Debug)]
+struct SummaryProjectionAllTimeGenerationChanged;
+
+impl std::fmt::Display for SummaryProjectionAllTimeGenerationChanged {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("summary all-time reconciliation observed a changed durable generation")
+    }
+}
+
+impl std::error::Error for SummaryProjectionAllTimeGenerationChanged {}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SummaryProjectionBuildMode {
     Bootstrap,
@@ -10033,11 +10044,74 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
     .await
 }
 
-async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
+pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
     }
     if !state.subscription_hub.has_summary_all_time_owner().await {
+        return Ok(());
+    }
+    if summary_projection_all_time_staged_recovery_required(&state.pool).await? {
+        let checkpoint = tokio::time::timeout(
+            SUMMARY_PROJECTION_BUILD_DEADLINE,
+            advance_summary_all_time_projection_checkpoint(state),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "summary all-time staged checkpoint exceeded {SUMMARY_PROJECTION_BUILD_DEADLINE:?}"
+            )
+        });
+        let checkpoint = match checkpoint {
+            Ok(Ok(checkpoint)) => checkpoint,
+            Ok(Err(error))
+                if error
+                    .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
+                    .is_some() =>
+            {
+                debug!(
+                    "summary all-time staged checkpoint observed a generation change; rebuilding rolling projection"
+                );
+                refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling)
+                    .await?;
+                return Ok(());
+            }
+            Ok(Err(error)) => {
+                warn!(error = ?error, "summary all-time staged checkpoint deferred; keeping fresh rolling projection");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        if checkpoint.global_ready() || checkpoint.account_ready() {
+            let publication = tokio::time::timeout(
+                SUMMARY_PROJECTION_BUILD_DEADLINE,
+                publish_summary_all_time_projection_checkpoint(state, checkpoint),
+            )
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "summary all-time staged finalization exceeded {SUMMARY_PROJECTION_BUILD_DEADLINE:?}"
+                )
+            });
+            match publication {
+                Ok(Ok(())) => {}
+                Ok(Err(error))
+                    if error
+                        .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
+                        .is_some() =>
+                {
+                    debug!(
+                        "summary all-time staged finalization observed a generation change; rebuilding rolling projection"
+                    );
+                    refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling)
+                        .await?;
+                }
+                Ok(Err(error)) => {
+                    warn!(error = ?error, "summary all-time staged finalization deferred; keeping fresh rolling projection");
+                }
+                Err(error) => return Err(error),
+            }
+        }
         return Ok(());
     }
     let coverage = tokio::time::timeout(
@@ -10066,7 +10140,17 @@ async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     if let Err(error) =
         refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::AllTime).await
     {
-        warn!(error = ?error, "summary all-time reconciliation deferred; keeping fresh rolling projection");
+        if error
+            .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
+            .is_some()
+        {
+            debug!(
+                "summary all-time reconciliation cancelled after a generation change; rebuilding rolling projection"
+            );
+            refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
+        } else {
+            warn!(error = ?error, "summary all-time reconciliation deferred; keeping fresh rolling projection");
+        }
     }
     Ok(())
 }
@@ -10074,26 +10158,7 @@ async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
 async fn renew_summary_projection_freshness_if_generation_matches(
     state: &AppState,
 ) -> Result<bool> {
-    // Terminal updates can modify an existing invocation row without moving the ID high-water
-    // mark. Capture the settled sequence with the durable boundaries so that case always takes
-    // the rebuild path instead of renewing an older terminal state.
-    let durable_terminal_sequence_watermark = state
-        .dashboard_activity_snapshot_cache
-        .lock()
-        .await
-        .read_model
-        .settled_terminal_sequence;
-    let generation_fence = SummaryProjectionGenerationFence {
-        live_high_watermark_id: load_summary_projection_live_high_watermark(&state.pool).await?,
-        rollup_live_cursor: load_summary_projection_rollup_live_cursor(&state.pool).await?,
-        account_rollup_live_cursor: load_summary_projection_account_rollup_live_cursor(&state.pool)
-            .await?,
-        completed_manifest_high_watermark_id: summary_projection_completed_manifest_high_watermark(
-            &state.pool,
-        )
-        .await?,
-        durable_terminal_sequence_watermark,
-    };
+    let generation_fence = load_summary_projection_generation_fence(state).await?;
     let renewed = state
         .subscription_hub
         .renew_summary_projection_freshness_if_generation_matches(generation_fence)
@@ -10215,7 +10280,7 @@ async fn await_summary_projection_all_time_build(
             _ = &mut timeout => return Err(anyhow!("summary projection build exceeded {deadline:?}")),
             _ = keepalive.tick() => match renew_summary_projection_freshness_if_generation_matches(state).await {
                 Ok(true) => debug!("summary rolling projection kept fresh during all-time reconciliation"),
-                Ok(false) => debug!("summary all-time reconciliation observed a changed durable generation"),
+                Ok(false) => return Err(SummaryProjectionAllTimeGenerationChanged.into()),
                 Err(error) => warn!(error = ?error, "summary all-time reconciliation could not renew rolling freshness"),
             },
         }
@@ -10797,6 +10862,9 @@ async fn summary_all_time_coverage_page_is_exact(
         .map(|archive| archive.file_path().to_string())
         .collect::<Vec<_>>();
     let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+    let account_ids_by_file = load_summary_projection_archive_manifest_account_sets(pool, &paths)
+        .await
+        .context("summary all-time coverage account manifest proof hydration failed")?;
     let mut global_complete = true;
     let mut account_complete = true;
     for archive in &page.archives {
@@ -10804,13 +10872,43 @@ async fn summary_all_time_coverage_page_is_exact(
             .get(archive.file_path())
             .copied()
             .unwrap_or_default();
-        global_complete &= archive.has_materialized_historical_rollups() && replay.overall;
-        account_complete &= archive.has_materialized_historical_rollups()
-            && page
-                .account_manifest_refreshed_paths
-                .contains(archive.file_path())
-            && replay.account_stats
-            && replay.usage_breakdown;
+        let account_ids = account_ids_by_file
+            .get(archive.file_path())
+            .expect("coverage proof account manifest includes every archive path");
+        let (archive_global_complete, archive_account_complete) =
+            if let Some(range) = summary_projection_archive_coverage_range(archive) {
+                let rollup_range = (
+                    align_bucket_epoch(range.start.timestamp(), 3_600, 0),
+                    align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0)
+                        .saturating_add(3_600),
+                );
+                let (hourly_rollup_totals, _) =
+                    load_summary_projection_rollup_totals_in_range(pool, Some(rollup_range))
+                        .await
+                        .context("summary all-time coverage rollup key proof hydration failed")?;
+                summary_projection_all_time_manifest_scope_coverage(
+                    archive,
+                    replay,
+                    page.account_manifest_refreshed_paths
+                        .contains(archive.file_path()),
+                    account_ids,
+                    &hourly_rollup_totals,
+                )?
+            } else {
+                // Legacy manifests have no finite range. A replay marker is still required, but
+                // there are no concrete bucket keys to validate in this bounded proof page.
+                (
+                    archive.has_materialized_historical_rollups() && replay.overall,
+                    archive.has_materialized_historical_rollups()
+                        && page
+                            .account_manifest_refreshed_paths
+                            .contains(archive.file_path())
+                        && replay.account_stats
+                        && replay.usage_breakdown,
+                )
+            };
+        global_complete &= archive_global_complete;
+        account_complete &= archive_account_complete;
         if !global_complete && !account_complete {
             break;
         }
@@ -10937,6 +11035,765 @@ pub(crate) async fn advance_summary_all_time_coverage_checkpoint(
         global_complete,
         account_complete,
     })
+}
+
+const SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE: &str = "all";
+const SUMMARY_PROJECTION_ALL_TIME_ROLLUP_PAGE_SIZE: i64 = 512;
+// Coverage proof pages are deliberately smaller than the normal manifest hydration chunk. Each
+// archive range is checked against its concrete compact rollup keys, keeping proof memory and
+// query work bounded even when thousands of manifests share one retention horizon.
+const SUMMARY_PROJECTION_ALL_TIME_MANIFEST_PROOF_PAGE_SIZE: usize = 32;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct SummaryAllTimeProjectionCheckpointRow {
+    live_high_watermark_id: i64,
+    rollup_live_cursor: i64,
+    account_rollup_live_cursor: Option<i64>,
+    manifest_high_watermark_id: Option<i64>,
+    durable_terminal_sequence_watermark: i64,
+    global_manifest_next_id: i64,
+    account_manifest_next_id: i64,
+    global_manifest_complete: i64,
+    account_manifest_complete: i64,
+    global_rollup_next_rowid: i64,
+    account_rollup_next_rowid: i64,
+    global_rollup_complete: i64,
+    account_rollup_complete: i64,
+    account_unavailable: i64,
+    global_total_count: i64,
+    global_success_count: i64,
+    global_failure_count: i64,
+    global_total_tokens: i64,
+    global_total_cost: f64,
+    global_non_success_cost: f64,
+}
+
+impl SummaryAllTimeProjectionCheckpointRow {
+    fn generation_fence(&self) -> SummaryProjectionGenerationFence {
+        SummaryProjectionGenerationFence {
+            live_high_watermark_id: self.live_high_watermark_id,
+            rollup_live_cursor: self.rollup_live_cursor,
+            account_rollup_live_cursor: self.account_rollup_live_cursor,
+            completed_manifest_high_watermark_id: self.manifest_high_watermark_id,
+            durable_terminal_sequence_watermark: self.durable_terminal_sequence_watermark.max(0)
+                as u64,
+        }
+    }
+
+    fn global_ready(&self) -> bool {
+        self.global_manifest_complete != 0 && self.global_rollup_complete != 0
+    }
+
+    fn account_ready(&self) -> bool {
+        self.account_unavailable == 0
+            && self.account_manifest_complete != 0
+            && self.account_rollup_complete != 0
+    }
+
+    fn global_totals(&self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.global_total_count,
+            success_count: self.global_success_count,
+            failure_count: self.global_failure_count,
+            total_tokens: self.global_total_tokens,
+            total_cost: self.global_total_cost,
+            non_success_cost: self.global_non_success_cost,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryAllTimeCheckpointGlobalRollupRow {
+    rowid: i64,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+}
+
+impl SummaryAllTimeCheckpointGlobalRollupRow {
+    fn totals(&self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.total_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_tokens: self.total_tokens,
+            total_cost: self.total_cost,
+            non_success_cost: self.non_success_cost,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryAllTimeCheckpointAccountRollupRow {
+    rowid: i64,
+    upstream_account_id: i64,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+}
+
+impl SummaryAllTimeCheckpointAccountRollupRow {
+    fn totals(&self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.total_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_tokens: self.total_tokens,
+            total_cost: self.total_cost,
+            non_success_cost: self.non_success_cost,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryAllTimeCheckpointAccountTotalsRow {
+    upstream_account_id: i64,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    non_success_cost: f64,
+}
+
+impl SummaryAllTimeCheckpointAccountTotalsRow {
+    fn totals(self) -> StatsTotals {
+        StatsTotals {
+            total_count: self.total_count,
+            success_count: self.success_count,
+            failure_count: self.failure_count,
+            total_tokens: self.total_tokens,
+            total_cost: self.total_cost,
+            non_success_cost: self.non_success_cost,
+        }
+    }
+}
+
+async fn summary_projection_all_time_staged_recovery_required(pool: &Pool<Sqlite>) -> Result<bool> {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    )
+    .fetch_one(pool)
+    .await
+    .context("summary all-time staged recovery admission count failed")?;
+    Ok(count > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES as i64)
+}
+
+async fn load_summary_all_time_projection_checkpoint(
+    pool: &Pool<Sqlite>,
+) -> Result<Option<SummaryAllTimeProjectionCheckpointRow>> {
+    sqlx::query_as::<_, SummaryAllTimeProjectionCheckpointRow>(
+        "SELECT live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
+                manifest_high_watermark_id, durable_terminal_sequence_watermark, \
+                global_manifest_next_id, account_manifest_next_id, global_manifest_complete, \
+                account_manifest_complete, global_rollup_next_rowid, account_rollup_next_rowid, \
+                global_rollup_complete, account_rollup_complete, account_unavailable, \
+                global_total_count, global_success_count, global_failure_count, global_total_tokens, \
+                global_total_cost, global_non_success_cost \
+         FROM summary_all_time_projection_checkpoint WHERE scope = ?1",
+    )
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .fetch_optional(pool)
+    .await
+    .context("summary all-time projection checkpoint hydration failed")
+}
+
+async fn reset_summary_all_time_projection_checkpoint(
+    pool: &Pool<Sqlite>,
+    generation_fence: SummaryProjectionGenerationFence,
+) -> Result<SummaryAllTimeProjectionCheckpointRow> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .context("summary all-time projection checkpoint reset transaction failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_account_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection account checkpoint reset failed")?;
+    sqlx::query(
+        "INSERT INTO summary_all_time_projection_checkpoint \
+         (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
+          manifest_high_watermark_id, durable_terminal_sequence_watermark) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(scope) DO UPDATE SET \
+           live_high_watermark_id = excluded.live_high_watermark_id, \
+           rollup_live_cursor = excluded.rollup_live_cursor, \
+           account_rollup_live_cursor = excluded.account_rollup_live_cursor, \
+           manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
+           durable_terminal_sequence_watermark = excluded.durable_terminal_sequence_watermark, \
+           global_manifest_next_id = 0, account_manifest_next_id = 0, \
+           global_manifest_complete = 0, account_manifest_complete = 0, \
+           global_rollup_next_rowid = 0, account_rollup_next_rowid = 0, \
+           global_rollup_complete = 0, account_rollup_complete = 0, account_unavailable = 0, \
+           global_total_count = 0, global_success_count = 0, global_failure_count = 0, \
+           global_total_tokens = 0, global_total_cost = 0, global_non_success_cost = 0, \
+           updated_at = datetime('now')",
+    )
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .bind(generation_fence.live_high_watermark_id)
+    .bind(generation_fence.rollup_live_cursor)
+    .bind(generation_fence.account_rollup_live_cursor)
+    .bind(generation_fence.completed_manifest_high_watermark_id)
+    .bind(
+        generation_fence
+            .durable_terminal_sequence_watermark
+            .min(i64::MAX as u64) as i64,
+    )
+    .execute(&mut *transaction)
+    .await
+    .context("summary all-time projection checkpoint reset failed")?;
+    transaction
+        .commit()
+        .await
+        .context("summary all-time projection checkpoint reset commit failed")?;
+    load_summary_all_time_projection_checkpoint(pool)
+        .await?
+        .ok_or_else(|| anyhow!("summary all-time projection checkpoint disappeared after reset"))
+}
+
+async fn advance_summary_all_time_projection_manifest_scope(
+    pool: &Pool<Sqlite>,
+    checkpoint: &SummaryAllTimeProjectionCheckpointRow,
+    account_scope: bool,
+) -> Result<()> {
+    let complete = if account_scope {
+        checkpoint.account_manifest_complete != 0
+    } else {
+        checkpoint.global_manifest_complete != 0
+    };
+    if complete {
+        return Ok(());
+    }
+    let Some(high_watermark_id) = checkpoint.manifest_high_watermark_id else {
+        let column = if account_scope {
+            "account_manifest_complete"
+        } else {
+            "global_manifest_complete"
+        };
+        sqlx::query(&format!(
+            "UPDATE summary_all_time_projection_checkpoint SET {column} = 1, updated_at = datetime('now') WHERE scope = ?1"
+        ))
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(pool)
+        .await
+        .context("summary all-time projection empty manifest checkpoint advance failed")?;
+        return Ok(());
+    };
+    let after_id = if account_scope {
+        checkpoint.account_manifest_next_id
+    } else {
+        checkpoint.global_manifest_next_id
+    };
+    let page = load_summary_projection_boundary_manifest_page_with_limit(
+        pool,
+        None,
+        (after_id > 0).then_some(after_id),
+        high_watermark_id,
+        SUMMARY_PROJECTION_ALL_TIME_MANIFEST_PROOF_PAGE_SIZE,
+    )
+    .await?;
+    let column = if account_scope {
+        "account_manifest_complete"
+    } else {
+        "global_manifest_complete"
+    };
+    let next_column = if account_scope {
+        "account_manifest_next_id"
+    } else {
+        "global_manifest_next_id"
+    };
+    if page.archives.is_empty() {
+        sqlx::query(&format!(
+            "UPDATE summary_all_time_projection_checkpoint SET {column} = 1, updated_at = datetime('now') WHERE scope = ?1"
+        ))
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(pool)
+        .await
+        .context("summary all-time projection manifest completion checkpoint failed")?;
+        return Ok(());
+    }
+    let (global_exact, account_exact) =
+        summary_all_time_coverage_page_is_exact(pool, &page).await?;
+    let scope_exact = if account_scope {
+        account_exact
+    } else {
+        global_exact
+    };
+    if !scope_exact {
+        debug!(
+            account_scope,
+            manifest_count = page.archives.len(),
+            "summary all-time projection manifest page is not exact yet"
+        );
+        return Ok(());
+    }
+    let next_after_id = page
+        .next_after_id
+        .expect("non-empty summary all-time projection manifest page has a seek cursor");
+    sqlx::query(&format!(
+        "UPDATE summary_all_time_projection_checkpoint \
+         SET {next_column} = ?1, updated_at = datetime('now') WHERE scope = ?2"
+    ))
+    .bind(next_after_id)
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .execute(pool)
+    .await
+    .context("summary all-time projection manifest checkpoint advance failed")?;
+    debug!(
+        account_scope,
+        manifest_count = page.archives.len(),
+        "summary all-time projection manifest checkpoint advanced"
+    );
+    Ok(())
+}
+
+async fn advance_summary_all_time_projection_global_rollup(
+    pool: &Pool<Sqlite>,
+    checkpoint: &SummaryAllTimeProjectionCheckpointRow,
+) -> Result<()> {
+    if checkpoint.global_rollup_complete != 0 {
+        return Ok(());
+    }
+    let rows = sqlx::query_as::<_, SummaryAllTimeCheckpointGlobalRollupRow>(
+        "SELECT rowid, total_count, success_count, failure_count, total_tokens, total_cost, \
+                COALESCE(non_success_cost, 0.0) AS non_success_cost \
+         FROM invocation_rollup_hourly WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+    )
+    .bind(checkpoint.global_rollup_next_rowid)
+    .bind(SUMMARY_PROJECTION_ALL_TIME_ROLLUP_PAGE_SIZE)
+    .fetch_all(pool)
+    .await
+    .context("summary all-time projection global rollup page hydration failed")?;
+    if rows.is_empty() {
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint \
+             SET global_rollup_complete = 1, updated_at = datetime('now') WHERE scope = ?1",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(pool)
+        .await
+        .context("summary all-time projection global rollup completion failed")?;
+        return Ok(());
+    }
+    let totals = rows.iter().fold(StatsTotals::default(), |totals, row| {
+        totals.add(row.totals())
+    });
+    let next_rowid = rows
+        .last()
+        .expect("non-empty global rollup page has a rowid")
+        .rowid;
+    sqlx::query(
+        "UPDATE summary_all_time_projection_checkpoint SET \
+           global_rollup_next_rowid = ?1, \
+           global_total_count = global_total_count + ?2, \
+           global_success_count = global_success_count + ?3, \
+           global_failure_count = global_failure_count + ?4, \
+           global_total_tokens = global_total_tokens + ?5, \
+           global_total_cost = global_total_cost + ?6, \
+           global_non_success_cost = global_non_success_cost + ?7, \
+           updated_at = datetime('now') WHERE scope = ?8",
+    )
+    .bind(next_rowid)
+    .bind(totals.total_count)
+    .bind(totals.success_count)
+    .bind(totals.failure_count)
+    .bind(totals.total_tokens)
+    .bind(totals.total_cost)
+    .bind(totals.non_success_cost)
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .execute(pool)
+    .await
+    .context("summary all-time projection global rollup checkpoint advance failed")?;
+    Ok(())
+}
+
+async fn advance_summary_all_time_projection_account_rollup(
+    pool: &Pool<Sqlite>,
+    checkpoint: &SummaryAllTimeProjectionCheckpointRow,
+) -> Result<()> {
+    if checkpoint.account_rollup_complete != 0 || checkpoint.account_unavailable != 0 {
+        return Ok(());
+    }
+    let rows = sqlx::query_as::<_, SummaryAllTimeCheckpointAccountRollupRow>(
+        "SELECT rowid, upstream_account_id, total_count, success_count, failure_count, \
+                total_tokens, total_cost, COALESCE(non_success_cost, 0.0) AS non_success_cost \
+         FROM upstream_account_stats_hourly \
+         WHERE rowid > ?1 AND upstream_account_id > 0 ORDER BY rowid ASC LIMIT ?2",
+    )
+    .bind(checkpoint.account_rollup_next_rowid)
+    .bind(SUMMARY_PROJECTION_ALL_TIME_ROLLUP_PAGE_SIZE)
+    .fetch_all(pool)
+    .await
+    .context("summary all-time projection account rollup page hydration failed")?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .context("summary all-time projection account rollup transaction failed")?;
+    if rows.is_empty() {
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint \
+             SET account_rollup_complete = 1, updated_at = datetime('now') WHERE scope = ?1",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection account rollup completion failed")?;
+        transaction
+            .commit()
+            .await
+            .context("summary all-time projection account rollup completion commit failed")?;
+        return Ok(());
+    }
+    for row in &rows {
+        let totals = row.totals();
+        sqlx::query(
+            "INSERT INTO summary_all_time_projection_account_checkpoint \
+             (scope, upstream_account_id, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(scope, upstream_account_id) DO UPDATE SET \
+               total_count = total_count + excluded.total_count, \
+               success_count = success_count + excluded.success_count, \
+               failure_count = failure_count + excluded.failure_count, \
+               total_tokens = total_tokens + excluded.total_tokens, \
+               total_cost = total_cost + excluded.total_cost, \
+               non_success_cost = non_success_cost + excluded.non_success_cost",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .bind(row.upstream_account_id)
+        .bind(totals.total_count)
+        .bind(totals.success_count)
+        .bind(totals.failure_count)
+        .bind(totals.total_tokens)
+        .bind(totals.total_cost)
+        .bind(totals.non_success_cost)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection account rollup accumulation failed")?;
+    }
+    let account_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM summary_all_time_projection_account_checkpoint WHERE scope = ?1",
+    )
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .fetch_one(&mut *transaction)
+    .await
+    .context("summary all-time projection account checkpoint count failed")?;
+    let next_rowid = rows
+        .last()
+        .expect("non-empty account rollup page has a rowid")
+        .rowid;
+    if account_count > SUMMARY_PROJECTION_MAX_ACCOUNTS as i64 {
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint SET \
+             account_unavailable = 1, account_rollup_complete = 1, \
+             updated_at = datetime('now') WHERE scope = ?1",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection account cardinality checkpoint failed")?;
+    } else {
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint SET \
+             account_rollup_next_rowid = ?1, updated_at = datetime('now') WHERE scope = ?2",
+        )
+        .bind(next_rowid)
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection account rollup checkpoint advance failed")?;
+    }
+    transaction
+        .commit()
+        .await
+        .context("summary all-time projection account rollup checkpoint commit failed")?;
+    Ok(())
+}
+
+async fn load_summary_projection_generation_fence(
+    state: &AppState,
+) -> Result<SummaryProjectionGenerationFence> {
+    let durable_terminal_sequence_watermark = state
+        .dashboard_activity_snapshot_cache
+        .lock()
+        .await
+        .read_model
+        .settled_terminal_sequence;
+    Ok(SummaryProjectionGenerationFence {
+        live_high_watermark_id: load_summary_projection_live_high_watermark(&state.pool).await?,
+        rollup_live_cursor: load_summary_projection_rollup_live_cursor(&state.pool).await?,
+        account_rollup_live_cursor: load_summary_projection_account_rollup_live_cursor(&state.pool)
+            .await?,
+        completed_manifest_high_watermark_id: summary_projection_completed_manifest_high_watermark(
+            &state.pool,
+        )
+        .await?,
+        durable_terminal_sequence_watermark,
+    })
+}
+
+async fn advance_summary_all_time_projection_checkpoint(
+    state: &AppState,
+) -> Result<SummaryAllTimeProjectionCheckpointRow> {
+    let generation_fence = load_summary_projection_generation_fence(state).await?;
+    let checkpoint = match load_summary_all_time_projection_checkpoint(&state.pool).await? {
+        Some(checkpoint) if checkpoint.generation_fence() == generation_fence => checkpoint,
+        Some(_) => {
+            debug!(
+                "summary all-time projection checkpoint generation changed; restarting staged recovery"
+            );
+            reset_summary_all_time_projection_checkpoint(&state.pool, generation_fence).await?
+        }
+        None => reset_summary_all_time_projection_checkpoint(&state.pool, generation_fence).await?,
+    };
+    advance_summary_all_time_projection_manifest_scope(&state.pool, &checkpoint, false).await?;
+    let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
+        .await?
+        .expect("summary all-time projection checkpoint exists after global manifest advance");
+    advance_summary_all_time_projection_manifest_scope(&state.pool, &checkpoint, true).await?;
+    let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
+        .await?
+        .expect("summary all-time projection checkpoint exists after account manifest advance");
+    advance_summary_all_time_projection_global_rollup(&state.pool, &checkpoint).await?;
+    let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
+        .await?
+        .expect("summary all-time projection checkpoint exists after global rollup advance");
+    advance_summary_all_time_projection_account_rollup(&state.pool, &checkpoint).await?;
+    let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
+        .await?
+        .expect("summary all-time projection checkpoint exists after account rollup advance");
+    if load_summary_projection_generation_fence(state).await? != generation_fence {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
+    Ok(checkpoint)
+}
+
+async fn summary_all_time_projection_checkpoint_live_tail_count(
+    pool: &Pool<Sqlite>,
+    lower_bound_id: i64,
+    upper_bound_id: i64,
+    scope: &'static str,
+) -> Result<()> {
+    if upper_bound_id <= lower_bound_id {
+        return Ok(());
+    }
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM codex_invocations WHERE id > ?1 AND id <= ?2",
+    )
+    .bind(lower_bound_id)
+    .bind(upper_bound_id)
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("summary all-time {scope} live-tail admission count failed"))?;
+    if count > summary_projection_exact_record_limit() as i64 {
+        return Err(anyhow!(
+            "summary all-time {scope} live-tail admission exceeded bounded record budget ({count} > {})",
+            summary_projection_exact_record_limit()
+        ));
+    }
+    Ok(())
+}
+
+async fn publish_summary_all_time_projection_checkpoint(
+    state: &AppState,
+    checkpoint: SummaryAllTimeProjectionCheckpointRow,
+) -> Result<()> {
+    if !checkpoint.global_ready() && !checkpoint.account_ready() {
+        return Ok(());
+    }
+    let generation_fence = checkpoint.generation_fence();
+    if load_summary_projection_generation_fence(state).await? != generation_fence {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
+    let projection = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .ok_or_else(|| {
+            anyhow!("summary all-time checkpoint requires a published rolling projection")
+        })?;
+    if projection.generation_fence != generation_fence {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
+    let mut next = Arc::unwrap_or_clone(projection);
+    let published_at = Instant::now();
+    let mut account_ids = HashSet::new();
+
+    if checkpoint.global_ready() {
+        summary_all_time_projection_checkpoint_live_tail_count(
+            &state.pool,
+            generation_fence.rollup_live_cursor,
+            generation_fence.live_high_watermark_id,
+            "global",
+        )
+        .await?;
+        let live_tail =
+            if generation_fence.live_high_watermark_id > generation_fence.rollup_live_cursor {
+                crate::stats::query_live_invocation_totals_after_id(
+                    &state.pool,
+                    InvocationSourceScope::All,
+                    generation_fence.rollup_live_cursor,
+                    generation_fence.live_high_watermark_id,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!("summary all-time staged global live-tail hydration failed: {error:?}")
+                })?
+            } else {
+                StatsTotals::default()
+            };
+        let mut totals = checkpoint.global_totals().add(live_tail);
+        let mut exact_record_ids = HashSet::new();
+        for record in next.records.iter().chain(next.current_records.iter()) {
+            if !exact_record_ids.insert(record.row.invoke_id.as_str())
+                || !summary_projection_all_time_uses_global_exact_record(
+                    record,
+                    generation_fence.rollup_live_cursor,
+                )
+            {
+                continue;
+            }
+            totals = totals.add(summary_projection_all_time_record_totals(record));
+        }
+        let mut response = totals.into_response();
+        response.non_success_cost = Some(totals.non_success_cost);
+        response.maintenance = next.maintenance.clone();
+        let in_progress = next
+            .in_progress_by_account
+            .get(&None)
+            .copied()
+            .unwrap_or_default();
+        response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+        response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+        response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+        response.in_progress_phase_counts = Some(in_progress.phase_counts);
+        next.all_time_by_account.insert(None, response);
+        next.all_time_refreshed_at = Some(published_at);
+        next.freshness.global_all_time_eligible = true;
+        next.all_time_terminal_coverage_complete = true;
+        next.all_time_terminal_sequence_watermark =
+            generation_fence.durable_terminal_sequence_watermark;
+        next.all_time_persisted_live_terminal_invoke_ids = next
+            .records
+            .iter()
+            .chain(next.current_records.iter())
+            .filter(|record| record.is_persisted_live_record)
+            .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
+            .collect();
+    }
+
+    if checkpoint.account_ready()
+        && let Some(account_rollup_live_cursor) = generation_fence.account_rollup_live_cursor
+    {
+        summary_all_time_projection_checkpoint_live_tail_count(
+            &state.pool,
+            account_rollup_live_cursor,
+            generation_fence.live_high_watermark_id,
+            "account",
+        )
+        .await?;
+        let mut account_totals = sqlx::query_as::<_, SummaryAllTimeCheckpointAccountTotalsRow>(
+            "SELECT upstream_account_id, total_count, success_count, failure_count, total_tokens, \
+                    total_cost, non_success_cost \
+             FROM summary_all_time_projection_account_checkpoint WHERE scope = ?1",
+        )
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .fetch_all(&state.pool)
+        .await
+        .context("summary all-time projection account checkpoint finalization failed")?
+        .into_iter()
+        .map(|row| (row.upstream_account_id, row.totals()))
+        .collect::<HashMap<_, _>>();
+        if generation_fence.live_high_watermark_id > account_rollup_live_cursor {
+            for (account_id, totals) in load_summary_projection_live_tail_account_totals(
+                &state.pool,
+                Some(account_rollup_live_cursor),
+                Some(generation_fence.live_high_watermark_id),
+            )
+            .await?
+            {
+                let entry = account_totals.entry(account_id).or_default();
+                *entry = entry.add(totals);
+            }
+        }
+        let mut exact_record_ids = HashSet::new();
+        for record in next.records.iter().chain(next.current_records.iter()) {
+            if !exact_record_ids.insert(record.row.invoke_id.as_str())
+                || !summary_projection_all_time_uses_account_exact_record(
+                    record,
+                    generation_fence.account_rollup_live_cursor,
+                )
+            {
+                continue;
+            }
+            let Some((account_id, totals)) = summary_projection_account_record_totals(record)
+            else {
+                continue;
+            };
+            let entry = account_totals.entry(account_id).or_default();
+            *entry = entry.add(totals);
+        }
+        if account_totals.len() > SUMMARY_PROJECTION_MAX_ACCOUNTS {
+            return Err(anyhow!(
+                "summary all-time staged account finalization exceeded bounded account budget ({})",
+                account_totals.len()
+            ));
+        }
+        for (account_id, totals) in account_totals {
+            let mut response = totals.into_response();
+            response.non_success_cost = Some(totals.non_success_cost);
+            response.maintenance = next.maintenance.clone();
+            let in_progress = next
+                .in_progress_by_account
+                .get(&Some(account_id))
+                .copied()
+                .unwrap_or_default();
+            response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+            response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+            response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+            response.in_progress_phase_counts = Some(in_progress.phase_counts);
+            next.all_time_by_account.insert(Some(account_id), response);
+            next.all_time_account_refreshed_at
+                .insert(account_id, published_at);
+            next.freshness.account_all_time_eligible.insert(account_id);
+            next.all_time_account_terminal_sequence_watermarks.insert(
+                account_id,
+                generation_fence.durable_terminal_sequence_watermark,
+            );
+            account_ids.insert(account_id);
+        }
+        next.all_time_account_ids_with_projection_data
+            .extend(account_ids.iter().copied());
+        next.known_account_ids.extend(account_ids.iter().copied());
+        next.all_time_account_manifest_admission_blocked_at = None;
+    } else if checkpoint.account_unavailable != 0 {
+        next.all_time_account_manifest_admission_blocked_at = Some(published_at);
+    }
+
+    next.all_time_oldest_account_refreshed_at =
+        next.all_time_account_refreshed_at.values().copied().min();
+    next.revision = state
+        .subscription_hub
+        .next_summary_projection_revision()
+        .await;
+    if load_summary_projection_generation_fence(state).await? != generation_fence {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
+    state.subscription_hub.store_summary_projection(next).await;
+    debug!(
+        global_ready = checkpoint.global_ready(),
+        account_ready = checkpoint.account_ready(),
+        "summary all-time staged projection published"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11095,6 +11952,23 @@ async fn load_summary_projection_boundary_manifest_page(
     after_id: Option<i64>,
     high_watermark_id: i64,
 ) -> Result<SummaryProjectionBoundaryManifestPage> {
+    load_summary_projection_boundary_manifest_page_with_limit(
+        pool,
+        range,
+        after_id,
+        high_watermark_id,
+        SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE,
+    )
+    .await
+}
+
+async fn load_summary_projection_boundary_manifest_page_with_limit(
+    pool: &Pool<Sqlite>,
+    range: Option<ExactUtcRange>,
+    after_id: Option<i64>,
+    high_watermark_id: i64,
+    page_size: usize,
+) -> Result<SummaryProjectionBoundaryManifestPage> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT id, file_path, coverage_start_at, coverage_end_at, \
                 historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at \
@@ -11116,7 +11990,7 @@ async fn load_summary_projection_boundary_manifest_page(
     }
     let rows = query
         .push(" ORDER BY id ASC LIMIT ")
-        .push_bind(SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE as i64)
+        .push_bind(page_size as i64)
         .build_query_as::<SummaryProjectionBoundaryManifestPageRow>()
         .fetch_all(pool)
         .await
@@ -30536,6 +31410,78 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_all_time_coverage_page_requires_materialized_rollup_keys() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let start = Utc::now() - ChronoDuration::hours(3);
+        let end = start + ChronoDuration::hours(1);
+        let archive_path = "/tmp/summary-coverage-proof-missing-rollup.sqlite.gz";
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+              historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+             VALUES ('codex_invocations', '2026-01', ?1, 'summary-coverage-proof-missing-rollup', 1, \
+                     'completed', ?2, ?3, datetime('now'), datetime('now'), datetime('now'))",
+        )
+        .bind(archive_path)
+        .bind(db_occurred_at_lower_bound(start))
+        .bind(db_occurred_at_upper_bound(end))
+        .execute(&state.pool)
+        .await
+        .expect("insert materialized archive manifest");
+        let archive_id: i64 =
+            sqlx::query_scalar("SELECT id FROM archive_batches WHERE file_path = ?1")
+                .bind(archive_path)
+                .fetch_one(&state.pool)
+                .await
+                .expect("load archive manifest id");
+        sqlx::query(
+            "INSERT INTO archive_batch_upstream_activity \
+             (archive_batch_id, account_id, last_activity_at) VALUES (?1, 42, ?2)",
+        )
+        .bind(archive_id)
+        .bind(db_occurred_at_lower_bound(start))
+        .execute(&state.pool)
+        .await
+        .expect("insert account manifest proof");
+        for target in [
+            HOURLY_ROLLUP_TARGET_INVOCATIONS,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        ] {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay \
+                 (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, \
+                 'summary-coverage-proof-missing-rollup')",
+            )
+            .bind(target)
+            .bind(archive_path)
+            .execute(&state.pool)
+            .await
+            .expect("insert replay proof");
+        }
+
+        let page = SummaryProjectionBoundaryManifestPage {
+            archives: vec![
+                crate::stats::ArchiveBatchPathRow::with_coverage_and_historical_rollups(
+                    archive_path,
+                    Some(db_occurred_at_lower_bound(start)),
+                    Some(db_occurred_at_upper_bound(end)),
+                    Some("now".to_string()),
+                ),
+            ],
+            account_manifest_refreshed_paths: HashSet::from([archive_path.to_string()]),
+            next_after_id: None,
+        };
+        let coverage = summary_all_time_coverage_page_is_exact(&state.pool, &page)
+            .await
+            .expect("evaluate materialized coverage proof");
+        assert_eq!(coverage, (false, false));
+    }
+
+    #[tokio::test]
     async fn summary_projection_all_time_finalization_uses_its_independent_stage_budget() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -30616,6 +31562,81 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_all_time_generation_change_cancels_and_rebuilds_rolling() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-all-time-generation-before', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed bootstrap projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create finalization interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
+        );
+        let refresh_state = state.clone();
+        let refresh =
+            tokio::spawn(async move { refresh_summary_snapshots(refresh_state.as_ref()).await });
+
+        tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
+            .await
+            .expect("all-time reconciliation reaches its staging point");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-all-time-generation-after', datetime('now'), 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("mutate the durable generation while all-time reconciliation is paused");
+
+        let result = tokio::time::timeout(
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL + SUMMARY_PROJECTION_BUILD_DEADLINE,
+            refresh,
+        )
+        .await
+        .expect(
+            "generation change must cancel all-time reconciliation and hand off rolling recovery",
+        );
+        clear_summary_projection_test_interleave();
+        result
+            .expect("join refresh task")
+            .expect("publish rebuilt rolling projection");
+
+        state.pool.close().await;
+        let Json(current) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("current must remain exact and memory-only after all-time cancellation");
+        assert_eq!(current.total_count, 2);
+        assert_eq!(current.total_tokens, 40);
+    }
+
+    #[tokio::test]
     async fn summary_projection_hydration_is_single_flight_per_hub() {
         let first = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -30660,7 +31681,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_handler_previous7d_keeps_last_good_without_archive_replay() {
+    async fn summary_handler_previous7d_localizes_missing_archive_usage_replay() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -30744,19 +31765,13 @@ mod request_compression_query_tests {
             .expect("record non-usage archive replay coverage");
         }
 
-        assert!(
-            refresh_summary_snapshots(state.as_ref()).await.is_err(),
-            "missing usage replay must retain the published exact last-good revision"
+        refresh_summary_snapshots(state.as_ref()).await.expect(
+            "refresh publishes independent exact selections with the archive gap localized",
         );
         state.pool.close().await;
 
-        let Json(actual) = fetch_summary(State(state), Query(query))
-            .await
-            .expect("previous7d handler must remain memory-only after archive refresh failure");
-        assert_eq!(actual.total_count, last_good.total_count);
-        assert_eq!(actual.total_tokens, last_good.total_tokens);
-        assert_eq!(actual.total_cost, last_good.total_cost);
-        assert_eq!(actual.usage_breakdown, last_good.usage_breakdown);
+        let response = fetch_summary(State(state), Query(query)).await;
+        assert!(matches!(response, Err(ApiError::Unavailable(_))));
     }
 
     #[tokio::test]
@@ -32318,6 +33333,9 @@ mod request_compression_query_tests {
         hydrate_summary_snapshots(state.as_ref())
             .await
             .expect("hydrate live-only all-time projection");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("finalize exact live-only all-time projection");
         state.pool.close().await;
 
         let Json(response) = fetch_summary(

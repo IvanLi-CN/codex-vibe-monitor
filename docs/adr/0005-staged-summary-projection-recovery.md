@@ -22,18 +22,19 @@ recoverable.
 - Keep `all` unavailable until its independent exact proof and aggregate are
   complete. No selection returns partial, approximate, or request-time rebuilt
   data.
-- Persist a global and account all-time coverage checkpoint with the manifest
-  high-watermark, seek cursor, and completion state. A worker advances one
-  bounded manifest page only after its materialization and replay proof is
-  complete. A changed high-watermark invalidates the previous generation.
-- Finalize and atomically swap all-time responses only after their checkpointed
-  coverage is complete. A deadline, pressure defer, or finalization failure
-  retains the current Bootstrap or last-good Projection.
+- Persist a global and account all-time checkpoint with the complete generation
+  fence, manifest-proof seek cursors, rollup seek cursors, and committed
+  aggregate accumulators. Each microbatch reads one bounded page and commits
+  its accumulator and next cursor together. A changed fence invalidates the
+  stale generation before later work can publish it.
+- Finalize and atomically swap each exact all-time scope only from its completed
+  checkpointed aggregate. A deadline, pressure defer, generation change, or
+  finalization failure retains the current Bootstrap or last-good Projection.
 - A cadence may renew the rolling freshness of an already Exact-Ready
-  Projection only after the complete generation fence still matches. All-time
-  finalization performs the same bounded check while it runs, so historical
-  convergence cannot stale a published rolling response. A mismatch receives a
-  new bounded reconciliation; it never extends the older coverage claim.
+  Projection only after the complete generation fence still matches. An
+  all-time mismatch cancels its build, releases its refresh ownership, and
+  hands off to a bounded rolling rebuild. Historical convergence therefore
+  cannot stale a published rolling response or publish an older coverage claim.
 - Keep the resident preview-byte budget, source-admission limits, HTTP/SSE wire
   shape, and request-time zero SQLite/archive/file I/O contract unchanged.
 

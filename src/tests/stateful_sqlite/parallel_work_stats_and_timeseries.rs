@@ -22810,22 +22810,28 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .expect("bootstrap must publish the exact current prefix before all-time reconciliation");
     assert_eq!(current.total_count, 1);
 
-    let first_checkpoint = advance_summary_all_time_coverage_checkpoint(&state.pool)
+    state
+        .subscription_hub
+        .note_summary_http_interest(true)
+        .await;
+    refresh_summary_snapshots(state.as_ref())
         .await
-        .expect("advance the first all-time coverage page");
-    assert!(
-        !first_checkpoint.is_complete(),
-        "one bounded page must not claim a 4097-manifest generation is complete"
-    );
-    let global_checkpoint = load_summary_all_time_coverage_checkpoint(
-        &state.pool,
-        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL,
+        .expect("advance the first all-time staged checkpoint page");
+    let first_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COALESCE(manifest_high_watermark_id, 0), global_manifest_next_id, global_rollup_next_rowid \
+         FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
     )
+    .fetch_one(&state.pool)
     .await
-    .expect("load global all-time coverage checkpoint")
-    .expect("persist global all-time coverage checkpoint");
-    assert!(global_checkpoint.next_manifest_id > 0);
-    assert_eq!(global_checkpoint.completed, 0);
+    .expect("persist first staged all-time checkpoint");
+    assert!(
+        first_checkpoint.1 > 0,
+        "first manifest page commits its seek cursor"
+    );
+    assert!(
+        first_checkpoint.2 > 0,
+        "first global rollup page commits its seek cursor"
+    );
 
     sqlx::query(
         "INSERT INTO archive_batches \
@@ -22872,41 +22878,61 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .execute(&state.pool)
     .await
     .expect("extend the account compact rollup for the next generation");
-    let reset_progress = advance_summary_all_time_coverage_checkpoint(&state.pool)
+    refresh_summary_snapshots(state.as_ref())
         .await
-        .expect("reset coverage checkpoint at the later manifest high-watermark");
-    assert!(!reset_progress.is_complete());
-    let reset_checkpoint = load_summary_all_time_coverage_checkpoint(
-        &state.pool,
-        SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL,
+        .expect("restart staged checkpoint at the later manifest generation");
+    let reset_checkpoint = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COALESCE(manifest_high_watermark_id, 0), global_manifest_next_id, global_rollup_next_rowid \
+         FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
     )
+    .fetch_one(&state.pool)
     .await
-    .expect("load reset global all-time coverage checkpoint")
-    .expect("persist reset global all-time coverage checkpoint");
+    .expect("load reset staged all-time checkpoint");
+    assert!(reset_checkpoint.0 > first_checkpoint.0);
     assert!(
-        reset_checkpoint.manifest_high_watermark_id > global_checkpoint.manifest_high_watermark_id
+        reset_checkpoint.1 <= first_checkpoint.1 && reset_checkpoint.2 <= first_checkpoint.2,
+        "a newer generation clears stale manifest and rollup cursors before resuming"
     );
-    assert!(
-        reset_checkpoint.next_manifest_id <= global_checkpoint.next_manifest_id,
-        "a newer generation restarts from a committed page instead of extending stale coverage"
-    );
-    let mut coverage_complete = false;
-    for _ in 0..16 {
-        coverage_complete = advance_summary_all_time_coverage_checkpoint(&state.pool)
+    let mut completed = false;
+    // Staged proof pages contain only a bounded set of manifests, so convergence requires one
+    // refresh per page rather than a single monolithic pass over the full archive set.
+    for _ in 0..200 {
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        refresh_summary_snapshots(state.as_ref())
             .await
-            .expect("advance bounded all-time coverage checkpoint")
-            .is_complete();
-        if coverage_complete {
+            .expect("resume bounded staged all-time recovery");
+        let checkpoint = sqlx::query_as::<_, (i64, i64, i64, i64)>(
+            "SELECT global_manifest_complete, account_manifest_complete, global_rollup_complete, account_rollup_complete \
+             FROM summary_all_time_projection_checkpoint WHERE scope = 'all'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load staged all-time completion state");
+        completed = checkpoint == (1, 1, 1, 1);
+        if completed {
             break;
         }
     }
     assert!(
-        coverage_complete,
-        "paged all-time coverage must converge from its stored seek cursor"
+        completed,
+        "staged all-time recovery must converge from committed manifest and rollup cursors"
     );
-    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
-        .await
-        .expect("build exact all-time projection after coverage reconciliation");
+    let Json(all_time) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("publish exact all-time projection after staged reconciliation");
+    assert_eq!(all_time.total_count, MANIFEST_COUNT + 2);
+    assert_eq!(all_time.total_tokens, (MANIFEST_COUNT + 1) * 17 + 23);
 
     // A rolling-only refresh must retain the fully hydrated all-time snapshot without reopening
     // its large manifest set.

@@ -121,11 +121,12 @@ all-time selection ready.
 _Avoid_: stale-source renewal, hidden full refresh, broader stale budget
 
 **All-Time Coverage Checkpoint**:
-The durable per-scope seek cursor for bounded manifest-proof reconciliation at a
-Projection Generation Fence. It advances only after a whole page has exact
-materialization and replay evidence, and a restart resumes from its committed
-cursor.
-_Avoid_: full-history startup retry, in-memory-only progress
+The durable generation-fenced state for bounded all-time reconciliation. It
+contains independent global/account manifest-proof cursors, rollup seek cursors
+and committed aggregate accumulators. A restart resumes from the last complete
+microbatch; a changed fence discards only that stale generation before the next
+bounded page begins.
+_Avoid_: full-history restart, mixed-generation aggregate, in-memory-only progress
 
 **Exact-Ready**:
 The state in which a requested Summary selection has all required source and
