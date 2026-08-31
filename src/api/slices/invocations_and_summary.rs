@@ -22,7 +22,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use std::{fs, io};
-use tracing::debug;
+use tracing::{debug, info};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11277,7 +11277,7 @@ async fn build_summary_projection_once(
     durable_terminal_sequence_watermark: u64,
 ) -> Result<SummaryProjection> {
     let build_started_at = Instant::now();
-    debug!(
+    info!(
         ?mode,
         stage = "rollup_load",
         "summary projection build stage started"
@@ -11324,7 +11324,7 @@ async fn build_summary_projection_once(
         load_summary_projection_rollup_totals_in_range(pool, Some(rollup_range)).await?;
     let hourly_rollup_usage =
         load_summary_projection_rollup_usage_in_range(pool, Some(rollup_range)).await?;
-    debug!(
+    info!(
         ?mode,
         stage = "rollup_load",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11439,7 +11439,7 @@ async fn build_summary_projection_once(
     };
     let live_high_watermark_id = load_summary_projection_live_high_watermark(pool).await?;
     let mut live_preview_cache = HashMap::<i64, UpstreamAccountInvocationPreviewRow>::new();
-    debug!(
+    info!(
         ?mode,
         stage = "live_exact_admission",
         "summary projection build stage started"
@@ -11464,7 +11464,7 @@ async fn build_summary_projection_once(
         },
     )
     .await?;
-    debug!(
+    info!(
         ?mode,
         stage = "live_exact_admission",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11505,7 +11505,7 @@ async fn build_summary_projection_once(
         ));
     }
     let recent_candidate_limit = state.config.list_limit_max.saturating_add(1);
-    debug!(
+    info!(
         ?mode,
         stage = "current_index_admission",
         "summary projection build stage started"
@@ -11537,7 +11537,7 @@ async fn build_summary_projection_once(
         Ok(admission) => admission,
         Err(error) => return Err(error),
     };
-    debug!(
+    info!(
         ?mode,
         stage = "current_index_admission",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11669,7 +11669,7 @@ async fn build_summary_projection_once(
         start: archive_start,
         end,
     };
-    debug!(
+    info!(
         ?mode,
         stage = "boundary_manifest_admission",
         "summary projection build stage started"
@@ -11681,7 +11681,7 @@ async fn build_summary_projection_once(
             SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES,
         )
         .await?;
-    debug!(
+    info!(
         ?mode,
         stage = "boundary_manifest_admission",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11876,7 +11876,7 @@ async fn build_summary_projection_once(
         end: live_start,
     };
     if historical_live_range.start < historical_live_range.end {
-        debug!(
+        info!(
             ?mode,
             stage = "historical_live_coverage",
             "summary projection build stage started"
@@ -11896,7 +11896,7 @@ async fn build_summary_projection_once(
             &mut live_preview_cache,
         )
         .await?;
-        debug!(
+        info!(
             ?mode,
             stage = "historical_live_coverage",
             elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11911,7 +11911,7 @@ async fn build_summary_projection_once(
     // resident concurrently. Immutable completed archives reuse the cached account set on later
     // refreshes; only a new path pays the discovery pass.
     let mut archive_actual_coverage_ranges = archive_coverage_ranges_by_file.clone();
-    debug!(
+    info!(
         ?mode,
         stage = "archive_account_discovery",
         "summary projection build stage started"
@@ -12042,7 +12042,7 @@ async fn build_summary_projection_once(
         archive_pool.close().await;
         drop(temp_cleanup);
     }
-    debug!(
+    info!(
         ?mode,
         stage = "archive_account_discovery",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -12149,7 +12149,7 @@ async fn build_summary_projection_once(
         // Page only bounded manifest metadata while planning the finite exact buckets. The raw
         // archives themselves are opened later one at a time after live boundary records have
         // been admitted; each page retains its actual replay/materialization proof.
-        debug!(
+        info!(
             ?mode,
             stage = "boundary_manifest_page_planning",
             "summary projection build stage started"
@@ -12252,7 +12252,7 @@ async fn build_summary_projection_once(
             };
             after_id = Some(next_after_id);
         }
-        debug!(
+        info!(
             ?mode,
             stage = "boundary_manifest_page_planning",
             elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -12407,7 +12407,7 @@ async fn build_summary_projection_once(
     }
     let persisted_live_ids = records_by_invoke_id.keys().cloned().collect::<HashSet<_>>();
     let mut exact_record_budget = records_by_invoke_id.len();
-    debug!(
+    info!(
         ?mode,
         stage = "boundary_archive_hydration",
         "summary projection build stage started"
@@ -12549,14 +12549,14 @@ async fn build_summary_projection_once(
             unavailable_unmaterialized_archive_current_ranges.push(archive_range);
         }
     }
-    debug!(
+    info!(
         ?mode,
         stage = "boundary_archive_hydration",
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build stage completed"
     );
     if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
-        debug!(
+        info!(
             ?mode,
             stage = "paged_boundary_archive_hydration",
             "summary projection build stage started"
@@ -12750,7 +12750,7 @@ async fn build_summary_projection_once(
             };
             after_id = Some(next_after_id);
         }
-        debug!(
+        info!(
             ?mode,
             stage = "paged_boundary_archive_hydration",
             elapsed_ms = build_started_at.elapsed().as_millis() as u64,
