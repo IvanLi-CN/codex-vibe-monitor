@@ -206,7 +206,7 @@ jobs:
           TARGET_SHA: ${{ steps.requested-target.outputs.target_sha }}
         run: |
           set -euo pipefail
-          image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"
+          image="${REGISTRY}/${GITHUB_REPOSITORY,,}:backend-test-${TARGET_SHA}"
           digest=""
           for attempt in 1 2 3; do
             digest="$(docker buildx imagetools inspect "${image}" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"' || true)"
