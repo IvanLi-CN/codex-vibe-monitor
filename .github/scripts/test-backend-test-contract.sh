@@ -6,6 +6,7 @@ dockerfile="$repo_root/Dockerfile"
 runner="$repo_root/.github/scripts/run-backend-tests.sh"
 compose_file="$repo_root/compose.backend-test.yml"
 ci_main_workflow="$repo_root/.github/workflows/ci-main.yml"
+release_workflow="$repo_root/.github/workflows/release.yml"
 
 grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
@@ -34,6 +35,21 @@ if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{
   echo 'CI Main must not publish the backend-test image with an unnormalized repository name' >&2
   exit 1
 fi
+
+if ! grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY,,}:backend-test-${TARGET_SHA}"' "$release_workflow"; then
+  echo 'expected manual release digest lookup to use the normalized backend-test image name' >&2
+  exit 1
+fi
+
+if grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"' "$release_workflow"; then
+  echo 'manual release digest lookup must not use an unnormalized repository name' >&2
+  exit 1
+fi
+
+github_repository_fixture='IvanLi-CN/Codex-Vibe-Monitor'
+target_sha_fixture='deadbeef'
+manual_image="ghcr.io/$(printf '%s' "$github_repository_fixture" | tr '[:upper:]' '[:lower:]'):backend-test-${target_sha_fixture}"
+[[ "$manual_image" == 'ghcr.io/ivanli-cn/codex-vibe-monitor:backend-test-deadbeef' ]]
 
 set +e
 missing_nextest_output="$(PATH=/usr/bin:/bin bash "$runner" --profile stateful-sqlite 2>&1)"
