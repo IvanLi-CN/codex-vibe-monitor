@@ -1,6 +1,6 @@
 {
   "app_effective_version": "2.69.3",
-  "backend_test_image_digest": "",
+  "backend_test_image_digest": "sha256:06accc7e0c4d43358a347b38435e1f5c78c321f48b69cd7349aa407a109e6156",
   "base_stable_version": "2.69.2",
   "channel_label": "channel:stable",
   "created_at": "2026-08-31T21:52:55Z",
