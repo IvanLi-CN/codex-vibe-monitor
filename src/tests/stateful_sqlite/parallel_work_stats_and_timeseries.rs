@@ -23043,6 +23043,80 @@ async fn summary_projection_keeps_30d_memory_exact_when_unreachable_rollups_exce
 }
 
 #[tokio::test]
+async fn summary_projection_paged_missing_compact_bucket_is_strictly_unavailable() {
+    let state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid test URL"))
+            .await;
+    let bucket_start = Utc
+        .timestamp_opt(
+            crate::stats::align_bucket_epoch(
+                (Utc::now() - ChronoDuration::hours(12)).timestamp(),
+                3_600,
+                0,
+            ),
+            0,
+        )
+        .single()
+        .expect("align compact coverage fixture to a full hour");
+    let coverage_start = crate::stats::db_occurred_at_lower_bound(bucket_start);
+    let coverage_end = crate::db_occurred_at_upper_bound(bucket_start + ChronoDuration::hours(1));
+
+    sqlx::query(
+        "WITH RECURSIVE manifests(ordinal) AS ( \
+            SELECT 1 UNION ALL SELECT ordinal + 1 FROM manifests WHERE ordinal < 4097 \
+         ) \
+         INSERT INTO archive_batches \
+         (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
+          historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at, created_at) \
+         SELECT 'codex_invocations', '2026-01', \
+                '/tmp/summary-paged-missing-compact-' || ordinal || '.sqlite.gz', \
+                'summary-paged-missing-compact-' || ordinal, 1, 'completed', ?1, ?2, \
+                datetime('now'), datetime('now'), datetime('now') \
+         FROM manifests",
+    )
+    .bind(&coverage_start)
+    .bind(&coverage_end)
+    .execute(&state.pool)
+    .await
+    .expect("insert paged manifests with a missing compact bucket");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) \
+             SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+             WHERE file_path GLOB '/tmp/summary-paged-missing-compact-*.sqlite.gz'",
+        )
+        .bind(target)
+        .execute(&state.pool)
+        .await
+        .expect("record complete replay markers without inventing a compact rollup key");
+    }
+
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("publish recent projection with a local compact-coverage gap");
+    state.pool.close().await;
+
+    let response = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(response, Err(ApiError::Unavailable(_))),
+        "a missing compact rollup key in a full internal hour must not return an undercounted 200"
+    );
+}
+
+#[tokio::test]
 async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     let _identity_guard = SUMMARY_PROJECTION_ARCHIVE_IDENTITY_TEST_LOCK.lock().await;
     let temp_dir = make_temp_test_dir("summary-paged-boundary-snapshot");
@@ -23358,51 +23432,64 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
     );
     state.pool.close().await;
 
-    for window in ["current", "1d"] {
-        for upstream_account_id in [None, Some(42)] {
-            let response = fetch_summary(
-                State(state.clone()),
-                Query(SummaryQuery {
-                    window: Some(window.to_string()),
-                    limit: None,
-                    time_zone: Some("UTC".to_string()),
-                    upstream_account_id,
-                }),
-            )
-            .await;
-            if window == "current" {
-                assert!(
-                    matches!(response, Err(ApiError::Unavailable(_))),
-                    "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
-                );
-                continue;
-            }
-            let Json(response) =
-                response.expect("serve the exact paged-boundary response without SQLite");
-            assert_eq!(response.total_count, 1, "{window} {upstream_account_id:?}");
-            assert_eq!(
-                response.total_tokens, 20,
-                "{window} {upstream_account_id:?}"
-            );
-            assert_f64_close(response.total_cost, 0.20);
-            if window == "1d" {
-                let model = response
-                    .usage_breakdown
-                    .expect("paged boundary usage breakdown")
-                    .models
-                    .into_iter()
-                    .find(|model| {
-                        model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high")
-                    })
-                    .expect("paged boundary model/reasoning detail");
-                let model_cost = model.costs.expect("paged boundary model costs").unknown;
-                assert!(
-                    (model_cost - 0.20).abs() < 1e-6,
-                    "{window} {upstream_account_id:?}: expected model cost 0.20, got {model_cost}",
-                );
-            }
-        }
+    for upstream_account_id in [None, Some(42)] {
+        let response = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "current {upstream_account_id:?} must not clamp an incomplete resident prefix"
+        );
     }
+
+    let Json(response) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("serve the exact global paged-boundary response without SQLite");
+    assert_eq!(response.total_count, 1);
+    assert_eq!(response.total_tokens, 20);
+    assert_f64_close(response.total_cost, 0.20);
+    let model = response
+        .usage_breakdown
+        .expect("paged boundary global usage breakdown")
+        .models
+        .into_iter()
+        .find(|model| model.model == "gpt-5" && model.reasoning_effort.as_deref() == Some("high"))
+        .expect("paged boundary model/reasoning detail");
+    let model_cost = model.costs.expect("paged boundary model costs").unknown;
+    assert!(
+        (model_cost - 0.20).abs() < 1e-6,
+        "expected model cost 0.20, got {model_cost}",
+    );
+
+    let account_response = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: Some(42),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(account_response, Err(ApiError::Unavailable(_))),
+        "a stale paged account manifest must retain an account-local unavailable proof"
+    );
     cleanup_temp_test_dir(&temp_dir);
 }
 
