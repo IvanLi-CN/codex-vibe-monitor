@@ -74,6 +74,107 @@ def make_pr(number: int, title: str, head_sha: str, labels: list[str]) -> dict[s
     }
 
 
+with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("target\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "target", cwd=repo)
+    target_sha = run("rev-parse", "HEAD", cwd=repo)
+    legacy_snapshot = {
+        "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
+        "target_sha": target_sha,
+        "pr_number": 900,
+        "pr_title": "Legacy snapshot without backend-test digest",
+        "registry": "ghcr.io",
+        "pr_head_sha": target_sha,
+        "type_label": "type:patch",
+        "channel_label": "channel:stable",
+        "release_bump": "patch",
+        "release_channel": "stable",
+        "release_enabled": True,
+        "release_prerelease": False,
+        "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+        "base_stable_version": "0.1.0",
+        "next_stable_version": "0.1.1",
+        "app_effective_version": "0.1.1",
+        "release_tag": "v0.1.1",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
+        "notes_ref": module.DEFAULT_NOTES_REF,
+        "snapshot_source": "ci-main",
+        "created_at": "2026-03-15T00:00:00Z",
+    }
+    run(
+        "notes",
+        f"--ref={module.DEFAULT_NOTES_REF}",
+        "add",
+        "-f",
+        "-m",
+        json.dumps(legacy_snapshot),
+        target_sha,
+        cwd=repo,
+    )
+
+    original_cwd = Path.cwd()
+    original_git = module.git
+    digest = "sha256:" + "b" * 64
+    output_path = repo / "backfilled-snapshot.json"
+    os.chdir(repo)
+    try:
+        def fake_git(*args: str, **kwargs: object):
+            if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            return original_git(*args, **kwargs)
+
+        module.git = fake_git
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(output_path),
+                max_attempts=1,
+                target_only=True,
+                backend_test_image_digest=digest,
+            )
+        )
+        assert exit_code == 0
+        stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert stored is not None
+        assert stored["backend_test_image_digest"] == digest
+        assert json.loads(output_path.read_text())["backend_test_image_digest"] == digest
+
+        try:
+            module.ensure_snapshot(
+                argparse.Namespace(
+                    target_sha=target_sha,
+                    github_repository="IvanLi-CN/codex-vibe-monitor",
+                    github_token="token",
+                    notes_ref=module.DEFAULT_NOTES_REF,
+                    registry="ghcr.io",
+                    api_root="https://api.github.com",
+                    output=str(repo / "conflicting-snapshot.json"),
+                    max_attempts=1,
+                    target_only=True,
+                    backend_test_image_digest="sha256:" + "c" * 64,
+                )
+            )
+        except module.SnapshotError as exc:
+            assert "digest mismatch" in str(exc)
+        else:
+            raise AssertionError("non-empty backend-test digest conflicts must fail")
+    finally:
+        module.git = original_git
+        os.chdir(original_cwd)
+
+
 original_urlopen = module.request.urlopen
 original_sleep = module.time.sleep
 try:
