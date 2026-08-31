@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.68.12",
+  "base_stable_version": "2.68.11",
+  "channel_label": "channel:stable",
+  "created_at": "2026-08-31T16:58:38Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.68.12",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6dd37ecda5f5df2c78c77e99ae012e6f05f7a425",
+  "pr_number": 880,
+  "pr_title": "fix(summary): publish bootstrap before archive paging",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.68.12",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.68.12",
+  "target_sha": "969ce27346ea2e6eda485eee7970481783c6dd48",
+  "type_label": "type:patch"
+}
