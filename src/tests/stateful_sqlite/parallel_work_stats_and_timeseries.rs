@@ -23467,7 +23467,10 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
 
     hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect("publish initial exact all-time archive snapshot");
+        .expect("publish the initial exact rolling projection");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("publish initial exact all-time archive snapshot after reconciliation");
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
@@ -23520,7 +23523,9 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
             .expect("all-time archive replacement must not block the snapshot reader")
             .expect("commit all-time archive replacement");
     });
-    let hydration = hydrate_summary_snapshots(state.as_ref()).await;
+    let hydration =
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await;
     replacement.await.expect("run all-time archive replacement");
     clear_summary_projection_test_interleave();
     hydration.expect("retain the prior all-time aggregate without scanning a replaced archive");
