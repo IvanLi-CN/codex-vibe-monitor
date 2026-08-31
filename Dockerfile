@@ -158,8 +158,8 @@ RUN apt-get update \
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${CARGO_NEXTEST_VERSION}/cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
     && echo "${CARGO_NEXTEST_SHA256_AMD64}  /tmp/cargo-nextest.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/cargo-nextest.tar.gz -C /tmp \
-    && install -m 0755 "/tmp/cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-gnu/cargo-nextest" /usr/local/cargo/bin/cargo-nextest \
-    && rm -rf /tmp/cargo-nextest.tar.gz "/tmp/cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-gnu"
+    && install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest \
+    && rm -f /tmp/cargo-nextest.tar.gz /tmp/cargo-nextest
 
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
