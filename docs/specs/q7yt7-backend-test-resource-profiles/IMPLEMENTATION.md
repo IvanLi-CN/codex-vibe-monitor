@@ -9,7 +9,7 @@
 - Project-owned validation target: `Dockerfile` `backend-test` (`rust:1.96.0-bookworm`, `cargo-nextest 0.9.138`, checksum-verified amd64 asset) invokes the profile runner with an isolated writable `/tmp` workspace.
 - Shared-testbox entrypoint: `compose.backend-test.yml` builds that same target without changing the profile command or test-thread contract.
 - Representative-scale acceptance: `src/tests/stateful_sqlite/representative_scale_acceptance.rs` is a deterministic, data-blind exact-oracle test selected by `--test-filter`; it crosses the retired 64 MiB aggregate source boundary and enforces 30-second bootstrap / 1800-second all-time budgets.
-- Release evidence: `scripts/validate-summary-production-fixture.sh` emits a bound production-copy receipt containing only canonical response hashes; `.github/scripts/release_snapshot.py validate-receipt` hard-fails missing, mismatched, or over-deadline receipts.
+- Release consumes the same target SHA's successful CI Main result and runtime-image smoke. Representative-scale acceptance remains a deterministic PR/Main gate and has no external receipt or production-copy input.
 - Catalog note: 三路 backend profile 合同保持不变；本轮收敛 Rust 编译缓存、Archive file fixture、PR smoke build 与非 backend required-job 资源边界
 
 ## Coverage / rollout summary

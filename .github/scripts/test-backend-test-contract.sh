@@ -36,16 +36,6 @@ if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{
   exit 1
 fi
 
-if ! grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY,,}:backend-test-${TARGET_SHA}"' "$release_workflow"; then
-  echo 'expected manual release digest lookup to use the normalized backend-test image name' >&2
-  exit 1
-fi
-
-if grep -Fq 'image="${REGISTRY}/${GITHUB_REPOSITORY}:backend-test-${TARGET_SHA}"' "$release_workflow"; then
-  echo 'manual release digest lookup must not use an unnormalized repository name' >&2
-  exit 1
-fi
-
 grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
 
 release_amd_smoke_build="$(sed -n '/^      - name: Build smoke image (linux\/amd64, load)$/,/^      - name: Smoke test image (linux\/amd64)$/p' "$release_workflow")"
@@ -58,30 +48,6 @@ if ! grep -Fq -- '--target "runtime"' "$repo_root/.github/scripts/build-smoke-im
   echo 'release arm64 smoke build helper must use the runtime image target' >&2
   exit 1
 fi
-
-manual_backfill_step="$(sed -n '/^      - name: Ensure immutable release snapshot for manual backfill$/,/^      - name: Select pending release target$/p' "$release_workflow")"
-if ! grep -Fq -- '--backend-test-image-digest "${{ steps.manual-backend-test-image.outputs.digest }}"' <<<"$manual_backfill_step"; then
-  echo 'manual snapshot backfill must bind the resolved backend-test image digest' >&2
-  exit 1
-fi
-
-pending_recovery_steps="$(sed -n '/^      - name: Set up Docker Buildx for pending release digest lookup$/,/^      - name: Load immutable release snapshot$/p' "$release_workflow")"
-for required in \
-  "if: github.event_name != 'workflow_dispatch' && steps.pending-target.outputs.target_sha != ''" \
-  'image="${REGISTRY}/${GITHUB_REPOSITORY,,}:backend-test-${TARGET_SHA}"' \
-  'python3 .github/scripts/release_snapshot.py ensure' \
-  '--backend-test-image-digest "${BACKEND_TEST_IMAGE_DIGEST}"' \
-  '--skip-publish'; do
-  if ! grep -Fq -- "$required" <<<"$pending_recovery_steps"; then
-    echo "automatic pending-release snapshot recovery is missing: $required" >&2
-    exit 1
-  fi
-done
-
-github_repository_fixture='IvanLi-CN/Codex-Vibe-Monitor'
-target_sha_fixture='deadbeef'
-manual_image="ghcr.io/$(printf '%s' "$github_repository_fixture" | tr '[:upper:]' '[:lower:]'):backend-test-${target_sha_fixture}"
-[[ "$manual_image" == 'ghcr.io/ivanli-cn/codex-vibe-monitor:backend-test-deadbeef' ]]
 
 set +e
 missing_nextest_output="$(PATH=/usr/bin:/bin bash "$runner" --profile stateful-sqlite 2>&1)"

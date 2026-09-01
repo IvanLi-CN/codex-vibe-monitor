@@ -4,7 +4,7 @@
 
 ## Related ADRs
 
-- [ADR 0006: Project-owned representative-scale validation gates](../../adr/0006-project-owned-representative-scale-gates.md)
+- [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
 
 ## 背景 / 问题陈述
 
@@ -107,9 +107,9 @@
 
 ### 契约文档（按 Kind 拆分）
 
-- `backend-test` image contract is defined by ADR 0006 and the repository
-  workflow contract; the image digest and receipt fields are immutable inputs to
-  release validation.
+- `backend-test` image contract is defined by ADR 0007 and the repository
+  workflow contract. It provides the project-owned execution environment for
+  deterministic backend validation and is not release-snapshot evidence.
 
 ## Project-owned execution contract
 
@@ -120,17 +120,16 @@
 - The target MUST invoke `.github/scripts/run-backend-tests.sh` for all three
   profiles. Runner Isolation may provide capacity, namespacing, and cleanup, but
   it MUST NOT alter profile filters, concurrency, or test arguments.
-- Candidate PRs MUST build the target from the current commit. Only a trusted
-  main workflow may publish the immutable test-image digest consumed by release
-  validation.
+- Candidate PRs MUST build the target from the current commit. A trusted main
+  workflow may publish the immutable test image, but Release does not consume
+  its digest as validation evidence.
 - Affected PRs MUST run the deterministic Representative-Scale Acceptance
   fixture. It MUST cover the old aggregate source admission boundary, paged
   archive proof, and staged all-time checkpoint without reducing the existing
   profile test set.
-- The acceptance result MUST include an independent exactness oracle and a
-  receipt bound to commit SHA, image digest, fixture contract version, oracle
-  version, and configured thresholds. Status-only or timing-only evidence is
-  insufficient.
+- The acceptance result MUST include an independent exactness oracle.
+  Status-only or timing-only evidence is insufficient; production-copy and
+  external receipts are not gate inputs.
 
 ## 验收标准（Acceptance Criteria）
 
@@ -161,9 +160,9 @@
   Exact-Ready within 30 seconds, `all` is exact within 1800 seconds, and the
   complete normalized response matches the independent oracle.
 
-- Given a changed commit, image digest, fixture contract, oracle version, or
-  deadline, When release snapshot validation consumes an older receipt, Then the
-  receipt is rejected and the affected release remains blocked.
+- Given a releasable target SHA, When Release begins publication, Then it uses
+  that target's successful CI Main result and runtime-image smoke without
+  reading an external validation path or receipt.
 
 ## 验收清单（Acceptance checklist）
 

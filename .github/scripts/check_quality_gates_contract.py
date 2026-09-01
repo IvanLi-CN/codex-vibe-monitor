@@ -737,18 +737,16 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
 
     release_snapshot = named_job_config(workflow, "release-snapshot", expected_jobs, "ci-main.yml")
     expected_release_needs = [
-            "lint",
-            "repository-tooling-checks",
-            "frontend-tests",
-            "storybook-accessibility-tests",
-            "docs-demo-build",
-            "records-overlay-e2e",
-            "backend-tests-lightweight",
-            "backend-tests-stateful-sqlite",
-            "backend-tests-archive-file-io",
-        ]
-    if "Publish Backend Test Image" in auxiliary_jobs:
-        expected_release_needs.append("backend-test-image")
+        "lint",
+        "repository-tooling-checks",
+        "frontend-tests",
+        "storybook-accessibility-tests",
+        "docs-demo-build",
+        "records-overlay-e2e",
+        "backend-tests-lightweight",
+        "backend-tests-stateful-sqlite",
+        "backend-tests-archive-file-io",
+    ]
     require(
         release_snapshot.get("needs") == expected_release_needs,
         "ci-main.yml.jobs.release-snapshot.needs drifted",
@@ -825,11 +823,6 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
         "release_snapshot.py ensure" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: snapshot writer must use release_snapshot.py ensure",
     )
-    if "Publish Backend Test Image" in auxiliary_jobs:
-        require(
-            "--backend-test-image-digest" in ensure_run,
-            "ci-main.yml.jobs.release-snapshot: release snapshot must bind the backend-test image digest",
-        )
     require(
         "RELEASE_SNAPSHOT_NOTES_REF" in ensure_run,
         "ci-main.yml.jobs.release-snapshot: notes-ref plumbing drifted",
@@ -863,7 +856,7 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
 
     concurrency = require_mapping(workflow.get("concurrency"), "label-gate.yml.concurrency")
     require(concurrency.get("group") == "label-gate-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.run_id }}", "label-gate.yml.concurrency.group drifted")
-    require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
+    require(concurrency.get("cancel-in-progress") is False, "label-gate.yml.concurrency.cancel-in-progress must stay false")
 
     job = named_job_config(workflow, "validate-pr-labels", expected_jobs, "label-gate.yml")
     require(job.get("name") == contract.label_check_name, "label-gate.yml: required label check name drifted")
@@ -1048,11 +1041,6 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
-    if "backend_test_image_digest" in outputs:
-        require(
-            outputs.get("backend_test_image_digest") == "${{ steps.snapshot.outputs.backend_test_image_digest }}",
-            "release.yml.jobs.release-meta.outputs.backend_test_image_digest must be exported",
-        )
     for output_name in (
         "snapshot_source",
         "manual_version",
@@ -1076,8 +1064,8 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     backfill_env = require_mapping(backfill_step.get("env"), "release.yml.jobs.release-meta.steps['Validate manual backfill target passed CI Main'].env")
     require(backfill_env.get("TARGET_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: manual backfill validation must consume target_sha")
     backfill_script = str(backfill_step.get("with", {}).get("script", ""))
-    require("snapshot-only CI Main failure" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill exception drifted")
-    require("listJobsForWorkflowRun" in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill job inspection drifted")
+    require("requires a successful CI Main run" in backfill_script, "release.yml.jobs.release-meta: manual backfill must require successful CI Main")
+    require("snapshot-only CI Main failure" not in backfill_script, "release.yml.jobs.release-meta: snapshot-only backfill exception must stay removed")
     override_step = step_config(release_meta, "Generate manual release override snapshot", "release.yml.jobs.release-meta")
     require(
         override_step.get("if") == "github.event_name == 'workflow_dispatch' && (inputs.version != '' || inputs.bump != '' || inputs.reason != '')",
@@ -1092,21 +1080,6 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("release_snapshot.py manual-override" in override_run, "release.yml.jobs.release-meta: manual override must use release_snapshot.py manual-override")
     require("--reason" in override_run, "release.yml.jobs.release-meta: manual override must pass audit reason")
     require("--actor" in override_run, "release.yml.jobs.release-meta: manual override must pass actor")
-    if "backend_test_image_digest" in outputs:
-        require(
-            release_meta_permissions.get("packages") == "read",
-            "release.yml.jobs.release-meta.permissions.packages must stay read for trusted image lookup",
-        )
-        lookup_step = step_config(
-            release_meta,
-            "Resolve trusted backend-test image digest for manual release",
-            "release.yml.jobs.release-meta",
-        )
-        lookup_run = str(lookup_step.get("run", ""))
-        require("docker buildx imagetools inspect" in lookup_run, "release.yml manual release must resolve an immutable backend-test digest")
-        require("backend-test-${TARGET_SHA}" in lookup_run, "release.yml manual release digest lookup must bind target_sha")
-        require("sha256:[0-9a-f]{64}" in lookup_run, "release.yml manual release digest lookup must validate sha256 format")
-        require("--backend-test-image-digest" in override_run, "release.yml manual override must bind backend-test image digest")
     ensure_step = step_config(release_meta, "Ensure immutable release snapshot for manual backfill", "release.yml.jobs.release-meta")
     require(
         ensure_step.get("if") == "github.event_name == 'workflow_dispatch' && inputs.version == '' && inputs.bump == '' && inputs.reason == ''",
@@ -1221,14 +1194,6 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require(publish_permissions.get("issues") == "write", "release.yml.jobs.release-publish.permissions.issues must stay write")
     require(publish_permissions.get("packages") == "write", "release.yml.jobs.release-publish.permissions.packages must stay write")
     require(publish_permissions.get("pull-requests") == "write", "release.yml.jobs.release-publish.permissions.pull-requests must stay write")
-    if "backend_test_image_digest" in outputs:
-        receipt_step = step_config(publish, "Validate production-copy receipt", "release.yml.jobs.release-publish")
-        receipt_env = require_mapping(receipt_step.get("env"), "release.yml.jobs.release-publish.steps['Validate production-copy receipt'].env")
-        require(receipt_env.get("RECEIPT_PATH") == "${{ vars.SUMMARY_PRODUCTION_RECEIPT_PATH }}", "release.yml production receipt path must come from the controlled runner variable")
-        require(receipt_env.get("TARGET_SHA") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml production receipt must bind target_sha")
-        require(receipt_env.get("BACKEND_TEST_IMAGE_DIGEST") == "${{ needs.release-meta.outputs.backend_test_image_digest }}", "release.yml production receipt must bind backend-test digest")
-        receipt_run = str(receipt_step.get("run", ""))
-        require("release_snapshot.py validate-receipt" in receipt_run and "exit 1" in receipt_run, "release.yml production receipt validation must hard-fail")
     publish_checkout = checkout_step(publish, "Checkout code", "release.yml.jobs.release-publish")
     require(publish_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.release-publish checkout ref drifted")
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
