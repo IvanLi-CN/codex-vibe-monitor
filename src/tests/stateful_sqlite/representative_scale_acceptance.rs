@@ -2,9 +2,10 @@ use super::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-const FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v1";
-const FIXTURE_ROWS: i64 = 96;
+const FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v2";
+const FIXTURE_ROWS: i64 = 321;
 const FIXTURE_PAYLOAD_BYTES: usize = 700_000;
+const MIN_RAW_SOURCE_BYTES: usize = 214 * 1024 * 1024;
 const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(30);
 const ALL_TIME_DEADLINE: Duration = Duration::from_secs(1_800);
 
@@ -37,8 +38,8 @@ async fn summary_representative_scale_acceptance() {
     .expect("insert deterministic representative-scale fixture");
 
     assert!(
-        FIXTURE_ROWS as usize * payload.len() > 64 * 1024 * 1024,
-        "fixture must cross the retired 64 MiB aggregate source boundary"
+        FIXTURE_ROWS as usize * payload.len() >= MIN_RAW_SOURCE_BYTES,
+        "fixture must contain at least 214 MiB of raw source text"
     );
 
     let bootstrap_started = Instant::now();
@@ -165,5 +166,5 @@ async fn summary_representative_scale_acceptance() {
     );
 
     // Keep the fixture contract in the test binary so the selected acceptance remains reproducible.
-    assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v1");
+    assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v2");
 }

@@ -96,6 +96,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
     BeforeHistoricalLiveCoverage,
+    BeforeProjectionPublication,
 }
 
 #[cfg(test)]
@@ -104,6 +105,7 @@ pub(crate) struct SummaryProjectionTestInterleave {
     writer_ready: Arc<tokio::sync::Notify>,
     resume_build: Arc<tokio::sync::Notify>,
     build_attempts: Arc<AtomicUsize>,
+    build_modes: Arc<StdMutex<Vec<SummaryProjectionBuildMode>>>,
     stages: Arc<[SummaryProjectionTestInterleaveStage]>,
     next_stage_index: Arc<AtomicUsize>,
 }
@@ -125,6 +127,13 @@ impl SummaryProjectionTestInterleave {
 
     pub(crate) fn build_attempts(&self) -> usize {
         self.build_attempts.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn build_modes(&self) -> Vec<SummaryProjectionBuildMode> {
+        self.build_modes
+            .lock()
+            .expect("summary projection test interleave mode lock")
+            .clone()
     }
 }
 
@@ -154,6 +163,7 @@ pub(crate) fn install_summary_projection_test_interleave_for_stages(
         writer_ready: Arc::new(tokio::sync::Notify::new()),
         resume_build: Arc::new(tokio::sync::Notify::new()),
         build_attempts: Arc::new(AtomicUsize::new(0)),
+        build_modes: Arc::new(StdMutex::new(Vec::new())),
         stages: stages.into(),
         next_stage_index: Arc::new(AtomicUsize::new(0)),
     };
@@ -178,6 +188,7 @@ pub(crate) fn clear_summary_projection_test_interleave() {
 #[cfg(test)]
 async fn pause_summary_projection_test_interleave(
     pool: &Pool<Sqlite>,
+    mode: SummaryProjectionBuildMode,
     stage: SummaryProjectionTestInterleaveStage,
 ) -> Result<()> {
     let table_present = sqlx::query_scalar::<_, i64>(
@@ -202,6 +213,11 @@ async fn pause_summary_projection_test_interleave(
     }
     interleave.next_stage_index.fetch_add(1, Ordering::SeqCst);
     interleave.build_attempts.fetch_add(1, Ordering::SeqCst);
+    interleave
+        .build_modes
+        .lock()
+        .expect("summary projection test interleave mode lock")
+        .push(mode);
     interleave.writer_ready.notify_one();
     interleave.resume_build.notified().await;
     Ok(())
@@ -10176,7 +10192,12 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
 }
 
 pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
-    if !renew_summary_projection_freshness_if_generation_matches(state).await? {
+    if state.subscription_hub.summary_projection().await.is_none() {
+        // A cold retry has no exact historical coverage proof to reuse. Keep the first
+        // publication on the Bootstrap deadline instead of downgrading it to the shorter
+        // Rolling deadline used only after an immutable projection exists.
+        hydrate_summary_snapshots(state).await?;
+    } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
     }
     let historical_live_recovery_required = state
@@ -10440,6 +10461,12 @@ async fn refresh_summary_snapshots_with_deadline(
             .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
         (_, None) => build.await?,
     };
+    info!(
+        ?mode,
+        stage = "generation_fence_snapshot",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build snapshot generation fence accepted"
+    );
     state
         .subscription_hub
         .store_summary_projection(projection)
@@ -12629,6 +12656,7 @@ async fn build_summary_projection_once(
     #[cfg(test)]
     pause_summary_projection_test_interleave(
         pool,
+        mode,
         SummaryProjectionTestInterleaveStage::AfterRollupLoad,
     )
     .await?;
@@ -13824,6 +13852,7 @@ async fn build_summary_projection_once(
             #[cfg(test)]
             pause_summary_projection_test_interleave(
                 pool,
+                mode,
                 SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
             )
             .await?;
@@ -14061,6 +14090,7 @@ async fn build_summary_projection_once(
         #[cfg(test)]
         pause_summary_projection_test_interleave(
             pool,
+            mode,
             SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
         )
         .await?;
@@ -14293,6 +14323,11 @@ async fn build_summary_projection_once(
         .filter(|archive| archive.has_materialized_historical_rollups())
         .cloned()
         .collect::<Vec<_>>();
+    info!(
+        ?mode,
+        stage = "current_archive_admission",
+        "summary projection build stage started"
+    );
     let current_materialized_paths = current_materialized_archives
         .iter()
         .map(|archive| archive.file_path().to_string())
@@ -14431,9 +14466,20 @@ async fn build_summary_projection_once(
         current_record_bytes = next_current_record_bytes;
         current_records_by_invoke_id.insert(invoke_id, record);
     }
+    info!(
+        ?mode,
+        stage = "current_archive_admission",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
     let mut global_all_time_source_unavailable = all_time_global_exact_source_unavailable
         || all_time_archive_admission_exceeded
         || all_time_source_unavailable_from_archive_ranges;
+    info!(
+        ?mode,
+        stage = "runtime_overlay",
+        "summary projection build stage started"
+    );
     // Runtime is an authoritative typed overlay until the terminal writer persists it.  Replace
     // only matching live keys; a new in-flight record is inserted exactly once.
     for runtime_record in state.proxy_runtime_invocations.snapshot() {
@@ -14512,6 +14558,17 @@ async fn build_summary_projection_once(
         current_records_by_invoke_id.insert(record.row.invoke_id.clone(), record);
     }
 
+    info!(
+        ?mode,
+        stage = "runtime_overlay",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
+    info!(
+        ?mode,
+        stage = "projection_materialization",
+        "summary projection build stage started"
+    );
     let maintenance = load_stats_maintenance_response(state)
         .await
         .map_err(|error| anyhow!("summary projection maintenance hydration failed: {error:?}"))?;
@@ -14843,6 +14900,7 @@ async fn build_summary_projection_once(
         #[cfg(test)]
         pause_summary_projection_test_interleave(
             pool,
+            mode,
             SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
         )
         .await?;
@@ -14854,6 +14912,7 @@ async fn build_summary_projection_once(
         #[cfg(test)]
         pause_summary_projection_test_interleave(
             pool,
+            mode,
             SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
         )
         .await?;
@@ -15352,6 +15411,19 @@ async fn build_summary_projection_once(
         freshness,
         revision,
     };
+    info!(
+        ?mode,
+        stage = "projection_materialization",
+        elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+        "summary projection build stage completed"
+    );
+    #[cfg(test)]
+    pause_summary_projection_test_interleave(
+        pool,
+        mode,
+        SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+    )
+    .await?;
     Ok(projection)
 }
 
@@ -33343,6 +33415,125 @@ mod request_compression_query_tests {
         .expect("rolling projection remains memory-only after SQLite closes");
         assert_eq!(current.total_count, 2);
         assert_eq!(current.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_cold_retry_uses_bootstrap_deadline() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-cold-retry-historical', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical source that Bootstrap must cover");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create cold retry interleave gate");
+
+        let initial_interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let initial_state = state.clone();
+        let initial = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(initial_state.as_ref(), Duration::from_secs(1))
+                .await
+        });
+        tokio::pin!(initial);
+        tokio::select! {
+            _ = initial_interleave.wait_for_writer() => {}
+            result = &mut initial => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join cold Bootstrap timeout")
+                    .expect_err("cold Bootstrap must time out while its historical stage is paused");
+                panic!("cold Bootstrap must reach the deterministic timeout stage");
+            }
+        }
+        initial
+            .await
+            .expect("join timed-out Bootstrap")
+            .expect_err("timed-out Bootstrap must not publish");
+        clear_summary_projection_test_interleave();
+        assert!(
+            state.subscription_hub.summary_projection().await.is_none(),
+            "a timed-out Bootstrap must leave the hub without a Projection"
+        );
+
+        let retry_interleave = install_summary_projection_test_interleave_for_stages(&[
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        ]);
+        let retry_state = state.clone();
+        let retry =
+            tokio::spawn(async move { refresh_summary_snapshots(retry_state.as_ref()).await });
+        tokio::pin!(retry);
+        tokio::select! {
+            _ = retry_interleave.wait_for_writer() => {}
+            result = &mut retry => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join cold retry")
+                    .expect("cold retry must not fail before selecting a build mode");
+                panic!("a cold maintenance retry must select Bootstrap, not Rolling");
+            }
+        }
+        retry_interleave.resume_build();
+        tokio::select! {
+            _ = retry_interleave.wait_for_writer() => {}
+            result = &mut retry => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join cold retry")
+                    .expect("cold retry must not fail before Projection publication");
+                panic!("cold Bootstrap retry must reach the publication tail");
+            }
+        }
+        retry_interleave.resume_build();
+        retry
+            .await
+            .expect("join cold Bootstrap retry")
+            .expect("cold Bootstrap retry must publish a Projection");
+        clear_summary_projection_test_interleave();
+        assert_eq!(
+            retry_interleave.build_attempts(),
+            2,
+            "the cold retry must reach Bootstrap coverage and publication in order",
+        );
+        assert_eq!(
+            retry_interleave.build_modes(),
+            vec![
+                SummaryProjectionBuildMode::Bootstrap,
+                SummaryProjectionBuildMode::Bootstrap,
+            ],
+            "a cold retry must remain Bootstrap through the publication tail",
+        );
+
+        state.pool.close().await;
+        for window in ["current", "1d", "7d", "30d", "today"] {
+            let _ = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: Some(50),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{window} must be served from the published memory Projection: {error:?}")
+            });
+        }
     }
 
     #[tokio::test]
