@@ -71,7 +71,7 @@ jobs:
       actions: read
       contents: read
     outputs:
-      target_sha: ${{ steps.pending-target.outputs.target_sha }}
+      target_sha: ${{ steps.release-target.outputs.target_sha }}
       release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
       release_bump: ${{ steps.snapshot.outputs.release_bump }}
       release_channel: ${{ steps.snapshot.outputs.release_channel }}
@@ -205,41 +205,21 @@ jobs:
             --skip-publish \
             --output "$RUNNER_TEMP/release-snapshot.json"
 
-      - name: Select pending release target
-        id: pending-target
+      - name: Select triggering release target
+        id: release-target
         shell: bash
         env:
           REQUESTED_SHA: ${{ steps.requested-target.outputs.target_sha }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"
 
-          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
-          else
-            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
-          fi
-          git fetch --tags origin
-          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
-          python3 .github/scripts/release_snapshot.py next-pending \
-            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
-            --main-ref "origin/main" \
-            --upper-bound "${REQUESTED_SHA}" \
-            --github-repository "${GITHUB_REPOSITORY}" \
-            --github-token "${GITHUB_TOKEN}" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Recover selected release snapshot
-        if: github.event_name != 'workflow_dispatch' && steps.pending-target.outputs.target_sha != ''
+      - name: Recover triggering release snapshot
+        if: github.event_name != 'workflow_dispatch' && steps.release-target.outputs.target_sha != ''
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.release-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           python3 .github/scripts/release_snapshot.py ensure \
@@ -253,11 +233,11 @@ jobs:
             --output "$RUNNER_TEMP/release-snapshot.json"
 
       - name: Load immutable release snapshot
-        if: steps.pending-target.outputs.target_sha != ''
+        if: steps.release-target.outputs.target_sha != ''
         id: snapshot
         shell: bash
         env:
-          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.release-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
@@ -272,17 +252,17 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
       - name: Compute candidate suffix
-        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
+        if: steps.release-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
         id: candidate
         shell: bash
         env:
-          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+          TARGET_SHA: ${{ steps.release-target.outputs.target_sha }}
         run: |
           set -euo pipefail
           echo "candidate_suffix=${TARGET_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Validate platforms for smoke gate
-        if: steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
+        if: steps.release-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -677,50 +657,3 @@ jobs:
                 `Failed to upsert PR release version comment: ${error.message} (status=${status}, accepted_permissions=${acceptedPermissions})`
               )
             }
-
-      - name: Resolve next pending release target
-        if: github.event_name != 'workflow_dispatch'
-        id: next-pending
-        env:
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-            git fetch --no-tags --prune --unshallow origin "+refs/heads/main:refs/remotes/origin/main"
-          else
-            git fetch --no-tags --prune origin "+refs/heads/main:refs/remotes/origin/main"
-          fi
-          git fetch --tags origin
-          git fetch --no-tags origin "+${RELEASE_SNAPSHOT_NOTES_REF}:${RELEASE_SNAPSHOT_NOTES_REF}" || true
-          python3 .github/scripts/release_snapshot.py next-pending \
-            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
-            --main-ref "origin/main" \
-            --upper-bound "$(git rev-parse origin/main)" \
-            --github-repository "${GITHUB_REPOSITORY}" \
-            --github-token "${GITHUB_TOKEN}" \
-            --github-output "$GITHUB_OUTPUT"
-
-      - name: Continue release queue
-        if: github.event_name != 'workflow_dispatch' && steps.next-pending.outputs.target_sha != ''
-        uses: actions/github-script@v9
-        env:
-          NEXT_TARGET_SHA: ${{ steps.next-pending.outputs.target_sha }}
-        with:
-          script: |
-            const { owner, repo } = context.repo
-            const nextSha = process.env.NEXT_TARGET_SHA
-            if (!nextSha) {
-              core.notice('Release queue is empty.')
-              return
-            }
-
-            await github.rest.actions.createWorkflowDispatch({
-              owner,
-              repo,
-              workflow_id: 'release.yml',
-              ref: 'main',
-              inputs: { commit_sha: nextSha },
-            })
-            core.notice(`Queued next release target ${nextSha}`)

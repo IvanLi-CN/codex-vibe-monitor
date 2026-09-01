@@ -11,7 +11,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any
 from urllib import error, parse, request
 
 SNAPSHOT_SCHEMA_VERSION = 1
@@ -127,18 +127,6 @@ def parse_args() -> argparse.Namespace:
         help="Resolve publish-time tags so latest follows the newest published stable release only.",
     )
     export_cmd.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
-
-    next_pending = subparsers.add_parser(
-        "next-pending",
-        help="Find the oldest unreleased snapshot on the first-parent path up to a given main commit.",
-    )
-    next_pending.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
-    next_pending.add_argument("--main-ref", required=True)
-    next_pending.add_argument("--upper-bound", default="")
-    next_pending.add_argument("--github-repository", default="")
-    next_pending.add_argument("--github-token", default="")
-    next_pending.add_argument("--api-root", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
-    next_pending.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
 
     return parser.parse_args()
 
@@ -554,60 +542,6 @@ def release_tag_points_to_target(snapshot: dict[str, Any]) -> bool:
     return tagged_sha == target_sha
 
 
-def ci_main_run_is_release_eligible(
-    api_root: str,
-    repository: str,
-    token: str,
-    target_sha: str,
-) -> Literal["eligible", "ineligible", "unknown"]:
-    owner, repo = repository.split("/", 1)
-    runs_payload = github_request_json(
-        api_root,
-        token,
-        f"/repos/{owner}/{repo}/actions/workflows/ci-main.yml/runs",
-        {
-            "branch": "main",
-            "event": "push",
-            "head_sha": target_sha,
-            "status": "completed",
-            "per_page": 100,
-        },
-    )
-    workflow_runs = runs_payload.get("workflow_runs") if isinstance(runs_payload, dict) else None
-    if not isinstance(workflow_runs, list):
-        raise SnapshotError("GitHub API returned an unexpected payload for CI Main workflow runs")
-
-    matching_runs = [
-        run for run in workflow_runs if isinstance(run, dict) and run.get("head_sha") == target_sha
-    ]
-    if not matching_runs:
-        return "unknown"
-
-    if any(run.get("conclusion") == "success" for run in matching_runs):
-        return "eligible"
-
-    return "ineligible"
-
-
-def pending_release_targets(
-    notes_ref: str,
-    upper_bound_sha: str,
-    *,
-    is_release_eligible: Callable[[str], Literal["eligible", "ineligible", "unknown"]] | None = None,
-) -> list[str]:
-    pending: list[str] = []
-    for commit in first_parent_commits(upper_bound_sha):
-        snapshot = read_snapshot(notes_ref, commit)
-        if not snapshot or not snapshot.get("release_enabled"):
-            continue
-        if release_tag_points_to_target(snapshot):
-            continue
-        if is_release_eligible is not None and is_release_eligible(commit) == "ineligible":
-            continue
-        pending.append(commit)
-    return pending
-
-
 def build_snapshot(
     *,
     target_sha: str,
@@ -1005,42 +939,6 @@ def export_existing_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
-def export_next_pending(args: argparse.Namespace) -> int:
-    upper_bound = args.upper_bound or git_output("rev-parse", args.main_ref)
-    upper_bound = normalize_sha(upper_bound)
-    git("merge-base", "--is-ancestor", upper_bound, args.main_ref)
-    fetch_notes_ref(args.notes_ref)
-    fetch_tags()
-    eligibility_check = None
-    if getattr(args, "github_repository", "") and getattr(args, "github_token", ""):
-        cache: dict[str, Literal["eligible", "ineligible", "unknown"]] = {}
-
-        def eligibility_check(commit: str) -> Literal["eligible", "ineligible", "unknown"]:
-            if commit not in cache:
-                try:
-                    cache[commit] = ci_main_run_is_release_eligible(
-                        args.api_root,
-                        args.github_repository,
-                        args.github_token,
-                        commit,
-                    )
-                except SnapshotError as exc:
-                    print(
-                        f"release_snapshot.py: warning: failed to inspect CI Main eligibility for {commit}: {exc}",
-                        file=sys.stderr,
-                    )
-                    cache[commit] = "unknown"
-            return cache[commit]
-
-    pending = pending_release_targets(
-        args.notes_ref,
-        upper_bound,
-        is_release_eligible=eligibility_check,
-    )
-    export_key_values({"target_sha": pending[0] if pending else ""}, args.github_output)
-    return 0
-
-
 def main() -> int:
     args = parse_args()
     try:
@@ -1050,8 +948,6 @@ def main() -> int:
             return export_manual_override_snapshot(args)
         if args.command == "export":
             return export_existing_snapshot(args)
-        if args.command == "next-pending":
-            return export_next_pending(args)
         raise SnapshotError(f"Unsupported command: {args.command}")
     except SnapshotError as exc:
         print(f"release_snapshot.py: {exc}", file=sys.stderr)

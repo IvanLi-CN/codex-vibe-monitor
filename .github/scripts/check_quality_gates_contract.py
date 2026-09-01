@@ -1041,6 +1041,10 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     outputs = require_mapping(release_meta.get("outputs"), "release.yml.jobs.release-meta.outputs")
     require("target_sha" in outputs, "release.yml.jobs.release-meta.outputs.target_sha must be exported")
+    require(
+        outputs.get("target_sha") == "${{ steps.release-target.outputs.target_sha }}",
+        "release.yml.jobs.release-meta.outputs.target_sha must come from the triggering target",
+    )
     for output_name in (
         "snapshot_source",
         "manual_version",
@@ -1092,22 +1096,28 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("release_snapshot.py ensure" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must use release_snapshot.py ensure")
     require("--snapshot-source manual-backfill" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must mark manual-backfill source")
     require("--skip-publish" in ensure_run, "release.yml.jobs.release-meta: manual snapshot ensure must avoid notes ref writes")
-    pending_step = step_config(release_meta, "Select pending release target", "release.yml.jobs.release-meta")
-    pending_env = require_mapping(pending_step.get("env"), "release.yml.jobs.release-meta.steps['Select pending release target'].env")
-    require(pending_env.get("REQUESTED_SHA") == "${{ steps.requested-target.outputs.target_sha }}", "release.yml.jobs.release-meta: pending target selector must consume requested target")
-    require(pending_env.get("GITHUB_REPOSITORY") == "${{ github.repository }}", "release.yml.jobs.release-meta: pending target selector must receive repository context")
-    require(pending_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-meta: pending target selector must receive GITHUB_TOKEN")
-    pending_run = str(pending_step.get("run", ""))
-    require("release_snapshot.py next-pending" in pending_run, "release.yml.jobs.release-meta: pending target selector must use release_snapshot.py next-pending")
-    require("--github-repository" in pending_run, "release.yml.jobs.release-meta: pending target selector must pass repository to next-pending")
-    require("--github-token" in pending_run, "release.yml.jobs.release-meta: pending target selector must pass token to next-pending")
+    release_target_step = step_config(release_meta, "Select triggering release target", "release.yml.jobs.release-meta")
+    release_target_env = require_mapping(release_target_step.get("env"), "release.yml.jobs.release-meta.steps['Select triggering release target'].env")
+    require(
+        release_target_env == {"REQUESTED_SHA": "${{ steps.requested-target.outputs.target_sha }}"},
+        "release.yml.jobs.release-meta: triggering target selector must only consume requested target",
+    )
+    release_target_run = str(release_target_step.get("run", ""))
+    require(
+        'echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"' in release_target_run,
+        "release.yml.jobs.release-meta: triggering target selector must forward requested target",
+    )
+    require(
+        "next-pending" not in path.read_text(),
+        "release.yml must not select or continue historical pending snapshots",
+    )
     snapshot_step = step_config(release_meta, "Load immutable release snapshot", "release.yml.jobs.release-meta")
     snapshot_env = require_mapping(snapshot_step.get("env"), "release.yml.jobs.release-meta.steps['Load immutable release snapshot'].env")
     require(
-        snapshot_env.get("TARGET_SHA") == "${{ steps.pending-target.outputs.target_sha }}",
+        snapshot_env.get("TARGET_SHA") == "${{ steps.release-target.outputs.target_sha }}",
         "release.yml.jobs.release-meta: snapshot loader must consume target_sha",
     )
-    require(snapshot_step.get("if") == "steps.pending-target.outputs.target_sha != ''", "release.yml.jobs.release-meta: snapshot loader gate drifted")
+    require(snapshot_step.get("if") == "steps.release-target.outputs.target_sha != ''", "release.yml.jobs.release-meta: snapshot loader gate drifted")
     snapshot_run = str(snapshot_step.get("run", ""))
     require(
         "release_snapshot.py export" in snapshot_run,
@@ -1123,8 +1133,16 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
     candidate_step = step_config(release_meta, "Compute candidate suffix", "release.yml.jobs.release-meta")
     require(
-        candidate_step.get("if") == "steps.pending-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'",
+        candidate_step.get("if") == "steps.release-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'",
         "release.yml.jobs.release-meta: candidate suffix gate drifted",
+    )
+    candidate_env = require_mapping(
+        candidate_step.get("env"),
+        "release.yml.jobs.release-meta.steps['Compute candidate suffix'].env",
+    )
+    require(
+        candidate_env.get("TARGET_SHA") == "${{ steps.release-target.outputs.target_sha }}",
+        "release.yml.jobs.release-meta: candidate suffix must consume the triggering target",
     )
     candidate_run = str(candidate_step.get("run", ""))
     require("candidate_suffix=${TARGET_SHA:0:12}" in candidate_run, "release.yml.jobs.release-meta: candidate suffix drifted")
@@ -1245,19 +1263,6 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     require("issues.updateComment" in comment_script, "release.yml.jobs.release-publish: PR release comment must support updates")
     require("github-actions[bot]" in comment_script, "release.yml.jobs.release-publish: PR release comment must only update github-actions[bot] comments")
     require("leaving PR comment unchanged" in comment_script, "release.yml.jobs.release-publish: PR release comment must warn on foreign marker comments")
-    next_step = step_config(publish, "Resolve next pending release target", "release.yml.jobs.release-publish")
-    require(next_step.get("if") == "github.event_name != 'workflow_dispatch'", "release.yml.jobs.release-publish: next pending target gate drifted")
-    next_env = require_mapping(next_step.get("env"), "release.yml.jobs.release-publish.steps['Resolve next pending release target'].env")
-    require(next_env.get("GITHUB_REPOSITORY") == "${{ github.repository }}", "release.yml.jobs.release-publish: next pending target must receive repository context")
-    require(next_env.get("GITHUB_TOKEN") == "${{ secrets.GITHUB_TOKEN }}", "release.yml.jobs.release-publish: next pending target must receive GITHUB_TOKEN")
-    next_run = str(next_step.get("run", ""))
-    require("release_snapshot.py next-pending" in next_run, "release.yml.jobs.release-publish: next pending target must use release_snapshot.py next-pending")
-    require("--github-repository" in next_run, "release.yml.jobs.release-publish: next pending target must pass repository to next-pending")
-    require("--github-token" in next_run, "release.yml.jobs.release-publish: next pending target must pass token to next-pending")
-    continue_step = step_config(publish, "Continue release queue", "release.yml.jobs.release-publish")
-    require(continue_step.get("if") == "github.event_name != 'workflow_dispatch' && steps.next-pending.outputs.target_sha != ''", "release.yml.jobs.release-publish: release queue continuation gate drifted")
-
-
 def validate_release_snapshot_pr(path: Path) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
