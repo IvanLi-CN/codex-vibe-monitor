@@ -15,34 +15,37 @@ permissions: {}
 jobs:
   notify_failure:
     if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure' }}
-    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    permissions:
+      id-token: write
+    uses: IvanLi-CN/oidrune/.github/workflows/notify.yml@00bbb56c1853eed577652f69678a0419c468e969
     with:
-      repository: ${{ github.repository }}
-      workflow_name: ${{ github.event.workflow_run.name }}
-      conclusion: ${{ github.event.workflow_run.conclusion }}
-      run_url: ${{ github.event.workflow_run.html_url }}
-      ref_label: "${{ github.event.workflow_run.head_branch && format('branch: {0}', github.event.workflow_run.head_branch) || 'ref: unavailable from workflow_run payload' }}"
-      head_sha: ${{ github.event.workflow_run.head_sha }}
-      run_attempt: ${{ github.event.workflow_run.run_attempt }}
-      actor: ${{ github.event.workflow_run.actor.login || github.actor }}
-      event_name: ${{ github.event.workflow_run.event }}
-    secrets:
-      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}
+      outcome: failure
+      on_gateway_failure: warn
+      summary: |
+        status: failure
+        workflow: ${{ github.event.workflow_run.name }}
+        event: ${{ github.event.workflow_run.event }}
+        branch: ${{ github.event.workflow_run.head_branch || 'unavailable' }}
+        sha: ${{ github.event.workflow_run.head_sha }}
+        attempt: ${{ github.event.workflow_run.run_attempt }}
+        actor: ${{ github.event.workflow_run.actor.login || github.actor }}
+        url: ${{ github.event.workflow_run.html_url }}
 
   smoke_test:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: IvanLi-CN/github-workflows/.github/workflows/release-failure-telegram.yml@main
+    permissions:
+      id-token: write
+    uses: IvanLi-CN/oidrune/.github/workflows/notify.yml@00bbb56c1853eed577652f69678a0419c468e969
     with:
-      alert_kind: "release-alert-smoke"
-      repository: ${{ github.repository }}
-      workflow_name: "Notify failed release"
-      conclusion: "failure"
-      run_url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
-      ref_label: "${{ format('branch: {0}', github.ref_name) }}"
-      head_sha: ${{ github.sha }}
-      run_attempt: ${{ github.run_attempt }}
-      actor: ${{ github.actor }}
-      event_name: "workflow_dispatch"
-      extra_details: "manual notifier smoke test"
-    secrets:
-      SHOUTRRR_URL: ${{ secrets.SHOUTRRR_URL }}
+      outcome: failure
+      on_gateway_failure: warn
+      summary: |
+        status: smoke test
+        workflow: Notify failed release
+        event: workflow_dispatch
+        branch: ${{ github.ref_name }}
+        sha: ${{ github.sha }}
+        attempt: ${{ github.run_attempt }}
+        actor: ${{ github.actor }}
+        url: ${{ format('{0}/{1}/actions/runs/{2}', github.server_url, github.repository, github.run_id) }}
+        note: manual notifier smoke test
