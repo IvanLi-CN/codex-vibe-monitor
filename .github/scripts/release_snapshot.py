@@ -1015,6 +1015,28 @@ def ensure_snapshot(args: argparse.Namespace) -> int:
         if existing is not None:
             requested_digest = getattr(args, "backend_test_image_digest", "")
             existing_digest = existing.get("backend_test_image_digest", "")
+            if requested_digest and not existing_digest:
+                # Legacy snapshots predate trusted backend-test digest binding. Only an
+                # absent digest may be augmented; conflicting non-empty values stay immutable.
+                existing = dict(existing)
+                existing["backend_test_image_digest"] = requested_digest
+                existing = validate_snapshot(existing, expected_sha=target_sha)
+                with tempfile.TemporaryDirectory(prefix="release-snapshot-notes-") as tmp:
+                    temp_note = Path(tmp) / "snapshot.json"
+                    write_json(temp_note, existing)
+                    git("notes", f"--ref={args.notes_ref}", "add", "-f", "-F", str(temp_note), target_sha)
+
+                write_json(output_path, existing)
+                if getattr(args, "skip_publish", False):
+                    return 0
+
+                push = git("push", "origin", args.notes_ref, check=False)
+                if push.returncode == 0:
+                    return 0
+                if attempt == args.max_attempts:
+                    detail = push.stderr.strip() or push.stdout.strip() or "git push origin notes ref failed"
+                    raise SnapshotError(f"Failed to publish release snapshot after {attempt} attempts: {detail}")
+                continue
             if requested_digest and existing_digest != requested_digest:
                 raise SnapshotError(
                     f"Release snapshot backend-test image digest mismatch for {target_sha}: "

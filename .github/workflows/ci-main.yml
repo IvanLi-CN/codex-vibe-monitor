@@ -580,6 +580,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Normalize backend-test image name
+        id: backend-test-image-name
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "image_name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build and publish immutable backend-test image (linux/amd64)
         id: build-backend-test-image
         uses: docker/build-push-action@v7
@@ -589,7 +596,7 @@ jobs:
           target: backend-test
           platforms: linux/amd64
           push: true
-          tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{ github.sha }}
+          tags: ${{ env.REGISTRY }}/${{ steps.backend-test-image-name.outputs.image_name }}:backend-test-${{ github.sha }}
 
   release-snapshot:
     name: Release Snapshot
