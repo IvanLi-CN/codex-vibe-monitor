@@ -502,6 +502,44 @@ test.beforeEach(async ({ context, page, request }) => {
   await expect(page.getByTestId("app-main")).toBeVisible();
 });
 
+test("serves revalidated PWA metadata and immutable content-hashed install icons", async ({
+  request,
+}) => {
+  const metadataCacheControl = "no-cache, max-age=0, must-revalidate";
+  const iconCacheControl = "public, max-age=31536000, immutable";
+
+  const htmlResponse = await request.get("/");
+  expect(htmlResponse.headers()["cache-control"]).toBe(metadataCacheControl);
+  const html = await htmlResponse.text();
+  expect(html).toMatch(/rel="manifest"[^>]+site\.webmanifest/);
+  expect(html).toMatch(/favicon-[0-9a-f]{12}\.svg/);
+  expect(html).toMatch(/apple-touch-icon-[0-9a-f]{12}\.png/);
+
+  const manifestResponse = await request.get("/site.webmanifest");
+  expect(manifestResponse.headers()["cache-control"]).toBe(metadataCacheControl);
+  const manifest = await manifestResponse.json();
+  expect(manifest.id).toBe("./");
+  expect(manifest.scope).toBe("./");
+  expect(manifest.start_url).toBe("./#/dashboard");
+
+  for (const icon of manifest.icons) {
+    expect(icon.src).not.toContain("?");
+    expect(icon.src).toMatch(
+      /(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[0-9a-f]{12}\.(?:png|svg)$/,
+    );
+    const iconResponse = await request.get(new URL(icon.src, manifestResponse.url()).pathname);
+    expect(iconResponse.status()).toBe(200);
+    expect(iconResponse.headers()["cache-control"]).toBe(iconCacheControl);
+  }
+
+  const serviceWorkerResponse = await request.get("/sw.js");
+  expect(serviceWorkerResponse.headers()["cache-control"]).toBe(metadataCacheControl);
+  const serviceWorker = await serviceWorkerResponse.text();
+  expect(serviceWorker).toContain("site.webmanifest");
+  expect(serviceWorker).not.toMatch(/"url":"[^"]*site\.webmanifest/);
+  expect(serviceWorker).not.toMatch(/"url":"[^"]*version\.json/);
+});
+
 test("shows an install prompt dialog without a header button and routes confirm through native prompt", async ({
   page,
 }) => {

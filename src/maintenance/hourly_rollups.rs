@@ -3706,6 +3706,52 @@ pub(crate) fn inject_absolute_social_preview_urls(
     index_html.replace(SOCIAL_PREVIEW_RELATIVE_ATTR, &absolute_attr)
 }
 
+const PWA_METADATA_CACHE_CONTROL: &str = "no-cache, max-age=0, must-revalidate";
+const PWA_ICON_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+pub(crate) fn static_cache_control(path: &str) -> Option<&'static str> {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    if path == "/"
+        || matches!(
+            filename,
+            "index.html" | "site.webmanifest" | "sw.js" | "version.json"
+        )
+    {
+        return Some(PWA_METADATA_CACHE_CONTROL);
+    }
+
+    let icon_specs = [
+        ("apple-touch-icon-", "png"),
+        ("favicon-", "svg"),
+        ("icon-192-", "png"),
+        ("icon-512-", "png"),
+        ("maskable-192-", "png"),
+        ("maskable-512-", "png"),
+    ];
+    let (prefix, expected_extension) = icon_specs
+        .iter()
+        .find(|(prefix, _)| filename.starts_with(*prefix))?;
+    let (digest, extension) = filename[prefix.len()..].rsplit_once('.')?;
+    if digest.len() == 12
+        && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && extension == *expected_extension
+    {
+        return Some(PWA_ICON_CACHE_CONTROL);
+    }
+    None
+}
+
+fn apply_static_cache_control<B>(path: &str, response: &mut axum::http::Response<B>) {
+    let Some(value) = static_cache_control(path) else {
+        return;
+    };
+    response.headers_mut().insert(
+        HeaderName::from_static("cache-control"),
+        HeaderValue::from_static(value),
+    );
+}
+
 pub(crate) async fn render_spa_index_response(
     state: Arc<AppState>,
     headers: &HeaderMap,
@@ -3722,12 +3768,14 @@ pub(crate) async fn render_spa_index_response(
         }
     };
 
-    Html(inject_absolute_social_preview_urls(
+    let mut response = Html(inject_absolute_social_preview_urls(
         index_html,
         headers,
         state.config.public_origin.as_deref(),
     ))
-    .into_response()
+    .into_response();
+    apply_static_cache_control("/index.html", &mut response);
+    response
 }
 
 pub(crate) async fn spawn_http_server(
@@ -3761,7 +3809,16 @@ pub(crate) async fn spawn_http_server(
                 let headers = request.headers().clone();
                 async move { Ok::<_, Infallible>(render_spa_index_response(state, &headers).await) }
             });
-            let spa_service = ServeDir::new(static_dir).not_found_service(spa_fallback);
+            let static_service = ServeDir::new(static_dir).not_found_service(spa_fallback);
+            let spa_service = service_fn(move |request: Request<Body>| {
+                let path = request.uri().path().to_owned();
+                let static_service = static_service.clone();
+                async move {
+                    let mut response = static_service.oneshot(request).await?;
+                    apply_static_cache_control(&path, &mut response);
+                    Ok::<_, Infallible>(response)
+                }
+            });
             router = router
                 .route_service("/", spa_index_service)
                 .route_service("/index.html", spa_index_html_service)
@@ -3846,6 +3903,60 @@ mod social_preview_tests {
         );
 
         assert!(rewritten.contains(r#"content="https://preview.example.com/social-preview.png""#));
+    }
+
+    #[test]
+    fn static_cache_control_revalidates_pwa_metadata() {
+        for path in [
+            "/",
+            "/index.html",
+            "/site.webmanifest",
+            "/sw.js",
+            "/version.json",
+        ] {
+            assert_eq!(
+                static_cache_control(path),
+                Some(PWA_METADATA_CACHE_CONTROL),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn static_cache_control_immutably_caches_content_hashed_install_icons() {
+        for path in [
+            "/favicon-0123456789ab.svg",
+            "/apple-touch-icon-0123456789ab.png",
+            "/icon-192-0123456789ab.png",
+            "/icon-512-0123456789ab.png",
+            "/maskable-192-0123456789ab.png",
+            "/maskable-512-0123456789ab.png?cache=bust",
+        ] {
+            assert_eq!(
+                static_cache_control(path),
+                Some(PWA_ICON_CACHE_CONTROL),
+                "{path}"
+            );
+        }
+        assert_eq!(static_cache_control("/icon-192.png"), None);
+        assert_eq!(static_cache_control("/icon-192-0123456789ab.jpg"), None);
+    }
+
+    #[test]
+    fn apply_static_cache_control_sets_the_selected_response_header() {
+        let mut response = axum::http::Response::new(());
+        apply_static_cache_control("/site.webmanifest", &mut response);
+        assert_eq!(
+            response.headers().get("cache-control").unwrap(),
+            PWA_METADATA_CACHE_CONTROL
+        );
+
+        let mut response = axum::http::Response::new(());
+        apply_static_cache_control("/icon-192-0123456789ab.png", &mut response);
+        assert_eq!(
+            response.headers().get("cache-control").unwrap(),
+            PWA_ICON_CACHE_CONTROL
+        );
     }
 }
 

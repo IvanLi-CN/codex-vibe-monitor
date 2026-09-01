@@ -4,6 +4,9 @@ use super::*;
 pub(crate) use super::*;
 
 /// Hydrates the production Summary projection before exercising the memory-only handler.
+///
+/// `all` requires its separately reconciled exact coverage; rolling selections intentionally use
+/// only Bootstrap so their tests retain the startup availability contract.
 pub(crate) async fn fetch_summary_from_memory_snapshot(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SummaryQuery>,
@@ -11,6 +14,11 @@ pub(crate) async fn fetch_summary_from_memory_snapshot(
     hydrate_summary_snapshots(state.as_ref())
         .await
         .map_err(ApiError::from)?;
+    if params.window.as_deref() == Some("all") {
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .map_err(ApiError::from)?;
+    }
 
     fetch_summary(State(state), Query(params)).await
 }
@@ -41,6 +49,7 @@ mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
 mod proxy_pool_roundtrip_and_retry_servers;
 mod record_budget;
+mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;
 #[expect(
     clippy::await_holding_lock,

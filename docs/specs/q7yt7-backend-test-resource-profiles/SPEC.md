@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
+
 ## 背景 / 问题陈述
 
 - 前序工作已将后端测试入口从 `include!()`、编号切片和 `#[path]` 聚合迁入 resource-profile 模块树；后续性能收敛必须以这一稳定分组为真相源。
@@ -103,7 +107,29 @@
 
 ### 契约文档（按 Kind 拆分）
 
-- `None`
+- `backend-test` image contract is defined by ADR 0007 and the repository
+  workflow contract. It provides the project-owned execution environment for
+  deterministic backend validation and is not release-snapshot evidence.
+
+## Project-owned execution contract
+
+- The repository MUST provide a `backend-test` target with the pinned Rust
+  toolchain, checksum-verified `cargo-nextest`, required system libraries, and a
+  writable test workspace. A caller MUST NOT need to install a test binary or
+  rely on login-shell PATH mutation.
+- The target MUST invoke `.github/scripts/run-backend-tests.sh` for all three
+  profiles. Runner Isolation may provide capacity, namespacing, and cleanup, but
+  it MUST NOT alter profile filters, concurrency, or test arguments.
+- Candidate PRs MUST build the target from the current commit. A trusted main
+  workflow may publish the immutable test image, but Release does not consume
+  its digest as validation evidence.
+- Affected PRs MUST run the deterministic Representative-Scale Acceptance
+  fixture. It MUST cover the old aggregate source admission boundary, paged
+  archive proof, and staged all-time checkpoint without reducing the existing
+  profile test set.
+- The acceptance result MUST include an independent exactness oracle.
+  Status-only or timing-only evidence is insufficient; production-copy and
+  external receipts are not gate inputs.
 
 ## 验收标准（Acceptance Criteria）
 
@@ -120,6 +146,23 @@
 - Given 运行完整 Stateful profile，When 每个 `4`、`6`、`8` threads 档位运行两次，Then 全部通过，runner 使用最快档位 `10%` 以内的最低线程数。
 
 - Given archive workflow 实验，When 它未同时降低 Stateful 关键路径和 backend runner 总秒数，Then archive workflow 变更不得保留。
+
+- Given a clean host without `cargo-nextest`, When the `backend-test` target
+  runs a profile, Then the profile starts with the pinned toolchain and does not
+  depend on host PATH contents.
+
+- Given a read-only source checkout, When the target runs a profile, Then source
+  inputs remain unchanged while target, schema template, and temporary archive
+  writes stay inside the declared Writable Test Workspace.
+
+- Given a production-shaped deterministic fixture, When the representative-scale
+  acceptance runs, Then `current` and supported rolling/calendar selections are
+  Exact-Ready within 30 seconds, `all` is exact within 1800 seconds, and the
+  complete normalized response matches the independent oracle.
+
+- Given a releasable target SHA, When Release begins publication, Then it uses
+  that target's successful CI Main result and runtime-image smoke without
+  reading an external validation path or receipt.
 
 ## 验收清单（Acceptance checklist）
 
@@ -150,6 +193,7 @@
 - `cargo check --locked --all-targets --all-features`
 - `bash .github/scripts/test-quality-gates-contract.sh`
 - `bash .github/scripts/test-live-quality-gates.sh`
+- `bash .github/scripts/test-representative-scale-contract.sh`
 
 ## Visual Evidence
 

@@ -96,7 +96,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Leave the generated snapshot in the local checkout and output file without pushing the notes ref.",
     )
-
     manual_override = subparsers.add_parser(
         "manual-override",
         help="Create a job-local release snapshot from explicit workflow_dispatch override inputs.",
@@ -187,6 +186,9 @@ def validate_snapshot(payload: Any, *, expected_sha: str | None = None) -> dict[
     if not isinstance(payload.get("snapshot_source"), str) or not payload.get("snapshot_source"):
         payload = dict(payload)
         payload["snapshot_source"] = "ci-main"
+    if "backend_test_image_digest" in payload:
+        payload = dict(payload)
+        payload.pop("backend_test_image_digest")
 
     required_strings = [
         "type_label",
@@ -583,36 +585,6 @@ def ci_main_run_is_release_eligible(
 
     if any(run.get("conclusion") == "success" for run in matching_runs):
         return "eligible"
-
-    for run in matching_runs:
-        if run.get("conclusion") != "failure":
-            continue
-        run_id = run.get("id")
-        if not isinstance(run_id, int):
-            raise SnapshotError("CI Main workflow run is missing a numeric id")
-        jobs_payload = github_request_json(
-            api_root,
-            token,
-            f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs",
-            {"per_page": 100},
-        )
-        jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
-        if not isinstance(jobs, list):
-            raise SnapshotError("GitHub API returned an unexpected payload for CI Main jobs")
-
-        snapshot_job: dict[str, Any] | None = None
-        blocking_jobs = 0
-        for job in jobs:
-            if not isinstance(job, dict):
-                continue
-            if job.get("name") == "Release Snapshot":
-                snapshot_job = job
-                continue
-            if job.get("conclusion") != "success":
-                blocking_jobs += 1
-
-        if snapshot_job and snapshot_job.get("conclusion") == "failure" and blocking_jobs == 0:
-            return "eligible"
 
     return "ineligible"
 

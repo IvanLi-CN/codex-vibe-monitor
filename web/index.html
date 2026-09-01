@@ -19,9 +19,10 @@
     <meta name="theme-color" content="#0ea5e9" />
     <meta name="color-scheme" content="light dark" />
 
-    <!-- Icons & Manifest -->
-    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg?v=%INSTALL_ICON_VERSION%" sizes="any" />
-    <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="%BASE_URL%apple-touch-icon.png?v=%INSTALL_ICON_VERSION%" />
+    <!-- The generated manifest is authoritative for Chromium installation metadata. -->
+    <!-- Apple touch is retained only as the legacy iOS/iPadOS Web Clip fallback. -->
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%%INSTALL_FAVICON%" sizes="any" />
+    <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="%BASE_URL%%INSTALL_APPLE_TOUCH_ICON%" />
 
     <!-- Open Graph / Social -->
     <meta property="og:type" content="website" />

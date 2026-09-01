@@ -35,7 +35,7 @@
 - `commit_sha` 必须是 40 位 SHA，且必须包含在 `origin/main`。
 - 手动覆盖必须满足 `version` 与 `bump` 严格二选一；`bump` 仅允许 `patch|minor|major`。
 - 手动覆盖必须提供非空 `reason`，并记录 actor 与触发时间。
-- 目标 commit 必须通过 `CI Main`，或满足既有 snapshot-only CI Main failure 例外。
+- 目标 commit 必须通过成功的 `CI Main`；任一失败结论均不可作为手动发布依据。
 - `version` 可接受 `X.Y.Z` 或 `vX.Y.Z`，规范化后必须大于当前最新 stable semver tag。
 - `bump` 基于当前最新 stable semver tag 推算；无 stable tag 时使用目标 commit 的 `Cargo.toml` version 作为基线。
 - 目标 Git tag 不存在时才新建；若已存在且指向目标 commit，允许幂等恢复；若指向其它 commit，必须失败。

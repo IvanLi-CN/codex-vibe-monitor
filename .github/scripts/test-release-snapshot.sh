@@ -22,7 +22,6 @@ assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-
 def run(*args: str, cwd: Path) -> str:
     result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True)
     return result.stdout.strip()
@@ -35,6 +34,104 @@ def make_pr(number: int, title: str, head_sha: str, labels: list[str]) -> dict[s
         "head": {"sha": head_sha},
         "labels": [{"name": label} for label in labels],
     }
+
+
+with tempfile.TemporaryDirectory(prefix="release-snapshot-legacy-field-") as tmp:
+    repo = Path(tmp)
+    run("init", cwd=repo)
+    run("config", "user.name", "Test User", cwd=repo)
+    run("config", "user.email", "test@example.com", cwd=repo)
+    run("checkout", "-b", "main", cwd=repo)
+    (repo / "Cargo.toml").write_text('[package]\nname = "demo"\nversion = "0.1.0"\n')
+    (repo / "README.md").write_text("target\n")
+    run("add", "Cargo.toml", "README.md", cwd=repo)
+    run("commit", "-m", "target", cwd=repo)
+    target_sha = run("rev-parse", "HEAD", cwd=repo)
+    legacy_snapshot = {
+        "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
+        "target_sha": target_sha,
+        "pr_number": 900,
+        "pr_title": "Legacy snapshot with retired backend-test digest",
+        "registry": "ghcr.io",
+        "pr_head_sha": target_sha,
+        "type_label": "type:patch",
+        "channel_label": "channel:stable",
+        "release_bump": "patch",
+        "release_channel": "stable",
+        "release_enabled": True,
+        "release_prerelease": False,
+        "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+        "base_stable_version": "0.1.0",
+        "next_stable_version": "0.1.1",
+        "app_effective_version": "0.1.1",
+        "release_tag": "v0.1.1",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
+        "notes_ref": module.DEFAULT_NOTES_REF,
+        "snapshot_source": "ci-main",
+        "backend_test_image_digest": "sha256:" + "b" * 64,
+        "created_at": "2026-03-15T00:00:00Z",
+    }
+    run(
+        "notes",
+        f"--ref={module.DEFAULT_NOTES_REF}",
+        "add",
+        "-f",
+        "-m",
+        json.dumps(legacy_snapshot),
+        target_sha,
+        cwd=repo,
+    )
+
+    original_cwd = Path.cwd()
+    original_git = module.git
+    output_path = repo / "legacy-snapshot.json"
+    os.chdir(repo)
+    try:
+        push_calls: list[tuple[str, ...]] = []
+
+        def fake_git(*args: str, **kwargs: object):
+            if args == ("push", "origin", module.DEFAULT_NOTES_REF):
+                push_calls.append(args)
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            return original_git(*args, **kwargs)
+
+        module.git = fake_git
+        exit_code = module.ensure_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                github_repository="IvanLi-CN/codex-vibe-monitor",
+                github_token="token",
+                notes_ref=module.DEFAULT_NOTES_REF,
+                registry="ghcr.io",
+                api_root="https://api.github.com",
+                output=str(output_path),
+                max_attempts=1,
+                target_only=True,
+                skip_publish=True,
+            )
+        )
+        assert exit_code == 0
+        assert not push_calls
+        stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
+        assert stored is not None
+        assert "backend_test_image_digest" not in stored
+        assert "backend_test_image_digest" not in json.loads(output_path.read_text())
+
+        export_output = repo / "exported-snapshot.txt"
+        assert module.export_existing_snapshot(
+            argparse.Namespace(
+                target_sha=target_sha,
+                notes_ref=module.DEFAULT_NOTES_REF,
+                snapshot_file=str(output_path),
+                resolve_publication_tags=False,
+                main_ref="",
+                github_output=str(export_output),
+            )
+        ) == 0
+        assert "backend_test_image_digest=" not in export_output.read_text()
+    finally:
+        module.git = original_git
+        os.chdir(original_cwd)
 
 
 original_urlopen = module.request.urlopen
@@ -188,7 +285,7 @@ try:
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         "b" * 40,
-    ) == "eligible"
+    ) == "ineligible"
     assert module.ci_main_run_is_release_eligible(
         "https://api.github.test",
         "IvanLi-CN/codex-vibe-monitor",

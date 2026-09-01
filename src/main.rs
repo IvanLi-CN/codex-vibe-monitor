@@ -90,7 +90,7 @@ use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tokio_util::sync::CancellationToken;
-use tower::service_fn;
+use tower::{ServiceExt, service_fn};
 use tower_http::{
     cors::{AllowOrigin, Any, CorsLayer},
     services::ServeDir,

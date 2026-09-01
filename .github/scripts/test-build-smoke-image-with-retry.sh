@@ -9,6 +9,10 @@ trap 'rm -rf "${tmp_dir}"' EXIT
 cat >"$tmp_dir/docker-transient" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${FAKE_DOCKER_ARGS_FILE:-}" ]]; then
+  printf '%q ' "$@" >>"$FAKE_DOCKER_ARGS_FILE"
+  printf '\n' >>"$FAKE_DOCKER_ARGS_FILE"
+fi
 attempt_file="${FAKE_DOCKER_ATTEMPT_FILE:?}"
 count=0
 if [[ -f "$attempt_file" ]]; then
@@ -71,8 +75,10 @@ mkdir -p "$transient_path"
 cp "$tmp_dir/docker-transient" "$transient_path/docker"
 
 attempt_file="$tmp_dir/transient-attempts"
+args_file="$tmp_dir/transient-args"
 PATH="$transient_path:$PATH" \
 FAKE_DOCKER_ATTEMPT_FILE="$attempt_file" \
+FAKE_DOCKER_ARGS_FILE="$args_file" \
 BUILD_PLATFORM="linux/arm64" \
 SMOKE_TAG="ghcr.io/example/smoke:arm64" \
 CANDIDATE_TAG="ghcr.io/example/candidate:arm64" \
@@ -83,6 +89,7 @@ BUILD_RETRY_BASE_DELAY_SECS="0" \
 bash "$script" >"$tmp_dir/transient.out" 2>"$tmp_dir/transient.err"
 
 [[ "$(cat "$attempt_file")" == "3" ]]
+grep -Fq -- '--target runtime' "$args_file"
 grep -q "transient failure for linux/arm64; retry in 0s (1/5)" "$tmp_dir/transient.err"
 grep -q "transient failure for linux/arm64; retry in 0s (2/5)" "$tmp_dir/transient.err"
 

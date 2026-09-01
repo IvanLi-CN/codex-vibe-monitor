@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -15,12 +18,23 @@ APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-app-icon.svg"
 MASKABLE_APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-maskable-app-icon.svg"
 
 PRODUCT_MARK_PUBLIC = PUBLIC_DIR / "brand-mark.svg"
-FAVICON_PUBLIC = PUBLIC_DIR / "favicon.svg"
-APPLE_TOUCH_PUBLIC = PUBLIC_DIR / "apple-touch-icon.png"
-ICON_192_PUBLIC = PUBLIC_DIR / "icon-192.png"
-ICON_512_PUBLIC = PUBLIC_DIR / "icon-512.png"
-MASKABLE_ICON_192_PUBLIC = PUBLIC_DIR / "maskable-192.png"
-MASKABLE_ICON_512_PUBLIC = PUBLIC_DIR / "maskable-512.png"
+
+LEGACY_INSTALL_ICON_NAMES = {
+    "apple-touch-icon.png",
+    "favicon.svg",
+    "icon-192.png",
+    "icon-512.png",
+    "maskable-192.png",
+    "maskable-512.png",
+}
+INSTALL_ICON_PATTERNS = (
+    re.compile(r"apple-touch-icon-[0-9a-f]{12}\.png"),
+    re.compile(r"favicon-[0-9a-f]{12}\.svg"),
+    re.compile(r"icon-192-[0-9a-f]{12}\.png"),
+    re.compile(r"icon-512-[0-9a-f]{12}\.png"),
+    re.compile(r"maskable-192-[0-9a-f]{12}\.png"),
+    re.compile(r"maskable-512-[0-9a-f]{12}\.png"),
+)
 
 
 SIGNAL_GRADIENT = [
@@ -107,6 +121,32 @@ def render_png(source_svg: Path, output_png: Path, size: int) -> None:
     )
 
 
+def render_png_bytes(source_svg: Path, size: int) -> bytes:
+    with tempfile.TemporaryDirectory(prefix="cvm-brand-assets-") as temp_dir:
+        output_png = Path(temp_dir) / "icon.png"
+        render_png(source_svg, output_png, size)
+        return output_png.read_bytes()
+
+
+def content_hashed_name(prefix: str, suffix: str, content: bytes) -> str:
+    digest = hashlib.sha256(content).hexdigest()[:12]
+    return f"{prefix}-{digest}{suffix}"
+
+
+def remove_generated_install_icons() -> None:
+    for path in PUBLIC_DIR.iterdir():
+        if path.name in LEGACY_INSTALL_ICON_NAMES or any(
+            pattern.fullmatch(path.name) for pattern in INSTALL_ICON_PATTERNS
+        ):
+            path.unlink()
+
+
+def write_hashed_asset(prefix: str, suffix: str, content: bytes) -> Path:
+    path = PUBLIC_DIR / content_hashed_name(prefix, suffix, content)
+    path.write_bytes(content)
+    return path
+
+
 def product_mark_svg() -> str:
     lines = [
         '<svg width="603" height="557" viewBox="0 0 6030 5570" fill="none" xmlns="http://www.w3.org/2000/svg">',
@@ -177,13 +217,14 @@ def main() -> None:
     write_text(APP_ICON_MASTER, regular_icon_svg)
     write_text(MASKABLE_APP_ICON_MASTER, maskable_icon_svg)
     write_text(PRODUCT_MARK_PUBLIC, product_svg)
-    write_text(FAVICON_PUBLIC, regular_icon_svg)
 
-    render_png(MASKABLE_APP_ICON_MASTER, APPLE_TOUCH_PUBLIC, 180)
-    render_png(APP_ICON_MASTER, ICON_192_PUBLIC, 192)
-    render_png(APP_ICON_MASTER, ICON_512_PUBLIC, 512)
-    render_png(MASKABLE_APP_ICON_MASTER, MASKABLE_ICON_192_PUBLIC, 192)
-    render_png(MASKABLE_APP_ICON_MASTER, MASKABLE_ICON_512_PUBLIC, 512)
+    remove_generated_install_icons()
+    write_hashed_asset("favicon", ".svg", regular_icon_svg.encode("utf-8"))
+    write_hashed_asset("apple-touch-icon", ".png", render_png_bytes(MASKABLE_APP_ICON_MASTER, 180))
+    write_hashed_asset("icon-192", ".png", render_png_bytes(APP_ICON_MASTER, 192))
+    write_hashed_asset("icon-512", ".png", render_png_bytes(APP_ICON_MASTER, 512))
+    write_hashed_asset("maskable-192", ".png", render_png_bytes(MASKABLE_APP_ICON_MASTER, 192))
+    write_hashed_asset("maskable-512", ".png", render_png_bytes(MASKABLE_APP_ICON_MASTER, 512))
 
 
 if __name__ == "__main__":

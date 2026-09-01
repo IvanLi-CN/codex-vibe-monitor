@@ -154,31 +154,7 @@ jobs:
             const matchingRuns = (runs.data.workflow_runs || []).filter(run => run.head_sha === sha)
             const passed = matchingRuns.some(run => run.conclusion === 'success')
             if (!passed) {
-              for (const run of matchingRuns) {
-                if (run.conclusion !== 'failure') {
-                  continue
-                }
-
-                const jobs = await github.rest.actions.listJobsForWorkflowRun({
-                  owner,
-                  repo,
-                  run_id: run.id,
-                  per_page: 100,
-                })
-
-                const entries = jobs.data.jobs || []
-                const snapshotJob = entries.find(job => job.name === 'Release Snapshot')
-                const blockingJobs = entries.filter(
-                  job => job.name !== 'Release Snapshot' && job.conclusion !== 'success'
-                )
-
-                if (snapshotJob && snapshotJob.conclusion === 'failure' && blockingJobs.length === 0) {
-                  core.notice(`Accepted snapshot-only CI Main failure for ${sha} via run ${run.id}`)
-                  return
-                }
-              }
-
-              core.setFailed(`Manual backfill requires either a successful CI Main run or a snapshot-only CI Main failure for ${sha}`)
+              core.setFailed(`Manual backfill requires a successful CI Main run for ${sha}`)
               return
             }
 

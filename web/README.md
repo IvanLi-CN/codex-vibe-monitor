@@ -30,6 +30,8 @@ bun run preview
   - Safari / iOS：手动 `Add to Home Screen` 指引
 - 离线边界：首次在线访问后，应用壳层与静态资源可离线打开；实时数据、SSE 与设置同步会明确降级。
 - 更新策略：waiting service worker 只在用户确认时刷新，不做 mid-session auto takeover。
+- 安装元数据：manifest 的 `id`、`scope`、`start_url` 保持稳定；图标使用内容哈希文件名，manifest / `sw.js` / `version.json` 重新校验，哈希图标使用 immutable 缓存。
+- 平台边界：Android Chrome/WebAPK 与支持 manifest 图标更新的 Chromium Desktop 会保留原安装身份并收敛到新图标；已有 iOS/iPadOS Web Clip 或不支持该更新的浏览器无法被网站强制迁移，Apple touch 只作为兼容 fallback，不把重装作为常规更新方案。
 
 PWA 专项回归：
 
