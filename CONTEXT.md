@@ -109,6 +109,15 @@ Coverage Checkpoint. A missing account-manifest proof is an account-scoped gap;
 it cannot invalidate an independently proven global compact response.
 _Avoid_: partial all-time response, global cold-start failure
 
+**Historical Live Coverage Proof**:
+The generation-fenced, immutable Projection proof for the bounded historical
+live interval between the exact recent tail and the archive horizon. A Rolling
+rebuild reuses only its unchanged overlap; a late historical record becomes a
+range-local unavailable boundary until a background coverage pass re-establishes
+the complete proof. This proof never authorizes request-time SQLite or file I/O.
+_Avoid_: full historical scan on every Rolling refresh, stale global snapshot,
+approximate historical aggregate
+
 **Projection Generation Fence**:
 The stable live ID, global/account rollup cursors, archive manifest
 high-watermark, and settled terminal sequence observed for one background

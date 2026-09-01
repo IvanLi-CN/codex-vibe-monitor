@@ -95,6 +95,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     AfterAllTimeArchiveDiscovery,
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
+    BeforeHistoricalLiveCoverage,
 }
 
 #[cfg(test)]
@@ -7166,12 +7167,20 @@ impl std::error::Error for SummaryProjectionAllTimeGenerationChanged {}
 pub(crate) enum SummaryProjectionBuildMode {
     Bootstrap,
     Rolling,
+    HistoricalLiveCoverage,
     AllTime,
 }
 
 impl SummaryProjectionBuildMode {
     const fn includes_all_time(self) -> bool {
         matches!(self, Self::AllTime)
+    }
+
+    const fn requires_full_historical_live_coverage(self) -> bool {
+        matches!(
+            self,
+            Self::Bootstrap | Self::HistoricalLiveCoverage | Self::AllTime
+        )
     }
 }
 
@@ -7416,6 +7425,13 @@ struct SummaryProjectionFreshness {
     account_all_time_eligible: HashSet<i64>,
 }
 
+#[derive(Debug, Clone)]
+struct SummaryProjectionHistoricalLiveCoverage {
+    range: ExactUtcRange,
+    high_watermark_id: i64,
+    reconciliation_required: bool,
+}
+
 // A projection can be renewed only when each durable source boundary remains unchanged.  This
 // is deliberately smaller than the projection itself: it lets the maintenance loop keep an
 // already-proven immutable response alive without cloning its resident preview rows.
@@ -7550,6 +7566,9 @@ pub(crate) struct SummaryProjection {
     exact_global_usage_rollup_buckets: HashSet<i64>,
     exact_account_usage_rollup_buckets: HashSet<i64>,
     rollup_live_cursor: i64,
+    // Historical live coverage is verified during Bootstrap or a dedicated background pass.
+    // Rolling rebuilds reuse its unchanged proof and localize only newly unproven buckets.
+    historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
     // These indexes are constructed once off-request.  They retain only the largest legal
     // current-window result for the global view and each account, so a hot `current` read never
     // sorts or allocates in proportion to retained history.
@@ -10160,6 +10179,31 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
     }
+    let historical_live_recovery_required = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .is_some_and(|projection| {
+            projection
+                .historical_live_coverage
+                .as_ref()
+                .is_some_and(|coverage| coverage.reconciliation_required)
+        });
+    if historical_live_recovery_required {
+        // Rolling publication is the availability-critical path. A complete historical live
+        // proof can be slower, so recover it afterwards while keeping the newly published exact
+        // current/recent selections fresh in the hub. Keep this outside the generation renewal
+        // branch: a deferred recovery must retry even while the localized projection remains
+        // fresh against an unchanged fence.
+        if let Err(error) = refresh_summary_snapshots_with_mode(
+            state,
+            SummaryProjectionBuildMode::HistoricalLiveCoverage,
+        )
+        .await
+        {
+            warn!(error = ?error, "summary historical live coverage recovery deferred; keeping fresh rolling projection");
+        }
+    }
     if !state.subscription_hub.has_summary_all_time_owner().await {
         return Ok(());
     }
@@ -10309,7 +10353,8 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
     let deadline = match mode {
-        SummaryProjectionBuildMode::AllTime => SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
+        SummaryProjectionBuildMode::HistoricalLiveCoverage
+        | SummaryProjectionBuildMode::AllTime => SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
         SummaryProjectionBuildMode::Bootstrap | SummaryProjectionBuildMode::Rolling => {
             SUMMARY_PROJECTION_BUILD_DEADLINE
         }
@@ -10359,6 +10404,14 @@ async fn refresh_summary_snapshots_with_deadline(
             all_time_account_persisted_live_terminal_invoke_ids: projection
                 .all_time_account_persisted_live_terminal_invoke_ids
                 .clone(),
+            historical_live_coverage: projection.historical_live_coverage.clone(),
+            unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
+            unavailable_exact_live_account_ranges: projection
+                .unavailable_exact_live_account_ranges
+                .clone(),
+            persisted_live_terminal_invoke_ids: projection
+                .persisted_live_terminal_invoke_ids
+                .clone(),
         });
     // The runtime read model advances this watermark only after SQLite ACKs every preceding
     // terminal in order. Capture it before the durable projection queries so a later successful
@@ -10377,9 +10430,11 @@ async fn refresh_summary_snapshots_with_deadline(
         durable_terminal_sequence_watermark,
     );
     let projection = match (mode, deadline) {
-        (SummaryProjectionBuildMode::AllTime, Some(deadline)) => {
-            await_summary_projection_all_time_build(state, build, deadline).await?
-        }
+        (
+            SummaryProjectionBuildMode::HistoricalLiveCoverage
+            | SummaryProjectionBuildMode::AllTime,
+            Some(deadline),
+        ) => await_summary_projection_all_time_build(state, build, deadline).await?,
         (_, Some(deadline)) => tokio::time::timeout(deadline, build)
             .await
             .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))??,
@@ -12433,6 +12488,10 @@ struct PreviousSummaryProjectionAllTime {
     all_time_persisted_live_terminal_invoke_ids: HashSet<String>,
     all_time_account_terminal_sequence_watermarks: HashMap<i64, u64>,
     all_time_account_persisted_live_terminal_invoke_ids: HashMap<i64, HashSet<String>>,
+    historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
+    unavailable_exact_live_ranges: Vec<ExactUtcRange>,
+    unavailable_exact_live_account_ranges: HashMap<i64, Vec<ExactUtcRange>>,
+    persisted_live_terminal_invoke_ids: HashSet<String>,
 }
 
 /// Reads every input needed by the hot path while running off-request.  The resulting projection
@@ -12535,6 +12594,10 @@ async fn build_summary_projection_once(
             previous_all_time_account_terminal_sequence_watermarks,
         all_time_account_persisted_live_terminal_invoke_ids:
             previous_all_time_account_persisted_live_terminal_invoke_ids,
+        historical_live_coverage: previous_historical_live_coverage,
+        unavailable_exact_live_ranges: previous_unavailable_exact_live_ranges,
+        unavailable_exact_live_account_ranges: previous_unavailable_exact_live_account_ranges,
+        persisted_live_terminal_invoke_ids: previous_persisted_live_terminal_invoke_ids,
     } = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = mode.includes_all_time()
         && summary_projection_manifest_admission_retry_is_due(
@@ -13750,36 +13813,81 @@ async fn build_summary_projection_once(
         start: archive_start,
         end: live_start,
     };
+    let mut historical_live_coverage = None;
     if historical_live_range.start < historical_live_range.end {
-        info!(
-            ?mode,
-            stage = "historical_live_coverage",
-            "summary projection build stage started"
-        );
-        mark_summary_projection_uncovered_historical_live_ranges(
-            pool,
-            historical_live_range,
-            live_high_watermark_id,
-            rollup_live_cursor,
-            account_rollup_live_cursor,
-            &hourly_rollup_totals,
-            &hourly_rollup_usage,
-            &fully_admitted_historical_live_buckets,
-            &state
-                .subscription_hub
-                .summary_terminal_overlay_identities()
-                .await,
-            &mut unavailable_exact_live_buckets,
-            &mut unavailable_exact_live_account_buckets,
-            &mut historical_global_covered_terminal_invoke_ids,
-        )
-        .await?;
-        info!(
-            ?mode,
-            stage = "historical_live_coverage",
-            elapsed_ms = build_started_at.elapsed().as_millis() as u64,
-            "summary projection build stage completed"
-        );
+        if mode.requires_full_historical_live_coverage() {
+            info!(
+                ?mode,
+                stage = "historical_live_coverage",
+                "summary projection build stage started"
+            );
+            #[cfg(test)]
+            pause_summary_projection_test_interleave(
+                pool,
+                SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+            )
+            .await?;
+            mark_summary_projection_uncovered_historical_live_ranges(
+                pool,
+                historical_live_range,
+                live_high_watermark_id,
+                rollup_live_cursor,
+                account_rollup_live_cursor,
+                &hourly_rollup_totals,
+                &hourly_rollup_usage,
+                &fully_admitted_historical_live_buckets,
+                &state
+                    .subscription_hub
+                    .summary_terminal_overlay_identities()
+                    .await,
+                &mut unavailable_exact_live_buckets,
+                &mut unavailable_exact_live_account_buckets,
+                &mut historical_global_covered_terminal_invoke_ids,
+            )
+            .await?;
+            historical_live_coverage = Some(SummaryProjectionHistoricalLiveCoverage {
+                range: historical_live_range,
+                high_watermark_id: live_high_watermark_id,
+                reconciliation_required: false,
+            });
+            info!(
+                ?mode,
+                stage = "historical_live_coverage",
+                elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+                "summary projection build stage completed"
+            );
+        } else {
+            let coverage = reuse_summary_projection_historical_live_coverage(
+                pool,
+                previous_historical_live_coverage.as_ref(),
+                historical_live_range,
+                live_high_watermark_id,
+                rollup_live_cursor,
+                account_rollup_live_cursor,
+                &hourly_rollup_totals,
+                &hourly_rollup_usage,
+                &fully_admitted_historical_live_buckets,
+                &previous_unavailable_exact_live_ranges,
+                &previous_unavailable_exact_live_account_ranges,
+                &previous_persisted_live_terminal_invoke_ids,
+                &state
+                    .subscription_hub
+                    .summary_terminal_overlay_identities()
+                    .await,
+                &mut unavailable_exact_live_buckets,
+                &mut unavailable_exact_live_account_buckets,
+                &mut historical_global_covered_terminal_invoke_ids,
+            )
+            .await?;
+            info!(
+                ?mode,
+                stage = "historical_live_coverage_reuse",
+                reconciliation_required = coverage.reconciliation_required,
+                elapsed_ms = build_started_at.elapsed().as_millis() as u64,
+                "summary projection historical live coverage reused"
+            );
+            historical_live_coverage = Some(coverage);
+        }
     }
     known_account_ids.extend(
         records_by_invoke_id
@@ -15190,6 +15298,7 @@ async fn build_summary_projection_once(
         exact_global_usage_rollup_buckets,
         exact_account_usage_rollup_buckets,
         rollup_live_cursor,
+        historical_live_coverage,
         all_time_by_account,
         all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
         {
@@ -19910,6 +20019,194 @@ struct SummaryProjectionHistoricalLiveTerminalRow {
     invoke_id: String,
     occurred_at: String,
     status: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct SummaryProjectionHistoricalLiveChangeRow {
+    occurred_at: String,
+    upstream_account_id: Option<i64>,
+}
+
+fn summary_projection_intersect_exact_ranges(
+    left: ExactUtcRange,
+    right: ExactUtcRange,
+) -> Option<ExactUtcRange> {
+    let range = ExactUtcRange {
+        start: left.start.max(right.start),
+        end: left.end.min(right.end),
+    };
+    (range.start < range.end).then_some(range)
+}
+
+async fn reuse_summary_projection_historical_live_coverage(
+    pool: &Pool<Sqlite>,
+    previous_coverage: Option<&SummaryProjectionHistoricalLiveCoverage>,
+    range: ExactUtcRange,
+    high_watermark_id: i64,
+    rollup_live_cursor: i64,
+    account_rollup_live_cursor: Option<i64>,
+    hourly_rollup_totals: &HashMap<(i64, Option<i64>), StatsTotals>,
+    hourly_rollup_usage: &HashMap<(i64, Option<i64>), UsageBreakdownResponse>,
+    fully_admitted_live_buckets: &BTreeSet<i64>,
+    previous_unavailable_global_ranges: &[ExactUtcRange],
+    previous_unavailable_account_ranges: &HashMap<i64, Vec<ExactUtcRange>>,
+    previous_terminal_identities: &HashSet<String>,
+    pending_terminal_identities: &HashSet<String>,
+    unavailable_global_buckets: &mut BTreeSet<i64>,
+    unavailable_account_buckets: &mut HashMap<i64, BTreeSet<i64>>,
+    global_covered_terminal_invoke_ids: &mut HashSet<String>,
+) -> Result<SummaryProjectionHistoricalLiveCoverage> {
+    let Some(previous_coverage) = previous_coverage else {
+        // A Rolling revision can be reached only after an older process failed before it
+        // published Bootstrap proof. Preserve its independent current/recent selections, but
+        // never infer historical exactness without the bounded coverage snapshot.
+        summary_projection_mark_unavailable_archive_ranges(unavailable_global_buckets, [range])?;
+        return Ok(SummaryProjectionHistoricalLiveCoverage {
+            range,
+            high_watermark_id,
+            reconciliation_required: true,
+        });
+    };
+    let Some(overlap) = summary_projection_intersect_exact_ranges(previous_coverage.range, range)
+    else {
+        summary_projection_mark_unavailable_archive_ranges(unavailable_global_buckets, [range])?;
+        return Ok(SummaryProjectionHistoricalLiveCoverage {
+            range,
+            high_watermark_id,
+            reconciliation_required: true,
+        });
+    };
+
+    let mut reconciliation_required = previous_coverage.reconciliation_required;
+    for previous_range in previous_unavailable_global_ranges {
+        if let Some(intersection) =
+            summary_projection_intersect_exact_ranges(*previous_range, overlap)
+        {
+            summary_projection_mark_unavailable_archive_ranges(
+                unavailable_global_buckets,
+                [intersection],
+            )?;
+        }
+    }
+    for (account_id, ranges) in previous_unavailable_account_ranges {
+        let account_buckets = unavailable_account_buckets.entry(*account_id).or_default();
+        for previous_range in ranges {
+            if let Some(intersection) =
+                summary_projection_intersect_exact_ranges(*previous_range, overlap)
+            {
+                summary_projection_mark_unavailable_archive_ranges(
+                    account_buckets,
+                    [intersection],
+                )?;
+            }
+        }
+    }
+    for identity in previous_terminal_identities {
+        let Some((_, occurred_at)) = identity.split_once('\0') else {
+            continue;
+        };
+        let Some(occurred_at) = parse_to_utc_datetime(occurred_at) else {
+            continue;
+        };
+        if overlap.start <= occurred_at && occurred_at < overlap.end {
+            global_covered_terminal_invoke_ids.insert(identity.clone());
+        }
+    }
+
+    // The moving historical boundary normally advances by seconds. Validate only that new tail
+    // synchronously; a large clock/cadence jump is conservatively localized and recovered by
+    // the background pass rather than putting the whole Rolling projection back on the slow
+    // historical group-by path.
+    if previous_coverage.range.end < range.end {
+        let tail = ExactUtcRange {
+            start: previous_coverage.range.end.max(range.start),
+            end: range.end,
+        };
+        if tail.start < tail.end {
+            if tail.end - tail.start <= ChronoDuration::hours(1) {
+                mark_summary_projection_uncovered_historical_live_ranges(
+                    pool,
+                    tail,
+                    high_watermark_id,
+                    rollup_live_cursor,
+                    account_rollup_live_cursor,
+                    hourly_rollup_totals,
+                    hourly_rollup_usage,
+                    fully_admitted_live_buckets,
+                    pending_terminal_identities,
+                    unavailable_global_buckets,
+                    unavailable_account_buckets,
+                    global_covered_terminal_invoke_ids,
+                )
+                .await?;
+            } else {
+                summary_projection_mark_unavailable_archive_ranges(
+                    unavailable_global_buckets,
+                    [tail],
+                )?;
+                reconciliation_required = true;
+            }
+        }
+    }
+
+    // New IDs can be inserted with an old timestamp. Reading this bounded metadata delta is
+    // enough to invalidate only its affected hour without re-grouping every historical live
+    // record. The later recovery pass re-establishes full compact proof before the gap clears.
+    const TERMINAL_WHERE: &str =
+        " AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')";
+    let resolved_upstream_account_id_sql =
+        invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut changes_query = QueryBuilder::<Sqlite>::new("SELECT occurred_at, ");
+    changes_query
+        .push(resolved_upstream_account_id_sql.as_str())
+        .push(" AS upstream_account_id FROM codex_invocations WHERE id > ")
+        .push_bind(previous_coverage.high_watermark_id)
+        .push(" AND occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(overlap.start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_upper_bound(overlap.end))
+        .push(TERMINAL_WHERE)
+        .push(" ORDER BY id ASC LIMIT ")
+        .push_bind(summary_projection_exact_record_limit().saturating_add(1) as i64);
+    let changes = changes_query
+        .build_query_as::<SummaryProjectionHistoricalLiveChangeRow>()
+        .fetch_all(pool)
+        .await
+        .context("summary projection historical live delta hydration failed")?;
+    if changes.len() > summary_projection_exact_record_limit() {
+        summary_projection_mark_unavailable_archive_ranges(unavailable_global_buckets, [overlap])?;
+        reconciliation_required = true;
+    } else {
+        for change in changes {
+            let Some(occurred_at) = parse_to_utc_datetime(&change.occurred_at) else {
+                continue;
+            };
+            let changed_range = ExactUtcRange {
+                start: occurred_at,
+                end: occurred_at + ChronoDuration::seconds(1),
+            };
+            summary_projection_mark_unavailable_archive_ranges(
+                unavailable_global_buckets,
+                [changed_range],
+            )?;
+            if let Some(account_id) = change
+                .upstream_account_id
+                .filter(|account_id| *account_id > 0)
+            {
+                summary_projection_mark_unavailable_archive_ranges(
+                    unavailable_account_buckets.entry(account_id).or_default(),
+                    [changed_range],
+                )?;
+            }
+            reconciliation_required = true;
+        }
+    }
+
+    Ok(SummaryProjectionHistoricalLiveCoverage {
+        range,
+        high_watermark_id,
+        reconciliation_required,
+    })
 }
 
 async fn mark_summary_projection_uncovered_historical_live_ranges(
@@ -32966,6 +33263,328 @@ mod request_compression_query_tests {
             matches!(affected, Err(ApiError::Unavailable(_))),
             "a rolling range intersecting the unadmitted archive must fail closed"
         );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_rolling_never_runs_historical_live_coverage() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-coverage-before', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live coverage");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection with historical coverage");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-coverage-current', datetime('now'), 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("advance only the current live source");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical coverage interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let refresh_state = state.clone();
+        let rolling = tokio::spawn(async move {
+            refresh_summary_snapshots_with_mode(
+                refresh_state.as_ref(),
+                SummaryProjectionBuildMode::Rolling,
+            )
+            .await
+        });
+        tokio::pin!(rolling);
+        tokio::select! {
+            result = &mut rolling => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join rolling refresh")
+                    .expect("rolling refresh must publish without a historical full scan");
+            }
+            _ = interleave.wait_for_writer() => {
+                interleave.resume_build();
+                let _ = rolling.await;
+                clear_summary_projection_test_interleave();
+                panic!("rolling refresh must not enter historical live coverage");
+            }
+        }
+        assert_eq!(
+            interleave.build_attempts(),
+            0,
+            "only Bootstrap or background recovery may scan historical live coverage",
+        );
+        state.pool.close().await;
+        let Json(current) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("rolling projection remains memory-only after SQLite closes");
+        assert_eq!(current.total_count, 2);
+        assert_eq!(current.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_rolling_localizes_late_historical_live_source_gap() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-gap-before', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed initial historical source");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection with historical proof");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-gap-late', ?1, 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert a late historical source after bootstrap proof");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await
+            .expect("late historical source must not abort rolling publication");
+        state.pool.close().await;
+
+        for window in ["current", "1d"] {
+            let _ = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: Some(50),
+                    time_zone: Some("UTC".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("disjoint {window} selection remains exact from memory");
+        }
+        let affected = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(affected, Err(ApiError::Unavailable(_))),
+            "only a selection intersecting the late historical source gap may fail closed",
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_background_historical_live_recovery_follows_rolling_publication() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-recovery-before', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live coverage");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection with historical proof");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-recovery-late', ?1, 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert late historical source");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical recovery interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let refresh_state = state.clone();
+        let refresh =
+            tokio::spawn(async move { refresh_summary_snapshots(refresh_state.as_ref()).await });
+        tokio::pin!(refresh);
+        tokio::select! {
+            result = &mut refresh => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join staged historical refresh")
+                    .expect("historical refresh must recover the localized gap");
+                panic!("background historical recovery must run after rolling publication");
+            }
+            _ = interleave.wait_for_writer() => {}
+        }
+        assert_eq!(
+            interleave.build_attempts(),
+            1,
+            "only the background recovery may enter the historical full scan",
+        );
+        let Json(current) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("rolling projection is published before historical recovery completes");
+        assert_eq!(current.total_count, 2);
+        let affected = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(affected, Err(ApiError::Unavailable(_))),
+            "the localized gap remains fail-closed until background coverage completes",
+        );
+        interleave.resume_build();
+        refresh
+            .await
+            .expect("join staged historical recovery")
+            .expect("background historical recovery succeeds");
+        clear_summary_projection_test_interleave();
+        state.pool.close().await;
+        let Json(recovered) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("recovered historical projection remains memory-only after SQLite closes");
+        assert_eq!(recovered.total_count, 2);
+        assert_eq!(recovered.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_historical_live_recovery_retries_while_generation_is_fresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-retry-before', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live coverage");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection with historical proof");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-retry-late', ?1, 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert late historical source");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await
+            .expect("publish localized historical gap");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical recovery interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let refresh_state = state.clone();
+        let refresh =
+            tokio::spawn(async move { refresh_summary_snapshots(refresh_state.as_ref()).await });
+        tokio::pin!(refresh);
+        tokio::select! {
+            result = &mut refresh => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join fresh-generation historical retry")
+                    .expect("fresh generation retry must not fail");
+                panic!("a fresh projection with a recoverable historical gap must retry coverage");
+            }
+            _ = interleave.wait_for_writer() => {}
+        }
+        interleave.resume_build();
+        refresh
+            .await
+            .expect("join historical retry")
+            .expect("historical retry succeeds");
+        clear_summary_projection_test_interleave();
+        state.pool.close().await;
+        let Json(recovered) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("fresh-generation retry restores the exact memory-only range");
+        assert_eq!(recovered.total_count, 2);
+        assert_eq!(recovered.total_tokens, 40);
     }
 
     #[test]
