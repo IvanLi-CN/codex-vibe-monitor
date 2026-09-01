@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.9",
+  "base_stable_version": "2.69.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-01T17:34:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "066e01b6b7043244fa1d25338c60a04378a50807",
+  "pr_number": 892,
+  "pr_title": "fix(summary): preserve cold bootstrap retry deadline",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.9",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.9",
+  "target_sha": "7346180c47ebd616dc967e4a57d2a1d37196c8ba",
+  "type_label": "type:patch"
+}
