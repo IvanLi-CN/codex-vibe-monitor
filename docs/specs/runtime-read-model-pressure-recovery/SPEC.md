@@ -36,6 +36,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   `current` and supported rolling/calendar selections must be Exact-Ready within
   30 seconds, while `all` may remain Range-Local Unavailable until its exact
   coverage checkpoint completes within 1800 seconds.
+- A `cold-start-retry` is an initial-publication attempt, not a degraded refresh:
+  while no immutable Projection is published, each scheduled retry uses the
+  30-second Bootstrap budget. The four-second Rolling budget applies only after
+  a Projection has been atomically published.
 - Representative-scale acceptance is CI-contained: the deterministic fixture
   and oracle run on the target commit in PR/Main CI. Release relies on that
   successful CI Main result and runtime-image smoke, never an external receipt
@@ -80,6 +84,8 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - Canonical source-record admission 与 resident preview capacity 必须分离。hydration 可以通过有限、有序的后台 source page 检查累计超过 shared resident preview-byte budget 的 raw source text；只有保留在 Projection 中的 compact preview value 消耗常驻预算。admission 必须保留精确 temporal 与 current-rank proof，服从 hydration deadline/cancellation，且绝不能移入 HTTP/SSE。
 - `current` 只能在每个请求 scope 的 newest-N 候选来源均已被有界 admission 证明时返回成功；一个可能进入该前缀、但未被常驻 Projection 收录的 archive 记录必须使对应 global 或 account `current` 请求 `unavailable`，不得返回较短的 200。确认早于 selected cutoff 的 archive 不得阻断不受影响的 global `current`。
 - 当 source-record admission 无法为某个 record 或 page 建立精确 coverage 时，hydration 必须发布所有独立已证明的 exact selection，并将受影响的 temporal/current-rank boundary 保留为 range-local `unavailable`。相交的 rolling/calendar selection，或可能包含该记录的 `current` prefix，必须 fail closed；不相交 selection 继续可用。不得发布 partial snapshot 或使整个 cold Projection 失败。
+- hub 尚无 Projection 时，初次 hydration 的 timeout、pressure defer 或其他可恢复失败后的 maintenance retry 必须再次使用 30 秒 Bootstrap；不得先运行 4 秒 Rolling 再把缺失 historical proof 交给背景恢复。只有一个 immutable Projection 已原子发布后，maintenance 才可使用 4 秒 Rolling 和既有 all-time checkpoint cadence。
+- Bootstrap telemetry 必须只记录 build mode、阶段名与耗时，不得记录 source text、archive path、record identity 或 payload。它至少覆盖 current archive admission、runtime overlay、Projection materialization 与 generation-fence snapshot，以便 cold retry 的超时阶段可被脱敏归因。
 - Bootstrap 与 Rolling 可以分页读取 archive manifest metadata 来建立 compact coverage 或有限 gap proof，但不得打开、校验或合并 paged raw archive。需要 paged raw replacement 的范围必须在已发布 Projection 中按 global 或 account scope 保留为 temporal/current-rank unavailable；缺少 account-manifest proof 不能否定已证明的 global compact response。raw hydration 只属于 generation-fenced All-Time Coverage Checkpoint，且不得撤销近期 Exact-Ready selection。
 - Rolling 在 generation fence 变化后不得重新分组整个 bounded historical live interval。它只能复用前一 Projection 中 high-watermark 之前未变化的 Historical Live Coverage Proof；新 ID 落入该 overlap 或移动边界无法在小范围内证明时，必须仅将相交时间范围标为 unavailable，并由独立、可取消的后台 historical-live coverage pass 重建完整 proof。该 pass 的延期或失败不得撤销已发布的 current/recent Projection。
 - 已发布的 Exact-Ready rolling Projection 只能在其 live high-watermark、global/account rollup cursor、archive manifest high-watermark 与 settled terminal sequence 均未变化时续租 freshness。任一 fence 成员变化必须进入新的 bounded reconciliation，不得把旧 source coverage 当作新鲜结果。
@@ -219,5 +225,3 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - 每次 checkpoint/aggregate 以 Initiative v4 guard 的 exact head/base、release 与 observation receipt 为准。
 
 ## Visual Evidence
-
-PR: none
