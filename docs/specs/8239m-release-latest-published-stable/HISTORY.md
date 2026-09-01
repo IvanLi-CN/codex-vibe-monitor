@@ -8,6 +8,7 @@
 ## Key Decisions
 
 - No separate historical decision record was present before this migration.
+- Release queue 以最新 pending snapshot 为发布候选；较新 stable tag 已证明发布后，其祖先路径上的旧 snapshot 视为被覆盖。这保证 release backlog 不会阻塞当前应用修复，同时保留 immutable snapshot 与 Git tag 的发布事实。
 
 ## Migrated Change History
 

@@ -24,4 +24,5 @@
 - [x] M1: 拆分 immutable tags 与 publish-time tags 责任边界
 - [x] M2: 让 `latest` 只受更高已发布 stable 影响
 - [x] M3: README 与脚本级回归测试对齐新语义
-- [ ] M4: fast-track 推进到 PR / CI / review 收敛
+- [x] M4: release queue 选择最新 pending snapshot，并在较新 stable 发布后跳过已覆盖祖先项。
+- [ ] M5: fast-track 推进到 PR / CI / review 收敛
