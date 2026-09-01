@@ -10178,28 +10178,30 @@ pub(crate) async fn hydrate_summary_snapshots_with_deadline(
 pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
     if !renew_summary_projection_freshness_if_generation_matches(state).await? {
         refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
-        let historical_live_recovery_required = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .is_some_and(|projection| {
-                projection
-                    .historical_live_coverage
-                    .as_ref()
-                    .is_some_and(|coverage| coverage.reconciliation_required)
-            });
-        if historical_live_recovery_required {
-            // Rolling publication is the availability-critical path. A complete historical
-            // live proof can be slower, so recover it afterwards while keeping the newly
-            // published exact current/recent selections fresh in the hub.
-            if let Err(error) = refresh_summary_snapshots_with_mode(
-                state,
-                SummaryProjectionBuildMode::HistoricalLiveCoverage,
-            )
-            .await
-            {
-                warn!(error = ?error, "summary historical live coverage recovery deferred; keeping fresh rolling projection");
-            }
+    }
+    let historical_live_recovery_required = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .is_some_and(|projection| {
+            projection
+                .historical_live_coverage
+                .as_ref()
+                .is_some_and(|coverage| coverage.reconciliation_required)
+        });
+    if historical_live_recovery_required {
+        // Rolling publication is the availability-critical path. A complete historical live
+        // proof can be slower, so recover it afterwards while keeping the newly published exact
+        // current/recent selections fresh in the hub. Keep this outside the generation renewal
+        // branch: a deferred recovery must retry even while the localized projection remains
+        // fresh against an unchanged fence.
+        if let Err(error) = refresh_summary_snapshots_with_mode(
+            state,
+            SummaryProjectionBuildMode::HistoricalLiveCoverage,
+        )
+        .await
+        {
+            warn!(error = ?error, "summary historical live coverage recovery deferred; keeping fresh rolling projection");
         }
     }
     if !state.subscription_hub.has_summary_all_time_owner().await {
@@ -33505,6 +33507,82 @@ mod request_compression_query_tests {
         )
         .await
         .expect("recovered historical projection remains memory-only after SQLite closes");
+        assert_eq!(recovered.total_count, 2);
+        assert_eq!(recovered.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_historical_live_recovery_retries_while_generation_is_fresh() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-retry-before', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live coverage");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection with historical proof");
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-historical-retry-late', ?1, 'proxy', 'success', 23, 2.5, '{}', '', 'full')",
+        )
+        .bind(&historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert late historical source");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::Rolling)
+            .await
+            .expect("publish localized historical gap");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical recovery interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        let refresh_state = state.clone();
+        let refresh =
+            tokio::spawn(async move { refresh_summary_snapshots(refresh_state.as_ref()).await });
+        tokio::pin!(refresh);
+        tokio::select! {
+            result = &mut refresh => {
+                clear_summary_projection_test_interleave();
+                result
+                    .expect("join fresh-generation historical retry")
+                    .expect("fresh generation retry must not fail");
+                panic!("a fresh projection with a recoverable historical gap must retry coverage");
+            }
+            _ = interleave.wait_for_writer() => {}
+        }
+        interleave.resume_build();
+        refresh
+            .await
+            .expect("join historical retry")
+            .expect("historical retry succeeds");
+        clear_summary_projection_test_interleave();
+        state.pool.close().await;
+        let Json(recovered) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("7d".to_string()),
+                limit: Some(50),
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("fresh-generation retry restores the exact memory-only range");
         assert_eq!(recovered.total_count, 2);
         assert_eq!(recovered.total_tokens, 40);
     }
