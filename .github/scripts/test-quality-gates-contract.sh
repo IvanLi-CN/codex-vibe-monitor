@@ -195,6 +195,29 @@ fi
 
 grep -q "label-gate.yml.concurrency.group drifted" "$tmp_dir/label-concurrency.log"
 
+label_cancellation_repo="$tmp_dir/label-cancellation-repo"
+copy_repo_snapshot "$baseline_repo" "$label_cancellation_repo"
+python3 - <<'PY' "$label_cancellation_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/label-gate.yml"
+text = path.read_text()
+needle = "  cancel-in-progress: false\n"
+replacement = "  cancel-in-progress: true\n"
+if needle not in text:
+    raise SystemExit("failed to locate label-gate cancellation policy")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$label_cancellation_repo" >/dev/null 2>"$tmp_dir/label-cancellation.log"; then
+  echo "expected label-gate cancellation fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "label-gate.yml.concurrency.cancel-in-progress must stay false" "$tmp_dir/label-cancellation.log"
+
 coverage_repo="$tmp_dir/coverage-repo"
 copy_repo_snapshot "$baseline_repo" "$coverage_repo"
 python3 - <<'PY' "$coverage_repo"

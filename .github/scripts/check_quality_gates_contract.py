@@ -856,7 +856,7 @@ def validate_label_gate(path: Path, contract: ContractModel) -> None:
 
     concurrency = require_mapping(workflow.get("concurrency"), "label-gate.yml.concurrency")
     require(concurrency.get("group") == "label-gate-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && format('metadata-{0}-{1}', github.event.pull_request.number, github.run_id) || github.event.pull_request.number || github.run_id }}", "label-gate.yml.concurrency.group drifted")
-    require(concurrency.get("cancel-in-progress") is True, "label-gate.yml.concurrency.cancel-in-progress must stay true")
+    require(concurrency.get("cancel-in-progress") is False, "label-gate.yml.concurrency.cancel-in-progress must stay false")
 
     job = named_job_config(workflow, "validate-pr-labels", expected_jobs, "label-gate.yml")
     require(job.get("name") == contract.label_check_name, "label-gate.yml: required label check name drifted")
