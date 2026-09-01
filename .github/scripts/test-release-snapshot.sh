@@ -22,44 +22,6 @@ assert spec is not None and spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-with tempfile.TemporaryDirectory(prefix="release-receipt-") as tmp:
-    receipt_path = Path(tmp) / "receipt.json"
-    target_sha = "a" * 40
-    image_digest = "sha256:" + "b" * 64
-    receipt_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "source": "production-copy",
-                "target_sha": target_sha,
-                "backend_test_image_digest": image_digest,
-                "fixture_contract_version": module.VALIDATION_FIXTURE_CONTRACT_VERSION,
-                "oracle_version": module.VALIDATION_ORACLE_VERSION,
-                "bootstrap_deadline_seconds": 30,
-                "all_time_deadline_seconds": 1800,
-                "bootstrap_elapsed_seconds": 2,
-                "all_time_elapsed_seconds": 11,
-                "oracle_sha256": "c" * 64,
-                "result": "pass",
-            }
-        )
-    )
-    assert module.validate_production_receipt(
-        str(receipt_path), target_sha=target_sha, backend_test_image_digest=image_digest
-    )["result"] == "pass"
-    invalid = json.loads(receipt_path.read_text())
-    invalid["target_sha"] = "d" * 40
-    receipt_path.write_text(json.dumps(invalid))
-    try:
-        module.validate_production_receipt(
-            str(receipt_path), target_sha=target_sha, backend_test_image_digest=image_digest
-        )
-    except module.SnapshotError:
-        pass
-    else:
-        raise AssertionError("receipt target binding must be hard-fail")
-
-
 def run(*args: str, cwd: Path) -> str:
     result = subprocess.run(["git", *args], cwd=cwd, check=True, text=True, capture_output=True)
     return result.stdout.strip()
@@ -74,7 +36,7 @@ def make_pr(number: int, title: str, head_sha: str, labels: list[str]) -> dict[s
     }
 
 
-with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as tmp:
+with tempfile.TemporaryDirectory(prefix="release-snapshot-legacy-field-") as tmp:
     repo = Path(tmp)
     run("init", cwd=repo)
     run("config", "user.name", "Test User", cwd=repo)
@@ -89,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
         "schema_version": module.SNAPSHOT_SCHEMA_VERSION,
         "target_sha": target_sha,
         "pr_number": 900,
-        "pr_title": "Legacy snapshot without backend-test digest",
+        "pr_title": "Legacy snapshot with retired backend-test digest",
         "registry": "ghcr.io",
         "pr_head_sha": target_sha,
         "type_label": "type:patch",
@@ -106,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
         "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
         "notes_ref": module.DEFAULT_NOTES_REF,
         "snapshot_source": "ci-main",
+        "backend_test_image_digest": "sha256:" + "b" * 64,
         "created_at": "2026-03-15T00:00:00Z",
     }
     run(
@@ -121,8 +84,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
 
     original_cwd = Path.cwd()
     original_git = module.git
-    digest = "sha256:" + "b" * 64
-    output_path = repo / "backfilled-snapshot.json"
+    output_path = repo / "legacy-snapshot.json"
     os.chdir(repo)
     try:
         push_calls: list[tuple[str, ...]] = []
@@ -145,7 +107,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
                 output=str(output_path),
                 max_attempts=1,
                 target_only=True,
-                backend_test_image_digest=digest,
                 skip_publish=True,
             )
         )
@@ -153,43 +114,8 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
         assert not push_calls
         stored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
         assert stored is not None
-        assert stored["backend_test_image_digest"] == digest
-        assert json.loads(output_path.read_text())["backend_test_image_digest"] == digest
-
-        try:
-            module.ensure_snapshot(
-                argparse.Namespace(
-                    target_sha=target_sha,
-                    github_repository="IvanLi-CN/codex-vibe-monitor",
-                    github_token="token",
-                    notes_ref=module.DEFAULT_NOTES_REF,
-                    registry="ghcr.io",
-                    api_root="https://api.github.com",
-                    output=str(repo / "conflicting-snapshot.json"),
-                    max_attempts=1,
-                    target_only=True,
-                    backend_test_image_digest="sha256:" + "c" * 64,
-                )
-            )
-        except module.SnapshotError as exc:
-            assert "digest mismatch" in str(exc)
-        else:
-            raise AssertionError("non-empty backend-test digest conflicts must fail")
-
-        # Simulate the subsequent workflow fetch restoring the legacy remote note.
-        run(
-            "notes",
-            f"--ref={module.DEFAULT_NOTES_REF}",
-            "add",
-            "-f",
-            "-m",
-            json.dumps(legacy_snapshot),
-            target_sha,
-            cwd=repo,
-        )
-        restored = module.read_snapshot(module.DEFAULT_NOTES_REF, target_sha)
-        assert restored is not None
-        assert not restored.get("backend_test_image_digest")
+        assert "backend_test_image_digest" not in stored
+        assert "backend_test_image_digest" not in json.loads(output_path.read_text())
 
         export_output = repo / "exported-snapshot.txt"
         assert module.export_existing_snapshot(
@@ -202,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-digest-backfill-") as 
                 github_output=str(export_output),
             )
         ) == 0
-        assert f"backend_test_image_digest={digest}" in export_output.read_text()
+        assert "backend_test_image_digest=" not in export_output.read_text()
     finally:
         module.git = original_git
         os.chdir(original_cwd)
@@ -359,7 +285,7 @@ try:
         "IvanLi-CN/codex-vibe-monitor",
         "token",
         "b" * 40,
-    ) == "eligible"
+    ) == "ineligible"
     assert module.ci_main_run_is_release_eligible(
         "https://api.github.test",
         "IvanLi-CN/codex-vibe-monitor",
@@ -554,7 +480,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Recover release assets for an existing tag",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
-            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_idempotent_version_snapshot["release_tag"] == "v0.1.1"
         assert manual_idempotent_version_snapshot["manual_version"] == "0.1.1"
@@ -577,7 +502,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish a new patch from the latest stable tag on this commit",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
-            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_bump_same_target_snapshot["base_stable_version"] == "0.1.1"
         assert manual_bump_same_target_snapshot["next_stable_version"] == "0.1.2"
@@ -594,7 +518,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish cleanup build for deployed stream root-cause diagnostics",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
-            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_bump_snapshot["snapshot_source"] == "manual-release-override"
         assert manual_bump_snapshot["release_enabled"] is True
@@ -618,7 +541,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish explicitly requested cleanup build",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
-            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_version_snapshot["manual_version"] == "0.2.0"
         assert manual_version_snapshot["manual_bump"] == ""
@@ -636,7 +558,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
             reason="Publish release candidate for diagnostics",
             actor="release-maintainer",
             triggered_at="2026-07-07T00:00:00Z",
-            backend_test_image_digest="sha256:" + "b" * 64,
         )
         assert manual_rc_snapshot["release_prerelease"] is True
         assert manual_rc_snapshot["release_tag"] == f"v0.2.1-rc.{sha1[:7]}"
@@ -664,7 +585,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
                     reason=case["reason"],
                     actor="release-maintainer",
                     triggered_at="2026-07-07T00:00:00Z",
-                    backend_test_image_digest="sha256:" + "b" * 64,
                 )
             except module.SnapshotError:
                 pass
@@ -684,7 +604,6 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
                 reason="tag conflict",
                 actor="release-maintainer",
                 triggered_at="2026-07-07T00:00:00Z",
-                backend_test_image_digest="sha256:" + "b" * 64,
             )
         except module.SnapshotError as exc:
             assert "already exists but points to" in str(exc)

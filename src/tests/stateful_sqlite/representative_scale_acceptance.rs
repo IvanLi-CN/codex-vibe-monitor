@@ -3,7 +3,6 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 const FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v1";
-const ORACLE_VERSION: &str = "summary-oracle-v1";
 const FIXTURE_ROWS: i64 = 96;
 const FIXTURE_PAYLOAD_BYTES: usize = 700_000;
 const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(30);
@@ -165,8 +164,6 @@ async fn summary_representative_scale_acceptance() {
         "independent oracle mismatch for all-time"
     );
 
-    // Keep these constants in the test binary so the project contract test can verify that the
-    // selected acceptance uses the same receipt bindings as production-copy validation.
+    // Keep the fixture contract in the test binary so the selected acceptance remains reproducible.
     assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v1");
-    assert_eq!(ORACLE_VERSION, "summary-oracle-v1");
 }

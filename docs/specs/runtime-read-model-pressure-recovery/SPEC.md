@@ -8,7 +8,7 @@
 - [ADR 0003: Durable invocation classification](../../adr/0003-durable-invocation-classification.md)
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0005: Staged Summary projection recovery](../../adr/0005-staged-summary-projection-recovery.md)
-- [ADR 0006: Project-owned representative-scale validation gates](../../adr/0006-project-owned-representative-scale-gates.md)
+- [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
 
 ## 背景 / 问题陈述
 
@@ -36,10 +36,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   `current` and supported rolling/calendar selections must be Exact-Ready within
   30 seconds, while `all` may remain Range-Local Unavailable until its exact
   coverage checkpoint completes within 1800 seconds.
-- A production-copy receipt is data-blind and immutable with respect to its
-  commit, backend-test image digest, fixture/oracle versions, and thresholds.
-  Missing or mismatched evidence blocks the affected release without changing
-  the memory-only HTTP/SSE contract.
+- Representative-scale acceptance is CI-contained: the deterministic fixture
+  and oracle run on the target commit in PR/Main CI. Release relies on that
+  successful CI Main result and runtime-image smoke, never an external receipt
+  or production-copy path.
 
 ### Non-goals
 

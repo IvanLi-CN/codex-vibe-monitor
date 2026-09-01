@@ -134,7 +134,6 @@ jobs:
           bash -n .github/scripts/build-smoke-image-with-retry.sh
           bash -n .github/scripts/run-backend-tests.sh
           bash -n .github/scripts/test-representative-scale-contract.sh
-          bash -n scripts/validate-summary-production-fixture.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
