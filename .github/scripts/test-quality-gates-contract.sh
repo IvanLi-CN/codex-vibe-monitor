@@ -515,6 +515,61 @@ fi
 
 grep -q "release.yml.concurrency.group drifted" "$tmp_dir/release-concurrency.log"
 
+release_target_repo="$tmp_dir/release-target-repo"
+copy_repo_snapshot "$baseline_repo" "$release_target_repo"
+python3 - <<'PY' "$release_target_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = '          echo "target_sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"\n'
+replacement = '          python3 .github/scripts/release_snapshot.py next-pending\n'
+if needle not in text:
+    raise SystemExit("failed to rewrite triggering release target selector")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_target_repo" --profile final >/dev/null 2>"$tmp_dir/release-target.log"; then
+  echo "expected historical release target selector fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "triggering target selector must forward requested target" "$tmp_dir/release-target.log"
+
+candidate_target_repo="$tmp_dir/candidate-target-repo"
+copy_repo_snapshot "$baseline_repo" "$candidate_target_repo"
+python3 - <<'PY' "$candidate_target_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = """      - name: Compute candidate suffix
+        if: steps.release-target.outputs.target_sha != '' && steps.snapshot.outputs.release_enabled == 'true'
+        id: candidate
+        shell: bash
+        env:
+          TARGET_SHA: ${{ steps.release-target.outputs.target_sha }}
+"""
+replacement = needle.replace(
+    "${{ steps.release-target.outputs.target_sha }}",
+    "${{ steps.requested-target.outputs.target_sha }}",
+)
+if needle not in text:
+    raise SystemExit("failed to rewrite candidate target binding")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$candidate_target_repo" --profile final >/dev/null 2>"$tmp_dir/candidate-target.log"; then
+  echo "expected candidate target binding fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "candidate suffix must consume the triggering target" "$tmp_dir/candidate-target.log"
+
 metadata_policy_repo="$tmp_dir/metadata-policy-repo"
 copy_repo_snapshot "$baseline_repo" "$metadata_policy_repo"
 python3 - <<'PY' "$metadata_policy_repo"
