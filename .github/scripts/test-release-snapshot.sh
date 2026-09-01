@@ -680,11 +680,35 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
                 )
             )
             assert exit_code == 0
-            assert github_output.read_text().strip() == f"target_sha={sha2}"
+            assert github_output.read_text().strip() == f"target_sha={sha3}"
         finally:
             module.ci_main_run_is_release_eligible = original_ci_main_eligibility
             module.fetch_notes_ref = original_fetch_notes_ref
             module.fetch_tags = original_fetch_tags
+
+        superseding_snapshot = dict(snapshot3)
+        superseding_snapshot.update(
+            {
+                "channel_label": "channel:stable",
+                "release_channel": "stable",
+                "release_prerelease": False,
+                "app_effective_version": "0.2.1",
+                "release_tag": "v0.2.1",
+                "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.1",
+            }
+        )
+        run(
+            "notes",
+            f"--ref={module.DEFAULT_NOTES_REF}",
+            "add",
+            "-f",
+            "-m",
+            json.dumps(superseding_snapshot),
+            sha3,
+            cwd=repo,
+        )
+        run("tag", "v0.2.1", sha3, cwd=repo)
+        assert module.pending_release_targets(module.DEFAULT_NOTES_REF, sha3) == []
 
         run("tag", "v0.2.0", sha2, cwd=repo)
         assert module.release_tag_points_to_target(snapshot2) is True

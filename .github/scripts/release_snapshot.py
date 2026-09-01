@@ -130,7 +130,7 @@ def parse_args() -> argparse.Namespace:
 
     next_pending = subparsers.add_parser(
         "next-pending",
-        help="Find the oldest unreleased snapshot on the first-parent path up to a given main commit.",
+        help="Find the newest unreleased snapshot on the first-parent path up to a given main commit.",
     )
     next_pending.add_argument("--notes-ref", default=DEFAULT_NOTES_REF)
     next_pending.add_argument("--main-ref", required=True)
@@ -595,10 +595,23 @@ def pending_release_targets(
     *,
     is_release_eligible: Callable[[str], Literal["eligible", "ineligible", "unknown"]] | None = None,
 ) -> list[str]:
-    pending: list[str] = []
-    for commit in first_parent_commits(upper_bound_sha):
-        snapshot = read_snapshot(notes_ref, commit)
+    commits = first_parent_commits(upper_bound_sha)
+    snapshots = [(commit, read_snapshot(notes_ref, commit)) for commit in commits]
+    newest_published_stable_index: int | None = None
+
+    for index, (_, snapshot) in enumerate(snapshots):
         if not snapshot or not snapshot.get("release_enabled"):
+            continue
+        if snapshot.get("release_channel") != "stable":
+            continue
+        if release_tag_points_to_target(snapshot):
+            newest_published_stable_index = index
+
+    pending: list[str] = []
+    for index, (commit, snapshot) in enumerate(snapshots):
+        if not snapshot or not snapshot.get("release_enabled"):
+            continue
+        if newest_published_stable_index is not None and index < newest_published_stable_index:
             continue
         if release_tag_points_to_target(snapshot):
             continue
@@ -1037,7 +1050,7 @@ def export_next_pending(args: argparse.Namespace) -> int:
         upper_bound,
         is_release_eligible=eligibility_check,
     )
-    export_key_values({"target_sha": pending[0] if pending else ""}, args.github_output)
+    export_key_values({"target_sha": pending[-1] if pending else ""}, args.github_output)
     return 0
 
 
