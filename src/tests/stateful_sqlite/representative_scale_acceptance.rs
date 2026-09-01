@@ -2,9 +2,11 @@ use super::*;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-const FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v1";
-const FIXTURE_ROWS: i64 = 96;
+const FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v2";
+const FIXTURE_ROWS: i64 = 321;
 const FIXTURE_PAYLOAD_BYTES: usize = 700_000;
+const MIN_RAW_SOURCE_BYTES: usize = 214 * 1024 * 1024;
+const CURRENT_LIMIT: i64 = 50;
 const BOOTSTRAP_DEADLINE: Duration = Duration::from_secs(30);
 const ALL_TIME_DEADLINE: Duration = Duration::from_secs(1_800);
 
@@ -37,8 +39,8 @@ async fn summary_representative_scale_acceptance() {
     .expect("insert deterministic representative-scale fixture");
 
     assert!(
-        FIXTURE_ROWS as usize * payload.len() > 64 * 1024 * 1024,
-        "fixture must cross the retired 64 MiB aggregate source boundary"
+        FIXTURE_ROWS as usize * payload.len() >= MIN_RAW_SOURCE_BYTES,
+        "fixture must contain at least 214 MiB of raw source text"
     );
 
     let bootstrap_started = Instant::now();
@@ -87,7 +89,16 @@ async fn summary_representative_scale_acceptance() {
         },
     });
     for window in ["current", "1d", "7d", "30d", "today"] {
-        let mut expected_for_window = expected.clone();
+        let mut expected_for_window = if window == "current" {
+            let mut current = expected.clone();
+            current["totalCount"] = json!(CURRENT_LIMIT);
+            current["successCount"] = json!(CURRENT_LIMIT);
+            current["totalCost"] = json!(CURRENT_LIMIT as f64 * 0.25);
+            current["totalTokens"] = json!(CURRENT_LIMIT * 7);
+            current
+        } else {
+            expected.clone()
+        };
         if window != "current" {
             expected_for_window["nonSuccessTokens"] = json!(0);
             expected_for_window["usageBreakdown"] = json!({
@@ -122,7 +133,11 @@ async fn summary_representative_scale_acceptance() {
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some(window.to_string()),
-                limit: Some(200),
+                limit: Some(if window == "current" {
+                    CURRENT_LIMIT
+                } else {
+                    200
+                }),
                 time_zone: Some("Asia/Shanghai".to_string()),
                 upstream_account_id: None,
             }),
@@ -165,5 +180,5 @@ async fn summary_representative_scale_acceptance() {
     );
 
     // Keep the fixture contract in the test binary so the selected acceptance remains reproducible.
-    assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v1");
+    assert_eq!(FIXTURE_CONTRACT_VERSION, "summary-representative-scale-v2");
 }

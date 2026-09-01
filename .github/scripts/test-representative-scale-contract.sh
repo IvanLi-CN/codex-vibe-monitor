@@ -13,7 +13,7 @@ grep -Fq 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"
 grep -Fq 'CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216' "$dockerfile"
 grep -Fq 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest' "$dockerfile"
 grep -Fq 'ENTRYPOINT ["bash", ".github/scripts/run-backend-tests.sh"]' "$dockerfile"
-grep -Fq 'FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v1"' "$test_file"
+grep -Fq 'FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v2"' "$test_file"
 grep -Fq 'summary_representative_scale_acceptance' "$test_file"
 grep -Fq 'cargo nextest run' "$runner"
 

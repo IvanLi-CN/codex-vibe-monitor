@@ -109,6 +109,13 @@ Coverage Checkpoint. A missing account-manifest proof is an account-scoped gap;
 it cannot invalidate an independently proven global compact response.
 _Avoid_: partial all-time response, global cold-start failure
 
+**Cold Bootstrap Retry**:
+A Summary maintenance attempt made while the hub has no published Projection.
+It retains Bootstrap's initial-publication semantics until one exact immutable
+Projection is atomically available; Rolling is a refresh of an already published
+Projection, not a cold-start fallback.
+_Avoid_: shortened cold retry, speculative warm refresh, global cold-start loop
+
 **Historical Live Coverage Proof**:
 The generation-fenced, immutable Projection proof for the bounded historical
 live interval between the exact recent tail and the archive horizon. A Rolling
