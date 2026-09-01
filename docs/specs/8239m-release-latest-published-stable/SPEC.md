@@ -1,8 +1,4 @@
-# Release `latest` 与当前 CI Main stable（#8239m）
-
-## Related ADRs
-
-- `docs/adr/0008-release-current-ci-head-coalescing.md`
+# Release `latest` 仅指向最新已发布 stable（#8239m）
 
 ## 背景 / 问题陈述
 
@@ -17,12 +13,11 @@
 - 明确并落地唯一语义：`latest` 只指向最新已发布 stable。
 - pending stable snapshot 不能压掉当前已发布 stable 的 `latest`。
 - stable 新 snapshot 的 immutable `tags_csv` 只保存版本 tag；`latest` 只在发布阶段动态解析。
-- 自动 Release 只发布触发该次成功 `CI Main` 的当前 `head_sha`，不会为排空历史 snapshot 队列发布祖先提交。
-- README、工作流合同与回归测试统一到同一规则。
+- README、脚本帮助文案与回归测试统一到同一规则。
 
 ### Non-goals
 
-- 不调整 semver bump、手动 backfill 入口或 PR label 规则。
+- 不调整 semver bump、release queue、手动 backfill 入口或 PR label 规则。
 - 不引入 registry API / GitHub Release API 作为新的发布状态来源。
 - 不迁移历史 release snapshot note schema。
 
@@ -32,11 +27,11 @@
 
 - `.github/scripts/release_snapshot.py`：重构 immutable tags 与 publish-time tags 的职责边界。
 - `.github/scripts/test-release-snapshot.sh`：补齐 pending stable、旧 stable rerun/backfill、rc 不更新 latest 的回归。
-- `.github/workflows/release.yml`：自动路径直接选择触发成功 CI Main 的 SHA，不续跑历史 snapshot。
-- `.github/scripts/check_quality_gates_contract.py` 与 fixtures：锁定直接目标选择并拒绝历史队列回归。
+- `README.md`：更新 stable / rc 与 `latest` 的准确语义。
 
 ### Out of scope
 
+- `.github/workflows/release.yml` 的工作流拓扑与权限模型。
 - 应用运行时代码、HTTP API、数据库或前端界面。
 
 ## 需求（Requirements）
@@ -47,9 +42,6 @@
 - `publication_tags()` 追加 `latest` 时，只能根据“是否存在更高已发布 stable”判定；未发布 snapshot 不得参与压制。
 - `release_tag_points_to_target()` 继续作为“该 snapshot 是否已发布”的权威信号。
 - 历史 snapshot 即使仍带 `latest`，在 `export --resolve-publication-tags` 时也必须按新规则重新计算，避免旧 note 影响结果。
-- 自动 Release 必须将 `workflow_run.head_sha` 直接传给目标选择、snapshot 加载、候选镜像和 tag 创建，不得扫描 first-parent 上较早的未发布 snapshot。
-- 手动 backfill 必须继续只消费显式输入 SHA，并要求该 SHA 有成功的 `CI Main` 结果。
-- 未发布的祖先 snapshot 必须保留为审计记录，但不得仅为了清空队列而自动发布。
 
 ### SHOULD
 
@@ -70,14 +62,10 @@
 - Given 新写入的 stable snapshot
   When 查看 immutable note 中的 `tags_csv`
   Then 只包含 `${image}:vX.Y.Z`。
-- Given 一个成功 `CI Main` 的当前 main 提交，其祖先仍有未发布 snapshot
-  When 自动 Release 启动
-  Then 只发布触发该 CI 的 `head_sha`，不会选择祖先 snapshot 或继续派发历史发布。
 
 ## 风险 / 假设（Risks / Assumptions）
 
 - 风险：历史 note 仍可能保存 `latest`，所以 release workflow 必须继续通过 `--resolve-publication-tags` 动态重算。
-- 风险：中间 snapshot 不会得到独立公开版本；它们的代码由后续 mainline release 覆盖，note 继续保留审计事实。
 - 假设：当前 workflow 的发布顺序保持“manifest push/verify -> git tag -> GitHub Release”，因此 `release_tag_points_to_target()` 足以代表“已发布 stable”。
 
 ## 参考（References）
