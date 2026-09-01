@@ -54,6 +54,15 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 1. 公开域名稳定时，始终显式配置 `PUBLIC_ORIGIN`。
 2. staging / review / 自部署 HTTP 实例，也把 `PUBLIC_ORIGIN` 配成真实可访问入口，不要依赖爬虫替你猜协议。
 
+## PWA Static Asset Cache Contract
+
+应用会直接为安装相关静态资源返回以下 `Cache-Control`：
+
+- `index.html`、`site.webmanifest`、`sw.js`、`version.json`：`no-cache, max-age=0, must-revalidate`
+- 内容哈希的 `favicon-*`、`apple-touch-icon-*`、`icon-*` 与 `maskable-*`：`public, max-age=31536000, immutable`
+
+不要在反向代理或 CDN 中把 manifest、service worker 或版本文件改成长期 immutable；它们必须能重新校验。图标内容变化时构建会生成新文件名，网关应保留这些哈希文件，不能把新 URL 重写回旧稳定文件名。
+
 ## Readiness And Container Health
 
 `GET /health` 现在表示 readiness，而不是“进程活着”：

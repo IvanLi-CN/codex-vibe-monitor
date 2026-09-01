@@ -1,6 +1,5 @@
 import "vitest/config";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
@@ -13,21 +12,153 @@ function normalizeBase(base: string | undefined): string {
   return `${raw.startsWith("/") ? raw : `/${raw}`}${raw.endsWith("/") ? "" : "/"}`;
 }
 
-const installIconAssets = [
-  "apple-touch-icon.png",
-  "favicon.svg",
-  "icon-192.png",
-  "icon-512.png",
-  "maskable-192.png",
-  "maskable-512.png",
-];
-
-function installIconVersion(): string {
-  const hash = createHash("sha256");
-  for (const asset of installIconAssets) {
-    hash.update(readFileSync(resolve("public", asset)));
+function findInstallIconAsset(prefix: string, extension: ".png" | ".svg"): string {
+  const candidates = readdirSync(resolve("public")).filter((name) => {
+    if (!name.startsWith(`${prefix}-`) || !name.endsWith(extension)) return false;
+    const digest = name.slice(prefix.length + 1, -extension.length);
+    return digest.length === 12 && /^[0-9a-f]{12}$/.test(digest);
+  });
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Expected one content-hashed ${prefix}${extension} asset, found ${candidates.length}: ${candidates.join(", ")}`,
+    );
   }
-  return hash.digest("hex").slice(0, 12);
+  return candidates[0];
+}
+
+const installIconAssets = {
+  appleTouch: findInstallIconAsset("apple-touch-icon", ".png"),
+  favicon: findInstallIconAsset("favicon", ".svg"),
+  icon192: findInstallIconAsset("icon-192", ".png"),
+  icon512: findInstallIconAsset("icon-512", ".png"),
+  maskable192: findInstallIconAsset("maskable-192", ".png"),
+  maskable512: findInstallIconAsset("maskable-512", ".png"),
+};
+
+const installIconFiles = Object.values(installIconAssets);
+
+type PwaManifestEntry = string | { url: string };
+type PwaPluginWithApi = {
+  api?: {
+    extendManifestEntries: (
+      callback: (entries: PwaManifestEntry[]) => PwaManifestEntry[] | undefined,
+    ) => void;
+  };
+};
+
+function isPwaRuntimeMetadataEntry(entry: PwaManifestEntry): boolean {
+  const path = (typeof entry === "string" ? entry : entry.url).split(/[?#]/, 1)[0];
+  const filename = path.slice(path.lastIndexOf("/") + 1);
+  return filename === "site.webmanifest" || filename === "version.json";
+}
+
+function createPwaPlugins() {
+  const pwaPlugins = VitePWA({
+    injectRegister: false,
+    registerType: "prompt",
+    strategies: "injectManifest",
+    srcDir: "src/pwa",
+    filename: "sw.ts",
+    manifestFilename: "site.webmanifest",
+    includeAssets: ["brand-mark.svg", ...installIconFiles, "social-preview.png"],
+    manifest: {
+      id: "./",
+      name: "Codex Vibe Monitor",
+      short_name: "Vibe Monitor",
+      description:
+        "Self-hosted observability workspace for OpenAI-compatible proxy traffic, request records, routing, and upstream account pools.",
+      theme_color: "#0ea5e9",
+      background_color: "#0ea5e9",
+      display: "standalone",
+      display_override: ["window-controls-overlay", "standalone"],
+      start_url: "./#/dashboard",
+      scope: "./",
+      orientation: "any",
+      categories: ["developer tools", "productivity", "utilities"],
+      shortcuts: [
+        {
+          name: "Dashboard",
+          short_name: "Dashboard",
+          url: "./#/dashboard",
+          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+        },
+        {
+          name: "Live",
+          short_name: "Live",
+          url: "./#/live",
+          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+        },
+        {
+          name: "Records",
+          short_name: "Records",
+          url: "./#/records",
+          icons: [{ src: installIconAssets.icon192, sizes: "192x192", type: "image/png" }],
+        },
+      ],
+      screenshots: [
+        {
+          src: "social-preview.png",
+          sizes: "1774x887",
+          type: "image/png",
+          form_factor: "wide",
+          label: "Codex Vibe Monitor dashboard preview",
+        },
+      ],
+      icons: [
+        {
+          src: installIconAssets.icon192,
+          sizes: "192x192",
+          type: "image/png",
+          purpose: "any",
+        },
+        {
+          src: installIconAssets.icon512,
+          sizes: "512x512",
+          type: "image/png",
+          purpose: "any",
+        },
+        {
+          src: installIconAssets.favicon,
+          sizes: "any",
+          type: "image/svg+xml",
+          purpose: "any",
+        },
+        {
+          src: installIconAssets.maskable192,
+          sizes: "192x192",
+          type: "image/png",
+          purpose: "maskable",
+        },
+        {
+          src: installIconAssets.maskable512,
+          sizes: "512x512",
+          type: "image/png",
+          purpose: "maskable",
+        },
+      ],
+    },
+    injectManifest: {
+      globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
+      maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+    },
+    devOptions: {
+      navigateFallback: "index.html",
+    },
+  });
+  const pwaMainPlugin = pwaPlugins.find(({ name }) => name === "vite-plugin-pwa") as
+    | PwaPluginWithApi
+    | undefined;
+  pwaPlugins.push({
+    name: "codex-vibe-monitor-pwa-precache-contract",
+    enforce: "post",
+    buildStart() {
+      // vite-plugin-pwa adds the manifest automatically; it must remain network-revalidated.
+      pwaMainPlugin?.api?.extendManifestEntries((entries) =>
+        entries.filter((entry) => !isPwaRuntimeMetadataEntry(entry)),
+      );
+    },
+  });
+  return pwaPlugins;
 }
 
 export function createAppViteConfig(mode: string): UserConfig {
@@ -37,8 +168,6 @@ export function createAppViteConfig(mode: string): UserConfig {
   const demo = runtime === "demo";
   const base = normalizeBase(env.VITE_DEPLOY_BASE);
   const isStorybook = mode === "storybook";
-  const iconVersion = installIconVersion();
-  const versionedIcon = (asset: string) => `${asset}?v=${iconVersion}`;
 
   if (runtime !== "live" && runtime !== "demo") {
     throw new Error(`Unsupported VITE_APP_RUNTIME: ${runtime}`);
@@ -53,120 +182,15 @@ export function createAppViteConfig(mode: string): UserConfig {
     base,
     plugins: [
       {
-        name: "codex-vibe-monitor-install-icon-version",
+        name: "codex-vibe-monitor-install-icon-assets",
         transformIndexHtml(html) {
-          return html.replaceAll("%INSTALL_ICON_VERSION%", iconVersion);
+          return html
+            .replaceAll("%INSTALL_FAVICON%", installIconAssets.favicon)
+            .replaceAll("%INSTALL_APPLE_TOUCH_ICON%", installIconAssets.appleTouch);
         },
       },
       react(),
-      !isStorybook &&
-        VitePWA({
-          injectRegister: false,
-          registerType: "prompt",
-          strategies: "injectManifest",
-          srcDir: "src/pwa",
-          filename: "sw.ts",
-          manifestFilename: "site.webmanifest",
-          includeAssets: [
-            "apple-touch-icon.png",
-            "brand-mark.svg",
-            "favicon.svg",
-            "icon-192.png",
-            "icon-512.png",
-            "maskable-192.png",
-            "maskable-512.png",
-            "social-preview.png",
-          ],
-          manifest: {
-            id: "./",
-            name: "Codex Vibe Monitor",
-            short_name: "Vibe Monitor",
-            description:
-              "Self-hosted observability workspace for OpenAI-compatible proxy traffic, request records, routing, and upstream account pools.",
-            theme_color: "#0ea5e9",
-            background_color: "#0ea5e9",
-            display: "standalone",
-            display_override: ["window-controls-overlay", "standalone"],
-            start_url: "./#/dashboard",
-            scope: "./",
-            orientation: "any",
-            categories: ["developer tools", "productivity", "utilities"],
-            shortcuts: [
-              {
-                name: "Dashboard",
-                short_name: "Dashboard",
-                url: "./#/dashboard",
-                icons: [
-                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
-                ],
-              },
-              {
-                name: "Live",
-                short_name: "Live",
-                url: "./#/live",
-                icons: [
-                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
-                ],
-              },
-              {
-                name: "Records",
-                short_name: "Records",
-                url: "./#/records",
-                icons: [
-                  { src: versionedIcon("icon-192.png"), sizes: "192x192", type: "image/png" },
-                ],
-              },
-            ],
-            screenshots: [
-              {
-                src: "social-preview.png",
-                sizes: "1774x887",
-                type: "image/png",
-                form_factor: "wide",
-                label: "Codex Vibe Monitor dashboard preview",
-              },
-            ],
-            icons: [
-              {
-                src: versionedIcon("icon-192.png"),
-                sizes: "192x192",
-                type: "image/png",
-                purpose: "any",
-              },
-              {
-                src: versionedIcon("icon-512.png"),
-                sizes: "512x512",
-                type: "image/png",
-                purpose: "any",
-              },
-              {
-                src: versionedIcon("favicon.svg"),
-                sizes: "any",
-                type: "image/svg+xml",
-                purpose: "any",
-              },
-              {
-                src: versionedIcon("maskable-192.png"),
-                sizes: "192x192",
-                type: "image/png",
-                purpose: "maskable",
-              },
-              {
-                src: versionedIcon("maskable-512.png"),
-                sizes: "512x512",
-                type: "image/png",
-                purpose: "maskable",
-              },
-            ],
-          },
-          injectManifest: {
-            globPatterns: ["**/*.{js,css,html,ico,png,svg,webmanifest,json}"],
-            maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-          },
-          devOptions: {
-            navigateFallback: "index.html",
-          },
-        }),
+      !isStorybook && createPwaPlugins(),
     ],
     resolve: isStorybook
       ? {

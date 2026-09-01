@@ -39,6 +39,21 @@ const contentTypes = new Map([
   [".webmanifest", "application/manifest+json; charset=utf-8"],
 ]);
 
+function cacheControlFor(filePath) {
+  const filename = path.basename(filePath);
+  if (["index.html", "site.webmanifest", "sw.js", "version.json"].includes(filename)) {
+    return "no-cache, max-age=0, must-revalidate";
+  }
+  if (
+    /^(?:apple-touch-icon|favicon|icon-192|icon-512|maskable-192|maskable-512)-[a-f0-9]{12}\.(?:png|svg)$/.test(
+      filename,
+    )
+  ) {
+    return "public, max-age=31536000, immutable";
+  }
+  return "no-store";
+}
+
 async function resolveFile(requestPath) {
   const sanitizedPath = requestPath === "/" ? "/index.html" : requestPath;
   const relativePath = sanitizedPath.replace(/^\/+/, "");
@@ -96,7 +111,7 @@ const server = createServer(async (request, response) => {
   const body = await readFile(filePath);
   const ext = path.extname(filePath);
   const headers = {
-    "cache-control": "no-store",
+    "cache-control": cacheControlFor(filePath),
     "content-type": contentTypes.get(ext) ?? "application/octet-stream",
   };
   if (path.basename(filePath) === "sw.js") {

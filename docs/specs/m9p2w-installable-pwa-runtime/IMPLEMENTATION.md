@@ -8,7 +8,8 @@
   - install control 不再在头栏暴露常驻 button；当浏览器满足安装条件时，app shell 会自动弹出 install prompt / manual guidance，并保持窄屏居中 modal 语义。
   - Dashboard 概览离线数据改为应用层 IndexedDB snapshot store：五个固定 range 各保存最近一份成功快照，不把 `/api/*` 缓存职责塞进 service worker。
   - `DashboardActivityOverview` 已接入 `live` / `cached-offline` / `not-cached-yet` 三态；`working conversations` 明确保留在线依赖，并在离线重开时显示不可用语义。
-  - install icon 已拆为透明 regular、独立 maskable 与 Apple touch 输出；`vite.config.ts` 从实际 icon 字节派生版本 URL，并让 manifest、shortcuts、HTML 和 Workbox 预缓存保持同代。
+  - install icon 已拆为透明 regular、独立 maskable 与 Apple touch 输出；`scripts/export_brand_assets.py` 为每个输出生成内容哈希文件名，`vite.config.ts` 只消费这组六个唯一资源。
+  - `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 走重新校验，service worker 排除运行时元数据后再 precache，内容哈希图标由后端静态服务使用 immutable 缓存。
 
 ## 状态
 
@@ -25,7 +26,8 @@
 - browser-native install prompt + Safari manual guidance
 - waiting-update prompt
 - offline shell banner
-- generated regular/maskable/Apple icon contract with content-derived URLs
+- generated regular/maskable/Apple icon contract with content-hashed filenames
+- revalidated PWA metadata and immutable install-icon caching
 
 ### Dashboard overview snapshots
 
@@ -73,7 +75,11 @@
 - `web/src/features/app-shell/PwaInstallControl.test.tsx`
   - 锁定自动安装提示的“无 trigger + 居中 modal + confirm action”契约，不允许回退成头栏按钮。
 - `scripts/export_brand_assets.py` 与 `web/scripts/check-pwa-assets.py`
-  - 以 traced product mark 导出独立 regular、maskable 与 Apple touch 资源，并检查尺寸、透明度、safe circle、hash、manifest purpose 与 URL 版本化。
+  - 以 traced product mark 导出独立 regular、maskable 与 Apple touch 资源，并检查尺寸、透明度、safe circle、内容哈希文件名、manifest purpose、HTML 引用与 SW precache 边界。
+- `src/maintenance/hourly_rollups.rs`
+  - 对 PWA 元数据和入口 HTML 返回重新校验策略，对内容哈希安装图标返回 immutable 缓存，并覆盖静态缓存分类单元测试。
+- `web/tests/pwa/installable-runtime.spec.ts` 与 `web/tests/pwa/test-server.mjs`
+  - 验证稳定 manifest identity、当前图标响应、缓存策略与 SW 不缓存运行时 manifest/version 元数据。
 
 ## Visual Evidence
 
