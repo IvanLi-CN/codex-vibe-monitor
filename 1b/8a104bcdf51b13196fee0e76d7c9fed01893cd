@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.6",
+  "base_stable_version": "2.69.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-01T06:25:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "21ef019f1adfd91a2bc643f35fd6ab02ae846342",
+  "pr_number": 887,
+  "pr_title": "fix(release): remove external validation receipt",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.6",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.6",
+  "target_sha": "1b8a104bcdf51b13196fee0e76d7c9fed01893cd",
+  "type_label": "type:patch"
+}
