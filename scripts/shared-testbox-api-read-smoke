@@ -115,6 +115,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   CLEANUP="$CLEANUP" \
   APP_CONTAINER="$APP_CONTAINER" \
   GIT_SHA="$GIT_SHA" \
+  RUN_ID="$RUN_ID" \
   bash -s <<'REMOTE'
 set -euo pipefail
 export TZ=Asia/Shanghai
@@ -135,10 +136,17 @@ cleanup_remote() {
   docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$SMOKE_SCRIPT"
   if [ "$CLEANUP" = "1" ]; then
+    if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+      docker run --rm --cap-drop=all \
+        -v "$(dirname "$REMOTE_RUN"):/runs" \
+        "$IMAGE_TAG" \
+        rm -rf "/runs/$RUN_ID" >/dev/null 2>&1 || true
+    else
+      rm -rf "$REMOTE_RUN"
+    fi
     if [ -z "$REUSE_IMAGE_TAG" ]; then
       docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
     fi
-    rm -rf "$REMOTE_RUN"
   fi
 }
 trap cleanup_remote EXIT
@@ -200,6 +208,25 @@ def seed_token():
     print(json.dumps({'phase': 'seed', 'status': status}))
 
 
+def wait_summary():
+    last_error = None
+    for _ in range(30):
+        status, payload = request_json(
+            'GET',
+            '/api/stats/summary?window=current&limit=50&timeZone=Asia%2FShanghai',
+            timeout=5,
+        )
+        if status == 200:
+            assert_shape('summary', payload)
+            print(json.dumps({'phase': 'summary', 'status': status, 'keys': sorted(payload.keys())}))
+            return
+        if status != 503:
+            raise SystemExit(f'summary failed: status={status} payload={payload}')
+        last_error = payload
+        time.sleep(1)
+    raise SystemExit(f'summary did not become ready within 30s: {last_error}')
+
+
 def assert_shape(name, payload):
     if name == 'version':
         assert isinstance(payload, dict), payload
@@ -222,7 +249,6 @@ def assert_shape(name, payload):
 def run_checks():
     checks = [
         ('version', '/api/version'),
-        ('summary', '/api/stats/summary'),
         ('timeseries', '/api/stats/timeseries?range=24h&bucket=1h'),
         ('prompt_cache', '/api/stats/prompt-cache-conversations?activityHours=1'),
     ]
@@ -240,6 +266,7 @@ if __name__ == '__main__':
         raise SystemExit(f'usage: {sys.argv[0]} run <token>')
     TOKEN = sys.argv[2]
     wait_health()
+    wait_summary()
     seed_token()
     run_checks()
 PY
