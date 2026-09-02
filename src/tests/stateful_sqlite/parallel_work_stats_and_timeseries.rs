@@ -6699,8 +6699,8 @@ async fn live_request_streaming_perf_uses_the_filtered_cohort_as_its_coverage_de
         .expect("fetch fixed live request streaming evaluation");
     assert_eq!(evaluation.revision, LIVE_REQUEST_STREAMING_REVISION);
     assert_eq!(evaluation.endpoint, "/v1/responses");
-    assert_eq!(evaluation.treatment_assignment_count, 3);
-    assert_eq!(evaluation.actual_live_first_count, 2);
+    assert_eq!(evaluation.treatment_assignment_count, 4);
+    assert_eq!(evaluation.actual_live_first_count, 3);
     assert_eq!(evaluation.treatment_buffered_fallback_count, 1);
     assert_eq!(evaluation.decision.status, "insufficient_data");
     assert_eq!(
