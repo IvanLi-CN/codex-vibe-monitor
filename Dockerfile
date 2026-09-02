@@ -153,6 +153,7 @@ ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6b
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/* \
+    && rustup component add clippy \
     && curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
       -o /tmp/cargo-nextest.tar.gz \
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${CARGO_NEXTEST_VERSION}/cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
