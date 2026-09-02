@@ -32437,7 +32437,7 @@ mod request_compression_query_tests {
             "a gap beyond the requested current prefix must remain selection-local"
         );
         assert!(
-            summary_delta_gap_affects_selection(
+            !summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 &[gap.clone()],
                 &[newer_delta.clone()],
