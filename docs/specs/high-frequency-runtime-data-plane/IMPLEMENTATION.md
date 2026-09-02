@@ -85,6 +85,8 @@ Aggregate validation remains responsible for full backend/web/Storybook coverage
 
 The `/v1/responses` live request-body performance surface now keeps assignment, eligibility, actual transport, route outcome and fallback reason as separate persisted-summary dimensions. `/api/stats/perf` exposes exact `(variant, transport)` cohorts and route diagnostics, while the fixed seven-day evaluation endpoint applies the server-owned sample, bootstrap and risk thresholds without inheriting diagnostic filters. The Stats panel renders buffered control, actual live-first treatment and buffered treatment fallback independently, and shows a non-comparable state when no live-first sample exists.
 
+Risk deltas are derived from matched account-group strata only; unmatched or unknown strata remain visible as diagnostics but cannot influence the canonical comparison. The evaluator keeps this aggregation borrow-only and deterministic so repeated reads produce the same decision for the same seven-day invocation set.
+
 Runtime pressure diagnostics are implemented for issues #738 and #768:
 
 - `GET /api/system/status` exposes additive `runtimePressureHealth` assembled from existing in-memory projection, request-pipeline, process-memory and writer-accounting counters without adding status-page SQL.
