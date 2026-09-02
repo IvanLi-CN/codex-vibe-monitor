@@ -18,6 +18,8 @@ grep -q '^COPY scripts/search-raw ./scripts/search-raw$' "$dockerfile"
 grep -q 'ENTRYPOINT \["bash", ".github/scripts/run-backend-tests.sh"\]' "$dockerfile"
 grep -q '^    entrypoint: \[\]$' "$compose_file"
 grep -q '^    command: \["sleep", "infinity"\]$' "$compose_file"
+grep -q '^    user: "65534:65534"$' "$compose_file"
+grep -q '^      CARGO_HOME: /tmp/codex-vibe-monitor-backend-test/cargo-home$' "$compose_file"
 
 if ! grep -Fq 'id: backend-test-image-name' "$ci_main_workflow"; then
   echo 'expected CI Main to normalize the backend-test GHCR image name' >&2
