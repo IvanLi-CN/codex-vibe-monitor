@@ -87,7 +87,8 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
 - 现有 pool routing settings additive 暴露 `liveRequestStreaming: { enabled, treatmentPercent }`；默认值为 `false` 和 `50`，启用后对所有符合其他请求条件的 `/v1/responses` 生效。
-- `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts` 与 `routeFinalization`。cohort 使用 `buffered`、`live_first`、`unknown` 三种 transport mode；性能面板默认只比较 v2，历史缺字段只能归入 `unknown`。
+- `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts` 与 `routeFinalization`。每个 cohort 是 `(live_first_experiment_variant, request_body_transport_mode)` 的精确组合；收益只能比较 `(control, buffered)` 与 `(treatment, live_first)`。`(treatment, buffered)` 是实验组缓冲回退，必须单独显示且不得替代实时首发样本。没有实际 `live_first` 样本时，UI 必须将收益标为不可比较。`routeFinalization` 必须同时给出精确 `outcomeCounts`、EOF 最终化率与保守缓冲率，历史缺字段只能归入 `unknown`。
+- `GET /api/stats/perf/live-request-streaming-evaluation` 是服务器拥有的只读结论接口：固定读取当前 live-first revision、`/v1/responses` 和滚动 `7d` 窗口，不接受前端 range、endpoint、group 或 cohort 筛选。它分别返回 treatment 分配、资格、实际 `live_first`、缓冲回退分母，按账号组匹配的 control/treatment 指标、全分配风险、route outcome 诊断及 `insufficient_data`、`recommend_keep`、`recommend_remove`、`review_required` 状态与稳定 reason code。
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
@@ -123,7 +124,8 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - 生产受控 A/B 中新增 Dashboard tab 的 CPU 增量不超过 10 个百分点，subscription lag/skipped 为零；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。该 A/B 是架构完成门槛，不能由“零 SQL”或单 topic Arc 复用测试替代。
 - 阻塞 `/v1/responses` 的下游尾部 body 后，treatment 不得在最终路由前向上游提供首个请求 chunk；control、metadata/tools/图片/加密字段晚到与重复 root key 都不得触发“已发送再取消”。EOF、冷缓存或解析预算退化保留完整缓冲。
 - API Key 与 OAuth、`follow|identity|gzip|deflate|zstd`、重复 key、嵌套 metadata、malformed body、cancel、early upstream return 与 replay/failover 均有回归覆盖。
-- 性能比较必须给出每 cohort 的成功样本数及首响应、首 token、overlap 的 p50/p90/p99；每组少于 200 个成功样本时 UI 不得宣称收益结论。
+- 性能比较必须给出每个实际 cohort 的调用数、成功样本数及首响应、首 token、overlap 的 p50/p90/p99；首响应与首 token 以更低为收益，overlap 以更高为收益，零基线不得伪造相对百分比。每项指标少于 200 个样本时 UI 不得宣称该项收益结论。没有 `(treatment, live_first)` 时，`(treatment, buffered)` 只能作为回退规模呈现，三项收益均为不可比较。
+- canonical evaluation 的固定判定规则为：treatment 分配少于 1,000 次返回 `insufficient_data`；达到 1,000 次而实际 `live_first` 占比低于 5% 返回 `recommend_remove`。其他情况要求按账号组匹配的 buffered control 与 actual live-first treatment 在首响应、首 token、overlap 各至少 200 个有效样本；使用固定随机种子的 2,000 次 bootstrap 计算 P50 差值双侧 95% 区间，四项风险差值使用单侧 95% 上界。仅当两个延迟收益下界均不少于 100ms、overlap 下界大于 0 且四项风险上界均不超过 0.5 个百分点时返回 `recommend_keep`；两个延迟收益上界均不大于 0 时返回 `recommend_remove`；其余返回 `review_required`。延迟只纳入最终成功请求，风险纳入全部实验分配；缺失或不可匹配分层不合并。
 
 ## Non-goals
 
@@ -136,11 +138,7 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发性能组件使用 Storybook 绑定的 `desktop1280` 视口，设置面板证据使用应用一致的 `vibe-dark` 深色主题。
 
-PR: include
-
 ![System Status runtime pressure degraded state on desktop](./assets/runtime-pressure-desktop.png)
-
-PR: include
 
 ![System Status runtime pressure accounting error state on mobile](./assets/runtime-pressure-mobile.png)
 
@@ -157,8 +155,6 @@ PR: include
   state: 两个 cohort 均达到 200 个成功样本
   evidence_note: 验证 buffered-control 与 live-first-treatment 并列呈现 P50 首响应、首 token、上传重叠、重试风险，以及首响应和首 token 的绝对/相对收益。
 
-PR: include
-
 ![Live request streaming measured cohort comparison](./assets/live-request-streaming-perf-measured.png)
 
 - source_type: storybook_canvas
@@ -174,11 +170,7 @@ PR: include
   state: 两个 cohort 均少于 200 个成功样本
   evidence_note: 验证样本不足时在两个 cohort 明确显示 17 / 200，三项收益固定为 -，界面不将对照数值作为可用的收益结论。
 
-PR: include
-
 ![Live request streaming insufficient sample guard](./assets/live-request-streaming-perf-insufficient-samples.png)
-
-PR: include
 
 ![Pool routing live request streaming enabled without account group field](./assets/pool-routing-live-streaming-no-account-group-dark.png)
 

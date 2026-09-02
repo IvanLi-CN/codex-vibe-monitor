@@ -79,6 +79,7 @@ export {
   fetchInvocationSuggestions,
   fetchInvocations,
   fetchInvocationWorkflowDetail,
+  fetchLiveRequestStreamingEvaluation,
   fetchLongTermStatsOverview,
   fetchLongTermStatsSeries,
   fetchModelRoutingLive,

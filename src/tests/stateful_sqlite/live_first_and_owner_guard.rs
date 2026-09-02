@@ -498,34 +498,40 @@ async fn live_route_gate_resolves_prompt_cache_and_sticky_before_early_delivery_
         assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
         assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
     }
-    let (transport_mode, finalization_outcome) = timeout(Duration::from_secs(1), async {
-        loop {
-            let row = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-                r#"
+    let (transport_mode, finalization_outcome, request_upstream_overlap_ms) =
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let row = sqlx::query_as::<_, (Option<String>, Option<String>, Option<f64>)>(
+                    r#"
                 SELECT
                     json_extract(payload, '$.requestBodyTransportMode'),
-                    json_extract(payload, '$.routeFinalizationOutcome')
+                    json_extract(payload, '$.routeFinalizationOutcome'),
+                    json_extract(payload, '$.requestUpstreamOverlapMs')
                 FROM codex_invocations
                 WHERE json_extract(payload, '$.liveFirstExperimentVariant') = 'treatment'
                 ORDER BY id DESC
                 LIMIT 1
                 "#,
-            )
-            .fetch_optional(&state.pool)
-            .await
-            .expect("query live treatment invocation");
-            if let Some(row) = row {
-                break row;
+                )
+                .fetch_optional(&state.pool)
+                .await
+                .expect("query live treatment invocation");
+                if let Some(row) = row {
+                    break row;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("live treatment invocation should persist");
+        })
+        .await
+        .expect("live treatment invocation should persist");
     assert_eq!(transport_mode.as_deref(), Some("live_first"));
     assert_eq!(
         finalization_outcome.as_deref(),
         Some("live_first_model_ready")
+    );
+    assert!(
+        request_upstream_overlap_ms.is_some_and(|value| value > 0.0),
+        "a live-first attempt must begin before downstream body capture completes"
     );
 
     upstream_handle.abort();

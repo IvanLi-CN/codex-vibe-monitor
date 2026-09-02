@@ -2203,6 +2203,7 @@ pub(crate) struct LiveRequestStreamingCohortStats {
     pub(crate) first_response_byte_total_ms: Option<LiveRequestStreamingPercentiles>,
     pub(crate) first_token_ms: Option<LiveRequestStreamingPercentiles>,
     pub(crate) request_upstream_overlap_ms: Option<LiveRequestStreamingPercentiles>,
+    pub(crate) fallback_reason_counts: std::collections::BTreeMap<String, i64>,
     pub(crate) first_attempt_failure_rate: f64,
     pub(crate) fallback_or_retry_rate: f64,
     pub(crate) capture_failure_rate: f64,
@@ -2237,9 +2238,74 @@ pub(crate) struct LiveRequestStreamingRouteFinalizationStats {
     pub(crate) finalization_ms: Option<LiveRequestStreamingPercentiles>,
     pub(crate) eof_finalized_rate: f64,
     pub(crate) conservative_buffered_rate: f64,
+    pub(crate) outcome_counts: std::collections::BTreeMap<String, i64>,
     pub(crate) dependency_factor_counts: std::collections::BTreeMap<String, i64>,
     pub(crate) hot_cache_hit_rate: f64,
     pub(crate) cold_load_rate: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingEvaluationResponse {
+    pub(crate) revision: String,
+    pub(crate) endpoint: String,
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) treatment_assignment_count: i64,
+    pub(crate) treatment_eligible_count: i64,
+    pub(crate) actual_live_first_count: i64,
+    pub(crate) treatment_buffered_fallback_count: i64,
+    pub(crate) actual_live_first_rate: f64,
+    pub(crate) cohorts: Vec<LiveRequestStreamingCohortStats>,
+    pub(crate) route_finalization: LiveRequestStreamingRouteFinalizationStats,
+    pub(crate) metrics: LiveRequestStreamingEvaluationMetrics,
+    pub(crate) risk: LiveRequestStreamingEvaluationRisk,
+    pub(crate) decision: LiveRequestStreamingEvaluationDecision,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingEvaluationMetrics {
+    pub(crate) first_response: Option<LiveRequestStreamingConfidenceInterval>,
+    pub(crate) first_token: Option<LiveRequestStreamingConfidenceInterval>,
+    pub(crate) overlap: Option<LiveRequestStreamingConfidenceInterval>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingEvaluationRisk {
+    pub(crate) first_attempt_failure: Option<LiveRequestStreamingRiskDelta>,
+    pub(crate) fallback_or_retry: Option<LiveRequestStreamingRiskDelta>,
+    pub(crate) capture_failure: Option<LiveRequestStreamingRiskDelta>,
+    pub(crate) ambiguous_delivery: Option<LiveRequestStreamingRiskDelta>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingConfidenceInterval {
+    pub(crate) p50_difference_ms: f64,
+    pub(crate) lower_ms: f64,
+    pub(crate) upper_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingRiskDelta {
+    pub(crate) difference: f64,
+    pub(crate) upper_bound: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LiveRequestStreamingEvaluationDecision {
+    pub(crate) status: String,
+    pub(crate) reason_codes: Vec<String>,
+    pub(crate) min_treatment_assignments: i64,
+    pub(crate) min_actual_live_first_rate: f64,
+    pub(crate) min_metric_samples: i64,
+    pub(crate) min_latency_benefit_ms: f64,
+    pub(crate) max_risk_increase: f64,
+    pub(crate) bootstrap_resamples: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]

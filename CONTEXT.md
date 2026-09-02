@@ -64,6 +64,24 @@ _Avoid_: TTFT 为零, 首响应, TTFB 回退
 The duration from the first upstream response byte to the end of that upstream stream.
 _Avoid_: 总耗时, TTFT, 代理处理耗时
 
+## Live Request Streaming Evaluation
+
+**实验分配（Experiment Assignment）**:
+The deterministic control or treatment label chosen for an eligible invocation. It describes assignment, not the request body transport that actually occurred.
+_Avoid_: 实际实时转发, 传输结果
+
+**实际请求体传输方式（Actual Request-Body Transport）**:
+The persisted transport mode for one invocation. Only `live_first` proves that the upstream received request-body bytes before downstream capture completed; a treatment assignment can still be `buffered`.
+_Avoid_: 实验组, 预期传输方式
+
+**实验组缓冲回退（Treatment Buffered Fallback）**:
+A treatment-assigned invocation whose actual request-body transport is `buffered`. It is reported separately and never substitutes for a live-first treatment sample in a benefit comparison.
+_Avoid_: 实时首发实验样本, 有效实验组样本
+
+**路由最终化结果（Route Finalization Outcome）**:
+The exact persisted reason a request route became final, such as model-ready live delivery or conservative buffered finalization. Its distribution explains opportunity and fallback rates; it is not a latency benefit metric.
+_Avoid_: 流式收益, 实验分配
+
 ## Runtime Read Models
 
 **Summary Projection**:

@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchPerfStats, type LiveRequestStreamingPerf } from "../lib/api";
+import {
+  fetchLiveRequestStreamingEvaluation,
+  fetchPerfStats,
+  type LiveRequestStreamingEvaluation,
+  type LiveRequestStreamingPerf,
+} from "../lib/api";
 
 export function useLiveRequestStreamingPerf(range: string) {
   const [data, setData] = useState<LiveRequestStreamingPerf | null>(null);
+  const [evaluation, setEvaluation] = useState<LiveRequestStreamingEvaluation | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const result = await fetchPerfStats({ range, endpoint: "/v1/responses" });
-      setData(result.liveRequestStreaming);
+      const [diagnostics, canonicalEvaluation] = await Promise.all([
+        fetchPerfStats({ range, endpoint: "/v1/responses" }),
+        fetchLiveRequestStreamingEvaluation(),
+      ]);
+      setData(diagnostics.liveRequestStreaming);
+      setEvaluation(canonicalEvaluation);
       setError(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -23,5 +33,5 @@ export function useLiveRequestStreamingPerf(range: string) {
     void load();
   }, [load]);
 
-  return { data, isLoading, error, refresh: load };
+  return { data, evaluation, isLoading, error, refresh: load };
 }
