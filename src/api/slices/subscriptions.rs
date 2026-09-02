@@ -14427,10 +14427,7 @@ mod tests {
                 "topic {topic} should reuse one serialized frame across SSE owners",
             );
         }
-        for (topic, terminal_total) in [
-            ("dashboard.activity.current", json!(1)),
-            ("stats.summary.current", json!(1)),
-        ] {
+        for (topic, terminal_total) in [("dashboard.activity.current", json!(1))] {
             let first_owner_frames = first_observations
                 .get(topic)
                 .expect("first owner should observe terminal Dashboard frame");
@@ -16121,7 +16118,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_slice_materializes_activity_and_summary_without_live_sqlite() {
+    async fn terminal_slice_materializes_activity_without_speculative_summary() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -16206,7 +16203,7 @@ mod tests {
         let activity_cached = &guard.topics[&activity_key];
         let summary_cached = &guard.topics[&summary_key];
         assert_eq!(activity_cached.cursor, activity_cursor_before + 1);
-        assert_eq!(summary_cached.cursor, summary_cursor_before + 1);
+        assert_eq!(summary_cached.cursor, summary_cursor_before);
         assert_eq!(
             activity_cached.snapshot_frame.payload_value()["summary"]["stats"]["totalCount"],
             json!(1)
@@ -16243,7 +16240,7 @@ mod tests {
         );
         assert_eq!(
             summary_cached.snapshot_frame.payload_value()["totalCount"],
-            json!(1)
+            json!(0)
         );
         drop(guard);
 
@@ -16266,9 +16263,8 @@ mod tests {
             "an unchanged terminal revision must not advance the activity cursor",
         );
         assert_eq!(
-            guard.topics[&summary_key].cursor,
-            summary_cursor_before + 1,
-            "an unchanged terminal revision must not advance the summary cursor",
+            guard.topics[&summary_key].cursor, summary_cursor_before,
+            "an unacknowledged terminal slice must not advance the summary cursor",
         );
     }
 
@@ -16571,7 +16567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hydrated_summary_topic_replays_pending_terminal_without_sqlite() {
+    async fn hydrated_summary_topic_does_not_replay_unacknowledged_terminal_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -16603,7 +16599,7 @@ mod tests {
         let payload = summary
             .build_cached_payload(state.clone())
             .await
-            .expect("hydrated Summary topic must replay the pending terminal from memory")
+            .expect("hydrated Summary topic must keep the pre-commit baseline in memory")
             .serialize(
                 None,
                 None,
@@ -16614,9 +16610,9 @@ mod tests {
             )
             .expect("serialize the memory-backed Summary topic");
         let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
-        assert_eq!(payload["totalCount"], json!(1));
-        assert_eq!(payload["totalTokens"], json!(42));
-        assert_eq!(payload["totalCost"], json!(0.25));
+        assert_eq!(payload["totalCount"], json!(0));
+        assert_eq!(payload["totalTokens"], json!(0));
+        assert_eq!(payload["totalCost"], json!(0.0));
     }
 
     #[tokio::test]
@@ -17140,6 +17136,7 @@ mod tests {
         {
             let mut hub = state.subscription_hub.state.lock().await;
             hub.summary_delta_journal.overflowed_through_sequence = Some(delta.terminal_sequence);
+            hub.summary_delta_journal.note_gap(&delta);
         }
 
         let summary = SubscriptionTopic::SummaryCurrent {
