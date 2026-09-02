@@ -14427,32 +14427,24 @@ mod tests {
                 "topic {topic} should reuse one serialized frame across SSE owners",
             );
         }
-        for (topic, terminal_total) in [("dashboard.activity.current", json!(1))] {
-            let first_owner_frames = first_observations
-                .get(topic)
-                .expect("first owner should observe terminal Dashboard frame");
-            let second_owner_frames = second_observations
-                .get(topic)
-                .expect("second owner should observe terminal Dashboard frame");
-            let terminal_frame = first_owner_frames
+        let topic = "dashboard.activity.current";
+        let terminal_total = json!(1);
+        let first_owner_frames = first_observations
+            .get(topic)
+            .expect("first owner should observe terminal Dashboard frame");
+        let second_owner_frames = second_observations
+            .get(topic)
+            .expect("second owner should observe terminal Dashboard frame");
+        let terminal_frame = first_owner_frames
+            .iter()
+            .find(|frame| frame.payload_value()["summary"]["stats"]["totalCount"] == terminal_total)
+            .expect("first owner should observe the terminal slice frame");
+        assert!(
+            second_owner_frames
                 .iter()
-                .find(|frame| {
-                    let payload = frame.payload_value();
-                    let total = if topic == "dashboard.activity.current" {
-                        &payload["summary"]["stats"]["totalCount"]
-                    } else {
-                        &payload["totalCount"]
-                    };
-                    total == &terminal_total
-                })
-                .expect("first owner should observe the terminal slice frame");
-            assert!(
-                second_owner_frames
-                    .iter()
-                    .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
-                "terminal topic {topic} must reuse one frame across two SSE owners",
-            );
-        }
+                .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
+            "terminal topic {topic} must reuse one frame across two SSE owners",
+        );
 
         let projection = state
             .proxy_runtime_invocations
