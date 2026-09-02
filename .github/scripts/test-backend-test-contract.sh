@@ -45,6 +45,12 @@ fi
 
 grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
 
+default_docker_stage="$(awk '/^FROM / { stage = $0 } END { print stage }' "$dockerfile")"
+if [[ "$default_docker_stage" != 'FROM production-runtime AS runtime' ]]; then
+  echo "default Docker build must produce the runtime image, got: $default_docker_stage" >&2
+  exit 1
+fi
+
 release_amd_smoke_build="$(sed -n '/^      - name: Build smoke image (linux\/amd64, load)$/,/^      - name: Smoke test image (linux\/amd64)$/p' "$release_workflow")"
 if ! grep -Fq 'target: runtime' <<<"$release_amd_smoke_build"; then
   echo 'release amd64 smoke build must use the runtime image target' >&2

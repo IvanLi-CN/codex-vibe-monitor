@@ -140,10 +140,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl 
 
 CMD ["codex-vibe-monitor"]
 
-# Stage 7: retain the production image as the default Docker build target.
-FROM production-runtime AS runtime
-
-# Stage 8: project-owned backend test environment. This target is intentionally
+# Stage 7: project-owned backend test environment. This target is intentionally
 # separate from the production image so test tooling and writable build paths
 # cannot alter the release runtime contract.
 FROM rust:1.96.0-bookworm AS backend-test
@@ -174,3 +171,6 @@ ENV BACKEND_TEST_WORKSPACE=/tmp/codex-vibe-monitor-backend-test \
     RUST_MIN_STACK=8388608
 
 ENTRYPOINT ["bash", ".github/scripts/run-backend-tests.sh"]
+
+# Stage 8: retain the production image as the default Docker build target.
+FROM production-runtime AS runtime
