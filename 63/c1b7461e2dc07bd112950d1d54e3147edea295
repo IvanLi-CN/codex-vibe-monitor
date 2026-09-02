@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.10",
+  "base_stable_version": "2.69.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-02T07:07:16Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "96c81aad20fa372f07ea2c68cdf4a0e8acffd554",
+  "pr_number": 893,
+  "pr_title": "fix(web): update installed PWA icons through Manifest",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.10",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.10",
+  "target_sha": "63c1b7461e2dc07bd112950d1d54e3147edea295",
+  "type_label": "type:patch"
+}
