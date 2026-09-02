@@ -159,6 +159,8 @@ Journal entry exceeds capacity or cannot be reduced. Only a selection that can
 include that proof is unavailable. A missing cursor with no durable metadata is
 an explicitly broad proof until reconciliation, because its range cannot be
 proven; it must never be localized by guessing from a later entry.
+When the proof budget is exhausted, that broad proof is retained instead of
+evicting an older account/time/rank boundary.
 _Avoid_: inferred range, partial response, stale success
 
 **RollingDelta**:

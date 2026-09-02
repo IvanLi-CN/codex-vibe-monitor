@@ -806,8 +806,14 @@ struct SummaryDeltaJournal {
     rolled_back_sequences: BTreeSet<u64>,
     entries: VecDeque<SummaryDeltaEntry>,
     bytes: usize,
+    // A terminal-journal replay can commit after Bootstrap has published. Its source row is
+    // exact, but it has no in-process dashboard sequence to join the contiguous live journal.
+    // Keep it in the same bounded resident budget and layer it into rolling reads separately.
+    replayed_entries: VecDeque<DashboardActivityTerminalDelta>,
+    replayed_bytes: usize,
     overflowed_through_sequence: Option<u64>,
     gap_proofs: VecDeque<DeltaGapProof>,
+    gap_proof_budget_exhausted: bool,
 }
 
 impl SummaryDeltaJournal {
@@ -847,10 +853,15 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
-        let exceeds_count = self.entries.len().saturating_add(self.pending.len())
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            .saturating_add(self.pending.len())
             >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
         let exceeds_bytes = self
             .bytes
+            .saturating_add(self.replayed_bytes)
             .saturating_add(self.pending_bytes)
             .saturating_add(delta.estimated_bytes)
             > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
@@ -912,13 +923,10 @@ impl SummaryDeltaJournal {
 
     fn note_unknown_sequence_gap(&mut self, cursor: u64) {
         self.cursor = self.cursor.max(SummaryDeltaCursor(cursor));
-        if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
-            self.gap_proofs.pop_front();
-        }
         // The missing cursor has no durable terminal metadata. Its time, account, and current
         // rank are therefore unknown, so this proof deliberately applies to every selection
         // until a generation-fenced reconciliation absorbs it.
-        self.gap_proofs.push_back(DeltaGapProof {
+        self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             upstream_account_id: None,
             occurred_at: String::new(),
@@ -928,15 +936,68 @@ impl SummaryDeltaJournal {
 
     fn note_gap(&mut self, delta: &DashboardActivityTerminalDelta) {
         self.cursor = self.cursor.max(SummaryDeltaCursor(delta.terminal_sequence));
-        if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
-            self.gap_proofs.pop_front();
-        }
-        self.gap_proofs.push_back(DeltaGapProof {
+        self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
             upstream_account_id: delta.upstream_account_id,
             occurred_at: delta.occurred_at.clone(),
             row_id: delta.persisted_row_id,
         });
+    }
+
+    fn retain_gap_proof(&mut self, proof: DeltaGapProof) {
+        if self.gap_proof_budget_exhausted {
+            return;
+        }
+        if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
+            // Dropping the oldest scoped proof could make an old account/range look exact.
+            // Keep one irreversible broad proof until a durable projection consumes the gap.
+            self.gap_proofs.clear();
+            self.gap_proofs.push_back(DeltaGapProof {
+                cursor: proof.cursor,
+                upstream_account_id: None,
+                occurred_at: String::new(),
+                row_id: None,
+            });
+            self.gap_proof_budget_exhausted = true;
+            return;
+        }
+        self.gap_proofs.push_back(proof);
+    }
+
+    fn append_replayed(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
+        if self.overflowed_through_sequence.is_some() {
+            self.note_gap(&delta);
+            return false;
+        }
+        if self
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(self.replayed_entries.iter())
+            .any(|entry| Self::contains_same_identity(entry, &delta))
+        {
+            return true;
+        }
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            .saturating_add(self.pending.len())
+            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = self
+            .bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(self.pending_bytes)
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        if exceeds_count || exceeds_bytes {
+            self.overflowed_through_sequence = Some(delta.terminal_sequence);
+            self.note_gap(&delta);
+            return false;
+        }
+        self.replayed_bytes = self.replayed_bytes.saturating_add(delta.estimated_bytes);
+        self.replayed_entries.push_back(delta);
+        true
     }
 
     // Entries arrive from the terminal slice only after its SQLite transaction has committed.
@@ -983,9 +1044,16 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
-        let exceeds_count = self.entries.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-        let exceeds_bytes =
-            self.bytes.saturating_add(delta.estimated_bytes) > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = self
+            .bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
         if exceeds_count || exceeds_bytes {
             self.overflowed_through_sequence = Some(slice_high_watermark);
             self.note_gap(&delta);
@@ -3409,10 +3477,15 @@ impl SubscriptionHub {
         {
             return false;
         }
-        let has_unabsorbed_delta = state.summary_delta_journal.entries.iter().any(|entry| {
-            !projection
-                .contains_persisted_live_terminal(&entry.delta.invoke_id, &entry.delta.occurred_at)
-        });
+        let has_unabsorbed_delta = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .any(|delta| {
+                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+            });
         if !has_unabsorbed_delta {
             return false;
         }
@@ -3445,22 +3518,45 @@ impl SubscriptionHub {
         );
     }
 
+    // Journal replay happens only after the SQLite transaction has committed. Replayed records
+    // have no compatible in-process dashboard sequence after restart, so do not manufacture one
+    // or trigger a full rolling read. Their exact values remain a bounded rolling overlay.
+    pub(crate) async fn acknowledge_replayed_summary_delta(
+        &self,
+        delta: DashboardActivityTerminalDelta,
+    ) {
+        let mut state = self.state.lock().await;
+        if !state.summary_delta_journal.append_replayed(delta) {
+            tracing::warn!(
+                replayed_terminal_count = state.summary_delta_journal.replayed_entries.len(),
+                replayed_terminal_bytes = state.summary_delta_journal.replayed_bytes,
+                gap_count = state.summary_delta_journal.gap_proofs.len(),
+                "replayed Summary Delta Journal entry reached a bounded gap"
+            );
+        }
+    }
+
     pub(crate) async fn summary_delta_journal_counts(&self) -> (usize, usize) {
         let state = self.state.lock().await;
         (
-            state.summary_delta_journal.entries.len(),
+            state
+                .summary_delta_journal
+                .entries
+                .len()
+                .saturating_add(state.summary_delta_journal.replayed_entries.len()),
             state.summary_delta_journal.gap_proofs.len(),
         )
     }
 
     pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
-        self.state
-            .lock()
-            .await
+        let state = self.state.lock().await;
+        state
             .summary_delta_journal
             .entries
             .iter()
-            .map(|entry| format!("{}\0{}", entry.delta.invoke_id, entry.delta.occurred_at))
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .map(|entry| format!("{}\0{}", entry.invoke_id, entry.occurred_at))
             .collect()
     }
 
@@ -3529,11 +3625,23 @@ impl SubscriptionHub {
             !projection
                 .contains_persisted_live_terminal(&entry.delta.invoke_id, &entry.delta.occurred_at)
         });
+        state
+            .summary_delta_journal
+            .replayed_entries
+            .retain(|entry| {
+                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
+            });
         state.summary_delta_journal.bytes = state
             .summary_delta_journal
             .entries
             .iter()
             .map(|entry| entry.delta.estimated_bytes)
+            .sum();
+        state.summary_delta_journal.replayed_bytes = state
+            .summary_delta_journal
+            .replayed_entries
+            .iter()
+            .map(|entry| entry.estimated_bytes)
             .sum();
         if state
             .summary_delta_journal
@@ -3544,6 +3652,7 @@ impl SubscriptionHub {
         {
             state.summary_delta_journal.overflowed_through_sequence = None;
             state.summary_delta_journal.gap_proofs.clear();
+            state.summary_delta_journal.gap_proof_budget_exhausted = false;
             tracing::info!(
                 durable_terminal_sequence_watermark =
                     projection.durable_terminal_sequence_watermark(),
@@ -3663,13 +3772,12 @@ impl SubscriptionHub {
             .summary_delta_journal
             .entries
             .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
             .filter(|entry| {
-                !projection.contains_persisted_live_terminal(
-                    &entry.delta.invoke_id,
-                    &entry.delta.occurred_at,
-                )
+                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
             })
-            .map(|entry| entry.delta.clone())
+            .cloned()
             .collect();
         Some(SummaryRollingDeltaSnapshot {
             projection,
@@ -3766,13 +3874,13 @@ impl SubscriptionHub {
                 .summary_delta_journal
                 .entries
                 .iter()
+                .map(|entry| &entry.delta)
+                .chain(state.summary_delta_journal.replayed_entries.iter())
                 .filter(|entry| {
-                    !projection.contains_persisted_live_terminal(
-                        &entry.delta.invoke_id,
-                        &entry.delta.occurred_at,
-                    )
+                    !projection
+                        .contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
                 })
-                .map(|entry| entry.delta.clone())
+                .cloned()
                 .collect::<Vec<_>>()
         };
         let mut initial_slice_suppressions = overlay
@@ -13786,6 +13894,41 @@ mod tests {
             .expect("known overflow retains a bounded gap proof");
         assert_eq!(proof.upstream_account_id, Some(42));
         assert!(!proof.occurred_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_proof_budget_retains_broad_fail_closed_guard() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut template = dashboard_runtime_topology_live_record(&occurred_at);
+        template.id = 1;
+        template.status = Some("success".to_string());
+        template.live_phase = None;
+        let template = apply_dashboard_activity_terminal_record(state.as_ref(), &template)
+            .await
+            .terminal_delta
+            .expect("accept terminal delta template");
+
+        let mut journal = SummaryDeltaJournal::default();
+        for sequence in 1..=SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS as u64 + 1 {
+            let mut gap = template.clone();
+            gap.invoke_id = format!("summary-delta-proof-budget-{sequence}");
+            gap.terminal_sequence = sequence;
+            gap.upstream_account_id = Some(sequence as i64);
+            journal.note_gap(&gap);
+        }
+
+        assert!(journal.gap_proof_budget_exhausted);
+        assert_eq!(journal.gap_proofs.len(), 1);
+        let proof = journal
+            .gap_proofs
+            .front()
+            .expect("budget exhaustion retains a broad proof");
+        assert!(proof.occurred_at.is_empty());
+        assert_eq!(proof.upstream_account_id, None);
     }
 
     #[tokio::test]

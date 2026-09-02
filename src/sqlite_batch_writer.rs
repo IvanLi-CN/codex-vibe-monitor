@@ -3721,9 +3721,14 @@ pub(crate) async fn flush_pending_batch_inner(
             let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
                 persisted.as_ref().map(|record| {
                     let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
-                    delta.terminal_sequence = sequence;
                     delta.persisted_row_id = Some(invocation_id);
-                    delta
+                    // A recovered terminal has no valid process-local sequence. Its committed
+                    // row is still exact, so preserve it as an independent replay overlay.
+                    let replayed_after_restart = sequence == 0;
+                    if !replayed_after_restart {
+                        delta.terminal_sequence = sequence;
+                    }
+                    (delta, replayed_after_restart)
                 })
             });
             persisted_terminals.push((
@@ -3766,8 +3771,14 @@ pub(crate) async fn flush_pending_batch_inner(
             .lock()
             .ok()
             .and_then(|guard| guard.clone());
-        if let (Some(summary_delta), Some(hub)) = (summary_delta, summary_delta_hub) {
-            hub.acknowledge_summary_delta(summary_delta).await;
+        if let (Some((summary_delta, replayed_after_restart)), Some(hub)) =
+            (summary_delta, summary_delta_hub)
+        {
+            if replayed_after_restart {
+                hub.acknowledge_replayed_summary_delta(summary_delta).await;
+            } else {
+                hub.acknowledge_summary_delta(summary_delta).await;
+            }
         }
         if let Some(hub) = terminal_projection_hub
             .lock()
@@ -4749,6 +4760,58 @@ mod tests {
                 .len(),
             1,
             "only the committed terminal belongs to the Summary Delta Journal"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_journal_replay_acknowledges_committed_summary_recovery_delta() {
+        let pool = test_pool().await;
+        let mut batch = PendingBatch::default();
+        let record = crate::tests::test_proxy_capture_record(
+            "summary-delta-replayed-ack",
+            "2026-08-09 12:01:00",
+        );
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture: false,
+                // Terminal journal replay uses the reserved post-restart marker rather than an
+                // obsolete dashboard sequence from the prior process.
+                dashboard_terminal_sequence: Some(0),
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
+                record,
+            },
+        ));
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_hub = Arc::new(SubscriptionHub::new());
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(Some(summary_hub.clone())));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+
+        flush_pending_batch_inner(
+            &pool,
+            &batch,
+            None,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &summary_delta_hub,
+            &terminal_projection_hub,
+            &dashboard_reconcile_gate,
+        )
+        .await
+        .expect("commit terminal journal replay and acknowledge Summary recovery delta");
+
+        assert_eq!(summary_hub.summary_delta_journal_counts().await, (1, 0));
+        assert_eq!(
+            summary_hub
+                .summary_terminal_overlay_identities()
+                .await
+                .len(),
+            1,
+            "a committed replay must become an exact Summary recovery overlay"
         );
     }
 

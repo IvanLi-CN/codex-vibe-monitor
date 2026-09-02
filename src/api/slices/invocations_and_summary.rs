@@ -32373,6 +32373,99 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_replayed_delta_publishes_without_full_live_admission() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-replay-base', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed immutable Summary projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+
+        let mut terminal = summary_projection_test_invocation();
+        terminal.id = 913_002;
+        terminal.invoke_id = "summary-replayed-terminal".to_string();
+        terminal.occurred_at = db_occurred_at_lower_bound(Utc::now());
+        terminal.source = SOURCE_PROXY.to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(23);
+        terminal.output_tokens = Some(11);
+        terminal.cost = Some(2.5);
+        terminal.upstream_account_id = Some(42);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost, payload, raw_response, detail_level) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', 'full')",
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.status.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": 42 }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist replayed terminal before its journal ACK");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("materialize committed replay delta");
+        state
+            .subscription_hub
+            .acknowledge_replayed_summary_delta(delta)
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("enable full-build probe");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+        );
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("replayed journal delta must renew rolling projection");
+        assert!(
+            interleave.build_modes().is_empty(),
+            "replayed delta must not enter full live admission"
+        );
+        clear_summary_projection_test_interleave();
+
+        state.pool.close().await;
+        for window in ["current", "1d", "7d", "30d", "today"] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: Some(50),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("replayed delta must serve the exact memory projection");
+            assert_eq!(response.total_count, 2, "{window} exact count");
+            assert_eq!(response.total_tokens, 40, "{window} exact tokens");
+        }
+    }
+
+    #[tokio::test]
     async fn summary_projection_delta_gap_respects_current_rank_and_account_scope() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
