@@ -10743,11 +10743,18 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             );
             return Ok(());
         }
-        // No unrepresented live row was found.  A fence change may belong only to archive or
-        // rollup coverage, which is reconciled by the independent AllTime checkpoint.  Do not
-        // manufacture a broad live gap here: doing so would make an already exact current/1d
-        // projection unavailable merely because an unrelated historical manifest changed.
-        return Ok(());
+        // A fence change may belong only to archive or rollup coverage. Rebuild the bounded
+        // RollingDelta projection so its metadata-only admission can publish a localized gap
+        // for the affected range; it still never performs paged raw archive hydration. A
+        // no-op here would leave the old projection falsely fresh after an archive replay proof
+        // changed underneath it.
+        return refresh_summary_snapshots_with_deadline(
+            state,
+            SummaryProjectionBuildMode::RollingDelta,
+            Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+            true,
+        )
+        .await;
     }
     let deadline = match mode {
         SummaryProjectionBuildMode::HistoricalLiveCoverage
