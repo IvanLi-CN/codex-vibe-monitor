@@ -7723,7 +7723,6 @@ impl SummaryProjection {
             coverage.reconciliation_required = true;
         }
     }
-
     fn current_selection_cutoff_for_scope(
         &self,
         upstream_account_id: Option<i64>,

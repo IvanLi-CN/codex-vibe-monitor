@@ -204,7 +204,6 @@ continuous Summary Source Change Journal proof. It creates a fail-closed
 recovery boundary until bounded reconciliation establishes an exact
 replacement; it never authorizes a stale successful response.
 _Avoid_: harmless cache miss, inferred delta, global stale success
-
 **Summary Delta Cursor**:
 The monotonic terminal sequence attached to one Summary Delta Journal entry.
 It establishes that a RollingDelta observes a continuous acknowledged tail.

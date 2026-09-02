@@ -3602,7 +3602,6 @@ impl SubscriptionHub {
         projection.mark_historical_live_recovery_required();
         state.summary_projection = Some(Arc::new(projection));
     }
-
     pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
         let state = self.state.lock().await;
         state
