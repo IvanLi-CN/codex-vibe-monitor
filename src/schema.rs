@@ -3731,6 +3731,93 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS summary_source_change_journal (
+            cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+            descriptor_version INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_revision INTEGER NOT NULL,
+            first_row_id INTEGER NOT NULL,
+            last_row_id INTEGER NOT NULL,
+            occurred_start TEXT NOT NULL,
+            occurred_end TEXT NOT NULL,
+            descriptor_json TEXT NOT NULL,
+            descriptor_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_source_change_journal table existence")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_summary_source_change_journal_revision \
+         ON summary_source_change_journal (source_revision, cursor)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary source change journal revision index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_source_change_compaction_proof (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_cursor INTEGER NOT NULL,
+            last_cursor INTEGER NOT NULL,
+            proof_kind TEXT NOT NULL,
+            proof_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_source_change_compaction_proof table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_archive_snapshot (
+            archive_batch_id INTEGER NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            page_index INTEGER NOT NULL,
+            coverage_start TEXT NOT NULL,
+            coverage_end TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            payload BLOB NOT NULL,
+            payload_bytes INTEGER NOT NULL,
+            snapshot_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_batch_id, manifest_sha256, page_index)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_archive_snapshot table existence")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_summary_archive_snapshot_manifest \
+         ON summary_archive_snapshot (manifest_sha256, archive_batch_id, page_index)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary archive snapshot manifest index")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_archive_snapshot_backfill_checkpoint (
+            scope TEXT PRIMARY KEY,
+            next_archive_batch_id INTEGER NOT NULL DEFAULT 0,
+            manifest_high_watermark_id INTEGER NOT NULL DEFAULT 0,
+            completed INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_archive_snapshot_backfill_checkpoint table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_all_time_projection_checkpoint (
             scope TEXT PRIMARY KEY,
             live_high_watermark_id INTEGER NOT NULL,

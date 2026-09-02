@@ -3739,6 +3739,35 @@ pub(crate) async fn flush_pending_batch_inner(
                 summary_delta,
             ));
         }
+        // Persist one compact Summary source descriptor in the same transaction as the terminal
+        // rows.  It is intentionally identity-only: rolling recovery reconstructs the bounded
+        // preview from the source table after a restart instead of duplicating raw payloads.
+        let descriptor_entries = persisted_terminals
+            .iter()
+            .map(
+                |(terminal, invocation_id, occurred_at, payload_metadata, _)| {
+                    SummarySourceChangeEntry {
+                        row_id: *invocation_id,
+                        invoke_id: terminal.record.invoke_id.clone(),
+                        occurred_at: occurred_at.clone(),
+                        upstream_account_id: payload_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.upstream_account_id),
+                        current_rank: None,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        if !descriptor_entries.is_empty() {
+            let source_revision = persisted_terminals
+                .iter()
+                .filter_map(|(terminal, ..)| terminal.dashboard_terminal_sequence)
+                .max()
+                .unwrap_or_default();
+            let descriptor =
+                SummarySourceChangeDescriptor::terminal_batch(source_revision, descriptor_entries)?;
+            append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
+        }
         terminal_tx.commit().await?;
     }
 
@@ -4761,6 +4790,57 @@ mod tests {
             1,
             "only the committed terminal belongs to the Summary Delta Journal"
         );
+        let descriptor_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM summary_source_change_journal WHERE source_kind = 'terminal_batch'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count committed Summary source descriptors");
+        assert_eq!(descriptor_count, 1);
+    }
+
+    #[tokio::test]
+    async fn summary_source_change_descriptor_failure_rolls_back_source() {
+        let pool = test_pool().await;
+        let mut tx = pool.begin().await.expect("begin source transaction");
+        sqlx::query(
+            "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, raw_response) \
+             VALUES ('descriptor-rollback', '2026-08-09 12:02:00', 'proxy', 'success', '')",
+        )
+        .execute(tx.as_mut())
+        .await
+        .expect("insert source row");
+        let mut descriptor = SummarySourceChangeDescriptor::terminal_batch(
+            1,
+            vec![SummarySourceChangeEntry {
+                row_id: 1,
+                invoke_id: "descriptor-rollback".to_string(),
+                occurred_at: "2026-08-09 12:02:00".to_string(),
+                upstream_account_id: None,
+                current_rank: None,
+            }],
+        )
+        .expect("build descriptor");
+        descriptor.version = SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION + 1;
+        assert!(
+            append_summary_source_change_descriptor_tx(tx.as_mut(), &descriptor)
+                .await
+                .is_err()
+        );
+        tx.rollback().await.expect("rollback source transaction");
+        let source_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = 'descriptor-rollback'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count rolled back source row");
+        assert_eq!(source_count, 0);
+        let descriptor_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_source_change_journal")
+                .fetch_one(&pool)
+                .await
+                .expect("count rolled back descriptors");
+        assert_eq!(descriptor_count, 0);
     }
 
     #[tokio::test]

@@ -127,6 +127,7 @@ mod runtime;
 mod runtime_mutation_bus;
 mod schema;
 mod share_links;
+mod summary_source_change;
 pub(crate) use dashboard_network_speed::*;
 #[expect(
     clippy::large_enum_variant,
@@ -161,6 +162,7 @@ pub(crate) use schema::*;
 pub(crate) use share_links::*;
 use sqlite_batch_writer::*;
 use stats::*;
+pub(crate) use summary_source_change::*;
 pub(crate) use terminal_projection::*;
 use upstream_accounts::*;
 #[cfg_attr(not(test), allow(dead_code))]
