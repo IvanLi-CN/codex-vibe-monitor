@@ -3485,6 +3485,10 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             get(fetch_parallel_work_stats_cached),
         )
         .route("/api/stats/perf", get(fetch_perf_stats))
+        .route(
+            "/api/stats/perf/live-request-streaming-evaluation",
+            get(fetch_live_request_streaming_evaluation),
+        )
         .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/stats/failures/summary", get(fetch_failure_summary))
         .route("/api/stats/errors/others", get(fetch_other_errors))

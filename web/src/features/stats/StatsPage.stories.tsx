@@ -5,6 +5,7 @@ import { I18nProvider } from "../../i18n";
 import type {
   ErrorDistributionResponse,
   FailureSummaryResponse,
+  LiveRequestStreamingEvaluation,
   ParallelWorkConversation,
   ParallelWorkStatsResponse,
   PerfStatsResponse,
@@ -317,6 +318,55 @@ function buildStatsStoryFixtures() {
     },
   };
 
+  const liveRequestStreamingEvaluation: LiveRequestStreamingEvaluation = {
+    revision: "live-request-body-v2",
+    endpoint: "/v1/responses",
+    rangeStart: new Date(weekStart).toISOString(),
+    rangeEnd: new Date(now).toISOString(),
+    treatmentAssignmentCount: 4200,
+    treatmentEligibleCount: 4120,
+    actualLiveFirstCount: 3980,
+    treatmentBufferedFallbackCount: 220,
+    actualLiveFirstRate: 3980 / 4200,
+    cohorts: perf.liveRequestStreaming.cohorts,
+    routeFinalization: {
+      sampleCount: 4200,
+      sufficientSamples: true,
+      rawBytes: { p50: 4096, p90: 8192, p99: 16384 },
+      logicalBytes: { p50: 4000, p90: 8000, p99: 16000 },
+      rawRatio: { p50: 1, p90: 1, p99: 1 },
+      logicalRatio: { p50: 1, p90: 1, p99: 1 },
+      finalizationMs: { p50Ms: 8, p90Ms: 12, p99Ms: 20 },
+      eofFinalizedRate: 1,
+      conservativeBufferedRate: 0.05,
+      outcomeCounts: { live_first_model_ready: 3980, buffered_fallback: 220 },
+      dependencyFactorCounts: { model: 4200 },
+      hotCacheHitRate: 0.995,
+      coldLoadRate: 0.005,
+    },
+    metrics: {
+      firstResponse: { p50DifferenceMs: 140, lowerMs: 112, upperMs: 168 },
+      firstToken: { p50DifferenceMs: 190, lowerMs: 151, upperMs: 228 },
+      overlap: { p50DifferenceMs: 180, lowerMs: 120, upperMs: 240 },
+    },
+    risk: {
+      firstAttemptFailure: { difference: 0.001, upperBound: 0.003 },
+      fallbackOrRetry: { difference: 0.002, upperBound: 0.004 },
+      captureFailure: { difference: 0, upperBound: 0.001 },
+      ambiguousDelivery: { difference: 0, upperBound: 0.001 },
+    },
+    decision: {
+      status: "recommend_keep",
+      reasonCodes: ["latency_and_risk_thresholds_met"],
+      minTreatmentAssignments: 1000,
+      minActualLiveFirstRate: 0.05,
+      minMetricSamples: 200,
+      minLatencyBenefitMs: 100,
+      maxRiskIncrease: 0.005,
+      bootstrapResamples: 2000,
+    },
+  };
+
   const buildTimeseriesForRange = (range: string, bucket: string) => {
     const rangeStart = rangeStartByRange(range);
     if (range === "7d") {
@@ -386,6 +436,7 @@ function buildStatsStoryFixtures() {
     errorDistribution,
     failureSummary,
     perf,
+    liveRequestStreamingEvaluation,
     buildTimeseriesForRange,
     buildParallelWorkForRange,
   };
@@ -419,6 +470,10 @@ function buildStatsRequestHandler(scenario: StatsScenario = "default") {
 
     if (url.pathname === "/api/stats/perf") {
       return jsonResponse(fixtures.perf);
+    }
+
+    if (url.pathname === "/api/stats/perf/live-request-streaming-evaluation") {
+      return jsonResponse(fixtures.liveRequestStreamingEvaluation);
     }
 
     if (url.pathname === "/api/stats/parallel-work") {

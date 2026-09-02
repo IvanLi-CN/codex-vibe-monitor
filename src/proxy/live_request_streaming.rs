@@ -4,6 +4,11 @@ use super::*;
 
 pub(crate) const LIVE_REQUEST_STREAMING_REVISION: &str = "responses-live-request-body-v2";
 pub(crate) const LIVE_REQUEST_STREAMING_MIN_SUCCESS_SAMPLES: i64 = 200;
+pub(crate) const LIVE_REQUEST_STREAMING_MIN_TREATMENT_ASSIGNMENTS: i64 = 1_000;
+pub(crate) const LIVE_REQUEST_STREAMING_MIN_ACTUAL_LIVE_RATE: f64 = 0.05;
+pub(crate) const LIVE_REQUEST_STREAMING_MIN_LATENCY_BENEFIT_MS: f64 = 100.0;
+pub(crate) const LIVE_REQUEST_STREAMING_MAX_RISK_INCREASE: f64 = 0.005;
+pub(crate) const LIVE_REQUEST_STREAMING_BOOTSTRAP_RESAMPLES: usize = 2_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RequestBodyTransportMode {

@@ -88,6 +88,7 @@ export default function StatsPage() {
   } = useParallelWorkStats({ range, bucket: effectiveBucket });
   const {
     data: liveRequestStreamingPerf,
+    evaluation: liveRequestStreamingEvaluation,
     isLoading: liveRequestStreamingPerfLoading,
     error: liveRequestStreamingPerfError,
   } = useLiveRequestStreamingPerf(range);
@@ -179,6 +180,7 @@ export default function StatsPage() {
 
       <LiveRequestStreamingPerfPanel
         data={liveRequestStreamingPerf}
+        evaluation={liveRequestStreamingEvaluation}
         isLoading={liveRequestStreamingPerfLoading}
         error={liveRequestStreamingPerfError}
       />
