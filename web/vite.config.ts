@@ -27,15 +27,17 @@ function findInstallIconAsset(prefix: string, extension: ".png" | ".svg"): strin
 }
 
 const installIconAssets = {
-  appleTouch: findInstallIconAsset("apple-touch-icon", ".png"),
   favicon: findInstallIconAsset("favicon", ".svg"),
   icon192: findInstallIconAsset("icon-192", ".png"),
   icon512: findInstallIconAsset("icon-512", ".png"),
   maskable192: findInstallIconAsset("maskable-192", ".png"),
   maskable512: findInstallIconAsset("maskable-512", ".png"),
 };
-
-const installIconFiles = Object.values(installIconAssets);
+const pwaPrecacheIgnores = [
+  "**/site.webmanifest",
+  "**/version.json",
+  ...Object.values(installIconAssets).map((filename) => `**/${filename}`),
+];
 
 type PwaManifestEntry = string | { url: string };
 type PwaPluginWithApi = {
@@ -52,6 +54,14 @@ function isPwaRuntimeMetadataEntry(entry: PwaManifestEntry): boolean {
   return filename === "site.webmanifest" || filename === "version.json";
 }
 
+function isPwaInstallIconEntry(entry: PwaManifestEntry): boolean {
+  const path = (typeof entry === "string" ? entry : entry.url).split(/[?#]/, 1)[0];
+  const filename = path.slice(path.lastIndexOf("/") + 1);
+  return /^(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[0-9a-f]{12}\.(?:png|svg)$/.test(
+    filename,
+  );
+}
+
 function createPwaPlugins() {
   const pwaPlugins = VitePWA({
     injectRegister: false,
@@ -60,7 +70,8 @@ function createPwaPlugins() {
     srcDir: "src/pwa",
     filename: "sw.ts",
     manifestFilename: "site.webmanifest",
-    includeAssets: ["brand-mark.svg", ...installIconFiles, "social-preview.png"],
+    includeAssets: ["brand-mark.svg", "social-preview.png"],
+    includeManifestIcons: false,
     manifest: {
       id: "./",
       name: "Codex Vibe Monitor",
@@ -139,6 +150,7 @@ function createPwaPlugins() {
     },
     injectManifest: {
       globPatterns: ["**/*.{js,css,html,ico,png,svg,json}"],
+      globIgnores: pwaPrecacheIgnores,
       maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
     },
     devOptions: {
@@ -154,7 +166,9 @@ function createPwaPlugins() {
     buildStart() {
       // vite-plugin-pwa adds the manifest automatically; it must remain network-revalidated.
       pwaMainPlugin?.api?.extendManifestEntries((entries) =>
-        entries.filter((entry) => !isPwaRuntimeMetadataEntry(entry)),
+        entries.filter(
+          (entry) => !isPwaRuntimeMetadataEntry(entry) && !isPwaInstallIconEntry(entry),
+        ),
       );
     },
   });
@@ -184,9 +198,7 @@ export function createAppViteConfig(mode: string): UserConfig {
       {
         name: "codex-vibe-monitor-install-icon-assets",
         transformIndexHtml(html) {
-          return html
-            .replaceAll("%INSTALL_FAVICON%", installIconAssets.favicon)
-            .replaceAll("%INSTALL_APPLE_TOUCH_ICON%", installIconAssets.appleTouch);
+          return html.replaceAll("%INSTALL_FAVICON%", installIconAssets.favicon);
         },
       },
       react(),

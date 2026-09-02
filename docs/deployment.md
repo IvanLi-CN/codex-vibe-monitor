@@ -59,7 +59,7 @@ Browser -> Traefik (public 80/443) -> codex-vibe-monitor (private :8080)
 应用会直接为安装相关静态资源返回以下 `Cache-Control`：
 
 - `index.html`、`site.webmanifest`、`sw.js`、`version.json`：`no-cache, max-age=0, must-revalidate`
-- 内容哈希的 `favicon-*`、`apple-touch-icon-*`、`icon-*` 与 `maskable-*`：`public, max-age=31536000, immutable`
+- 内容哈希的 `favicon-*`、`icon-*` 与 `maskable-*`：`public, max-age=31536000, immutable`
 
 不要在反向代理或 CDN 中把 manifest、service worker 或版本文件改成长期 immutable；它们必须能重新校验。图标内容变化时构建会生成新文件名，网关应保留这些哈希文件，不能把新 URL 重写回旧稳定文件名。
 

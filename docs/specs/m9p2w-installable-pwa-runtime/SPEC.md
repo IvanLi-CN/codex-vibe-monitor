@@ -2,47 +2,47 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
-## 背景 / 问题陈述
+## Context and Scope
 
 - `Codex Vibe Monitor` 已经具备 installable PWA 所需的应用身份，但如果只有 manifest / icon / standalone metadata，而没有正式的 install、update、offline contract，PWA 仍然停留在“能被识别”而不是“可交付”的层级。
 - 仅有离线壳层会让安装后的首次断网打开体验过于单薄：用户能进入 dashboard shell，却看不到最近一次概览数据，owner-facing 语义会误伤成“离线时什么都没有”。
 - 本次规范把 `#m9p2w` 从“installable runtime + offline shell”升级为“installable runtime + Dashboard overview offline snapshots readable”，同时继续明确这不是完整 offline-capable 数据应用。
 
-## 目标 / 非目标
+### 目标 / 非目标
 
-### Goals
+#### Goals
 
 - 维持正式 `installable-runtime` PWA 合同：base-aware manifest、service worker、浏览器原生安装提示、Safari manual guidance、prompt-style update 与离线 app shell 持续有效。
 - 在根 Dashboard 概览内支持离线读取最近一次成功同步的五个固定 range 快照：`today`、`yesterday`、`1d`、`7d`、`usage`。
 - 对 owner-facing UX 提供统一 snapshot vocabulary：`live`、`cached-offline`、`not-cached-yet`，并显示 `cachedAt`。
 - 保持现有 `HashRouter`、REST/SSE、工作台信息架构与安装后默认入口 `/#/dashboard` 不回退。
 
-### Non-goals
+#### Non-goals
 
 - 不把产品升级为完整 `offline-capable` 数据应用；不承诺 `/api/*`、SSE、写操作、详情抽屉、后台同步、working conversations 在离线时继续真实可用。
 - 不缓存 `upstreamAccountId` scoped 视图、conversation / invocation / account detail drawer，也不把 SSE event log 变成本地事件仓。
 - 不把 API 缓存职责塞进 service worker；`/api/*`、`/events` 仍不得被 SW 拦截成数据缓存层。
 
-## 范围（Scope）
+### 范围（Scope）
 
-### In scope
+#### In scope
 
 - 共享 app shell 的 install prompt、Safari manual guidance、installed vocabulary、waiting-update prompt 与 offline shell banner。
 - Dashboard 概览五个固定 range 的 IndexedDB 最新成功快照，及其离线读路径、后台预热、重连刷新和 `not-cached-yet` 空状态。
 - PWA 专项 Vitest / Storybook / Playwright 覆盖，以及 `#m9p2w` spec / implementation / history / spec index 的 current truth 同步。
 
-### Out of scope
+#### Out of scope
 
 - working conversations 的离线数据保真、详情页离线回放、离线写入排队、后台同步、推送通知。
 - 与 installable PWA 或概览离线快照无关的信息架构重做或大幅视觉重设计。
 
-## 功能与行为规格
+## Requirements
 
 ### Install surface
 
-- 应用必须生成 base-aware manifest，包含稳定 identity、icons、theme color、`start_url=./#/dashboard`、`scope=./` 与高价值 shortcuts。
-- install icon 必须从 `scripts/export_brand_assets.py` 的 product mark 单一几何源导出：透明 regular `purpose: "any"` 保留品牌构图；不透明 `#FBFDFF` maskable 与 180px Apple touch 采用独立资源。maskable/Apple 的重要前景最大边为画布 58%-62%，且位于中心半径 40% 的安全圆；图源不得预烘焙系统圆角、描边、阴影或外框。
-- regular、maskable、Apple touch、favicon 与 shortcut 的字节变化必须同步更新 manifest、HTML 和 precache 可见引用。每一代安装资源使用内容哈希文件名，manifest URL、HTML fallback URL 与 precache 引用必须指向同一代文件；`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
+- [REQ-PWA-MANIFEST] 应用必须生成 base-aware manifest，包含稳定 identity、icons、theme color、`start_url=./#/dashboard`、`scope=./` 与高价值 shortcuts。
+- [REQ-PWA-ICONS] install icon 必须从 `scripts/export_brand_assets.py` 的 product mark 单一几何源导出：透明 regular `purpose: "any"` 保留品牌构图；不透明 `#FBFDFF` maskable 采用独立资源。maskable 的重要前景最大边为画布 58%-62%，且位于中心半径 40% 的安全圆；图源不得预烘焙系统圆角、描边、阴影或外框。现有批准的 regular/maskable artwork 像素保持不变。
+- [REQ-PWA-ICON-URLS] regular、maskable、favicon 与 shortcut 的字节变化必须同步更新 manifest 与 HTML 可见引用；安装图标不进入 service worker precache。每一代安装资源使用内容哈希文件名，manifest URL 与 HTML favicon URL 必须指向同一代文件；`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
 - 主界面头栏不得放置常驻 install/status button；当浏览器满足安装条件时，应改为自动弹出明确的 install prompt 或 manual guidance。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
@@ -50,21 +50,21 @@
 
 ### Update behavior
 
-- service worker 必须采用 prompt-style update；waiting worker 只能在用户明确确认后接管，禁止 mid-session 自动 takeover。
+- [REQ-PWA-UPDATE] service worker 必须采用 prompt-style update；waiting worker 只能在用户明确确认后接管，禁止 mid-session 自动 takeover。
 - update banner 必须使用统一版本 vocabulary，至少展示当前前端版本与待切换版本。
 - `version.json` 必须从网络真相读取，不能被旧 worker 的静态 precache 吞掉。
-- `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 必须允许浏览器和网关重新校验；内容哈希安装图标使用 `public, max-age=31536000, immutable`，图标内容变化必须产生新文件名。service worker 不得把 manifest 或版本元数据放进 precache。
-- manifest 身份 `id=./`、`scope=./` 与 `start_url=./#/dashboard` 必须保持稳定。manifest 是 Chromium 安装元数据的权威来源；`apple-touch-icon` 只服务无法使用 manifest 的旧式 iOS/iPadOS Web Clip 路径，不得覆盖 Chromium manifest 合同。
+- [REQ-PWA-REVALIDATION] `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 必须允许浏览器和网关重新校验；内容哈希安装图标使用 `public, max-age=31536000, immutable`，图标内容变化必须产生新文件名。service worker 不得预缓存或 cache-first 固化 manifest、常规安装图标、maskable 图标或 Apple 图标，只保留应用壳所需缓存。
+- [REQ-PWA-IDENTITY] manifest 身份 `id=./`、`scope=./` 与 `start_url=./#/dashboard` 必须保持稳定。manifest 是产品 App 唯一的 Chromium 安装图标元数据来源；产品 HTML 不得声明 `rel="apple-touch-icon"`，也不再生成、注入或测试该 fallback 路径。
 
 ### Platform update semantics
 
-- Chromium Desktop（Chrome / Edge）与 Android Chrome/WebAPK 必须继续使用同一个稳定 manifest identity。发布新图标时同时发布新内容哈希 URL、可重新校验的 manifest 和新 service worker；这会让支持 manifest 更新的浏览器把安装元数据收敛到同一个已安装应用，而不是创建第二个应用或要求日常重装。
+- [REQ-PWA-INSTALLED-UPDATE] Chromium Desktop（Chrome / Edge）与 Android Chrome/WebAPK 必须继续使用同一个稳定 manifest identity。发布新图标时同时发布新内容哈希 URL、可重新校验的 manifest 和新 service worker；正常启动与更新检查应能在同一个已安装应用中取得 V2 manifest 与图标，无需卸载或重新安装。
 - Android Chrome 的 WebAPK 更新由 Chrome 的 manifest 检查和设备调度完成，可能等待应用窗口关闭、充电或 Wi-Fi；图标变化必须体现在 `icons` 字段或其 URL 变化中，不能只覆盖同名文件。Chromium Desktop 的图标更新能力依赖浏览器版本；当前 Chrome manifest 更新流程支持图标 URL 变化，旧版本或其他浏览器可能只更新非图标字段。
-- 已存在的 iOS/iPadOS Web Clips，以及不实现 manifest 安装元数据更新的其他浏览器，不能被网站强制迁移其已保存的主屏图标。它们只能在用户再次添加时读取当前 Apple touch fallback；产品不把“重装”作为正常更新机制，也不承诺能远程替换旧 Web Clip 图标。
+- 已存在的 iOS/iPadOS Web Clips，以及不实现 manifest 安装元数据更新的其他浏览器，不能被网站强制迁移其已保存的主屏图标。产品 App 不提供 Apple touch fallback，也不承诺远程替换旧 Web Clip 图标；本规范不把“重装”作为正常更新机制，自动更新验收仅覆盖 Android Chrome/WebAPK 与 Chromium Desktop。
 
 ### Offline model
 
-- 离线合同分成两层：
+- [REQ-PWA-OFFLINE] 离线合同分成两层：
   - Shell cache：首次在线访问成功后，关闭网络仍可打开 app shell 与基础静态资源。
   - Dashboard overview snapshots：五个固定 range 各保留一份最近一次成功快照，离线时可读，但不承诺是实时数据。
 - service worker 继续只负责壳层与静态资源；Dashboard 历史概览数据通过前端 IndexedDB 持久化快照恢复。
@@ -72,7 +72,7 @@
 
 ### Dashboard overview snapshots
 
-- 快照范围固定为 `today`、`yesterday`、`1d`、`7d`、`usage`。
+- [REQ-PWA-SNAPSHOTS] 快照范围固定为 `today`、`yesterday`、`1d`、`7d`、`usage`。
 - “多 range 历史”在本规范中的含义固定为：每个 range 只保留最新一份成功快照，不做多版本时间旅行回放。
 - 概览 UI 需提供以下三种状态：
   - `live`：在线 live hooks / SSE 语义正常工作，不显示 cached banner。
@@ -117,7 +117,17 @@
 - `usage`
   - `fetchTimeseries("6mo", { bucket: "1d" })`
 
-## 验收标准
+### Owner-facing rendering
+
+- `Dashboard/DashboardActivityOverview` 必须提供稳定的 `cached-offline` 与 `not-cached-yet` stories。
+- 视觉证据至少覆盖原生安装入口 / Safari guidance / waiting update、离线 shell banner、Dashboard 概览 cached banner，以及离线状态下切到其他已缓存 range 后仍可读的概览内容。
+
+## Verification
+
+- VER-PWA-ARTIFACT covers: REQ-PWA-MANIFEST, REQ-PWA-ICONS, REQ-PWA-ICON-URLS, REQ-PWA-REVALIDATION, REQ-PWA-IDENTITY
+- VER-PWA-WORKER covers: REQ-PWA-UPDATE, REQ-PWA-REVALIDATION
+- VER-PWA-INSTALLED-UPDATE covers: REQ-PWA-INSTALLED-UPDATE, REQ-PWA-IDENTITY
+- VER-PWA-OFFLINE covers: REQ-PWA-OFFLINE, REQ-PWA-SNAPSHOTS
 
 - Given 桌面 Chromium 或 Android Chrome
   When 页面满足安装条件
@@ -147,24 +157,9 @@
   When 用户尝试安装
   Then UI 不伪装成存在原生 install prompt，而是提供 manual Add to Home Screen guidance。
 
-## 非功能性验收 / 质量门槛
+## Related ADRs
 
-### Testing
-
-- `python3 scripts/export_brand_assets.py && cd web && bun run test:pwa-assets`
-- `cd web && bun run test`
-- `cd web && bun run test-storybook`
-- `cd web && bun run test:e2e:pwa`
-- `cd web && bun run build`
-
-### UI / Storybook
-
-- `Dashboard/DashboardActivityOverview` 必须提供稳定的 `cached-offline` 与 `not-cached-yet` stories。
-- 视觉证据至少覆盖：
-  - 原生安装入口 / Safari guidance / waiting update
-  - 离线 shell banner
-  - Dashboard 概览 cached banner
-  - 离线状态下切到其他已缓存 range 后仍可读的概览内容
+- None
 
 ## Visual Evidence
 
@@ -176,9 +171,9 @@
 
 ![Codex Vibe Monitor application icon comparison](./assets/pwa-application-icon-comparison.png)
 
-- source_type: deterministic generated contact sheet from the locked pre-change asset and the candidate build
+- source_type: deterministic generated contact sheet from the locked pre-change asset and the approved regular/maskable sources; the Apple touch panel is historical-only and is not a current product output
 - target_program: mock-only platform-mask preview
-- capture_scope: Regular/`any`, maskable, 180px Apple touch, 48/128/512px previews, circle/squircle/macOS masks
+- capture_scope: Current product Regular/`any`, maskable, 48/128/512px previews, circle/squircle/macOS masks; historical Apple touch comparison only
 - state: owner-confirmed candidate freeze
 
 ### Install / Update / Shell

@@ -11,8 +11,11 @@
 - Safari / iOS 继续只提供 manual Add to Home Screen guidance；更新与离线快照扩容并没有改变这一浏览器边界。
 - install prompt 从头栏常驻 button 改为自动弹出的一次性 modal / guidance。原因是 install 是首次交付动作，不应长期占用 owner-facing 头栏空间，也不该让“已安装 / 未安装”状态伪装成普通工具按钮。
 - 自动安装提示在窄屏上改为居中 modal，而不是继续复用移动端贴底 dialog。原因是这块语义属于“状态说明 + 操作确认”，owner-facing 预期是弹窗，不是会与页面滚动/抽屉语义混淆的 bottom sheet。
-- install icon 从预烘焙白色圆角卡片改为 product mark 的多角色派生。regular 保持透明构图，maskable/Apple 使用不透明安全画布，让浏览器和系统独立施加圆角、阴影与外壳；内容派生的资源标识使安装面能可靠接收新字节。
+- install icon 从预烘焙白色圆角卡片改为 product mark 的多角色派生。regular 保持透明构图，maskable 使用不透明安全画布，让浏览器和系统独立施加圆角、阴影与外壳；既有批准的 regular/maskable 像素保持不变，产品不再生成 Apple touch fallback。
 - 安装图标交付改为内容哈希文件名，并把 manifest、service worker 与静态响应缓存职责分开：可重新校验的元数据负责发现新引用，immutable 图标负责稳定缓存，避免旧 worker 或同名文件继续提供过期安装图标。
+- 产品 App 的 Manifest 成为唯一安装图标元数据来源。移除 HTML 的 `rel="apple-touch-icon"` 以及对应生成、注入和测试路径，避免白底旧 fallback 与线上批准 artwork 分叉；既有 iOS/iPadOS Web Clip 不在可强制迁移范围内。
+- service worker 只缓存应用壳；manifest、版本元数据、regular/maskable 安装图标和 Apple 图标均不进入 precache 或 cache-first 路由。内容哈希图标由可重新校验的 manifest 发现并使用 immutable 响应缓存。
+- PWA 更新验收增加 V1 已安装到 V2 发布的路径：Android Chrome/WebAPK 与 Chromium Desktop 的同一安装身份在正常更新检查中取得 V2 manifest 和新图标 URL，不要求卸载或重新安装。
 
 ## References
 

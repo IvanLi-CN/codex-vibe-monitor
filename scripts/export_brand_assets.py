@@ -20,7 +20,6 @@ MASKABLE_APP_ICON_MASTER = BRAND_DIR / "codex-vibe-monitor-maskable-app-icon.svg
 PRODUCT_MARK_PUBLIC = PUBLIC_DIR / "brand-mark.svg"
 
 LEGACY_INSTALL_ICON_NAMES = {
-    "apple-touch-icon.png",
     "favicon.svg",
     "icon-192.png",
     "icon-512.png",
@@ -28,7 +27,6 @@ LEGACY_INSTALL_ICON_NAMES = {
     "maskable-512.png",
 }
 INSTALL_ICON_PATTERNS = (
-    re.compile(r"apple-touch-icon-[0-9a-f]{12}\.png"),
     re.compile(r"favicon-[0-9a-f]{12}\.svg"),
     re.compile(r"icon-192-[0-9a-f]{12}\.png"),
     re.compile(r"icon-512-[0-9a-f]{12}\.png"),
@@ -220,7 +218,6 @@ def main() -> None:
 
     remove_generated_install_icons()
     write_hashed_asset("favicon", ".svg", regular_icon_svg.encode("utf-8"))
-    write_hashed_asset("apple-touch-icon", ".png", render_png_bytes(MASKABLE_APP_ICON_MASTER, 180))
     write_hashed_asset("icon-192", ".png", render_png_bytes(APP_ICON_MASTER, 192))
     write_hashed_asset("icon-512", ".png", render_png_bytes(APP_ICON_MASTER, 512))
     write_hashed_asset("maskable-192", ".png", render_png_bytes(MASKABLE_APP_ICON_MASTER, 192))
