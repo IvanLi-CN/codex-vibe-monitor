@@ -3658,9 +3658,7 @@ impl SubscriptionHub {
         &self,
     ) -> Option<SummaryRollingDeltaSnapshot> {
         let state = self.state.lock().await;
-        let Some(projection) = state.summary_projection.clone() else {
-            return None;
-        };
+        let projection = state.summary_projection.clone()?;
         let entries = state
             .summary_delta_journal
             .entries

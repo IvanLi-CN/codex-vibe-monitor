@@ -32428,8 +32428,8 @@ mod request_compression_query_tests {
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
-                &[gap.clone()],
-                &[newer_delta.clone()],
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
                 &SummaryWindow::Current(2),
                 Shanghai,
                 None,
@@ -32439,8 +32439,8 @@ mod request_compression_query_tests {
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
-                &[gap.clone()],
-                &[newer_delta.clone()],
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
                 &SummaryWindow::Current(4),
                 Shanghai,
                 None,
@@ -32450,8 +32450,8 @@ mod request_compression_query_tests {
         assert!(
             summary_delta_gap_affects_selection(
                 projection.as_ref(),
-                &[gap.clone()],
-                &[newer_delta.clone()],
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
                 &SummaryWindow::Current(5),
                 Shanghai,
                 None,
@@ -32461,8 +32461,8 @@ mod request_compression_query_tests {
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
-                &[gap],
-                &[newer_delta],
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
                 &SummaryWindow::Current(50),
                 Shanghai,
                 Some(7),
