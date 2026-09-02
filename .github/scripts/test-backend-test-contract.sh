@@ -45,8 +45,8 @@ fi
 
 python3 "$repo_root/.github/scripts/test-shared-testbox-api-read-smoke.py"
 
-if ! grep -Fq -- '--user "$(id -u):$(id -g)"' "$repo_root/scripts/shared-testbox-api-read-smoke"; then
-  echo 'shared API smoke cleanup must run as the testbox workspace owner' >&2
+if ! grep -Fq -- '--entrypoint /bin/chmod' "$repo_root/scripts/shared-testbox-api-read-smoke"; then
+  echo 'shared API smoke cleanup must make app-owned data removable before cleanup' >&2
   exit 1
 fi
 

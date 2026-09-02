@@ -137,16 +137,17 @@ cleanup_remote() {
   rm -f "$SMOKE_SCRIPT"
   if [ "$CLEANUP" = "1" ]; then
     if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-      if ! docker run --rm --cap-drop=all --user "$(id -u):$(id -g)" --entrypoint /bin/rm \
-        -v "$(dirname "$REMOTE_RUN"):/runs" \
-        "$IMAGE_TAG" \
-        -rf "/runs/$RUN_ID"; then
-        cleanup_status=1
+      if [ -d "$REMOTE_RUN/data" ]; then
+        if ! docker run --rm --cap-drop=all --entrypoint /bin/chmod \
+          -v "$(dirname "$REMOTE_RUN"):/runs" \
+          "$IMAGE_TAG" \
+          -R a+rwX "/runs/$RUN_ID/data"; then
+          cleanup_status=1
+        fi
       fi
-    else
-      if ! rm -rf "$REMOTE_RUN"; then
-        cleanup_status=1
-      fi
+    fi
+    if ! rm -rf "$REMOTE_RUN"; then
+      cleanup_status=1
     fi
     if [ -e "$REMOTE_RUN" ]; then
       echo "cleanup left run directory: $REMOTE_RUN" >&2
