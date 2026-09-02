@@ -2327,38 +2327,39 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 .and_then(|candidate| candidate.resolved_account.as_ref())
                 .map(|account| account.account_id)
         });
-    if request_driven_recovery_target_id.is_some() && selection_audit.is_none() {
-        if let Some(winner) = resolved_candidates.first() {
-            let account = winner
-                .resolved_account
-                .as_ref()
-                .expect("recovery target requires a resolved ordinary winner");
-            let runner_up = resolved_candidates
+    if request_driven_recovery_target_id.is_some()
+        && selection_audit.is_none()
+        && let Some(winner) = resolved_candidates.first()
+    {
+        let account = winner
+            .resolved_account
+            .as_ref()
+            .expect("recovery target requires a resolved ordinary winner");
+        let runner_up = resolved_candidates
+            .get(1)
+            .and_then(|candidate| candidate.resolved_account.as_ref());
+        selection_audit = Some(PoolRoutingSelectionAudit {
+            selected_account_id: account.account_id,
+            selected_account_name: account.display_name.clone(),
+            eligible_candidate_count: resolved_candidates.len(),
+            winner_reason_code: pool_routing_selection_winner_reason(
+                &winner.score,
+                resolved_candidates.get(1).map(|candidate| &candidate.score),
+            )
+            .to_string(),
+            compared_account_id: runner_up.map(|candidate| candidate.account_id),
+            compared_account_name: runner_up.map(|candidate| candidate.display_name.clone()),
+            selected_score: Some(routing_selection_score_snapshot(&winner.score)),
+            compared_score: resolved_candidates
                 .get(1)
-                .and_then(|candidate| candidate.resolved_account.as_ref());
-            selection_audit = Some(PoolRoutingSelectionAudit {
-                selected_account_id: account.account_id,
-                selected_account_name: account.display_name.clone(),
-                eligible_candidate_count: resolved_candidates.len(),
-                winner_reason_code: pool_routing_selection_winner_reason(
-                    &winner.score,
-                    resolved_candidates.get(1).map(|candidate| &candidate.score),
-                )
-                .to_string(),
-                compared_account_id: runner_up.map(|candidate| candidate.account_id),
-                compared_account_name: runner_up.map(|candidate| candidate.display_name.clone()),
-                selected_score: Some(routing_selection_score_snapshot(&winner.score)),
-                compared_score: resolved_candidates
-                    .get(1)
-                    .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
-                handoff_admission: None,
-                excluded_candidates: selection_audit_exclusions
-                    .iter()
-                    .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
-                    .cloned()
-                    .collect(),
-            });
-        }
+                .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
+            handoff_admission: None,
+            excluded_candidates: selection_audit_exclusions
+                .iter()
+                .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+                .cloned()
+                .collect(),
+        });
     }
     if let Some(index) = request_driven_recovery_target_index {
         let recovery_target = resolved_candidates.remove(index);
