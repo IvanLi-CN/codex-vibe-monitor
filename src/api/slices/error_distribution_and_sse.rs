@@ -2253,7 +2253,7 @@ impl LiveRequestStreamingRiskCounts {
         }
     }
 
-    fn into_delta(&self) -> Option<LiveRequestStreamingRiskDelta> {
+    fn delta(&self) -> Option<LiveRequestStreamingRiskDelta> {
         let (control_events, control_total, treatment_events, treatment_total) = self
             .by_group
             .values()
@@ -2520,10 +2520,10 @@ fn evaluate_live_request_streaming_rows(
         overlap: metric_confidence_interval(&overlap, true),
     };
     let risk = LiveRequestStreamingEvaluationRisk {
-        first_attempt_failure: first_attempt_failure.into_delta(),
-        fallback_or_retry: fallback_or_retry.into_delta(),
-        capture_failure: capture_failure.into_delta(),
-        ambiguous_delivery: ambiguous_delivery.into_delta(),
+        first_attempt_failure: first_attempt_failure.delta(),
+        fallback_or_retry: fallback_or_retry.delta(),
+        capture_failure: capture_failure.delta(),
+        ambiguous_delivery: ambiguous_delivery.delta(),
     };
     let mut reason_codes = Vec::new();
     let status = if treatment_assignment_count < LIVE_REQUEST_STREAMING_MIN_TREATMENT_ASSIGNMENTS {
@@ -2532,16 +2532,11 @@ fn evaluate_live_request_streaming_rows(
     } else if actual_live_first_rate < LIVE_REQUEST_STREAMING_MIN_ACTUAL_LIVE_RATE {
         reason_codes.push("actual_live_first_rate_below_minimum".to_string());
         "recommend_remove"
-    } else if metrics.first_response.is_none()
-        || metrics.first_token.is_none()
-        || metrics.overlap.is_none()
-    {
-        reason_codes.push("metric_samples_below_minimum".to_string());
-        "insufficient_data"
-    } else {
-        let response = metrics.first_response.as_ref().expect("checked above");
-        let token = metrics.first_token.as_ref().expect("checked above");
-        let overlap = metrics.overlap.as_ref().expect("checked above");
+    } else if let (Some(response), Some(token), Some(overlap)) = (
+        metrics.first_response.as_ref(),
+        metrics.first_token.as_ref(),
+        metrics.overlap.as_ref(),
+    ) {
         let risks = [
             risk.first_attempt_failure.as_ref(),
             risk.fallback_or_retry.as_ref(),
@@ -2568,6 +2563,9 @@ fn evaluate_live_request_streaming_rows(
             }
             "review_required"
         }
+    } else {
+        reason_codes.push("metric_samples_below_minimum".to_string());
+        "insufficient_data"
     };
 
     let mut by_cohort = BTreeMap::<String, LiveRequestStreamingCohortAccumulator>::new();
@@ -4394,10 +4392,10 @@ mod tests {
         risk.observe("unknown", "treatment", false);
         risk.observe("canary", "control", false);
         risk.observe("other", "treatment", true);
-        assert!(risk.into_delta().is_none());
+        assert!(risk.delta().is_none());
 
         risk.observe("canary", "treatment", true);
-        let delta = risk.into_delta().expect("matched account group risk");
+        let delta = risk.delta().expect("matched account group risk");
         assert_eq!(delta.difference, 1.0);
         assert!(delta.upper_bound >= delta.difference);
     }
