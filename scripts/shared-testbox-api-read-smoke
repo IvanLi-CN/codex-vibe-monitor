@@ -132,24 +132,47 @@ mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
 
 cleanup_remote() {
-  set +e
+  local cleanup_status=0
   docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$SMOKE_SCRIPT"
   if [ "$CLEANUP" = "1" ]; then
     if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-      docker run --rm --cap-drop=all \
+      if ! docker run --rm --cap-drop=all --user "$(id -u):$(id -g)" --entrypoint /bin/rm \
         -v "$(dirname "$REMOTE_RUN"):/runs" \
         "$IMAGE_TAG" \
-        rm -rf "/runs/$RUN_ID" >/dev/null 2>&1 || true
+        -rf "/runs/$RUN_ID"; then
+        cleanup_status=1
+      fi
     else
-      rm -rf "$REMOTE_RUN"
+      if ! rm -rf "$REMOTE_RUN"; then
+        cleanup_status=1
+      fi
+    fi
+    if [ -e "$REMOTE_RUN" ]; then
+      echo "cleanup left run directory: $REMOTE_RUN" >&2
+      cleanup_status=1
     fi
     if [ -z "$REUSE_IMAGE_TAG" ]; then
-      docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
+      if ! docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1; then
+        cleanup_status=1
+      fi
     fi
   fi
+  return "$cleanup_status"
 }
-trap cleanup_remote EXIT
+
+finish_remote() {
+  local exit_status=$?
+  trap - EXIT
+  if [ -n "${LOG_PID:-}" ]; then
+    kill "$LOG_PID" >/dev/null 2>&1 || true
+  fi
+  if ! cleanup_remote && [ "$exit_status" -eq 0 ]; then
+    exit_status=1
+  fi
+  exit "$exit_status"
+}
+trap finish_remote EXIT
 
 cat > "$SMOKE_SCRIPT" <<'PY'
 #!/usr/bin/env python3
@@ -306,7 +329,6 @@ docker run -d --name "$APP_CONTAINER" --cap-drop=all \
 
 docker logs -f "$APP_CONTAINER" >"$APP_LOG" 2>&1 &
 LOG_PID=$!
-trap 'kill "$LOG_PID" >/dev/null 2>&1 || true; cleanup_remote' EXIT
 
 printf '== verify api ==\n'
 docker run --rm --cap-drop=all \
@@ -316,5 +338,12 @@ docker run --rm --cap-drop=all \
 
 printf '== app log tail ==\n'
 tail -n 40 "$APP_LOG" || true
+if ! cleanup_remote; then
+  trap - EXIT
+  kill "$LOG_PID" >/dev/null 2>&1 || true
+  exit 1
+fi
+trap - EXIT
+kill "$LOG_PID" >/dev/null 2>&1 || true
 printf '== shared testbox api read smoke ok ==\n'
 REMOTE

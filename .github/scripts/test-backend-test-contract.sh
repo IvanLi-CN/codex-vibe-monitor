@@ -45,6 +45,11 @@ fi
 
 python3 "$repo_root/.github/scripts/test-shared-testbox-api-read-smoke.py"
 
+if ! grep -Fq -- '--user "$(id -u):$(id -g)"' "$repo_root/scripts/shared-testbox-api-read-smoke"; then
+  echo 'shared API smoke cleanup must run as the testbox workspace owner' >&2
+  exit 1
+fi
+
 grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
 
 default_docker_stage="$(awk '/^FROM / { stage = $0 } END { print stage }' "$dockerfile")"
