@@ -7737,6 +7737,7 @@ impl SummaryProjection {
         gap: &DeltaGapProof,
         limit: usize,
         upstream_account_id: Option<i64>,
+        deltas: &[DashboardActivityTerminalDelta],
     ) -> bool {
         if limit == 0 {
             return false;
@@ -7750,7 +7751,7 @@ impl SummaryProjection {
             .map(Vec::as_slice)
             .unwrap_or_default();
         let row_id = gap.row_id.unwrap_or(i64::MAX);
-        let newer_count = indexes
+        let newer_base_count = indexes
             .iter()
             .filter_map(|index| self.current_records.get(*index))
             .filter(|record| {
@@ -7758,6 +7759,26 @@ impl SummaryProjection {
                     || (record.occurred_at == occurred_at && record.row.id > row_id)
             })
             .count();
+        let newer_delta_count = deltas
+            .iter()
+            .filter(|delta| {
+                upstream_account_id
+                    .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
+            })
+            .filter_map(|delta| {
+                parse_to_utc_datetime(&delta.occurred_at).map(|delta_occurred_at| {
+                    (
+                        delta_occurred_at,
+                        delta.persisted_row_id.unwrap_or(i64::MAX),
+                    )
+                })
+            })
+            .filter(|(delta_occurred_at, delta_row_id)| {
+                *delta_occurred_at > occurred_at
+                    || (*delta_occurred_at == occurred_at && *delta_row_id > row_id)
+            })
+            .count();
+        let newer_count = newer_base_count.saturating_add(newer_delta_count);
         // A gap outside the resident prefix cannot alter a smaller current selection. If its
         // rank reaches the requested limit, the response cannot be proved exact in memory.
         limit >= newer_count.saturating_add(1)
@@ -29119,6 +29140,7 @@ pub(crate) async fn load_summary_response_from_query(
 pub(crate) fn summary_delta_gap_affects_selection(
     projection: &SummaryProjection,
     gaps: &[DeltaGapProof],
+    deltas: &[DashboardActivityTerminalDelta],
     window: &SummaryWindow,
     reporting_tz: Tz,
     upstream_account_id: Option<i64>,
@@ -29132,6 +29154,7 @@ pub(crate) fn summary_delta_gap_affects_selection(
                     gap,
                     (*limit).max(0) as usize,
                     upstream_account_id,
+                    deltas,
                 )
         });
     }
@@ -29203,6 +29226,7 @@ pub(crate) async fn fetch_summary(
     if summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
+        &deltas,
         &window,
         reporting_tz,
         account_id,
@@ -32383,11 +32407,24 @@ mod request_compression_query_tests {
             occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
             row_id: Some(i64::MAX),
         };
+        let mut delta_record = dashboard_runtime_topology_live_record(&db_occurred_at_lower_bound(
+            Utc::now() - ChronoDuration::minutes(2),
+        ));
+        delta_record.id = 0;
+        delta_record.invoke_id = "summary-delta-gap-tail".to_string();
+        delta_record.status = Some("success".to_string());
+        delta_record.live_phase = None;
+        delta_record.upstream_account_id = Some(42);
+        let newer_delta = apply_dashboard_activity_terminal_record(state.as_ref(), &delta_record)
+            .await
+            .terminal_delta
+            .expect("materialize committed delta ordering fixture");
 
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 &[gap.clone()],
+                &[newer_delta.clone()],
                 &SummaryWindow::Current(2),
                 Shanghai,
                 None,
@@ -32398,7 +32435,19 @@ mod request_compression_query_tests {
             summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 &[gap.clone()],
+                &[newer_delta.clone()],
                 &SummaryWindow::Current(4),
+                Shanghai,
+                None,
+            ),
+            "the acknowledged delta tail must extend the exact current cutoff"
+        );
+        assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                &[gap.clone()],
+                &[newer_delta.clone()],
+                &SummaryWindow::Current(5),
                 Shanghai,
                 None,
             ),
@@ -32408,6 +32457,7 @@ mod request_compression_query_tests {
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 &[gap],
+                &[newer_delta],
                 &SummaryWindow::Current(50),
                 Shanghai,
                 Some(7),

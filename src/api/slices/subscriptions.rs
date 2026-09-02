@@ -11313,6 +11313,7 @@ impl SubscriptionTopic {
                             && crate::summary_delta_gap_affects_selection(
                                 projection.as_ref(),
                                 &gaps,
+                                &pending_terminal_deltas,
                                 &summary_window,
                                 reporting_tz,
                                 *upstream_account_id,
@@ -13703,6 +13704,47 @@ mod tests {
             "the later conflicting ACK retains its bounded recovery cursor"
         );
         assert_eq!(journal.overflowed_through_sequence, Some(3));
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_rollback_removes_speculative_entry() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 1;
+        record.invoke_id = "summary-delta-rolled-back".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        let mut speculative = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+            .await
+            .terminal_delta
+            .expect("accept speculative terminal delta");
+        speculative.terminal_sequence = 1;
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.register_pending(speculative.clone()));
+        assert!(journal.entries.is_empty());
+        journal.rollback_pending(Some(speculative.terminal_sequence));
+        assert!(journal.pending.is_empty());
+        assert!(journal.entries.is_empty());
+        assert_eq!(journal.cursor, SummaryDeltaCursor(1));
+        assert!(journal.gap_proofs.is_empty());
+
+        let mut committed = speculative;
+        committed.invoke_id = "summary-delta-after-rollback".to_string();
+        committed.terminal_sequence = 2;
+        committed.persisted_row_id = Some(2);
+        assert!(journal.register_pending(committed.clone()));
+        assert!(journal.acknowledge_pending(committed));
+        assert_eq!(journal.entries.len(), 1);
+        assert_eq!(
+            journal.entries.front().map(|entry| entry.cursor),
+            Some(SummaryDeltaCursor(2))
+        );
+        assert!(journal.gap_proofs.is_empty());
     }
 
     #[tokio::test]

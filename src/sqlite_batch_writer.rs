@@ -4849,7 +4849,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn p1_terminal_batch_rolls_back_the_committed_prefix_on_poison_record() {
+    async fn p1_terminal_batch_keeps_summary_journal_unacknowledged_on_poison_record() {
         let pool = test_pool().await;
         sqlx::query(
             r#"
@@ -4892,13 +4892,6 @@ mod tests {
         )
         .await
         .expect_err("poison record aborts the complete P1 transaction");
-        for terminal in batch.terminal_invocations.values() {
-            let delta = crate::persisted_dashboard_activity_terminal_delta(&terminal.record);
-            summary_hub.register_summary_delta_pending(delta).await;
-            summary_hub
-                .rollback_summary_delta_pending(terminal.dashboard_terminal_sequence)
-                .await;
-        }
         assert!(
             error
                 .chain()
@@ -4918,7 +4911,7 @@ mod tests {
                 .summary_terminal_overlay_identities()
                 .await
                 .is_empty(),
-            "rolled-back terminals must not enter the Summary Delta Journal"
+            "a failed transaction must not acknowledge a terminal into the Summary Delta Journal"
         );
     }
 
