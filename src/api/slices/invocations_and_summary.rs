@@ -10546,8 +10546,13 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
         }
         // Do not infer that a direct durable change is represented by an empty or gapped
         // journal. That recovery still needs the existing fail-closed full rolling path.
-        return refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling)
-            .await;
+        return refresh_summary_snapshots_with_deadline(
+            state,
+            SummaryProjectionBuildMode::Rolling,
+            Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+            true,
+        )
+        .await;
     }
     let deadline = match mode {
         SummaryProjectionBuildMode::HistoricalLiveCoverage
@@ -32407,11 +32412,11 @@ mod request_compression_query_tests {
             occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
             row_id: Some(i64::MAX),
         };
-        let mut delta_record = dashboard_runtime_topology_live_record(&db_occurred_at_lower_bound(
-            Utc::now() - ChronoDuration::minutes(2),
-        ));
+        let mut delta_record = summary_projection_test_invocation();
         delta_record.id = 0;
         delta_record.invoke_id = "summary-delta-gap-tail".to_string();
+        delta_record.occurred_at =
+            db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
         delta_record.status = Some("success".to_string());
         delta_record.live_phase = None;
         delta_record.upstream_account_id = Some(42);

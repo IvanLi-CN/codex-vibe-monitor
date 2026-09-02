@@ -4708,7 +4708,7 @@ mod tests {
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
 
-        let mut pending_delta = crate::persisted_dashboard_activity_terminal_delta(
+        let pending_record = crate::proxy::api_invocation_from_runtime_record(
             &batch
                 .terminal_invocations
                 .values()
@@ -4716,6 +4716,7 @@ mod tests {
                 .expect("one queued terminal")
                 .record,
         );
+        let mut pending_delta = crate::persisted_dashboard_activity_terminal_delta(&pending_record);
         pending_delta.terminal_sequence = 1;
         pending_delta.persisted_row_id = None;
         summary_hub
