@@ -208,22 +208,30 @@ def seed_token():
     print(json.dumps({'phase': 'seed', 'status': status}))
 
 
-def wait_summary():
+def wait_summary(*, monotonic=time.monotonic, sleep=time.sleep):
     last_error = None
-    for _ in range(30):
+    deadline = monotonic() + 30
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
         status, payload = request_json(
             'GET',
             '/api/stats/summary?window=current&limit=50&timeZone=Asia%2FShanghai',
-            timeout=5,
+            timeout=min(5, remaining),
         )
         if status == 200:
-            assert_shape('summary', payload)
-            print(json.dumps({'phase': 'summary', 'status': status, 'keys': sorted(payload.keys())}))
-            return
+            if monotonic() <= deadline:
+                assert_shape('summary', payload)
+                print(json.dumps({'phase': 'summary', 'status': status, 'keys': sorted(payload.keys())}))
+                return
+            break
         if status != 503:
             raise SystemExit(f'summary failed: status={status} payload={payload}')
         last_error = payload
-        time.sleep(1)
+        remaining = deadline - monotonic()
+        if remaining > 0:
+            sleep(min(1, remaining))
     raise SystemExit(f'summary did not become ready within 30s: {last_error}')
 
 

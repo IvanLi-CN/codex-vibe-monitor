@@ -43,6 +43,8 @@ if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{
   exit 1
 fi
 
+python3 "$repo_root/.github/scripts/test-shared-testbox-api-read-smoke.py"
+
 grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
 
 default_docker_stage="$(awk '/^FROM / { stage = $0 } END { print stage }' "$dockerfile")"
