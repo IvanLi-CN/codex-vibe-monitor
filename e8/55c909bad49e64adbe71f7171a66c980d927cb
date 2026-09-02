@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.11",
+  "base_stable_version": "2.69.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-02T09:56:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.11",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "99402e0d6e903f9a6b5fcc838887f6038d13a2b1",
+  "pr_number": 895,
+  "pr_title": "feat(stats): make live request streaming evaluation auditable",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.11",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.11",
+  "target_sha": "e855c909bad49e64adbe71f7171a66c980d927cb",
+  "type_label": "type:patch"
+}
