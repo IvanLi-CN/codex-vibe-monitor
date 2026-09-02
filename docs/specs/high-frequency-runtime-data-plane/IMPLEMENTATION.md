@@ -83,6 +83,8 @@ Runtime projection maintains independent current/phase, network/rate and termina
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
 
+The `/v1/responses` live request-body performance surface now keeps assignment, eligibility, actual transport, route outcome and fallback reason as separate persisted-summary dimensions. `/api/stats/perf` exposes exact `(variant, transport)` cohorts and route diagnostics, while the fixed seven-day evaluation endpoint applies the server-owned sample, bootstrap and risk thresholds without inheriting diagnostic filters. The Stats panel renders buffered control, actual live-first treatment and buffered treatment fallback independently, and shows a non-comparable state when no live-first sample exists.
+
 Runtime pressure diagnostics are implemented for issues #738 and #768:
 
 - `GET /api/system/status` exposes additive `runtimePressureHealth` assembled from existing in-memory projection, request-pipeline, process-memory and writer-accounting counters without adding status-page SQL.
