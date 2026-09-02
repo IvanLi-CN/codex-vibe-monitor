@@ -52,10 +52,10 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## `/v1/responses` Live Request Body
 
-- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and v2 treatment cohorts without an account-group filter; v1 data is excluded from the v2 comparison.
+- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and v2 treatment assignments without an account-group filter; v1 data is excluded from the v2 comparison. Assignment and actual request-body transport are persisted independently, so a treatment assignment that remains buffered is a visible fallback rather than a live-first sample.
 - The request pipeline reuses the raw replay snapshot for retries, validates the complete root JSON object before publishing the final route, then applies JSON/compression transforms. No upstream body exists while a route can still change; bounded parsing, cold cache and EOF finalization preserve the buffered contract.
 - The runtime snapshot carries the live setting, account rows, candidates, rules, capability state, bindings, sticky routes, route penalties and model health needed for selection. Prompt-cache/encrypted-owner and sticky-route lookups use independent 16,384-entry negative LRUs with single-flight cold reads and write-through invalidation. Failures and recoveries publish a refreshed routing snapshot; healthy success acknowledgements do not trigger a reload. The performance response reports route-finalization byte positions, ratios, factors and cache outcomes separately from successful response-benefit samples.
-- Invocation persistence and hourly statistics retain exact request/response overlap timestamps so the performance surface compares direct first-response and first-token measurements instead of additive stage estimates.
+- Invocation persistence and hourly statistics retain exact request/response overlap timestamps so the performance surface compares direct first-response and first-token measurements instead of additive stage estimates. The comparison uses only buffered control against actual live-first treatment; fallback-only treatment traffic reports no benefit. Route-finalization statistics expose exact outcome counts alongside EOF-finalization and conservative-buffered rates so operators can distinguish the absence of a streaming opportunity from a low sample count.
 
 ## Verification State
 

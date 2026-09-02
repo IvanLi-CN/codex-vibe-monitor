@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { expect, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
-import type { LiveRequestStreamingPerf } from "../../lib/api";
+import type { LiveRequestStreamingEvaluation, LiveRequestStreamingPerf } from "../../lib/api";
 import { LiveRequestStreamingPerfPanel } from "./LiveRequestStreamingPerfPanel";
 
 const measured: LiveRequestStreamingPerf = {
@@ -49,6 +49,7 @@ const measured: LiveRequestStreamingPerf = {
     finalizationMs: { p50Ms: 8, p90Ms: 22, p99Ms: 57 },
     eofFinalizedRate: 1,
     conservativeBufferedRate: 0.08,
+    outcomeCounts: { live_first_model_ready: 250 },
     dependencyFactorCounts: {
       model: 250,
       sticky: 97,
@@ -61,6 +62,60 @@ const measured: LiveRequestStreamingPerf = {
   },
 };
 const measuredRouteFinalization = measured.routeFinalization!;
+const evaluationKeep: LiveRequestStreamingEvaluation = {
+  revision: "live-request-body-v2",
+  endpoint: "/v1/responses",
+  rangeStart: "2026-03-12T00:00:00Z",
+  rangeEnd: "2026-03-19T00:00:00Z",
+  treatmentAssignmentCount: 4200,
+  treatmentEligibleCount: 4120,
+  actualLiveFirstCount: 3980,
+  treatmentBufferedFallbackCount: 220,
+  actualLiveFirstRate: 3980 / 4200,
+  cohorts: measured.cohorts,
+  routeFinalization: measuredRouteFinalization,
+  metrics: {
+    firstResponse: { p50DifferenceMs: 220, lowerMs: 180, upperMs: 260 },
+    firstToken: { p50DifferenceMs: 280, lowerMs: 230, upperMs: 330 },
+    overlap: { p50DifferenceMs: 168, lowerMs: 120, upperMs: 220 },
+  },
+  risk: {
+    firstAttemptFailure: { difference: 0.001, upperBound: 0.003 },
+    fallbackOrRetry: { difference: 0.002, upperBound: 0.004 },
+    captureFailure: { difference: 0, upperBound: 0.001 },
+    ambiguousDelivery: { difference: 0, upperBound: 0.001 },
+  },
+  decision: {
+    status: "recommend_keep",
+    reasonCodes: ["latency_and_risk_thresholds_met"],
+    minTreatmentAssignments: 1000,
+    minActualLiveFirstRate: 0.05,
+    minMetricSamples: 200,
+    minLatencyBenefitMs: 100,
+    maxRiskIncrease: 0.005,
+    bootstrapResamples: 2000,
+  },
+};
+const fallbackOnly: LiveRequestStreamingPerf = {
+  ...measured,
+  cohorts: measured.cohorts.map((cohort) =>
+    cohort.cohort === "treatment"
+      ? {
+          ...cohort,
+          transportMode: "buffered",
+          sufficientSamples: false,
+          requestUpstreamOverlapSampleCount: 0,
+          requestUpstreamOverlapMs: null,
+        }
+      : cohort,
+  ),
+  routeFinalization: {
+    ...measuredRouteFinalization,
+    eofFinalizedRate: 0,
+    conservativeBufferedRate: 1,
+    outcomeCounts: { buffered_no_model: 252 },
+  },
+};
 
 function ThemeRoot({ children }: { children: ReactNode }) {
   useEffect(() => {
@@ -90,8 +145,11 @@ const meta = {
     (Story) => (
       <ThemeRoot>
         <I18nProvider>
-          <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-            <div className="mx-auto w-full max-w-5xl border border-base-content/40 bg-base-100 p-3">
+          <div
+            data-visual-evidence-surface
+            className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+          >
+            <div data-visual-evidence-target className="mx-auto w-full max-w-5xl">
               <Story />
             </div>
           </div>
@@ -106,13 +164,36 @@ type Story = StoryObj<typeof meta>;
 
 export const Measured: Story = {
   tags: ["test"],
-  args: { data: measured },
+  args: { data: measured, evaluation: evaluationKeep },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByTestId("live-request-streaming-perf-panel")).toBeVisible();
     await expect(canvas.getByText("缓冲对照组")).toBeVisible();
-    await expect(canvas.getByText("实时首发实验组")).toBeVisible();
+    await expect(canvas.getByText("实际实时首发实验组")).toBeVisible();
     await expect(canvas.getByText("+220 ms (+22.4%)")).toBeVisible();
+    await expect(canvas.getByText("+168 ms")).toBeVisible();
+    await expect(canvas.getByText("固定 7 天窗口结论")).toBeVisible();
+    await expect(canvas.getByText("建议保留")).toBeVisible();
+  },
+};
+
+export const DecisionReview: Story = {
+  tags: ["test"],
+  args: {
+    data: measured,
+    evaluation: {
+      ...evaluationKeep,
+      decision: {
+        ...evaluationKeep.decision,
+        status: "review_required",
+        reasonCodes: ["latency_or_risk_evidence_inconclusive", "risk_increase_above_threshold"],
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("需要人工审查")).toBeVisible();
+    await expect(canvas.getByText(/risk_increase_above_threshold/)).toBeVisible();
   },
 };
 
@@ -135,7 +216,21 @@ export const InsufficientSamples: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getAllByText("样本不足：17 / 200")).toHaveLength(3);
+    await expect(canvas.getAllByText("最低指标样本：17 / 200")).toHaveLength(2);
+    await expect(canvas.getByText("样本不足：17 / 200")).toBeVisible();
+    await expect(canvas.queryByText("+220 ms (+22.4%)")).not.toBeInTheDocument();
+  },
+};
+
+export const FallbackOnly: Story = {
+  tags: ["test"],
+  args: { data: fallbackOnly },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText("尚无实际实时首发样本。252 个实验组请求已回退为缓冲转发，收益不可比较。"),
+    ).toBeVisible();
+    await expect(canvas.getByText("实验组回退：缓冲转发")).toBeVisible();
     await expect(canvas.queryByText("+220 ms (+22.4%)")).not.toBeInTheDocument();
   },
 };

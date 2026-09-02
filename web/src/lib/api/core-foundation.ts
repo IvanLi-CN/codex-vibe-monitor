@@ -1326,6 +1326,7 @@ export interface LiveRequestStreamingRouteFinalizationStats {
   finalizationMs?: LiveRequestStreamingPercentiles | null;
   eofFinalizedRate: number;
   conservativeBufferedRate: number;
+  outcomeCounts?: Record<string, number>;
   dependencyFactorCounts: Record<string, number>;
   hotCacheHitRate: number;
   coldLoadRate: number;
@@ -1343,6 +1344,7 @@ export interface LiveRequestStreamingCohortStats {
   firstResponseByteTotalMs?: LiveRequestStreamingPercentiles | null;
   firstTokenMs?: LiveRequestStreamingPercentiles | null;
   requestUpstreamOverlapMs?: LiveRequestStreamingPercentiles | null;
+  fallbackReasonCounts?: Record<string, number>;
   firstAttemptFailureRate: number;
   fallbackOrRetryRate: number;
   captureFailureRate: number;
@@ -1355,6 +1357,58 @@ export interface LiveRequestStreamingPerf {
   responseInvocationCount: number;
   cohorts: LiveRequestStreamingCohortStats[];
   routeFinalization?: LiveRequestStreamingRouteFinalizationStats;
+}
+
+export type LiveRequestStreamingEvaluationStatus =
+  | "insufficient_data"
+  | "recommend_keep"
+  | "recommend_remove"
+  | "review_required";
+
+export interface LiveRequestStreamingConfidenceInterval {
+  p50DifferenceMs: number;
+  lowerMs: number;
+  upperMs: number;
+}
+
+export interface LiveRequestStreamingRiskDelta {
+  difference: number;
+  upperBound: number;
+}
+
+export interface LiveRequestStreamingEvaluation {
+  revision: string;
+  endpoint: string;
+  rangeStart: string;
+  rangeEnd: string;
+  treatmentAssignmentCount: number;
+  treatmentEligibleCount: number;
+  actualLiveFirstCount: number;
+  treatmentBufferedFallbackCount: number;
+  actualLiveFirstRate: number;
+  cohorts: LiveRequestStreamingCohortStats[];
+  routeFinalization: LiveRequestStreamingRouteFinalizationStats;
+  metrics: {
+    firstResponse?: LiveRequestStreamingConfidenceInterval | null;
+    firstToken?: LiveRequestStreamingConfidenceInterval | null;
+    overlap?: LiveRequestStreamingConfidenceInterval | null;
+  };
+  risk: {
+    firstAttemptFailure?: LiveRequestStreamingRiskDelta | null;
+    fallbackOrRetry?: LiveRequestStreamingRiskDelta | null;
+    captureFailure?: LiveRequestStreamingRiskDelta | null;
+    ambiguousDelivery?: LiveRequestStreamingRiskDelta | null;
+  };
+  decision: {
+    status: LiveRequestStreamingEvaluationStatus;
+    reasonCodes: string[];
+    minTreatmentAssignments: number;
+    minActualLiveFirstRate: number;
+    minMetricSamples: number;
+    minLatencyBenefitMs: number;
+    maxRiskIncrease: number;
+    bootstrapResamples: number;
+  };
 }
 
 export interface PerfStatsQuery {
@@ -5333,6 +5387,12 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
 
   const query = search.toString();
   return fetchJson<PerfStatsResponse>(query ? `/api/stats/perf?${query}` : "/api/stats/perf");
+}
+
+export async function fetchLiveRequestStreamingEvaluation() {
+  return fetchJson<LiveRequestStreamingEvaluation>(
+    "/api/stats/perf/live-request-streaming-evaluation",
+  );
 }
 
 export async function fetchQuotaSnapshot() {
