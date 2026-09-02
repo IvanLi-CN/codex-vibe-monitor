@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from html.parser import HTMLParser
 import json
 import math
 import re
@@ -18,7 +19,6 @@ PUBLIC_DIR = WEB_DIR / "public"
 DIST_DIR = WEB_DIR / "dist"
 BACKGROUND = (0xFB, 0xFD, 0xFF)
 INSTALL_ICON_SPECS = {
-    "apple_touch": ("apple-touch-icon", ".png"),
     "favicon": ("favicon", ".svg"),
     "icon_192": ("icon-192", ".png"),
     "icon_512": ("icon-512", ".png"),
@@ -26,13 +26,37 @@ INSTALL_ICON_SPECS = {
     "maskable_512": ("maskable-512", ".png"),
 }
 LEGACY_INSTALL_ICON_NAMES = {
-    "apple-touch-icon.png",
     "favicon.svg",
     "icon-192.png",
     "icon-512.png",
     "maskable-192.png",
     "maskable-512.png",
 }
+
+
+class LinkTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "link":
+            self.links.append({key: value or "" for key, value in attrs})
+
+
+def parse_link_tags(html: str) -> list[dict[str, str]]:
+    parser = LinkTagParser()
+    parser.feed(html)
+    parser.close()
+    return parser.links
+
+
+def link_has_rel(link: dict[str, str], rel: str) -> bool:
+    return rel in link.get("rel", "").lower().split()
+
+
+def href_filename(link: dict[str, str]) -> str:
+    return link.get("href", "").split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
 
 
 def read_png(path: Path) -> tuple[int, int, list[tuple[int, int, int, int]]]:
@@ -164,7 +188,7 @@ def assert_build_contract(assets: dict[str, Path]) -> None:
     assert manifest["id"] == "./", "built manifest identity changed"
     assert manifest["scope"] == "./", "built manifest scope changed"
     assert manifest["start_url"] == "./#/dashboard", "built manifest start_url changed"
-    expected_icons = {path.name for key, path in assets.items() if key != "apple_touch"}
+    expected_icons = {path.name for path in assets.values()}
     actual_icons = {icon["src"] for icon in manifest["icons"]}
     assert actual_icons == expected_icons, "built manifest icon URLs do not match the generated assets"
     expected_purposes = {
@@ -185,12 +209,18 @@ def assert_build_contract(assets: dict[str, Path]) -> None:
     }, "built shortcut icon URL is not content-hashed"
 
     built_html = (DIST_DIR / "index.html").read_text()
-    assert assets["favicon"].name in built_html, "built favicon URL is stale"
-    assert assets["apple_touch"].name in built_html, "built Apple touch URL is stale"
-    assert 'rel="manifest"' in built_html and "site.webmanifest" in built_html, (
-        "built HTML does not expose the generated manifest"
+    links = parse_link_tags(built_html)
+    manifest_links = [link for link in links if link_has_rel(link, "manifest")]
+    assert len(manifest_links) == 1, "built HTML must expose exactly one manifest link"
+    assert href_filename(manifest_links[0]) == "site.webmanifest", (
+        "built HTML manifest link does not point to site.webmanifest"
     )
-    assert "apple-touch-icon.png" not in built_html, "built HTML retains the legacy stable Apple touch URL"
+    favicon_links = [link for link in links if link_has_rel(link, "icon")]
+    assert len(favicon_links) == 1, "built HTML must expose exactly one favicon link"
+    assert href_filename(favicon_links[0]) == assets["favicon"].name, "built favicon URL is stale"
+    assert not any(link_has_rel(link, "apple-touch-icon") for link in links), (
+        "built HTML retains the Apple touch icon link"
+    )
     worker = (DIST_DIR / "sw.js").read_text()
     assert not re.search(r'"url":"[^"]*site\.webmanifest', worker), (
         "service worker precaches the manifest"
@@ -199,7 +229,8 @@ def assert_build_contract(assets: dict[str, Path]) -> None:
         "service worker precaches version metadata"
     )
     for path in assets.values():
-        assert path.name in worker, f"Workbox precache omits {path.name}"
+        assert path.name not in worker, f"service worker precaches install icon {path.name}"
+    assert "CacheFirst" not in worker, "service worker cache-first routes can pin install metadata"
 
 
 def main() -> None:
@@ -210,20 +241,26 @@ def main() -> None:
     assert_regular(assets["icon_512"], 512)
     assert_maskable(assets["maskable_192"], 192)
     assert_maskable(assets["maskable_512"], 512)
-    assert_maskable(assets["apple_touch"], 180)
-
     regular_hash = hashlib.sha256(assets["icon_512"].read_bytes()).digest()
     maskable_hash = hashlib.sha256(assets["maskable_512"].read_bytes()).digest()
     assert regular_hash != maskable_hash, "regular and maskable icons share bytes"
 
     regular_svg = (WEB_DIR.parent / "docs" / "readme-assets" / "brand" / "codex-vibe-monitor-app-icon.svg").read_text()
+    assert assets["favicon"].read_text() == regular_svg, (
+        "favicon artwork no longer matches the approved regular icon source"
+    )
     assert "feDropShadow" not in regular_svg and "rx=" not in regular_svg, "regular source contains platform chrome"
 
     config = (WEB_DIR / "vite.config.ts").read_text()
     assert 'purpose: "any"' in config and 'purpose: "maskable"' in config, "manifest purposes are incomplete"
-    assert "findInstallIconAsset" in config and "installIconFiles" in config, (
-        "Vite does not resolve content-hashed install assets"
-    )
+    assert (
+        "findInstallIconAsset" in config
+        and "isPwaInstallIconEntry" in config
+        and "installIconFiles" not in config
+        and "apple-touch-icon" not in config
+        and "includeManifestIcons: false" in config
+        and "globIgnores" in config
+    ), "Vite does not resolve only the content-hashed install assets"
     assert 'id: "./"' in config and 'scope: "./"' in config and 'start_url: "./#/dashboard"' in config, (
         "manifest identity contract is incomplete"
     )
@@ -232,11 +269,10 @@ def main() -> None:
     assert "site.webmanifest" in service_worker and "NetworkOnly" in service_worker, (
         "service worker does not revalidate the manifest"
     )
+    assert "isInstallIconPath" in service_worker, "service worker does not classify install icons"
     assert "ignoreURLParametersMatching" not in service_worker, "service worker still matches query-versioned icons"
     index = (WEB_DIR / "index.html").read_text()
-    assert "%INSTALL_FAVICON%" in index and "%INSTALL_APPLE_TOUCH_ICON%" in index, (
-        "HTML install links are not content-hashed"
-    )
+    assert "%INSTALL_FAVICON%" in index, "HTML favicon link is not content-hashed"
     assert_build_contract(assets)
 
 

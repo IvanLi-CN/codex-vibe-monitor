@@ -140,7 +140,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
   - 新前端版本部署后，页面只在用户确认时切换到 waiting service worker，不会在排障中的会话里自动刷新
   - manifest 的 `id`、`scope`、`start_url` 保持稳定；安装图标使用内容哈希 URL，manifest / `sw.js` / `version.json` 可重新校验，哈希图标使用 immutable 缓存
   - Android Chrome/WebAPK 与支持 manifest 图标更新的 Chromium Desktop 会沿用原安装身份收敛到新图标，更新可能受浏览器检查周期或 Android 设备调度影响
-  - 已存在的 iOS/iPadOS Web Clip 及不支持 manifest 元数据更新的浏览器不能被网站强制替换已保存图标；Apple touch 仅作为再次添加时的兼容 fallback，不把重装作为常规更新方案
+  - 已存在的 iOS/iPadOS Web Clip 及不支持 manifest 元数据更新的浏览器不能被网站强制替换已保存图标；产品 App 不提供 Apple touch fallback，也不把重装作为常规更新方案
 
 ## 页面地图
 

@@ -3722,7 +3722,6 @@ pub(crate) fn static_cache_control(path: &str) -> Option<&'static str> {
     }
 
     let icon_specs = [
-        ("apple-touch-icon-", "png"),
         ("favicon-", "svg"),
         ("icon-192-", "png"),
         ("icon-512-", "png"),
@@ -3926,7 +3925,6 @@ mod social_preview_tests {
     fn static_cache_control_immutably_caches_content_hashed_install_icons() {
         for path in [
             "/favicon-0123456789ab.svg",
-            "/apple-touch-icon-0123456789ab.png",
             "/icon-192-0123456789ab.png",
             "/icon-512-0123456789ab.png",
             "/maskable-192-0123456789ab.png",
