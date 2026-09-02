@@ -3775,6 +3775,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS summary_source_change_cursor (
+            scope TEXT PRIMARY KEY,
+            cursor INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_source_change_cursor table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_archive_snapshot (
             archive_batch_id INTEGER NOT NULL,
             manifest_sha256 TEXT NOT NULL,

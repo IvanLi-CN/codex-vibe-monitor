@@ -10552,19 +10552,32 @@ async fn renew_summary_projection_freshness_if_generation_matches(
 /// source row is hydrated in 400-id chunks and exposed through the existing in-memory replay
 /// overlay.  This function deliberately never invokes the full live admission builder.
 async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
-    let after_cursor = state.subscription_hub.summary_source_change_cursor().await;
+    let mut after_cursor = state.subscription_hub.summary_source_change_cursor().await;
+    if after_cursor == 0 {
+        after_cursor = load_summary_source_change_checkpoint(
+            &state.pool,
+            SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
+        )
+        .await?;
+        if after_cursor > 0 {
+            state
+                .subscription_hub
+                .advance_summary_source_change_cursor(after_cursor)
+                .await;
+        }
+    }
     let tail = load_summary_source_change_tail(
         &state.pool,
         after_cursor,
         SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES,
     )
     .await?;
-    let Some(last) = tail.last() else {
+    let Some(last_cursor) = tail.last().map(|record| record.cursor) else {
         return Ok(false);
     };
     state
         .subscription_hub
-        .advance_summary_source_change_cursor(last.cursor)
+        .advance_summary_source_change_cursor(last_cursor)
         .await;
 
     let ids = tail
@@ -10596,9 +10609,20 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
     }
 
     let mut restored = false;
+    let mut complete = true;
     for record in tail {
+        if record.descriptor.source_kind != "terminal_batch" {
+            // Archive and rollup descriptors are durable fence evidence for the independent
+            // historical reconciler. They must not be interpreted as live invocation rows.
+            state
+                .subscription_hub
+                .mark_summary_projection_historical_recovery_required()
+                .await;
+            continue;
+        }
         for entry in record.descriptor.entries {
             let Some(row) = rows_by_id.get(&entry.row_id) else {
+                complete = false;
                 state
                     .subscription_hub
                     .record_summary_source_change_gap(record.cursor)
@@ -10613,6 +10637,14 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
                 .await;
             restored = true;
         }
+    }
+    if complete {
+        store_summary_source_change_checkpoint(
+            &state.pool,
+            SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
+            last_cursor,
+        )
+        .await?;
     }
     Ok(restored)
 }

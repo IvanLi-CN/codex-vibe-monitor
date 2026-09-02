@@ -874,6 +874,47 @@ fn invocation_archive_candidate_to_hourly_source_record(
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SummaryArchiveSnapshotRecord {
+    row_id: i64,
+    occurred_at: String,
+    source: String,
+    status: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+    first_token_ms: Option<f64>,
+}
+
+fn encode_summary_archive_snapshot_payload(
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<Vec<u8>> {
+    let records = rows
+        .iter()
+        .map(|row| SummaryArchiveSnapshotRecord {
+            row_id: row.id,
+            occurred_at: row.occurred_at.clone(),
+            source: row.source.clone(),
+            status: row.status.clone(),
+            input_tokens: row.input_tokens,
+            output_tokens: row.output_tokens,
+            cache_input_tokens: row.cache_input_tokens,
+            reasoning_tokens: row.reasoning_tokens,
+            total_tokens: row.total_tokens,
+            cost: row.cost,
+            first_token_ms: row.first_token_ms,
+        })
+        .collect::<Vec<_>>();
+    let normalized =
+        serde_json::to_vec(&records).context("encode normalized Summary Archive Snapshot page")?;
+    zstd::stream::encode_all(normalized.as_slice(), 1)
+        .context("compress normalized Summary Archive Snapshot page")
+}
+
 #[cfg(test)]
 mod ttft_retention_tests {
     use super::*;
@@ -3241,6 +3282,32 @@ pub(crate) async fn archive_old_invocations(
                 &archive_outcome.file_path,
             )
             .await?;
+            // Keep a normalized, raw-free Summary source page in the same transaction as the
+            // authoritative archive publication. Cleanup can therefore retire the file only
+            // after this exact page and its manifest identity are durable.
+            let snapshot_archive_batch_id = load_archive_batch_id_for_file_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.month_key,
+                &archive_outcome.file_path,
+            )
+            .await?;
+            let snapshot_payload = encode_summary_archive_snapshot_payload(&materialized_rows)?;
+            let snapshot_page = SummaryArchiveSnapshotPage {
+                archive_batch_id: snapshot_archive_batch_id,
+                manifest_sha256: archive_outcome.sha256.clone(),
+                page_index: 0,
+                coverage_start: archive_outcome.coverage_start_at.clone().ok_or_else(|| {
+                    anyhow!("authoritative archive is missing Snapshot start coverage")
+                })?,
+                coverage_end: archive_outcome.coverage_end_at.clone().ok_or_else(|| {
+                    anyhow!("authoritative archive is missing Snapshot end coverage")
+                })?,
+                row_count: u32::try_from(materialized_rows.len())
+                    .context("Summary Archive Snapshot row count overflow")?,
+                payload: snapshot_payload,
+            };
+            store_summary_archive_snapshot_page_tx(tx.as_mut(), &snapshot_page).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),

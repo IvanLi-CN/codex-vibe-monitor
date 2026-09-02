@@ -1051,6 +1051,21 @@ async fn upsert_archive_batch_manifest_with_status(
             &deduped_upstream_last_activity,
         )
         .await?;
+        let descriptor = SummarySourceChangeDescriptor::source_change(
+            "archive_manifest",
+            u64::try_from(archive_batch_id).context("archive batch source revision overflow")?,
+            vec![SummarySourceChangeEntry {
+                row_id: archive_batch_id,
+                invoke_id: format!("archive:{}", batch.sha256),
+                occurred_at: batch
+                    .coverage_start_at
+                    .clone()
+                    .unwrap_or_else(|| batch.month_key.clone()),
+                upstream_account_id: None,
+                current_rank: None,
+            }],
+        )?;
+        append_summary_source_change_descriptor_tx(tx, &descriptor).await?;
     }
     if batch.dataset == "codex_invocations" && !deduped_upstream_last_activity.is_empty() {
         upsert_archived_upstream_last_activity(tx, &deduped_upstream_last_activity).await?;

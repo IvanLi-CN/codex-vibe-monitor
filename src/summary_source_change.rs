@@ -14,6 +14,7 @@ use sqlx::{Pool, Row, Sqlite, SqliteConnection};
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES: usize = 10_000;
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION: i64 = 1;
+pub(crate) const SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE: &str = "summary-global";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +40,8 @@ pub(crate) struct SummarySourceChangeDescriptor {
 }
 
 impl SummarySourceChangeDescriptor {
-    pub(crate) fn terminal_batch(
+    pub(crate) fn source_change(
+        source_kind: impl Into<String>,
         source_revision: u64,
         entries: Vec<SummarySourceChangeEntry>,
     ) -> Result<Self> {
@@ -61,7 +63,7 @@ impl SummarySourceChangeDescriptor {
             .to_string();
         Ok(Self {
             version: SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION,
-            source_kind: "terminal_batch".to_string(),
+            source_kind: source_kind.into(),
             source_revision,
             first_row_id: first.row_id,
             last_row_id: last.row_id,
@@ -69,6 +71,13 @@ impl SummarySourceChangeDescriptor {
             occurred_end,
             entries,
         })
+    }
+
+    pub(crate) fn terminal_batch(
+        source_revision: u64,
+        entries: Vec<SummarySourceChangeEntry>,
+    ) -> Result<Self> {
+        Self::source_change("terminal_batch", source_revision, entries)
     }
 
     pub(crate) fn encoded_len(&self) -> Result<usize> {
@@ -136,6 +145,13 @@ pub(crate) async fn store_summary_archive_snapshot_page_tx(
     .execute(&mut *connection)
     .await
     .context("store summary archive snapshot page")?;
+    tracing::debug!(
+        stage = "summary_archive_snapshot_page",
+        page_index = page.page_index,
+        row_count = page.row_count,
+        payload_bytes = page.payload.len(),
+        "stored normalized Summary Archive Snapshot page"
+    );
     Ok(())
 }
 
@@ -145,26 +161,35 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     manifest_sha256: &str,
 ) -> Result<bool> {
     let row = sqlx::query(
-        "SELECT snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes \
+        "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes \
          FROM summary_archive_snapshot \
-         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND page_index = 0",
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
     )
     .bind(archive_batch_id)
     .bind(manifest_sha256)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
     .context("check summary archive snapshot proof")?;
-    let Some(row) = row else {
+    if row.is_empty() {
         return Ok(false);
-    };
-    let payload = row.get::<Vec<u8>, _>("payload");
-    let mut hasher = Sha256::new();
-    hasher.update(&payload);
-    let computed = format!("{:x}", hasher.finalize());
-    Ok(row.get::<String, _>("snapshot_sha256") == computed
-        && row.get::<i64, _>("payload_bytes") == i64::try_from(payload.len()).unwrap_or(-1)
-        && !row.get::<String, _>("coverage_start").trim().is_empty()
-        && !row.get::<String, _>("coverage_end").trim().is_empty())
+    }
+    for (expected_page, row) in row.into_iter().enumerate() {
+        if row.get::<i64, _>("page_index") != i64::try_from(expected_page).unwrap_or(-1) {
+            return Ok(false);
+        }
+        let payload = row.get::<Vec<u8>, _>("payload");
+        let mut hasher = Sha256::new();
+        hasher.update(&payload);
+        let computed = format!("{:x}", hasher.finalize());
+        if row.get::<String, _>("snapshot_sha256") != computed
+            || row.get::<i64, _>("payload_bytes") != i64::try_from(payload.len()).unwrap_or(-1)
+            || row.get::<String, _>("coverage_start").trim().is_empty()
+            || row.get::<String, _>("coverage_end").trim().is_empty()
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,6 +246,7 @@ pub(crate) async fn compact_summary_source_change_journal(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -243,6 +269,12 @@ mod tests {
         .execute(&pool)
         .await
         .expect("proof table");
+        sqlx::query(
+            "CREATE TABLE summary_source_change_cursor (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+        )
+        .execute(&pool)
+        .await
+        .expect("cursor table");
         sqlx::query(
             "CREATE TABLE summary_archive_snapshot (archive_batch_id INTEGER NOT NULL, manifest_sha256 TEXT NOT NULL, page_index INTEGER NOT NULL, coverage_start TEXT NOT NULL, coverage_end TEXT NOT NULL, row_count INTEGER NOT NULL, payload BLOB NOT NULL, payload_bytes INTEGER NOT NULL, snapshot_sha256 TEXT NOT NULL, PRIMARY KEY (archive_batch_id, manifest_sha256, page_index))",
         )
@@ -321,6 +353,23 @@ mod tests {
                 .expect("mismatched proof")
         );
     }
+
+    #[tokio::test]
+    async fn durable_source_change_checkpoint_is_monotonic() {
+        let pool = pool().await;
+        store_summary_source_change_checkpoint(&pool, "summary-global", 12)
+            .await
+            .expect("store first checkpoint");
+        store_summary_source_change_checkpoint(&pool, "summary-global", 7)
+            .await
+            .expect("store stale checkpoint");
+        assert_eq!(
+            load_summary_source_change_checkpoint(&pool, "summary-global")
+                .await
+                .expect("load checkpoint"),
+            12
+        );
+    }
 }
 
 pub(crate) async fn append_summary_source_change_descriptor_tx(
@@ -360,6 +409,13 @@ pub(crate) async fn append_summary_source_change_descriptor_tx(
     .execute(&mut *connection)
     .await
     .context("append summary source change descriptor")?;
+    tracing::debug!(
+        stage = "summary_source_change_descriptor",
+        source_kind = %descriptor.source_kind,
+        entry_count = descriptor.entries.len(),
+        descriptor_bytes,
+        "stored durable Summary Source Change descriptor"
+    );
     u64::try_from(result.last_insert_rowid()).context("summary source cursor overflow")
 }
 
@@ -460,6 +516,59 @@ pub(crate) async fn summary_source_change_cursor(pool: &Pool<Sqlite>) -> Result<
     .context("load summary source change cursor")?
     .unwrap_or_default();
     u64::try_from(cursor).context("summary source cursor is negative")
+}
+
+/// Return the last source-journal cursor that a process durably acknowledged after publishing
+/// its reconstructed projection.  The checkpoint is deliberately allowed to lag the journal:
+/// replaying an already-consumed descriptor is harmless because projection identity suppresses
+/// duplicates, while advancing it before publication could lose a tail after a crash.
+pub(crate) async fn load_summary_source_change_checkpoint(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+) -> Result<u64> {
+    let cursor = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT cursor FROM summary_source_change_cursor WHERE scope = ?1",
+    )
+    .bind(scope)
+    .fetch_optional(pool)
+    .await
+    .context("load summary source change checkpoint")?
+    .flatten()
+    .unwrap_or_default();
+    u64::try_from(cursor).context("summary source checkpoint cursor is negative")
+}
+
+pub(crate) async fn store_summary_source_change_checkpoint(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+    cursor: u64,
+) -> Result<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .context("begin summary source checkpoint")?;
+    store_summary_source_change_checkpoint_tx(tx.as_mut(), scope, cursor).await?;
+    tx.commit()
+        .await
+        .context("commit summary source checkpoint")?;
+    Ok(())
+}
+
+pub(crate) async fn store_summary_source_change_checkpoint_tx(
+    connection: &mut SqliteConnection,
+    scope: &str,
+    cursor: u64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO summary_source_change_cursor (scope, cursor, updated_at) VALUES (?1, ?2, datetime('now')) \
+         ON CONFLICT(scope) DO UPDATE SET cursor = MAX(summary_source_change_cursor.cursor, excluded.cursor), updated_at = datetime('now')",
+    )
+    .bind(scope)
+    .bind(i64::try_from(cursor).context("summary source checkpoint cursor overflow")?)
+    .execute(&mut *connection)
+    .await
+    .context("store summary source change checkpoint")?;
+    Ok(())
 }
 
 pub(crate) fn descriptor_occurred_at(entry: &SummarySourceChangeEntry) -> Option<DateTime<Utc>> {

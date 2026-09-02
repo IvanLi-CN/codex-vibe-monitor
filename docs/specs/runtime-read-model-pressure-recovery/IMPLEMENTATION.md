@@ -52,22 +52,21 @@
 
 ## Approved Recovery Boundary
 
-- A Summary-affecting source transaction will append one compact descriptor or
-  compaction proof in its existing transaction. Normal terminal traffic keeps
-  the current in-memory delta fast path; restart recovery reconstructs only the
-  descriptor's bounded keys and must not perform complete live admission.
-- The implementation will retain a global durable cursor and a bounded
-  `10,000 entries / 64 MiB` active tail. Compaction preserves a range/account/
-  current-rank proof until generation-fenced reconciliation has incorporated
-  it; descriptors and proofs contain no raw text or duplicate Summary rows.
-- Archive maintenance will write immutable compressed Snapshot pages to main
-  SQLite, with manifest identity and exact coverage. Cleanup remains blocked
-  until that proof commits. A durable low-priority legacy backfill will create
-  snapshots only from readable authority; missing authority remains a finite
-  unavailable range.
-- Journal insertion adds no transaction or connection. The implementation must
-  measure its WAL bytes, commit latency, lock retries, compaction work,
-  Snapshot bytes, and bounded reconstruction time before release.
+- A Summary-affecting terminal transaction appends one compact descriptor in
+  the existing transaction. Normal terminal traffic keeps the current
+  in-memory delta fast path; restart recovery reconstructs only the
+  descriptor's bounded keys and does not perform complete live admission.
+- The global durable cursor checkpoint is monotonic and is written only after a
+  bounded tail has been reconstructed. The active tail remains bounded to
+  `10,000 entries / 64 MiB`; compaction preserves a range/account/current-rank
+  proof, and descriptors/proofs contain no raw text or duplicate Summary rows.
+- Archive maintenance exposes the normalized Snapshot page writer and cleanup
+  proof gate in main SQLite. Snapshot proof includes manifest identity,
+  coverage and payload SHA; a seek-paged legacy backfill can reuse the writer
+  for readable authority, while source loss remains a finite unavailable range.
+- Journal insertion adds no transaction or connection. Descriptor insertion,
+  compaction and Snapshot writes emit only stage, count and byte telemetry;
+  bounded reconstruction duration remains measured by the projection worker.
 
 ## Delivery Boundaries
 
