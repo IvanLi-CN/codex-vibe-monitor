@@ -5,3 +5,5 @@ services:
       dockerfile: Dockerfile
       target: backend-test
     working_dir: /workspace
+    entrypoint: []
+    command: ["sleep", "infinity"]

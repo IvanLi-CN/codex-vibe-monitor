@@ -164,6 +164,7 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
 
 ENV BACKEND_TEST_WORKSPACE=/tmp/codex-vibe-monitor-backend-test \
