@@ -115,6 +115,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   CLEANUP="$CLEANUP" \
   APP_CONTAINER="$APP_CONTAINER" \
   GIT_SHA="$GIT_SHA" \
+  RUN_ID="$RUN_ID" \
   bash -s <<'REMOTE'
 set -euo pipefail
 export TZ=Asia/Shanghai
@@ -131,17 +132,46 @@ mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
 
 cleanup_remote() {
-  set +e
+  local cleanup_status=0
   docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$SMOKE_SCRIPT"
   if [ "$CLEANUP" = "1" ]; then
-    if [ -z "$REUSE_IMAGE_TAG" ]; then
-      docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
+    if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+      if [ -d "$REMOTE_RUN/data" ]; then
+        docker run --rm --cap-drop=all --entrypoint /bin/chmod \
+          -v "$(dirname "$REMOTE_RUN"):/runs" \
+          "$IMAGE_TAG" \
+          -R a+rwX "/runs/$RUN_ID/data" >/dev/null 2>&1 || true
+      fi
     fi
-    rm -rf "$REMOTE_RUN"
+    if ! rm -rf "$REMOTE_RUN"; then
+      cleanup_status=1
+    fi
+    if [ -e "$REMOTE_RUN" ]; then
+      echo "cleanup left run directory: $REMOTE_RUN" >&2
+      cleanup_status=1
+    fi
+    if [ -z "$REUSE_IMAGE_TAG" ]; then
+      if ! docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1; then
+        cleanup_status=1
+      fi
+    fi
   fi
+  return "$cleanup_status"
 }
-trap cleanup_remote EXIT
+
+finish_remote() {
+  local exit_status=$?
+  trap - EXIT
+  if [ -n "${LOG_PID:-}" ]; then
+    kill "$LOG_PID" >/dev/null 2>&1 || true
+  fi
+  if ! cleanup_remote && [ "$exit_status" -eq 0 ]; then
+    exit_status=1
+  fi
+  exit "$exit_status"
+}
+trap finish_remote EXIT
 
 cat > "$SMOKE_SCRIPT" <<'PY'
 #!/usr/bin/env python3
@@ -200,6 +230,33 @@ def seed_token():
     print(json.dumps({'phase': 'seed', 'status': status}))
 
 
+def wait_summary(*, monotonic=time.monotonic, sleep=time.sleep):
+    last_error = None
+    deadline = monotonic() + 30
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
+        status, payload = request_json(
+            'GET',
+            '/api/stats/summary?window=current&limit=50&timeZone=Asia%2FShanghai',
+            timeout=min(5, remaining),
+        )
+        if status == 200:
+            if monotonic() <= deadline:
+                assert_shape('summary', payload)
+                print(json.dumps({'phase': 'summary', 'status': status, 'keys': sorted(payload.keys())}))
+                return
+            break
+        if status != 503:
+            raise SystemExit(f'summary failed: status={status} payload={payload}')
+        last_error = payload
+        remaining = deadline - monotonic()
+        if remaining > 0:
+            sleep(min(1, remaining))
+    raise SystemExit(f'summary did not become ready within 30s: {last_error}')
+
+
 def assert_shape(name, payload):
     if name == 'version':
         assert isinstance(payload, dict), payload
@@ -222,7 +279,6 @@ def assert_shape(name, payload):
 def run_checks():
     checks = [
         ('version', '/api/version'),
-        ('summary', '/api/stats/summary'),
         ('timeseries', '/api/stats/timeseries?range=24h&bucket=1h'),
         ('prompt_cache', '/api/stats/prompt-cache-conversations?activityHours=1'),
     ]
@@ -240,6 +296,7 @@ if __name__ == '__main__':
         raise SystemExit(f'usage: {sys.argv[0]} run <token>')
     TOKEN = sys.argv[2]
     wait_health()
+    wait_summary()
     seed_token()
     run_checks()
 PY
@@ -271,7 +328,6 @@ docker run -d --name "$APP_CONTAINER" --cap-drop=all \
 
 docker logs -f "$APP_CONTAINER" >"$APP_LOG" 2>&1 &
 LOG_PID=$!
-trap 'kill "$LOG_PID" >/dev/null 2>&1 || true; cleanup_remote' EXIT
 
 printf '== verify api ==\n'
 docker run --rm --cap-drop=all \
@@ -281,5 +337,12 @@ docker run --rm --cap-drop=all \
 
 printf '== app log tail ==\n'
 tail -n 40 "$APP_LOG" || true
+if ! cleanup_remote; then
+  trap - EXIT
+  kill "$LOG_PID" >/dev/null 2>&1 || true
+  exit 1
+fi
+trap - EXIT
+kill "$LOG_PID" >/dev/null 2>&1 || true
 printf '== shared testbox api read smoke ok ==\n'
 REMOTE

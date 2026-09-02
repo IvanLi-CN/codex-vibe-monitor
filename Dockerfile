@@ -140,10 +140,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=6 CMD curl 
 
 CMD ["codex-vibe-monitor"]
 
-# Stage 7: retain the production image as the default Docker build target.
-FROM production-runtime AS runtime
-
-# Stage 8: project-owned backend test environment. This target is intentionally
+# Stage 7: project-owned backend test environment. This target is intentionally
 # separate from the production image so test tooling and writable build paths
 # cannot alter the release runtime contract.
 FROM rust:1.96.0-bookworm AS backend-test
@@ -153,6 +150,7 @@ ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6b
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/* \
+    && rustup component add clippy \
     && curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
       -o /tmp/cargo-nextest.tar.gz \
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${CARGO_NEXTEST_VERSION}/cargo-nextest-${CARGO_NEXTEST_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
@@ -164,10 +162,15 @@ RUN apt-get update \
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
+RUN mkdir -p target && chown 65534:65534 target
 
 ENV BACKEND_TEST_WORKSPACE=/tmp/codex-vibe-monitor-backend-test \
     CARGO_TARGET_DIR=/tmp/codex-vibe-monitor-backend-test/target \
     RUST_MIN_STACK=8388608
 
 ENTRYPOINT ["bash", ".github/scripts/run-backend-tests.sh"]
+
+# Stage 8: retain the production image as the default Docker build target.
+FROM production-runtime AS runtime

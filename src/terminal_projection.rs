@@ -814,6 +814,10 @@ pub(crate) async fn register_terminal_projection_before_enqueue(
     let dashboard = apply_dashboard_activity_terminal_record(state, record).await;
     if let Some(delta) = dashboard.terminal_delta.clone() {
         state
+            .subscription_hub
+            .register_summary_delta_pending(delta.clone())
+            .await;
+        state
             .proxy_runtime_invocations
             .record_dashboard_terminal_delta(delta);
         ensure_dashboard_activity_live_snapshot_producer(state);
@@ -832,6 +836,10 @@ pub(crate) async fn rollback_terminal_projection_before_enqueue(
     record: &ApiInvocation,
     registration: &TerminalProjectionRegistration,
 ) {
+    state
+        .subscription_hub
+        .rollback_summary_delta_pending(registration.dashboard.terminal_sequence)
+        .await;
     state
         .proxy_runtime_invocations
         .discard_dashboard_terminal_delta(&record.invoke_id, &record.occurred_at);

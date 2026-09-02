@@ -157,6 +157,37 @@ publish new source data, weaken an unavailable boundary, or make an unready
 all-time selection ready.
 _Avoid_: stale-source renewal, hidden full refresh, broader stale budget
 
+**Summary Delta Journal**:
+The bounded, ordered in-memory sequence of compact terminal deltas. A pending
+registration establishes write-side continuity before asynchronous enqueue but
+is not readable by Summary. Only the matching SQLite commit acknowledgement
+promotes it to the exact difference between a published rolling Projection and
+the current recent terminal tail. Rejected enqueue removes its pending entry;
+the journal is not an alternative durable source or request-time fallback.
+_Avoid_: speculative read, dashboard-only truth, durable archive log
+
+**Summary Delta Cursor**:
+The monotonic terminal sequence attached to one Summary Delta Journal entry.
+It establishes that a RollingDelta observes a continuous acknowledged tail.
+_Avoid_: timestamp ordering, best-effort event ID, unordered overlay
+
+**Delta Gap Proof**:
+A bounded account/time/current-rank proof created when a known Summary Delta
+Journal entry exceeds capacity or cannot be reduced. Only a selection that can
+include that proof is unavailable. A missing cursor with no durable metadata is
+an explicitly broad proof until reconciliation, because its range cannot be
+proven; it must never be localized by guessing from a later entry.
+When the proof budget is exhausted, that broad proof is retained instead of
+evicting an older account/time/rank boundary.
+_Avoid_: inferred range, partial response, stale success
+
+**RollingDelta**:
+The bounded in-memory recovery mode that composes an immutable rolling base
+with a continuous Summary Delta Journal. It does not run complete live-source
+admission, archive hydration, or request-time I/O, and it never makes `all`
+ready.
+_Avoid_: full rolling rebuild, all-time finalization, stale-cache success
+
 **All-Time Coverage Checkpoint**:
 The durable generation-fenced state for bounded all-time reconciliation. It
 contains independent global/account manifest-proof cursors, rollup seek cursors

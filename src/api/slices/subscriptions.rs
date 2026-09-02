@@ -50,6 +50,7 @@ const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
 const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
 const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS: usize = 1_024;
+const SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS: usize = 4_096;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -739,14 +740,10 @@ struct SubscriptionHubState {
     dashboard_terminal_slice: Option<Arc<DashboardTerminalProjectionSlice>>,
     summary_snapshots: HashMap<SummarySnapshotKey, SummarySnapshotEntry>,
     summary_projection: Option<Arc<SummaryProjection>>,
-    // Terminal slices are ephemeral delivery batches. Retain a bounded exact Summary overlay
-    // until the next rolling projection revision demonstrably contains each durable identity.
-    summary_terminal_overlay: VecDeque<DashboardActivityTerminalDelta>,
-    summary_terminal_overlay_bytes: usize,
-    // The highest sequence not retained because the bounded overlay overflowed. It remains
-    // fail-closed until a later durable Summary projection proves it has observed every terminal
-    // through this sequence.
-    summary_terminal_overlay_overflowed_through_sequence: Option<u64>,
+    // Terminal slices are ephemeral delivery batches. The Summary-owned journal only receives
+    // entries after the writer's SQLite commit ACK, so it is a bounded exact delta between an
+    // immutable base projection and the latest rolling view.
+    summary_delta_journal: SummaryDeltaJournal,
     // All-time coverage can lag independently of rolling coverage. Keep its replay budget
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
     summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
@@ -770,6 +767,306 @@ struct SubscriptionHubState {
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
     runtime_topic_recovery_running: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct SummaryDeltaCursor(pub(crate) u64);
+
+#[derive(Debug, Clone)]
+pub(crate) struct SummaryDeltaEntry {
+    pub(crate) cursor: SummaryDeltaCursor,
+    pub(crate) delta: DashboardActivityTerminalDelta,
+}
+
+// A dropped, conflicting, or out-of-order journal entry never permits a stale global response.
+// The reconciliation path consumes this proof to restrict only selections that could include it.
+#[derive(Debug, Clone)]
+pub(crate) struct DeltaGapProof {
+    pub(crate) cursor: SummaryDeltaCursor,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) occurred_at: String,
+    pub(crate) row_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SummaryRollingDeltaSnapshot {
+    pub(crate) projection: Arc<SummaryProjection>,
+    pub(crate) entries: Vec<DashboardActivityTerminalDelta>,
+    pub(crate) gaps: Vec<DeltaGapProof>,
+}
+
+#[derive(Debug, Default)]
+struct SummaryDeltaJournal {
+    // The immutable Projection has already proven every sequence through this watermark. The
+    // next journal tail must begin immediately after it, even when the resident queue is empty.
+    base_cursor: SummaryDeltaCursor,
+    cursor: SummaryDeltaCursor,
+    pending: BTreeMap<u64, DashboardActivityTerminalDelta>,
+    pending_bytes: usize,
+    rolled_back_sequences: BTreeSet<u64>,
+    entries: VecDeque<SummaryDeltaEntry>,
+    bytes: usize,
+    // A terminal-journal replay can commit after Bootstrap has published. Its source row is
+    // exact, but it has no in-process dashboard sequence to join the contiguous live journal.
+    // Keep it in the same bounded resident budget and layer it into rolling reads separately.
+    replayed_entries: VecDeque<DashboardActivityTerminalDelta>,
+    replayed_bytes: usize,
+    overflowed_through_sequence: Option<u64>,
+    gap_proofs: VecDeque<DeltaGapProof>,
+    gap_proof_budget_exhausted: bool,
+}
+
+impl SummaryDeltaJournal {
+    fn contains_same_identity(
+        left: &DashboardActivityTerminalDelta,
+        right: &DashboardActivityTerminalDelta,
+    ) -> bool {
+        left.invoke_id == right.invoke_id && left.occurred_at == right.occurred_at
+    }
+
+    // Registration happens before the asynchronous SQLite enqueue. Pending entries establish
+    // the expected sequence and retain a bounded recovery proof, but they are never exposed to
+    // Summary reads until the writer calls `append` after commit.
+    fn register_pending(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
+        let sequence = delta.terminal_sequence;
+        if self.overflowed_through_sequence.is_some() {
+            self.note_gap(&delta);
+            return false;
+        }
+        if let Some(existing) = self.pending.get(&sequence) {
+            if Self::contains_same_identity(existing, &delta) {
+                return true;
+            }
+            self.overflowed_through_sequence = Some(sequence);
+            self.note_unknown_sequence_gap(sequence);
+            self.note_gap(&delta);
+            return false;
+        }
+        if self
+            .entries
+            .iter()
+            .any(|entry| entry.cursor == SummaryDeltaCursor(sequence))
+            || sequence <= self.cursor.max(self.base_cursor).0
+        {
+            self.overflowed_through_sequence = Some(sequence);
+            self.note_unknown_sequence_gap(sequence);
+            self.note_gap(&delta);
+            return false;
+        }
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            .saturating_add(self.pending.len())
+            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = self
+            .bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(self.pending_bytes)
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        if exceeds_count || exceeds_bytes {
+            self.overflowed_through_sequence = Some(sequence);
+            self.note_gap(&delta);
+            return false;
+        }
+        self.pending_bytes = self.pending_bytes.saturating_add(delta.estimated_bytes);
+        self.pending.insert(sequence, delta);
+        true
+    }
+
+    fn rollback_pending(&mut self, sequence: Option<u64>) {
+        let Some(sequence) = sequence else {
+            return;
+        };
+        if let Some(delta) = self.pending.remove(&sequence) {
+            self.pending_bytes = self.pending_bytes.saturating_sub(delta.estimated_bytes);
+        }
+        let mut known_through = self.cursor.max(self.base_cursor).0;
+        if sequence <= known_through {
+            return;
+        }
+        self.rolled_back_sequences.insert(sequence);
+        while self
+            .rolled_back_sequences
+            .remove(&known_through.saturating_add(1))
+        {
+            known_through = known_through.saturating_add(1);
+        }
+        self.cursor = self.cursor.max(SummaryDeltaCursor(known_through));
+    }
+
+    fn commit_skipped_sequences(&mut self) {
+        let mut known_through = self.cursor.max(self.base_cursor).0;
+        while self
+            .rolled_back_sequences
+            .remove(&known_through.saturating_add(1))
+        {
+            known_through = known_through.saturating_add(1);
+        }
+        self.cursor = self.cursor.max(SummaryDeltaCursor(known_through));
+    }
+
+    fn acknowledge_pending(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
+        if let Some(pending) = self.pending.remove(&delta.terminal_sequence) {
+            self.pending_bytes = self.pending_bytes.saturating_sub(pending.estimated_bytes);
+            if !Self::contains_same_identity(&pending, &delta) {
+                self.overflowed_through_sequence = Some(delta.terminal_sequence);
+                self.note_unknown_sequence_gap(delta.terminal_sequence);
+                self.note_gap(&delta);
+                return false;
+            }
+        }
+        self.commit_skipped_sequences();
+        self.append(delta.clone(), delta.terminal_sequence)
+    }
+
+    fn note_unknown_sequence_gap(&mut self, cursor: u64) {
+        self.cursor = self.cursor.max(SummaryDeltaCursor(cursor));
+        // The missing cursor has no durable terminal metadata. Its time, account, and current
+        // rank are therefore unknown, so this proof deliberately applies to every selection
+        // until a generation-fenced reconciliation absorbs it.
+        self.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(cursor),
+            upstream_account_id: None,
+            occurred_at: String::new(),
+            row_id: None,
+        });
+    }
+
+    fn note_gap(&mut self, delta: &DashboardActivityTerminalDelta) {
+        self.cursor = self.cursor.max(SummaryDeltaCursor(delta.terminal_sequence));
+        self.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(delta.terminal_sequence),
+            upstream_account_id: delta.upstream_account_id,
+            occurred_at: delta.occurred_at.clone(),
+            row_id: delta.persisted_row_id,
+        });
+    }
+
+    fn retain_gap_proof(&mut self, proof: DeltaGapProof) {
+        if self.gap_proof_budget_exhausted {
+            return;
+        }
+        if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
+            // Dropping the oldest scoped proof could make an old account/range look exact.
+            // Keep one irreversible broad proof until a durable projection consumes the gap.
+            self.gap_proofs.clear();
+            self.gap_proofs.push_back(DeltaGapProof {
+                cursor: proof.cursor,
+                upstream_account_id: None,
+                occurred_at: String::new(),
+                row_id: None,
+            });
+            self.gap_proof_budget_exhausted = true;
+            return;
+        }
+        self.gap_proofs.push_back(proof);
+    }
+
+    fn append_replayed(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
+        if self.overflowed_through_sequence.is_some() {
+            self.note_gap(&delta);
+            return false;
+        }
+        if self
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(self.replayed_entries.iter())
+            .any(|entry| Self::contains_same_identity(entry, &delta))
+        {
+            return true;
+        }
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            .saturating_add(self.pending.len())
+            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = self
+            .bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(self.pending_bytes)
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        if exceeds_count || exceeds_bytes {
+            self.overflowed_through_sequence = Some(delta.terminal_sequence);
+            self.note_gap(&delta);
+            return false;
+        }
+        self.replayed_bytes = self.replayed_bytes.saturating_add(delta.estimated_bytes);
+        self.replayed_entries.push_back(delta);
+        true
+    }
+
+    // Entries arrive from the terminal slice only after its SQLite transaction has committed.
+    // Only a repeat of the same immutable terminal identity is harmless. An old or conflicting
+    // sequence is a fail-closed gap because it could otherwise replace an exact terminal without
+    // a rebuild.
+    fn append(&mut self, delta: DashboardActivityTerminalDelta, slice_high_watermark: u64) -> bool {
+        if self.overflowed_through_sequence.is_some() {
+            self.overflowed_through_sequence = Some(
+                self.overflowed_through_sequence
+                    .unwrap_or_default()
+                    .max(slice_high_watermark),
+            );
+            self.note_gap(&delta);
+            return false;
+        }
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|entry| entry.cursor == SummaryDeltaCursor(delta.terminal_sequence))
+        {
+            if existing.delta.invoke_id == delta.invoke_id
+                && existing.delta.occurred_at == delta.occurred_at
+                && existing.delta.persisted_row_id == delta.persisted_row_id
+            {
+                return true;
+            }
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_sequence_gap(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
+        let known_through = self.cursor.max(self.base_cursor);
+        if delta.terminal_sequence <= known_through.0 {
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_sequence_gap(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
+        let expected_next = known_through.0.saturating_add(1);
+        if delta.terminal_sequence != expected_next {
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_sequence_gap(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
+        let exceeds_count = self
+            .entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = self
+            .bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        if exceeds_count || exceeds_bytes {
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
+        self.bytes = self.bytes.saturating_add(delta.estimated_bytes);
+        self.cursor = SummaryDeltaCursor(delta.terminal_sequence);
+        self.entries.push_back(SummaryDeltaEntry {
+            cursor: SummaryDeltaCursor(delta.terminal_sequence),
+            delta,
+        });
+        true
+    }
 }
 
 fn record_all_time_account_overflow_marker(
@@ -802,6 +1099,63 @@ fn record_all_time_account_overflow_marker(
         .as_mut()
     {
         *existing = (*existing).max(terminal_sequence);
+    }
+}
+
+// Both the rolling journal and the all-time overlay are derived only from a committed terminal
+// ACK. Keeping this admission here prevents a Dashboard pre-commit slice from making a Summary
+// response observe a transaction that can still roll back.
+fn append_summary_all_time_delta(
+    state: &mut SubscriptionHubState,
+    delta: &DashboardActivityTerminalDelta,
+    slice_high_watermark: u64,
+) {
+    if let Some(overflowed_through) = state
+        .summary_terminal_overlay_all_time_overflowed_through_sequence
+        .as_mut()
+    {
+        *overflowed_through = (*overflowed_through).max(slice_high_watermark);
+    }
+    if state
+        .summary_terminal_overlay_all_time_overflowed_through_sequence
+        .is_none()
+        && !state
+            .summary_terminal_overlay_all_time
+            .iter()
+            .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+    {
+        let exceeds_count =
+            state.summary_terminal_overlay_all_time.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+        let exceeds_bytes = state
+            .summary_terminal_overlay_all_time_bytes
+            .saturating_add(delta.estimated_bytes)
+            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+        if exceeds_count || exceeds_bytes {
+            state.summary_terminal_overlay_all_time_overflowed_through_sequence =
+                Some(slice_high_watermark);
+            if let Some(account_id) = delta.upstream_account_id {
+                record_all_time_account_overflow_marker(state, account_id, delta.terminal_sequence);
+            }
+            tracing::warn!(
+                pending_terminal_count = state.summary_terminal_overlay_all_time.len(),
+                pending_terminal_bytes = state.summary_terminal_overlay_all_time_bytes,
+                overflowed_through = slice_high_watermark,
+                "all-time summary terminal overlay reached its bounded memory budget"
+            );
+        } else {
+            state.summary_terminal_overlay_all_time_bytes = state
+                .summary_terminal_overlay_all_time_bytes
+                .saturating_add(delta.estimated_bytes);
+            state
+                .summary_terminal_overlay_all_time
+                .push_back(delta.clone());
+        }
+    } else if state
+        .summary_terminal_overlay_all_time_overflowed_through_sequence
+        .is_some()
+        && let Some(account_id) = delta.upstream_account_id
+    {
+        record_all_time_account_overflow_marker(state, account_id, delta.terminal_sequence);
     }
 }
 
@@ -1052,10 +1406,6 @@ struct DashboardSummaryMaterializerState {
     current_revision: Option<u64>,
     terminal_revision: Option<u64>,
     terminal_sequence: u64,
-    // The initial memory-only Summary base may already have replayed a terminal overlay, while
-    // the hub's latest terminal slice still contains the same delta. Keep this bounded set only
-    // for the first materialization so reconnects neither double-count nor skip ACKed deltas.
-    initial_terminal_slice_suppressions: Option<HashSet<u64>>,
     range_start: Option<DateTime<Utc>>,
 }
 
@@ -1610,14 +1960,13 @@ impl DashboardSummaryMaterializerState {
             current_revision: None,
             terminal_revision: None,
             terminal_sequence,
-            initial_terminal_slice_suppressions: None,
             range_start,
         }
     }
 
     fn from_summary_projection(
         response: StatsResponse,
-        initial_terminal_slice_suppressions: HashSet<u64>,
+        _initial_terminal_slice_suppressions: HashSet<u64>,
         range_start: Option<DateTime<Utc>>,
     ) -> Self {
         Self {
@@ -1625,7 +1974,6 @@ impl DashboardSummaryMaterializerState {
             current_revision: None,
             terminal_revision: None,
             terminal_sequence: 0,
-            initial_terminal_slice_suppressions: Some(initial_terminal_slice_suppressions),
             range_start,
         }
     }
@@ -2480,9 +2828,9 @@ impl DashboardTopicMaterializer {
             }
             Self::Summary {
                 base,
-                window,
-                reporting_tz,
-                source_scope,
+                window: _,
+                reporting_tz: _,
+                source_scope: _,
                 upstream_account_id,
             } => {
                 let mut base = base.lock().expect("summary materializer state lock");
@@ -2494,35 +2842,10 @@ impl DashboardTopicMaterializer {
                     );
                     base.current_revision = current.map(|slice| slice.revision);
                 }
-                let initial_terminal_slice_suppressions =
-                    base.initial_terminal_slice_suppressions.take();
                 if terminal.is_some_and(|slice| base.terminal_revision < Some(slice.revision)) {
-                    let DashboardSummaryMaterializerState {
-                        response,
-                        terminal_sequence,
-                        ..
-                    } = &mut *base;
-                    if let Some(mut suppressions) = initial_terminal_slice_suppressions {
-                        apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
-                            response,
-                            &mut suppressions,
-                            window,
-                            *reporting_tz,
-                            *source_scope,
-                            *upstream_account_id,
-                            terminal.expect("terminal slice checked above"),
-                        );
-                    } else {
-                        apply_dashboard_terminal_slice_to_summary_response(
-                            response,
-                            terminal_sequence,
-                            window,
-                            *reporting_tz,
-                            *source_scope,
-                            *upstream_account_id,
-                            terminal.expect("terminal slice checked above"),
-                        );
-                    }
+                    // Terminal slices can be emitted before the SQLite transaction commits.
+                    // Summary only incorporates the writer-ACKed journal during its dedicated
+                    // refresh, so this delivery path never publishes a speculative total.
                     base.terminal_revision = terminal.map(|slice| slice.revision);
                 }
                 serde_json::to_vec(&base.response).map_err(ApiError::from)
@@ -3116,13 +3439,124 @@ impl SubscriptionHub {
         })
     }
 
-    pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
+    // Only acknowledged terminal deltas are admitted to this queue. When it remains bounded
+    // and contains an identity the immutable baseline has not absorbed, its values are the
+    // exact delta between that baseline and the rolling read model.
+    pub(crate) async fn register_summary_delta_pending(
+        &self,
+        delta: DashboardActivityTerminalDelta,
+    ) {
+        let mut state = self.state.lock().await;
+        if !state.summary_delta_journal.register_pending(delta) {
+            tracing::warn!(
+                pending_terminal_count = state.summary_delta_journal.pending.len(),
+                pending_terminal_bytes = state.summary_delta_journal.pending_bytes,
+                overflowed_through = ?state.summary_delta_journal.overflowed_through_sequence,
+                "pending Summary Delta Journal registration reached a bounded gap"
+            );
+        }
+    }
+
+    pub(crate) async fn rollback_summary_delta_pending(&self, terminal_sequence: Option<u64>) {
         self.state
             .lock()
             .await
-            .summary_terminal_overlay
+            .summary_delta_journal
+            .rollback_pending(terminal_sequence);
+    }
+
+    pub(crate) async fn renew_summary_projection_freshness_from_delta_journal(&self) -> bool {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        if state
+            .summary_delta_journal
+            .overflowed_through_sequence
+            .is_some()
+        {
+            return false;
+        }
+        let has_unabsorbed_delta = state
+            .summary_delta_journal
+            .entries
             .iter()
-            .map(|delta| format!("{}\0{}", delta.invoke_id, delta.occurred_at))
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .any(|delta| {
+                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+            });
+        if !has_unabsorbed_delta {
+            return false;
+        }
+        projection.renew_freshness_from_delta_journal();
+        true
+    }
+
+    pub(crate) async fn acknowledge_summary_delta(&self, delta: DashboardActivityTerminalDelta) {
+        let mut state = self.state.lock().await;
+        let slice_high_watermark = delta.terminal_sequence;
+        let account_scoped = delta.upstream_account_id.is_some();
+        if !state
+            .summary_delta_journal
+            .acknowledge_pending(delta.clone())
+        {
+            tracing::warn!(
+                pending_terminal_count = state.summary_delta_journal.entries.len(),
+                pending_terminal_bytes = state.summary_delta_journal.bytes,
+                overflowed_through = ?state.summary_delta_journal.overflowed_through_sequence,
+                "rolling Summary Delta Journal reached a bounded gap"
+            );
+        }
+        append_summary_all_time_delta(&mut state, &delta, slice_high_watermark);
+        tracing::debug!(
+            stage = "delta_journal_ack",
+            entry_count = state.summary_delta_journal.entries.len(),
+            gap_count = state.summary_delta_journal.gap_proofs.len(),
+            account_scoped,
+            "acknowledged Summary Delta Journal entry"
+        );
+    }
+
+    // Journal replay happens only after the SQLite transaction has committed. Replayed records
+    // have no compatible in-process dashboard sequence after restart, so do not manufacture one
+    // or trigger a full rolling read. Their exact values remain a bounded rolling overlay.
+    pub(crate) async fn acknowledge_replayed_summary_delta(
+        &self,
+        delta: DashboardActivityTerminalDelta,
+    ) {
+        let mut state = self.state.lock().await;
+        if !state.summary_delta_journal.append_replayed(delta) {
+            tracing::warn!(
+                replayed_terminal_count = state.summary_delta_journal.replayed_entries.len(),
+                replayed_terminal_bytes = state.summary_delta_journal.replayed_bytes,
+                gap_count = state.summary_delta_journal.gap_proofs.len(),
+                "replayed Summary Delta Journal entry reached a bounded gap"
+            );
+        }
+    }
+
+    pub(crate) async fn summary_delta_journal_counts(&self) -> (usize, usize) {
+        let state = self.state.lock().await;
+        (
+            state
+                .summary_delta_journal
+                .entries
+                .len()
+                .saturating_add(state.summary_delta_journal.replayed_entries.len()),
+            state.summary_delta_journal.gap_proofs.len(),
+        )
+    }
+
+    pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
+        let state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .map(|entry| format!("{}\0{}", entry.invoke_id, entry.occurred_at))
             .collect()
     }
 
@@ -3176,21 +3610,49 @@ impl SubscriptionHub {
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
-        state.summary_terminal_overlay.retain(|delta| {
-            !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+        state.summary_delta_journal.base_cursor =
+            state
+                .summary_delta_journal
+                .base_cursor
+                .max(SummaryDeltaCursor(
+                    projection.durable_terminal_sequence_watermark(),
+                ));
+        state.summary_delta_journal.cursor = state
+            .summary_delta_journal
+            .cursor
+            .max(state.summary_delta_journal.base_cursor);
+        state.summary_delta_journal.entries.retain(|entry| {
+            !projection
+                .contains_persisted_live_terminal(&entry.delta.invoke_id, &entry.delta.occurred_at)
         });
-        state.summary_terminal_overlay_bytes = state
-            .summary_terminal_overlay
+        state
+            .summary_delta_journal
+            .replayed_entries
+            .retain(|entry| {
+                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
+            });
+        state.summary_delta_journal.bytes = state
+            .summary_delta_journal
+            .entries
             .iter()
-            .map(|delta| delta.estimated_bytes)
+            .map(|entry| entry.delta.estimated_bytes)
+            .sum();
+        state.summary_delta_journal.replayed_bytes = state
+            .summary_delta_journal
+            .replayed_entries
+            .iter()
+            .map(|entry| entry.estimated_bytes)
             .sum();
         if state
-            .summary_terminal_overlay_overflowed_through_sequence
+            .summary_delta_journal
+            .overflowed_through_sequence
             .is_some_and(|overflowed_through| {
                 projection.durable_terminal_sequence_watermark() >= overflowed_through
             })
         {
-            state.summary_terminal_overlay_overflowed_through_sequence = None;
+            state.summary_delta_journal.overflowed_through_sequence = None;
+            state.summary_delta_journal.gap_proofs.clear();
+            state.summary_delta_journal.gap_proof_budget_exhausted = false;
             tracing::info!(
                 durable_terminal_sequence_watermark =
                     projection.durable_terminal_sequence_watermark(),
@@ -3272,6 +3734,7 @@ impl SubscriptionHub {
             Arc<SummaryProjection>,
             Vec<DashboardActivityTerminalDelta>,
             HashSet<u64>,
+            Vec<DeltaGapProof>,
         )>,
         ApiError,
     > {
@@ -3286,7 +3749,46 @@ impl SubscriptionHub {
                 all_time,
                 upstream_account_id,
             )?;
-        Ok(Some((projection, overlay, initial_slice_suppressions)))
+        let gaps = state
+            .summary_delta_journal
+            .gap_proofs
+            .iter()
+            .cloned()
+            .collect();
+        Ok(Some((
+            projection,
+            overlay,
+            initial_slice_suppressions,
+            gaps,
+        )))
+    }
+
+    pub(crate) async fn summary_projection_with_rolling_delta(
+        &self,
+    ) -> Option<SummaryRollingDeltaSnapshot> {
+        let state = self.state.lock().await;
+        let projection = state.summary_projection.clone()?;
+        let entries = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .filter(|entry| {
+                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
+            })
+            .cloned()
+            .collect();
+        Some(SummaryRollingDeltaSnapshot {
+            projection,
+            entries,
+            gaps: state
+                .summary_delta_journal
+                .gap_proofs
+                .iter()
+                .cloned()
+                .collect(),
+        })
     }
 
     fn summary_projection_terminal_overlay_from_state(
@@ -3310,7 +3812,8 @@ impl SubscriptionHub {
             }
         } else {
             state
-                .summary_terminal_overlay_overflowed_through_sequence
+                .summary_delta_journal
+                .overflowed_through_sequence
                 .is_some()
         };
         let overflow_is_covered = if all_time {
@@ -3347,32 +3850,39 @@ impl SubscriptionHub {
         } else {
             false
         };
-        if overflowed && !overflow_is_covered {
+        if overflowed && !overflow_is_covered && all_time {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
         }
-        let overlay_source = if all_time {
-            &state.summary_terminal_overlay_all_time
+        let overlay = if all_time {
+            state
+                .summary_terminal_overlay_all_time
+                .iter()
+                .filter(|delta| {
+                    !projection.all_time_terminal_scope_covers(
+                        upstream_account_id,
+                        &delta.invoke_id,
+                        &delta.occurred_at,
+                        delta.terminal_sequence,
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>()
         } else {
-            &state.summary_terminal_overlay
+            state
+                .summary_delta_journal
+                .entries
+                .iter()
+                .map(|entry| &entry.delta)
+                .chain(state.summary_delta_journal.replayed_entries.iter())
+                .filter(|entry| {
+                    !projection
+                        .contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
         };
-        let overlay = overlay_source
-            .iter()
-            .filter(|delta| {
-                !((!all_time
-                    && projection
-                        .contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at))
-                    || (all_time
-                        && projection.all_time_terminal_scope_covers(
-                            upstream_account_id,
-                            &delta.invoke_id,
-                            &delta.occurred_at,
-                            delta.terminal_sequence,
-                        )))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
         let mut initial_slice_suppressions = overlay
             .iter()
             .map(|delta| delta.terminal_sequence)
@@ -5138,105 +5648,30 @@ impl SubscriptionHub {
             {
                 return;
             }
+            #[cfg(test)]
             let highest_sequence = slice
                 .deltas
                 .iter()
                 .map(|delta| delta.terminal_sequence)
                 .max()
                 .unwrap_or_default();
-            if let Some(overflowed_through) = guard
-                .summary_terminal_overlay_overflowed_through_sequence
-                .as_mut()
-            {
-                *overflowed_through = (*overflowed_through).max(highest_sequence);
-            }
-            if let Some(overflowed_through) = guard
-                .summary_terminal_overlay_all_time_overflowed_through_sequence
-                .as_mut()
-            {
-                *overflowed_through = (*overflowed_through).max(highest_sequence);
-            }
+            #[cfg(test)]
             for delta in &slice.deltas {
-                if guard
-                    .summary_terminal_overlay_overflowed_through_sequence
-                    .is_none()
-                    && !guard
-                        .summary_terminal_overlay
-                        .iter()
-                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
-                {
-                    let exceeds_count =
-                        guard.summary_terminal_overlay.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-                    let exceeds_bytes = guard
-                        .summary_terminal_overlay_bytes
-                        .saturating_add(delta.estimated_bytes)
-                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-                    if exceeds_count || exceeds_bytes {
-                        let overflowed_through = highest_sequence;
-                        guard.summary_terminal_overlay_overflowed_through_sequence =
-                            Some(overflowed_through);
+                // Test fixtures can model a pre-existing durable row without a writer task.
+                // Production admission remains exclusively on the writer's post-commit ACK.
+                if delta.persisted_row_id.is_some() {
+                    if !guard
+                        .summary_delta_journal
+                        .append(delta.clone(), highest_sequence)
+                    {
                         tracing::warn!(
-                            pending_terminal_count = guard.summary_terminal_overlay.len(),
-                            pending_terminal_bytes = guard.summary_terminal_overlay_bytes,
-                            overflowed_through,
-                            "rolling summary terminal overlay reached its bounded memory budget"
+                            pending_terminal_count = guard.summary_delta_journal.entries.len(),
+                            pending_terminal_bytes = guard.summary_delta_journal.bytes,
+                            overflowed_through = ?guard.summary_delta_journal.overflowed_through_sequence,
+                            "rolling Summary Delta Journal reached a bounded gap"
                         );
-                    } else {
-                        guard.summary_terminal_overlay_bytes = guard
-                            .summary_terminal_overlay_bytes
-                            .saturating_add(delta.estimated_bytes);
-                        guard.summary_terminal_overlay.push_back(delta.clone());
                     }
-                }
-                if guard
-                    .summary_terminal_overlay_all_time_overflowed_through_sequence
-                    .is_none()
-                    && !guard
-                        .summary_terminal_overlay_all_time
-                        .iter()
-                        .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
-                {
-                    let exceeds_count = guard.summary_terminal_overlay_all_time.len()
-                        >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-                    let exceeds_bytes = guard
-                        .summary_terminal_overlay_all_time_bytes
-                        .saturating_add(delta.estimated_bytes)
-                        > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-                    if exceeds_count || exceeds_bytes {
-                        let overflowed_through = highest_sequence;
-                        guard.summary_terminal_overlay_all_time_overflowed_through_sequence =
-                            Some(overflowed_through);
-                        if let Some(account_id) = delta.upstream_account_id {
-                            record_all_time_account_overflow_marker(
-                                &mut guard,
-                                account_id,
-                                delta.terminal_sequence,
-                            );
-                        }
-                        tracing::warn!(
-                            pending_terminal_count = guard.summary_terminal_overlay_all_time.len(),
-                            pending_terminal_bytes = guard.summary_terminal_overlay_all_time_bytes,
-                            overflowed_through,
-                            "all-time summary terminal overlay reached its bounded memory budget"
-                        );
-                    } else {
-                        guard.summary_terminal_overlay_all_time_bytes = guard
-                            .summary_terminal_overlay_all_time_bytes
-                            .saturating_add(delta.estimated_bytes);
-                        guard
-                            .summary_terminal_overlay_all_time
-                            .push_back(delta.clone());
-                    }
-                } else if guard
-                    .summary_terminal_overlay_all_time_overflowed_through_sequence
-                    .is_some()
-                    && let Some(account_id) = delta.upstream_account_id
-                {
-                    record_all_time_account_overflow_marker(
-                        &mut guard,
-                        account_id,
-                        delta.terminal_sequence,
-                    );
+                    append_summary_all_time_delta(&mut guard, delta, highest_sequence);
                 }
             }
             guard.dashboard_terminal_slice = Some(Arc::new(slice));
@@ -9728,7 +10163,7 @@ fn terminal_delta_is_within_range(
         .is_some_and(|occurred_at| occurred_at >= range.start && occurred_at < range.end)
 }
 
-fn apply_dashboard_terminal_slice_to_summary_response(
+pub(crate) fn apply_dashboard_terminal_slice_to_summary_response(
     response: &mut StatsResponse,
     terminal_sequence: &mut u64,
     window: &SummaryWindow,
@@ -9752,32 +10187,6 @@ fn apply_dashboard_terminal_slice_to_summary_response(
         }
         apply_dashboard_activity_terminal_delta_to_stats(response, delta);
         *terminal_sequence = (*terminal_sequence).max(delta.terminal_sequence);
-    }
-}
-
-fn apply_dashboard_terminal_slice_to_summary_response_skipping_sequences(
-    response: &mut StatsResponse,
-    suppressions: &mut HashSet<u64>,
-    window: &SummaryWindow,
-    reporting_tz: Tz,
-    source_scope: InvocationSourceScope,
-    upstream_account_id: Option<i64>,
-    slice: &DashboardTerminalProjectionSlice,
-) {
-    let range = summary_window_range(window, reporting_tz, Utc::now())
-        .ok()
-        .flatten()
-        .map(|(start, end)| ExactUtcRange { start, end });
-    for delta in &slice.deltas {
-        if suppressions.remove(&delta.terminal_sequence)
-            || !terminal_delta_matches_source_scope(delta, source_scope)
-            || upstream_account_id
-                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
-            || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
-        {
-            continue;
-        }
-        apply_dashboard_activity_terminal_delta_to_stats(response, delta);
     }
 }
 
@@ -11003,27 +11412,60 @@ impl SubscriptionTopic {
                         projection,
                         pending_terminal_deltas,
                         initial_terminal_slice_suppressions,
+                        gaps,
                     )) = projection_with_overlay
                     {
-                        let mut response = projection
-                            .response_for_query(&query, state.config.list_limit_max as i64)?;
+                        if !matches!(summary_window, SummaryWindow::All)
+                            && crate::summary_delta_gap_affects_selection(
+                                projection.as_ref(),
+                                &gaps,
+                                &pending_terminal_deltas,
+                                &summary_window,
+                                reporting_tz,
+                                *upstream_account_id,
+                            )
+                        {
+                            return Err(ApiError::unavailable(anyhow!(
+                                "summary delta journal has an unproven change for the requested selection"
+                            )));
+                        }
+                        let mut response = projection.response_for_query_with_rolling_delta(
+                            &query,
+                            state.config.list_limit_max as i64,
+                            !matches!(summary_window, SummaryWindow::All)
+                                && (!pending_terminal_deltas.is_empty() || !gaps.is_empty()),
+                        )?;
+                        let current_selection =
+                            if let SummaryWindow::Current(limit) = &summary_window {
+                                projection.apply_rolling_delta_to_current_response(
+                                    &mut response,
+                                    *limit,
+                                    *upstream_account_id,
+                                    &pending_terminal_deltas,
+                                )?;
+                                true
+                            } else {
+                                false
+                            };
                         // The immutable SummaryProjection represents one durable baseline. A
                         // terminal remains in the hub-owned overlay until that exact projection
                         // contains its durable identity, including after SQLite ACK but before a
                         // background projection swap. This stays entirely in memory.
                         let mut replayed_terminal_sequence = 0;
-                        apply_dashboard_terminal_slice_to_summary_response(
-                            &mut response,
-                            &mut replayed_terminal_sequence,
-                            &summary_window,
-                            reporting_tz,
-                            InvocationSourceScope::All,
-                            *upstream_account_id,
-                            &DashboardTerminalProjectionSlice {
-                                revision: 0,
-                                deltas: pending_terminal_deltas,
-                            },
-                        );
+                        if !current_selection {
+                            apply_dashboard_terminal_slice_to_summary_response(
+                                &mut response,
+                                &mut replayed_terminal_sequence,
+                                &summary_window,
+                                reporting_tz,
+                                InvocationSourceScope::All,
+                                *upstream_account_id,
+                                &DashboardTerminalProjectionSlice {
+                                    revision: 0,
+                                    deltas: pending_terminal_deltas,
+                                },
+                            );
+                        }
                         let range_start =
                             summary_window_range(&summary_window, reporting_tz, Utc::now())?
                                 .map(|(start, _)| start);
@@ -13328,6 +13770,168 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn summary_delta_journal_conflicting_ack_records_gap() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut first = dashboard_runtime_topology_live_record(&occurred_at);
+        first.id = 0;
+        first.invoke_id = "summary-delta-journal-first".to_string();
+        first.status = Some("success".to_string());
+        first.live_phase = None;
+        let first = apply_dashboard_activity_terminal_record(state.as_ref(), &first)
+            .await
+            .terminal_delta
+            .expect("accept first terminal delta");
+        let mut skipped = first.clone();
+        skipped.invoke_id = "summary-delta-journal-skipped".to_string();
+        skipped.terminal_sequence = first.terminal_sequence.saturating_add(2);
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.append(first, 1));
+        assert!(
+            !journal.append(skipped, 3),
+            "a non-contiguous durable ACK must not be treated as an exact delta"
+        );
+        assert!(
+            journal
+                .gap_proofs
+                .iter()
+                .any(|proof| proof.occurred_at.is_empty() && proof.upstream_account_id.is_none()),
+            "a missing cursor without durable metadata must remain globally fail-closed"
+        );
+        assert!(
+            journal
+                .gap_proofs
+                .iter()
+                .any(|proof| proof.cursor == SummaryDeltaCursor(3)),
+            "the later conflicting ACK retains its bounded recovery cursor"
+        );
+        assert_eq!(journal.overflowed_through_sequence, Some(3));
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_rollback_removes_speculative_entry() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 1;
+        record.invoke_id = "summary-delta-rolled-back".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        let mut speculative = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+            .await
+            .terminal_delta
+            .expect("accept speculative terminal delta");
+        speculative.terminal_sequence = 1;
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.register_pending(speculative.clone()));
+        assert!(journal.entries.is_empty());
+        journal.rollback_pending(Some(speculative.terminal_sequence));
+        assert!(journal.pending.is_empty());
+        assert!(journal.entries.is_empty());
+        assert_eq!(journal.cursor, SummaryDeltaCursor(1));
+        assert!(journal.gap_proofs.is_empty());
+
+        let mut committed = speculative;
+        committed.invoke_id = "summary-delta-after-rollback".to_string();
+        committed.terminal_sequence = 2;
+        committed.persisted_row_id = Some(2);
+        assert!(journal.register_pending(committed.clone()));
+        assert!(journal.acknowledge_pending(committed));
+        assert_eq!(journal.entries.len(), 1);
+        assert_eq!(
+            journal.entries.front().map(|entry| entry.cursor),
+            Some(SummaryDeltaCursor(2))
+        );
+        assert!(journal.gap_proofs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_capacity_overflow_retains_local_proof() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut template = dashboard_runtime_topology_live_record(&occurred_at);
+        template.id = 1;
+        template.invoke_id = "summary-delta-capacity-template".to_string();
+        template.status = Some("success".to_string());
+        template.live_phase = None;
+        template.upstream_account_id = Some(42);
+        let template = apply_dashboard_activity_terminal_record(state.as_ref(), &template)
+            .await
+            .terminal_delta
+            .expect("accept terminal delta template");
+
+        let mut journal = SummaryDeltaJournal::default();
+        for sequence in 1..=SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 {
+            let mut delta = template.clone();
+            delta.invoke_id = format!("summary-delta-capacity-{sequence}");
+            delta.terminal_sequence = sequence;
+            assert!(
+                journal.append(delta, sequence),
+                "the bounded journal must admit its exact configured capacity"
+            );
+        }
+        let mut overflow = template;
+        overflow.invoke_id = "summary-delta-capacity-overflow".to_string();
+        overflow.terminal_sequence = SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 + 1;
+        assert!(
+            !journal.append(overflow, SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 + 1),
+            "the first entry beyond capacity must not become an exact delta"
+        );
+        let proof = journal
+            .gap_proofs
+            .back()
+            .expect("known overflow retains a bounded gap proof");
+        assert_eq!(proof.upstream_account_id, Some(42));
+        assert!(!proof.occurred_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_proof_budget_retains_broad_fail_closed_guard() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut template = dashboard_runtime_topology_live_record(&occurred_at);
+        template.id = 1;
+        template.status = Some("success".to_string());
+        template.live_phase = None;
+        let template = apply_dashboard_activity_terminal_record(state.as_ref(), &template)
+            .await
+            .terminal_delta
+            .expect("accept terminal delta template");
+
+        let mut journal = SummaryDeltaJournal::default();
+        for sequence in 1..=SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS as u64 + 1 {
+            let mut gap = template.clone();
+            gap.invoke_id = format!("summary-delta-proof-budget-{sequence}");
+            gap.terminal_sequence = sequence;
+            gap.upstream_account_id = Some(sequence as i64);
+            journal.note_gap(&gap);
+        }
+
+        assert!(journal.gap_proof_budget_exhausted);
+        assert_eq!(journal.gap_proofs.len(), 1);
+        let proof = journal
+            .gap_proofs
+            .front()
+            .expect("budget exhaustion retains a broad proof");
+        assert!(proof.occurred_at.is_empty());
+        assert_eq!(proof.upstream_account_id, None);
+    }
+
+    #[tokio::test]
     async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -13823,35 +14427,24 @@ mod tests {
                 "topic {topic} should reuse one serialized frame across SSE owners",
             );
         }
-        for (topic, terminal_total) in [
-            ("dashboard.activity.current", json!(1)),
-            ("stats.summary.current", json!(1)),
-        ] {
-            let first_owner_frames = first_observations
-                .get(topic)
-                .expect("first owner should observe terminal Dashboard frame");
-            let second_owner_frames = second_observations
-                .get(topic)
-                .expect("second owner should observe terminal Dashboard frame");
-            let terminal_frame = first_owner_frames
+        let topic = "dashboard.activity.current";
+        let terminal_total = json!(1);
+        let first_owner_frames = first_observations
+            .get(topic)
+            .expect("first owner should observe terminal Dashboard frame");
+        let second_owner_frames = second_observations
+            .get(topic)
+            .expect("second owner should observe terminal Dashboard frame");
+        let terminal_frame = first_owner_frames
+            .iter()
+            .find(|frame| frame.payload_value()["summary"]["stats"]["totalCount"] == terminal_total)
+            .expect("first owner should observe the terminal slice frame");
+        assert!(
+            second_owner_frames
                 .iter()
-                .find(|frame| {
-                    let payload = frame.payload_value();
-                    let total = if topic == "dashboard.activity.current" {
-                        &payload["summary"]["stats"]["totalCount"]
-                    } else {
-                        &payload["totalCount"]
-                    };
-                    total == &terminal_total
-                })
-                .expect("first owner should observe the terminal slice frame");
-            assert!(
-                second_owner_frames
-                    .iter()
-                    .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
-                "terminal topic {topic} must reuse one frame across two SSE owners",
-            );
-        }
+                .any(|frame| Arc::ptr_eq(terminal_frame, frame)),
+            "terminal topic {topic} must reuse one frame across two SSE owners",
+        );
 
         let projection = state
             .proxy_runtime_invocations
@@ -15517,7 +16110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_slice_materializes_activity_and_summary_without_live_sqlite() {
+    async fn terminal_slice_materializes_activity_without_speculative_summary() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -15602,7 +16195,7 @@ mod tests {
         let activity_cached = &guard.topics[&activity_key];
         let summary_cached = &guard.topics[&summary_key];
         assert_eq!(activity_cached.cursor, activity_cursor_before + 1);
-        assert_eq!(summary_cached.cursor, summary_cursor_before + 1);
+        assert_eq!(summary_cached.cursor, summary_cursor_before);
         assert_eq!(
             activity_cached.snapshot_frame.payload_value()["summary"]["stats"]["totalCount"],
             json!(1)
@@ -15639,7 +16232,7 @@ mod tests {
         );
         assert_eq!(
             summary_cached.snapshot_frame.payload_value()["totalCount"],
-            json!(1)
+            json!(0)
         );
         drop(guard);
 
@@ -15662,9 +16255,8 @@ mod tests {
             "an unchanged terminal revision must not advance the activity cursor",
         );
         assert_eq!(
-            guard.topics[&summary_key].cursor,
-            summary_cursor_before + 1,
-            "an unchanged terminal revision must not advance the summary cursor",
+            guard.topics[&summary_key].cursor, summary_cursor_before,
+            "an unacknowledged terminal slice must not advance the summary cursor",
         );
     }
 
@@ -15967,7 +16559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hydrated_summary_topic_replays_pending_terminal_without_sqlite() {
+    async fn hydrated_summary_topic_does_not_replay_unacknowledged_terminal_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -15999,7 +16591,7 @@ mod tests {
         let payload = summary
             .build_cached_payload(state.clone())
             .await
-            .expect("hydrated Summary topic must replay the pending terminal from memory")
+            .expect("hydrated Summary topic must keep the pre-commit baseline in memory")
             .serialize(
                 None,
                 None,
@@ -16010,9 +16602,9 @@ mod tests {
             )
             .expect("serialize the memory-backed Summary topic");
         let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
-        assert_eq!(payload["totalCount"], json!(1));
-        assert_eq!(payload["totalTokens"], json!(42));
-        assert_eq!(payload["totalCost"], json!(0.25));
+        assert_eq!(payload["totalCount"], json!(0));
+        assert_eq!(payload["totalTokens"], json!(0));
+        assert_eq!(payload["totalCost"], json!(0.0));
     }
 
     #[tokio::test]
@@ -16172,12 +16764,13 @@ mod tests {
 
         // This is the former split-read interleaving: capture the old projection and its overlay,
         // then let refresh publish the new projection that consumes and clears that overlay.
-        let (projection, pending_terminal_deltas, initial_terminal_slice_suppressions) = state
-            .subscription_hub
-            .summary_projection_with_terminal_overlay(false, None)
-            .await
-            .expect("capture coherent Summary snapshot")
-            .expect("initial Summary projection is available");
+        let (projection, pending_terminal_deltas, initial_terminal_slice_suppressions, _gaps) =
+            state
+                .subscription_hub
+                .summary_projection_with_terminal_overlay(false, None)
+                .await
+                .expect("capture coherent Summary snapshot")
+                .expect("initial Summary projection is available");
         assert_eq!(pending_terminal_deltas.len(), 1);
 
         hydrate_summary_snapshots(state.as_ref())
@@ -16189,7 +16782,8 @@ mod tests {
                 .state
                 .lock()
                 .await
-                .summary_terminal_overlay
+                .summary_delta_journal
+                .entries
                 .is_empty(),
             "the refreshed projection must consume the prior terminal overlay"
         );
@@ -16429,7 +17023,7 @@ mod tests {
         {
             let hub = state.subscription_hub.state.lock().await;
             assert!(
-                hub.summary_terminal_overlay.is_empty(),
+                hub.summary_delta_journal.entries.is_empty(),
                 "global proof must consume the terminal exactly once from the shared overlay"
             );
         }
@@ -16533,8 +17127,8 @@ mod tests {
             .await;
         {
             let mut hub = state.subscription_hub.state.lock().await;
-            hub.summary_terminal_overlay_overflowed_through_sequence =
-                Some(delta.terminal_sequence);
+            hub.summary_delta_journal.overflowed_through_sequence = Some(delta.terminal_sequence);
+            hub.summary_delta_journal.note_gap(&delta);
         }
 
         let summary = SubscriptionTopic::SummaryCurrent {
@@ -16557,7 +17151,8 @@ mod tests {
                 .state
                 .lock()
                 .await
-                .summary_terminal_overlay_overflowed_through_sequence
+                .summary_delta_journal
+                .overflowed_through_sequence
                 .is_none(),
             "the durable watermark must clear an overflow it fully covers",
         );

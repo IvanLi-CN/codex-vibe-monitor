@@ -4,6 +4,15 @@
 
 ## Current Status
 
+- `SummaryDeltaJournal` retains compact terminal deltas only after the SQLite
+  batch writer has acknowledged the source record. Its 10,000-entry / 64 MiB
+  cap and monotonic cursor make the rolling tail bounded.
+- `RollingDelta` renews a published rolling Projection from that continuous
+  journal instead of entering complete live admission. Direct durable changes
+  without journal evidence retain the existing bounded full Rolling path.
+- HTTP and Summary SSE compose the immutable base and journal from hub memory.
+  A current selection that would require rank replacement, or a time/account
+  range intersecting a `DeltaGapProof`, is unavailable rather than approximate.
 - Lifecycle: active canonical-classification recovery initiative.
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.
 - Cold maintenance retries now retain the 30-second Bootstrap mode until the hub has atomically published its first immutable Projection; only published Projections use the four-second Rolling refresh path. Bootstrap telemetry records the current archive admission, runtime overlay, Projection materialization and generation-fence snapshot stages without source content.
@@ -25,6 +34,7 @@
 - Historical live coverage follows the same staged availability boundary. Bootstrap and the dedicated background recovery mode group the bounded historical interval by source hour and account, then publish the resulting generation-fenced proof with the Projection. Rolling reads only the ID delta inside an unchanged proof overlap and verifies the small moving tail; it neither repeats the full group-by nor opens a request-time fallback. A late historical ID becomes an hour-local unavailable proof until the background pass replaces it with complete coverage, while the fresh current/recent Projection remains published.
 - Bootstrap does not publish speculative zero-valued all-time account entries, and a bounded current-rank cutoff does not invalidate separately exact rolling ranges. When a refresh observes a finite archive gap, it publishes the independently exact selections with that gap marked unavailable while retaining an exact all-time last-good response where available. Account-manifest or account-replay gaps remain account-scoped so a globally proven compact rollup stays available; a gap without finite coverage proof remains broadly unavailable. The final all-time assembly has its own bounded background deadline so materialized current boundaries can converge without extending the startup gate.
 - Projection freshness renewal compares the complete durable generation fence before it extends a published rolling response. A matching fence renews only the in-memory freshness lease; a changed live watermark, global/account rollup cursor, archive manifest high-watermark, or settled terminal sequence takes the normal bounded rebuild path. An all-time task that observes a changed fence cancels before publication, releases its refresh lock and immediately hands off to that rolling rebuild; staged finalization checks the fence before and after its atomic swap.
+- Summary Delta Journal retains a broad fail-closed proof instead of evicting an older scoped proof when its proof budget saturates. Terminal-journal and shutdown replay records become exact committed rolling overlays with their own bounded residency, because their prior process-local dashboard sequence is not valid after restart; replay does not trigger full live admission.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 

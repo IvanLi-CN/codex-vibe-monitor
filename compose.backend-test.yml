@@ -5,3 +5,8 @@ services:
       dockerfile: Dockerfile
       target: backend-test
     working_dir: /workspace
+    entrypoint: []
+    command: ["sleep", "infinity"]
+    user: "65534:65534"
+    environment:
+      CARGO_HOME: /tmp/codex-vibe-monitor-backend-test/cargo-home

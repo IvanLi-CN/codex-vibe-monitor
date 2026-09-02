@@ -878,7 +878,9 @@ impl TerminalJournal {
                         Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
                     }),
                     raw_capture: entry.raw_capture,
-                    dashboard_terminal_sequence: None,
+                    // The original process-local dashboard sequence is unavailable after a
+                    // restart. The writer treats this sentinel as an exact replay overlay.
+                    dashboard_terminal_sequence: Some(0),
                     terminal_projection_event_ids: Vec::new(),
                     startup_backfill_tasks,
                     record,
@@ -1140,7 +1142,9 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
             |((invoke_id, occurred_at, raw_capture), record)| BatchedTerminalInvocationWrite {
                 capture_started: None,
                 raw_capture: *raw_capture,
-                dashboard_terminal_sequence: None,
+                // Shutdown recovery has the same post-restart sequence boundary as journal
+                // replay and must not force Summary into a full rolling rebuild.
+                dashboard_terminal_sequence: Some(0),
                 terminal_projection_event_ids: Vec::new(),
                 startup_backfill_tasks: startup_backfill_tasks_for_terminal(
                     &api_invocation_from_runtime_record(record),

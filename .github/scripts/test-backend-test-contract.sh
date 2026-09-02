@@ -13,8 +13,15 @@ grep -q '^  backend-test:$' "$compose_file"
 grep -q 'target: backend-test' "$compose_file"
 grep -q 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"
 grep -q 'CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216' "$dockerfile"
+grep -q 'rustup component add clippy' "$dockerfile"
 grep -q 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest' "$dockerfile"
+grep -q '^COPY scripts/search-raw ./scripts/search-raw$' "$dockerfile"
+grep -q '^RUN mkdir -p target && chown 65534:65534 target$' "$dockerfile"
 grep -q 'ENTRYPOINT \["bash", ".github/scripts/run-backend-tests.sh"\]' "$dockerfile"
+grep -q '^    entrypoint: \[\]$' "$compose_file"
+grep -q '^    command: \["sleep", "infinity"\]$' "$compose_file"
+grep -q '^    user: "65534:65534"$' "$compose_file"
+grep -q '^      CARGO_HOME: /tmp/codex-vibe-monitor-backend-test/cargo-home$' "$compose_file"
 
 if ! grep -Fq 'id: backend-test-image-name' "$ci_main_workflow"; then
   echo 'expected CI Main to normalize the backend-test GHCR image name' >&2
@@ -36,7 +43,20 @@ if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{
   exit 1
 fi
 
+python3 "$repo_root/.github/scripts/test-shared-testbox-api-read-smoke.py"
+
+if ! grep -Fq -- '--entrypoint /bin/chmod' "$repo_root/scripts/shared-testbox-api-read-smoke"; then
+  echo 'shared API smoke cleanup must make app-owned data removable before cleanup' >&2
+  exit 1
+fi
+
 grep -q '^FROM production-runtime AS runtime$' "$dockerfile"
+
+default_docker_stage="$(awk '/^FROM / { stage = $0 } END { print stage }' "$dockerfile")"
+if [[ "$default_docker_stage" != 'FROM production-runtime AS runtime' ]]; then
+  echo "default Docker build must produce the runtime image, got: $default_docker_stage" >&2
+  exit 1
+fi
 
 release_amd_smoke_build="$(sed -n '/^      - name: Build smoke image (linux\/amd64, load)$/,/^      - name: Smoke test image (linux\/amd64)$/p' "$release_workflow")"
 if ! grep -Fq 'target: runtime' <<<"$release_amd_smoke_build"; then
