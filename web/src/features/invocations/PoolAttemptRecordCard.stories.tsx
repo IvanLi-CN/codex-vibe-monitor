@@ -108,6 +108,53 @@ export const FreshAssignmentRoutingDecision: Story = {
   },
 };
 
+function RecoveryStoryCard() {
+  const { t } = useTranslation();
+  return (
+    <div data-visual-evidence-surface className="max-w-3xl bg-blue-200 p-6">
+      <div data-visual-evidence-target>
+        <PoolAttemptRecordCard
+          attempt={{
+            ...freshAssignmentAttempt,
+            attemptId: "RECOVERYAUDIT1",
+            upstreamAccountId: 2918,
+            upstreamAccountName: "Ciii2",
+            routingSource: "priorityHandoff",
+            routingSelectionAudit: {
+              ...freshAssignmentAttempt.routingSelectionAudit!,
+              selectedAccountId: 2918,
+              selectedAccountName: "Ciii2",
+              winnerReasonCode: "requestDrivenRecoveryAdmission",
+              handoffAdmission: {
+                decision: "admitted",
+                phase: "verifying",
+                verificationSuccessCount: 1,
+                generation: 8,
+                trigger: "modelRouteRecovery",
+              },
+            },
+          }}
+          proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
+          t={t}
+          testId="request-driven-recovery-admission"
+        />
+      </div>
+    </div>
+  );
+}
+
+export const RequestDrivenRecoveryAdmission: Story = {
+  render: RecoveryStoryCard,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("request-driven-recovery-admission")).toBeVisible();
+    await expect(
+      canvas.getByText(/请求驱动的恢复目标|request-driven recovery target/i),
+    ).toBeVisible();
+    await expect(canvas.getByText(/模型路由恢复|Model-route recovery/i)).toBeVisible();
+  },
+};
+
 export const HistoricalDecisionWithoutScore: Story = {
   render: HistoricalStoryCard,
   play: async ({ canvasElement }) => {

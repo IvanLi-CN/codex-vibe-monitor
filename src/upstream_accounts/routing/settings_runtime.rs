@@ -1547,6 +1547,8 @@ pub(crate) struct PoolRoutingHandoffAdmission {
     pub(crate) verification_success_count: u8,
     #[serde(default)]
     pub(crate) generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trigger: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

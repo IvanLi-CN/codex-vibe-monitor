@@ -196,11 +196,24 @@ function routingSelectionHandoffLabel(audit: PoolRoutingSelectionAudit, t: Trans
   const phaseKey = `live.routing.record.handoffPhases.${admission.phase}` as TranslationKey;
   const decision = t(decisionKey) === decisionKey ? admission.decision : t(decisionKey);
   const phase = t(phaseKey) === phaseKey ? admission.phase : t(phaseKey);
-  return t("live.routing.record.handoffAdmissionValue", {
-    decision,
-    phase,
-    count: admission.verificationSuccessCount,
-  });
+  const triggerKey =
+    `live.routing.record.handoffTriggers.${admission.trigger ?? ""}` as TranslationKey;
+  const trigger = admission.trigger
+    ? t(triggerKey) === triggerKey
+      ? admission.trigger
+      : t(triggerKey)
+    : null;
+  return t(
+    trigger
+      ? "live.routing.record.handoffAdmissionValueWithTrigger"
+      : "live.routing.record.handoffAdmissionValue",
+    {
+      decision,
+      phase,
+      count: admission.verificationSuccessCount,
+      ...(trigger ? { trigger } : {}),
+    },
+  );
 }
 
 export function PoolAttemptRecordCard({

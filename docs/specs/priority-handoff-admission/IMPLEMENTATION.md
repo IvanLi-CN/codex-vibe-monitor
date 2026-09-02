@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: the original admission gate, audit contract, and Settings UI are implemented; request-driven recovery admission is specified but not yet implemented
+- Implementation: the original admission gate, request-driven recovery path, generation fences, audit contract, and record-detail diagnostics are implemented
 - Lifecycle: active
 - Catalog note: topic anchor: API Key / routing / sticky priority handoff
 
@@ -15,7 +15,7 @@
 - 全局 Settings 开关 `priorityHandoffAdmissionEnabled` 已实现并默认开启。新增恢复通道继续由同一开关控制，不增加第二个设置；关闭时保留旧路由行为，重新开启时以新的本地状态代际从 `0/3` 验证。
 - 运行时许可、冷却与恢复计数只存在于当前进程。设置和诊断可持久化，但没有持久化可用性时不得阻断请求。
 
-## Planned implementation map
+## Implemented behavior map
 
 ### 1. Expose recovery eligibility in the immutable routing snapshot
 
@@ -60,8 +60,7 @@
 
 ## Remaining Gaps
 
-- Request-driven recovery admission and its temporal coupling are not yet present in business code.
-- Real-upstream cancellation and uncertain-delivery behavior continues to rely on the existing transport harness; the change must preserve its conservative terminal rules.
+- Real-upstream cancellation and uncertain-delivery behavior continues to rely on the existing transport harness; the change preserves its conservative terminal rules.
 
 ## Related Changes
 

@@ -556,6 +556,7 @@ export interface PoolRoutingSelectionAudit {
     phase: string;
     verificationSuccessCount: number;
     generation?: number;
+    trigger?: "priorityAttraction" | "modelRouteRecovery" | string;
   } | null;
   excludedCandidates: PoolRoutingSelectionAuditExcludedCandidate[];
 }
@@ -3843,7 +3844,7 @@ function normalizePromptCacheConversationOperationStickySnapshot(
   };
 }
 
-function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionAudit | null {
+export function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionAudit | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const selectedAccountId = normalizeFiniteNumber(payload.selectedAccountId);
   const selectedAccountName =
@@ -3936,6 +3937,9 @@ function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSelectionA
       normalized.handoffAdmission = { decision, phase, verificationSuccessCount };
       const generation = normalizeFiniteNumber(admission.generation);
       if (generation != null) normalized.handoffAdmission.generation = generation;
+      if (typeof admission.trigger === "string" && admission.trigger.trim()) {
+        normalized.handoffAdmission.trigger = admission.trigger.trim();
+      }
     }
   }
   return normalized;

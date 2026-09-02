@@ -167,7 +167,9 @@ impl ModelRoutePenalty {
 pub(crate) struct ModelRouteRuntimeSnapshot {
     state: String,
     cooldown_until: Option<String>,
+    last_failure_kind: Option<String>,
     cache_concurrency_limit: Option<i64>,
+    cache_recovery_limit: Option<i64>,
 }
 
 impl ModelRouteRuntimeSnapshot {
@@ -198,6 +200,16 @@ impl ModelRouteRuntimeSnapshot {
                 .is_some_and(|until| until <= now)
     }
 
+    pub(crate) fn is_request_driven_recovery_candidate_at(&self, now: DateTime<Utc>) -> bool {
+        if self.last_failure_kind.as_deref() == Some(CACHE_HIT_FAILURE_KIND)
+            || self.cache_concurrency_limit.is_some()
+            || self.cache_recovery_limit.is_some()
+        {
+            return false;
+        }
+        self.state == MODEL_ROUTE_STATE_DEGRADED || self.requires_expired_cooldown_probe_at(now)
+    }
+
     pub(crate) fn concurrency_limit_at(
         &self,
         cache_hit_protection_enabled: bool,
@@ -216,10 +228,22 @@ impl ModelRouteRuntimeSnapshot {
 pub(crate) async fn load_model_route_runtime_snapshots(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<(i64, String), ModelRouteRuntimeSnapshot>> {
-    let rows = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<i64>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
         r#"
         SELECT routes.account_id, routes.model, routes.state, routes.cooldown_until,
-               routes.cache_concurrency_limit
+               routes.last_failure_kind, routes.cache_concurrency_limit,
+               routes.cache_recovery_limit
           FROM pool_upstream_account_model_routes AS routes
           JOIN pool_upstream_accounts AS accounts ON accounts.id = routes.account_id
          WHERE accounts.kind = ?1
@@ -234,13 +258,23 @@ pub(crate) async fn load_model_route_runtime_snapshots(
     Ok(rows
         .into_iter()
         .map(
-            |(account_id, model, state, cooldown_until, cache_concurrency_limit)| {
+            |(
+                account_id,
+                model,
+                state,
+                cooldown_until,
+                last_failure_kind,
+                cache_concurrency_limit,
+                cache_recovery_limit,
+            )| {
                 (
                     (account_id, model),
                     ModelRouteRuntimeSnapshot {
                         state,
                         cooldown_until,
+                        last_failure_kind,
                         cache_concurrency_limit,
+                        cache_recovery_limit,
                     },
                 )
             },
@@ -1673,7 +1707,13 @@ pub(crate) async fn record_temporary_model_route_failure_from_attempt(
     failure_kind: Option<&str>,
     reason_code: &str,
 ) -> Result<bool> {
-    record_model_route_failure_from_attempt_inner(
+    let Some(attempt_context) = load_attempt_route_context(pool, attempt_id).await? else {
+        return Ok(false);
+    };
+    let Some(model) = attempt_context.request_model else {
+        return Ok(false);
+    };
+    let recorded = record_model_route_failure_from_attempt_inner(
         pool,
         account_id,
         attempt_id,
@@ -1684,7 +1724,11 @@ pub(crate) async fn record_temporary_model_route_failure_from_attempt(
         false,
         Some(reason_code),
     )
-    .await
+    .await?;
+    if recorded {
+        restart_priority_handoff_verification_for_model(account_id, &model);
+    }
+    Ok(recorded)
 }
 
 pub(crate) async fn record_temporary_model_route_failure_for_model(
@@ -1700,7 +1744,7 @@ pub(crate) async fn record_temporary_model_route_failure_for_model(
         return Ok(false);
     }
     let model = model.trim();
-    record_model_route_failure_inner(
+    let recorded = record_model_route_failure_inner(
         pool,
         account_id,
         None,
@@ -1712,7 +1756,11 @@ pub(crate) async fn record_temporary_model_route_failure_for_model(
         false,
         Some(reason_code),
     )
-    .await
+    .await?;
+    if recorded {
+        restart_priority_handoff_verification_for_model(account_id, model);
+    }
+    Ok(recorded)
 }
 
 pub(crate) async fn attempt_has_explicit_model_failure(
