@@ -7182,6 +7182,9 @@ impl std::error::Error for SummaryProjectionAllTimeGenerationChanged {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SummaryProjectionBuildMode {
     Bootstrap,
+    // A published rolling baseline can consume the hub-owned committed terminal journal
+    // without re-admitting the complete live source.
+    RollingDelta,
     Rolling,
     HistoricalLiveCoverage,
     AllTime,
@@ -7704,6 +7707,10 @@ impl SummaryProjection {
         true
     }
 
+    pub(crate) fn renew_freshness_from_delta_journal(&self) {
+        self.freshness_lease.renew();
+    }
+
     fn current_selection_cutoff_for_scope(
         &self,
         upstream_account_id: Option<i64>,
@@ -7723,6 +7730,119 @@ impl SummaryProjection {
 
     fn current_selection_cutoff(&self, limit: usize) -> Option<DateTime<Utc>> {
         self.current_selection_cutoff_for_scope(None, limit)
+    }
+
+    pub(crate) fn delta_gap_affects_current_selection(
+        &self,
+        gap: &DeltaGapProof,
+        limit: usize,
+        upstream_account_id: Option<i64>,
+    ) -> bool {
+        if limit == 0 {
+            return false;
+        }
+        let Some(occurred_at) = parse_to_utc_datetime(&gap.occurred_at) else {
+            return true;
+        };
+        let indexes = self
+            .recent_indexes
+            .get(&upstream_account_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let row_id = gap.row_id.unwrap_or(i64::MAX);
+        let newer_count = indexes
+            .iter()
+            .filter_map(|index| self.current_records.get(*index))
+            .filter(|record| {
+                record.occurred_at > occurred_at
+                    || (record.occurred_at == occurred_at && record.row.id > row_id)
+            })
+            .count();
+        // A gap outside the resident prefix cannot alter a smaller current selection. If its
+        // rank reaches the requested limit, the response cannot be proved exact in memory.
+        limit >= newer_count.saturating_add(1)
+    }
+
+    pub(crate) fn apply_rolling_delta_to_current_response(
+        &self,
+        response: &mut StatsResponse,
+        limit: i64,
+        upstream_account_id: Option<i64>,
+        deltas: &[DashboardActivityTerminalDelta],
+    ) -> Result<(), ApiError> {
+        if deltas.is_empty() {
+            return Ok(());
+        }
+        let limit = limit.max(0) as usize;
+        let indexes = self
+            .recent_indexes
+            .get(&upstream_account_id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut candidates = Vec::<(DateTime<Utc>, i64, StatsTotals, i64)>::new();
+        for index in indexes {
+            let Some(record) = self.current_records.get(*index) else {
+                return Err(ApiError::unavailable(anyhow!(
+                    "summary current delta base is outside the resident index"
+                )));
+            };
+            if upstream_account_id
+                .is_some_and(|account_id| record.row.upstream_account_id != Some(account_id))
+            {
+                continue;
+            }
+            let totals = summary_projection_record_totals(record);
+            let non_success_tokens = (totals.failure_count > 0).then_some(record.row.total_tokens);
+            candidates.push((
+                record.occurred_at,
+                record.row.id,
+                totals,
+                non_success_tokens.unwrap_or_default(),
+            ));
+        }
+        for delta in deltas {
+            if upstream_account_id
+                .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
+            {
+                continue;
+            }
+            let occurred_at = parse_to_utc_datetime(&delta.occurred_at).ok_or_else(|| {
+                ApiError::unavailable(anyhow!(
+                    "summary delta journal has an invalid current ordering timestamp"
+                ))
+            })?;
+            let totals = StatsTotals {
+                total_count: 1,
+                success_count: i64::from(delta.success),
+                failure_count: i64::from(delta.failure),
+                total_tokens: delta.total_tokens,
+                total_cost: delta.total_cost,
+                non_success_cost: if delta.failure { delta.total_cost } else { 0.0 },
+            };
+            candidates.push((
+                occurred_at,
+                delta.persisted_row_id.unwrap_or(i64::MAX),
+                totals,
+                if delta.failure { delta.total_tokens } else { 0 },
+            ));
+        }
+        candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+        let mut totals = StatsTotals::default();
+        let mut non_success_tokens = 0_i64;
+        for (_, _, candidate, candidate_non_success_tokens) in candidates.into_iter().take(limit) {
+            totals = totals.add(candidate);
+            non_success_tokens += candidate_non_success_tokens;
+        }
+        response.total_count = totals.total_count;
+        response.success_count = totals.success_count;
+        response.failure_count = totals.failure_count;
+        response.total_tokens = totals.total_tokens;
+        response.total_cost = totals.total_cost;
+        response.non_success_cost = Some(totals.non_success_cost);
+        if response.non_success_tokens.is_some() {
+            response.non_success_tokens = Some(non_success_tokens);
+        }
+        Ok(())
     }
 
     fn current_archive_may_affect_global_current(&self, limit: usize) -> bool {
@@ -7922,6 +8042,15 @@ impl SummaryProjection {
         params: &SummaryQuery,
         default_limit: i64,
     ) -> Result<StatsResponse, ApiError> {
+        self.response_for_query_with_rolling_delta(params, default_limit, false)
+    }
+
+    pub(crate) fn response_for_query_with_rolling_delta(
+        &self,
+        params: &SummaryQuery,
+        default_limit: i64,
+        rolling_delta_is_exact: bool,
+    ) -> Result<StatsResponse, ApiError> {
         validate_summary_projection_window(params, default_limit)?;
         let rolling_refreshed_at = self.rolling_refreshed_at();
         let last_good_age_ms =
@@ -8040,9 +8169,10 @@ impl SummaryProjection {
                 "summary projection persisted-live account source is unavailable for the requested range"
             )));
         }
-        if self
-            .rolling_refreshed_at()
-            .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+        if !rolling_delta_is_exact
+            && self
+                .rolling_refreshed_at()
+                .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
         {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection last-good snapshot exceeded the freshness budget"
@@ -10198,7 +10328,8 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
         // Rolling deadline used only after an immutable projection exists.
         hydrate_summary_snapshots(state).await?;
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
-        refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling).await?;
+        refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
+            .await?;
     }
     let historical_live_recovery_required = state
         .subscription_hub
@@ -10373,12 +10504,36 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
 ) -> Result<()> {
+    if matches!(mode, SummaryProjectionBuildMode::RollingDelta) {
+        let started = Instant::now();
+        if state
+            .subscription_hub
+            .renew_summary_projection_freshness_from_delta_journal()
+            .await
+        {
+            let (entry_count, gap_count) =
+                state.subscription_hub.summary_delta_journal_counts().await;
+            debug!(
+                ?mode,
+                stage = "delta_journal_reduce",
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                entry_count,
+                gap_count,
+                "summary projection rolling delta renewed without live source admission"
+            );
+            return Ok(());
+        }
+        // Do not infer that a direct durable change is represented by an empty or gapped
+        // journal. That recovery still needs the existing fail-closed full rolling path.
+        return refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::Rolling)
+            .await;
+    }
     let deadline = match mode {
         SummaryProjectionBuildMode::HistoricalLiveCoverage
         | SummaryProjectionBuildMode::AllTime => SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
-        SummaryProjectionBuildMode::Bootstrap | SummaryProjectionBuildMode::Rolling => {
-            SUMMARY_PROJECTION_BUILD_DEADLINE
-        }
+        SummaryProjectionBuildMode::Bootstrap
+        | SummaryProjectionBuildMode::RollingDelta
+        | SummaryProjectionBuildMode::Rolling => SUMMARY_PROJECTION_BUILD_DEADLINE,
     };
     refresh_summary_snapshots_with_deadline(state, mode, Some(deadline), true).await
 }
@@ -22615,7 +22770,7 @@ fn dashboard_activity_terminal_delta(record: &ApiInvocation) -> DashboardActivit
 
 // Persisted dashboard rows come from build_invocation_select_query(), whose timing expression
 // already establishes final-attempt ownership. Runtime records need the stricter retry guard.
-fn persisted_dashboard_activity_terminal_delta(
+pub(crate) fn persisted_dashboard_activity_terminal_delta(
     record: &ApiInvocation,
 ) -> DashboardActivityTerminalDelta {
     dashboard_activity_terminal_delta_with_first_token(
@@ -28961,6 +29116,43 @@ pub(crate) async fn load_summary_response_from_query(
     Ok(response)
 }
 
+pub(crate) fn summary_delta_gap_affects_selection(
+    projection: &SummaryProjection,
+    gaps: &[DeltaGapProof],
+    window: &SummaryWindow,
+    reporting_tz: Tz,
+    upstream_account_id: Option<i64>,
+) -> bool {
+    if let SummaryWindow::Current(limit) = window {
+        return gaps.iter().any(|gap| {
+            (upstream_account_id.is_none()
+                || gap.upstream_account_id.is_none()
+                || gap.upstream_account_id == upstream_account_id)
+                && projection.delta_gap_affects_current_selection(
+                    gap,
+                    (*limit).max(0) as usize,
+                    upstream_account_id,
+                )
+        });
+    }
+    let range = summary_window_range(window, reporting_tz, Utc::now())
+        .ok()
+        .flatten();
+    gaps.iter().any(|gap| {
+        if upstream_account_id.is_some()
+            && gap.upstream_account_id.is_some()
+            && gap.upstream_account_id != upstream_account_id
+        {
+            return false;
+        }
+        let Some((start, end)) = range else {
+            return true;
+        };
+        parse_to_utc_datetime(&gap.occurred_at)
+            .is_none_or(|occurred_at| occurred_at >= start && occurred_at < end)
+    })
+}
+
 pub(crate) async fn fetch_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SummaryQuery>,
@@ -28979,17 +29171,74 @@ pub(crate) async fn fetch_summary(
         .subscription_hub
         .note_summary_http_interest(all_time)
         .await;
-    let projection = state
+    if all_time {
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .ok_or_else(|| {
+                ApiError::unavailable(anyhow!("summary projection has not completed hydration"))
+            })?;
+        return Ok(Json(projection.response_for_query(
+            &params,
+            state.config.list_limit_max as i64,
+        )?));
+    }
+
+    let SummaryRollingDeltaSnapshot {
+        projection,
+        entries: deltas,
+        gaps,
+    } = state
         .subscription_hub
-        .summary_projection()
+        .summary_projection_with_rolling_delta()
         .await
         .ok_or_else(|| {
             ApiError::unavailable(anyhow!("summary projection has not completed hydration"))
         })?;
-    Ok(Json(projection.response_for_query(
+    let window = parse_summary_window(&params, state.config.list_limit_max as i64)
+        .map_err(ApiError::bad_request)?;
+    let account_id = params.upstream_account_id;
+    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    if summary_delta_gap_affects_selection(
+        projection.as_ref(),
+        &gaps,
+        &window,
+        reporting_tz,
+        account_id,
+    ) {
+        return Err(ApiError::unavailable(anyhow!(
+            "summary delta journal has an unproven change for the requested selection"
+        )));
+    }
+    let mut response = projection.response_for_query_with_rolling_delta(
         &params,
         state.config.list_limit_max as i64,
-    )?))
+        !deltas.is_empty() || !gaps.is_empty(),
+    )?;
+    if let SummaryWindow::Current(limit) = window {
+        projection.apply_rolling_delta_to_current_response(
+            &mut response,
+            limit,
+            account_id,
+            &deltas,
+        )?;
+        return Ok(Json(response));
+    }
+    let mut terminal_sequence = 0;
+    apply_dashboard_terminal_slice_to_summary_response(
+        &mut response,
+        &mut terminal_sequence,
+        &window,
+        reporting_tz,
+        InvocationSourceScope::All,
+        account_id,
+        &DashboardTerminalProjectionSlice {
+            revision: 0,
+            deltas,
+        },
+    );
+    Ok(Json(response))
 }
 
 pub(crate) async fn load_stats_maintenance_response(
@@ -31988,6 +32237,183 @@ mod request_compression_query_tests {
         )
         .await;
         assert!(matches!(all_time, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_rolling_delta_publishes_without_full_live_admission() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-delta-base', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed immutable Summary projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+
+        let mut terminal = summary_projection_test_invocation();
+        terminal.id = 913_001;
+        terminal.invoke_id = "summary-delta-committed-terminal".to_string();
+        terminal.occurred_at = db_occurred_at_lower_bound(Utc::now());
+        terminal.source = SOURCE_PROXY.to_string();
+        terminal.status = Some("success".to_string());
+        terminal.live_phase = None;
+        terminal.total_tokens = Some(23);
+        terminal.output_tokens = Some(11);
+        terminal.cost = Some(2.5);
+        terminal.upstream_account_id = Some(42);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost, payload, raw_response, detail_level) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', 'full')",
+        )
+        .bind(terminal.id)
+        .bind(&terminal.invoke_id)
+        .bind(&terminal.occurred_at)
+        .bind(&terminal.source)
+        .bind(terminal.status.as_deref())
+        .bind(terminal.total_tokens)
+        .bind(terminal.output_tokens)
+        .bind(terminal.cost)
+        .bind(json!({ "upstreamAccountId": 42 }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist terminal before its journal ACK");
+        let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+            .await
+            .terminal_delta
+            .expect("materialize committed terminal delta");
+        state
+            .subscription_hub
+            .acknowledge_summary_delta(delta)
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("enable full-build probe");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+        );
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("committed journal must renew rolling projection");
+        assert!(
+            interleave.build_modes().is_empty(),
+            "RollingDelta must not enter full live admission"
+        );
+        clear_summary_projection_test_interleave();
+
+        state.pool.close().await;
+        for window in ["current", "1d", "7d", "30d", "today"] {
+            let Json(response) = fetch_summary(
+                State(state.clone()),
+                Query(SummaryQuery {
+                    window: Some(window.to_string()),
+                    limit: Some(50),
+                    time_zone: Some("Asia/Shanghai".to_string()),
+                    upstream_account_id: None,
+                }),
+            )
+            .await
+            .expect("RollingDelta must serve the exact memory projection");
+            assert_eq!(response.total_count, 2, "{window} exact count");
+            assert_eq!(response.total_tokens, 40, "{window} exact tokens");
+        }
+        let all_time = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(matches!(all_time, Err(ApiError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn summary_projection_delta_gap_respects_current_rank_and_account_scope() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let newest = db_occurred_at_lower_bound(Utc::now());
+        for (index, occurred_at) in [
+            newest,
+            db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(1)),
+            db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query(
+                "INSERT INTO codex_invocations \
+                 (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+                 VALUES (?1, ?2, 'proxy', 'success', 1, 0.01, '{\"upstreamAccountId\":42}', '', 'full')",
+            )
+            .bind(format!("summary-delta-gap-rank-{index}"))
+            .bind(occurred_at)
+            .execute(&state.pool)
+            .await
+            .expect("seed ordered Summary current record");
+        }
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish Summary projection");
+        let projection = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("published projection");
+        let gap = DeltaGapProof {
+            cursor: SummaryDeltaCursor(4),
+            upstream_account_id: Some(42),
+            occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
+            row_id: Some(i64::MAX),
+        };
+
+        assert!(
+            !summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                &[gap.clone()],
+                &SummaryWindow::Current(2),
+                Shanghai,
+                None,
+            ),
+            "a gap beyond the requested current prefix must remain selection-local"
+        );
+        assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                &[gap.clone()],
+                &SummaryWindow::Current(4),
+                Shanghai,
+                None,
+            ),
+            "a current limit reaching the first unproven rank must fail closed"
+        );
+        assert!(
+            !summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                &[gap],
+                &SummaryWindow::Current(50),
+                Shanghai,
+                Some(7),
+            ),
+            "a gap for another account must not hide an independent account selection"
+        );
     }
 
     #[tokio::test]

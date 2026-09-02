@@ -383,6 +383,7 @@ pub(crate) async fn run() -> Result<()> {
     sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
     let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
     let subscription_hub = Arc::new(SubscriptionHub::new());
+    sqlite_batch_writer.set_summary_delta_hub(subscription_hub.clone());
     terminal_projection_hub.set_runtime_mutation_bus(subscription_hub.runtime_mutation_bus());
 
     let state = Arc::new(AppState {

@@ -8,6 +8,7 @@
 - [ADR 0003: Durable invocation classification](../../adr/0003-durable-invocation-classification.md)
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0005: Staged Summary projection recovery](../../adr/0005-staged-summary-projection-recovery.md)
+- [ADR 0008: Bounded incremental Summary projection recovery](../../adr/0008-bounded-incremental-summary-projection-recovery.md)
 - [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
 
 ## 背景 / 问题陈述
@@ -44,6 +45,19 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   and oracle run on the target commit in PR/Main CI. Release relies on that
   successful CI Main result and runtime-image smoke, never an external receipt
   or production-copy path.
+- A published rolling Projection may consume only a continuous,
+  Summary Delta Journal through `RollingDelta`. Pre-enqueue registration is not
+  readable; only a matching SQLite commit ACK promotes the compact delta. It
+  must not re-admit the complete live source for ordinary terminal tail changes. A
+  bounded journal overflow creates a `DeltaGapProof`: intersecting
+  time/account/current-rank selections are unavailable, while disjoint
+  Exact-Ready selections remain memory-only. A missing cursor without durable
+  metadata remains broad unavailable until reconciliation instead of being
+  assigned the range of a later entry.
+- `RollingDelta` never authorizes `all`, request-time SQLite/archive/file I/O,
+  partial data, or stale last-good success. Its journal entries are compact
+  in-memory reductions after durable acknowledgement; all-time convergence
+  remains independently owned by ADR 0005's checkpoint.
 
 ### Non-goals
 

@@ -4,6 +4,15 @@
 
 ## Current Status
 
+- `SummaryDeltaJournal` retains compact terminal deltas only after the SQLite
+  batch writer has acknowledged the source record. Its 10,000-entry / 64 MiB
+  cap and monotonic cursor make the rolling tail bounded.
+- `RollingDelta` renews a published rolling Projection from that continuous
+  journal instead of entering complete live admission. Direct durable changes
+  without journal evidence retain the existing bounded full Rolling path.
+- HTTP and Summary SSE compose the immutable base and journal from hub memory.
+  A current selection that would require rank replacement, or a time/account
+  range intersecting a `DeltaGapProof`, is unavailable rather than approximate.
 - Lifecycle: active canonical-classification recovery initiative.
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.
 - Cold maintenance retries now retain the 30-second Bootstrap mode until the hub has atomically published its first immutable Projection; only published Projections use the four-second Rolling refresh path. Bootstrap telemetry records the current archive admission, runtime overlay, Projection materialization and generation-fence snapshot stages without source content.

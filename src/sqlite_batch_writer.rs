@@ -927,9 +927,15 @@ impl PendingBatch {
         if self.terminal_invocations.is_empty() || max_rows == 0 || max_bytes == 0 {
             return Self::default();
         }
+        // The map is keyed by invocation identity, but Summary consumes terminal entries by
+        // the registration sequence assigned before persistence. Preserve that sequence across
+        // batches whenever the pending set contains a contiguous prefix.
+        let mut candidates = self.terminal_invocations.iter().collect::<Vec<_>>();
+        candidates
+            .sort_by_key(|(_, terminal)| terminal.dashboard_terminal_sequence.unwrap_or(u64::MAX));
         let mut selected_keys = Vec::new();
         let mut selected_bytes = 0_usize;
-        for (key, terminal) in &self.terminal_invocations {
+        for (key, terminal) in candidates {
             let bytes = terminal.estimated_memory_bytes();
             if selected_keys.len() >= max_rows {
                 break;
@@ -1272,6 +1278,7 @@ pub(crate) struct SqliteBatchWriter {
     terminal_runtime_store: Arc<std::sync::Mutex<Option<Arc<ProxyRuntimeInvocationStore>>>>,
     dashboard_activity_snapshot_cache:
         Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
+    summary_delta_hub: Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
     database_path: std::path::PathBuf,
@@ -1303,6 +1310,7 @@ impl SqliteBatchWriter {
         let dropped_writes = Arc::new(AtomicU64::new(0));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_journal = match TerminalJournal::open(database_path) {
             Ok(journal) => Some(journal),
@@ -1341,6 +1349,7 @@ impl SqliteBatchWriter {
             Some(pricing_catalog),
             terminal_runtime_store.clone(),
             dashboard_activity_snapshot_cache.clone(),
+            summary_delta_hub.clone(),
             terminal_projection_hub.clone(),
             dashboard_reconcile_gate.clone(),
             terminal_journal.clone(),
@@ -1356,6 +1365,7 @@ impl SqliteBatchWriter {
             dropped_writes,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            summary_delta_hub,
             terminal_projection_hub,
             terminal_journal,
             database_path: database_path.to_path_buf(),
@@ -1401,6 +1411,7 @@ impl SqliteBatchWriter {
             dropped_writes: Arc::new(AtomicU64::new(0)),
             terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+            summary_delta_hub: Arc::new(std::sync::Mutex::new(None)),
             terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
             terminal_journal: Arc::new(std::sync::Mutex::new(None)),
             database_path: std::path::PathBuf::from("test-sqlite-batch-writer.db"),
@@ -1440,6 +1451,12 @@ impl SqliteBatchWriter {
     ) {
         if let Ok(mut guard) = self.dashboard_activity_snapshot_cache.lock() {
             *guard = Some(cache);
+        }
+    }
+
+    pub(crate) fn set_summary_delta_hub(&self, hub: Arc<SubscriptionHub>) {
+        if let Ok(mut guard) = self.summary_delta_hub.lock() {
+            *guard = Some(hub);
         }
     }
 
@@ -1860,6 +1877,7 @@ impl SqliteBatchWriter {
         }
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let deferred = flush_pending_batch_inner(
@@ -1869,6 +1887,7 @@ impl SqliteBatchWriter {
             None,
             &terminal_runtime_store,
             &dashboard_activity_snapshot_cache,
+            &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
         )
@@ -1882,6 +1901,7 @@ impl SqliteBatchWriter {
                 None,
                 &terminal_runtime_store,
                 &dashboard_activity_snapshot_cache,
+                &summary_delta_hub,
                 &terminal_projection_hub,
                 &dashboard_reconcile_gate,
             )
@@ -1920,6 +1940,7 @@ impl SqliteBatchWriter {
                 self.prompt_cache_conversation_cache.as_ref(),
                 &self.terminal_runtime_store,
                 &self.dashboard_activity_snapshot_cache,
+                &self.summary_delta_hub,
                 &self.terminal_projection_hub,
                 &self.dashboard_reconcile_gate,
             )
@@ -1960,6 +1981,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     dashboard_activity_snapshot_cache: Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    summary_delta_hub: Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
@@ -2054,6 +2076,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 prompt_cache_conversation_cache.as_ref(),
                                 &terminal_runtime_store,
                                 &dashboard_activity_snapshot_cache,
+                                &summary_delta_hub,
                                 &terminal_projection_hub,
                                 &dashboard_reconcile_gate,
                                 &terminal_journal,
@@ -2204,6 +2227,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     prompt_cache_conversation_cache.as_ref(),
                                     &terminal_runtime_store,
                                     &dashboard_activity_snapshot_cache,
+                                    &summary_delta_hub,
                                     &terminal_projection_hub,
                                     &dashboard_reconcile_gate,
                                     &terminal_journal,
@@ -2380,6 +2404,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         prompt_cache_conversation_cache.as_ref(),
                         &terminal_runtime_store,
                         &dashboard_activity_snapshot_cache,
+                        &summary_delta_hub,
                         &terminal_projection_hub,
                         &dashboard_reconcile_gate,
                         &terminal_journal,
@@ -2501,6 +2526,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 prompt_cache_conversation_cache.as_ref(),
                                 &terminal_runtime_store,
                                 &dashboard_activity_snapshot_cache,
+                                &summary_delta_hub,
                                 &terminal_projection_hub,
                                 &dashboard_reconcile_gate,
                                 &terminal_journal,
@@ -2663,6 +2689,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             prompt_cache_conversation_cache.as_ref(),
                             &terminal_runtime_store,
                             &dashboard_activity_snapshot_cache,
+                            &summary_delta_hub,
                             &terminal_projection_hub,
                             &dashboard_reconcile_gate,
                             &terminal_journal,
@@ -2759,6 +2786,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         prompt_cache_conversation_cache.as_ref(),
                         &terminal_runtime_store,
                         &dashboard_activity_snapshot_cache,
+                        &summary_delta_hub,
                         &terminal_projection_hub,
                         &dashboard_reconcile_gate,
                         &terminal_journal,
@@ -2921,6 +2949,7 @@ async fn flush_pending_batch_accounted(
     dashboard_activity_snapshot_cache: &Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
@@ -2937,6 +2966,7 @@ async fn flush_pending_batch_accounted(
         prompt_cache_conversation_cache,
         terminal_runtime_store,
         dashboard_activity_snapshot_cache,
+        summary_delta_hub,
         terminal_projection_hub,
         dashboard_reconcile_gate,
         terminal_journal,
@@ -3138,6 +3168,7 @@ pub(crate) async fn flush_pending_batch(
     dashboard_activity_snapshot_cache: &Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
     terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
@@ -3173,6 +3204,7 @@ pub(crate) async fn flush_pending_batch(
             prompt_cache_conversation_cache,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            summary_delta_hub,
             terminal_projection_hub,
             dashboard_reconcile_gate,
         )
@@ -3192,6 +3224,7 @@ pub(crate) async fn flush_pending_batch(
                         prompt_cache_conversation_cache,
                         terminal_runtime_store,
                         dashboard_activity_snapshot_cache,
+                        summary_delta_hub,
                         terminal_projection_hub,
                         dashboard_reconcile_gate,
                     )
@@ -3376,6 +3409,7 @@ pub(crate) async fn flush_pending_batch(
             prompt_cache_conversation_cache,
             terminal_runtime_store,
             dashboard_activity_snapshot_cache,
+            summary_delta_hub,
             terminal_projection_hub,
             dashboard_reconcile_gate,
         )
@@ -3410,6 +3444,7 @@ pub(crate) async fn flush_pending_batch(
         prompt_cache_conversation_cache,
         terminal_runtime_store,
         dashboard_activity_snapshot_cache,
+        summary_delta_hub,
         terminal_projection_hub,
         dashboard_reconcile_gate,
     )
@@ -3620,6 +3655,7 @@ pub(crate) async fn flush_pending_batch_inner(
     dashboard_activity_snapshot_cache: &Arc<
         std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>,
     >,
+    summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
 ) -> Result<PendingBatch> {
@@ -3682,12 +3718,35 @@ pub(crate) async fn flush_pending_batch_inner(
                         upstream_account_id: record.upstream_account_id,
                         request_model: None,
                     });
-            persisted_terminals.push((terminal, invocation_id, occurred_at, payload_metadata));
+            let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
+                persisted.as_ref().map(|record| {
+                    let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
+                    delta.terminal_sequence = sequence;
+                    delta.persisted_row_id = Some(invocation_id);
+                    delta
+                })
+            });
+            persisted_terminals.push((
+                terminal,
+                invocation_id,
+                occurred_at,
+                payload_metadata,
+                summary_delta,
+            ));
         }
         terminal_tx.commit().await?;
     }
 
-    for (terminal, invocation_id, occurred_at, payload_metadata) in persisted_terminals {
+    // The batch's coalescing key is invocation identity, while Summary's correctness proof is
+    // the terminal sequence allocated at registration time. Commit is atomic, so publish its
+    // ACKs in that sequence order rather than the map's identity order.
+    persisted_terminals.sort_by_key(|(terminal, _, _, _, _)| {
+        terminal.dashboard_terminal_sequence.unwrap_or(u64::MAX)
+    });
+
+    for (terminal, invocation_id, occurred_at, payload_metadata, summary_delta) in
+        persisted_terminals
+    {
         deferred_batch.add_startup_backfill_wake_tasks(&terminal.startup_backfill_tasks);
         let dashboard_cache = dashboard_activity_snapshot_cache
             .lock()
@@ -3702,6 +3761,13 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.dashboard_terminal_sequence,
             )
             .await;
+        }
+        let summary_delta_hub = summary_delta_hub
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        if let (Some(summary_delta), Some(hub)) = (summary_delta, summary_delta_hub) {
+            hub.acknowledge_summary_delta(summary_delta).await;
         }
         if let Some(hub) = terminal_projection_hub
             .lock()
@@ -4564,6 +4630,7 @@ mod tests {
         ));
         let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
 
@@ -4574,6 +4641,7 @@ mod tests {
             None,
             &terminal_runtime_store,
             &dashboard_activity_snapshot_cache,
+            &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
         )
@@ -4600,6 +4668,7 @@ mod tests {
             None,
             &terminal_runtime_store,
             &dashboard_activity_snapshot_cache,
+            &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
         )
@@ -4612,6 +4681,74 @@ mod tests {
         assert_eq!(progress.wake_generation, 1);
         assert!(progress.is_due(Utc::now()));
         assert_eq!(progress.last_status, STARTUP_BACKFILL_STATUS_IDLE);
+    }
+
+    #[tokio::test]
+    async fn summary_delta_journal_acknowledges_only_committed_terminal() {
+        let pool = test_pool().await;
+        let mut batch = PendingBatch::default();
+        let record = crate::tests::test_proxy_capture_record(
+            "summary-delta-committed-ack",
+            "2026-08-09 12:00:00",
+        );
+        batch.push(SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                capture_started: None,
+                raw_capture: false,
+                dashboard_terminal_sequence: Some(1),
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
+                record,
+            },
+        ));
+        let terminal_runtime_store = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_hub = Arc::new(SubscriptionHub::new());
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(Some(summary_hub.clone())));
+        let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
+        let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
+
+        let mut pending_delta = crate::persisted_dashboard_activity_terminal_delta(
+            &batch
+                .terminal_invocations
+                .values()
+                .next()
+                .expect("one queued terminal")
+                .record,
+        );
+        pending_delta.terminal_sequence = 1;
+        pending_delta.persisted_row_id = None;
+        summary_hub
+            .register_summary_delta_pending(pending_delta)
+            .await;
+        assert!(
+            summary_hub
+                .summary_terminal_overlay_identities()
+                .await
+                .is_empty(),
+            "a queued terminal must not be visible to Summary before SQLite commit"
+        );
+        flush_pending_batch_inner(
+            &pool,
+            &batch,
+            None,
+            None,
+            &terminal_runtime_store,
+            &dashboard_activity_snapshot_cache,
+            &summary_delta_hub,
+            &terminal_projection_hub,
+            &dashboard_reconcile_gate,
+        )
+        .await
+        .expect("commit terminal and acknowledge its Summary delta");
+        assert_eq!(
+            summary_hub
+                .summary_terminal_overlay_identities()
+                .await
+                .len(),
+            1,
+            "only the committed terminal belongs to the Summary Delta Journal"
+        );
     }
 
     #[tokio::test]
@@ -4737,6 +4874,8 @@ mod tests {
         ));
         let runtime_store = Arc::new(std::sync::Mutex::new(None));
         let dashboard_cache = Arc::new(std::sync::Mutex::new(None));
+        let summary_hub = Arc::new(SubscriptionHub::new());
+        let summary_delta_hub = Arc::new(std::sync::Mutex::new(Some(summary_hub.clone())));
         let projection_hub = Arc::new(std::sync::Mutex::new(None));
         let reconcile_gate = Arc::new(Mutex::new(()));
 
@@ -4747,11 +4886,19 @@ mod tests {
             None,
             &runtime_store,
             &dashboard_cache,
+            &summary_delta_hub,
             &projection_hub,
             &reconcile_gate,
         )
         .await
         .expect_err("poison record aborts the complete P1 transaction");
+        for terminal in batch.terminal_invocations.values() {
+            let delta = crate::persisted_dashboard_activity_terminal_delta(&terminal.record);
+            summary_hub.register_summary_delta_pending(delta).await;
+            summary_hub
+                .rollback_summary_delta_pending(terminal.dashboard_terminal_sequence)
+                .await;
+        }
         assert!(
             error
                 .chain()
@@ -4766,6 +4913,13 @@ mod tests {
         .await
         .expect("count terminal rows");
         assert_eq!(persisted, 0, "P1 transaction must not commit a prefix");
+        assert!(
+            summary_hub
+                .summary_terminal_overlay_identities()
+                .await
+                .is_empty(),
+            "rolled-back terminals must not enter the Summary Delta Journal"
+        );
     }
 
     #[tokio::test]
@@ -4793,6 +4947,7 @@ mod tests {
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(Mutex::new(())),
             &Arc::new(std::sync::Mutex::new(None)),
         )
@@ -4814,6 +4969,7 @@ mod tests {
             retained.batch,
             FlushReason::Interval,
             None,
+            &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
