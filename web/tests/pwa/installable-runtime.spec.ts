@@ -10,6 +10,22 @@ function jsonRouteBody(body: unknown) {
   };
 }
 
+type ManifestIcon = { src: string };
+type TestManifest = {
+  id: string;
+  scope: string;
+  start_url: string;
+  icons: ManifestIcon[];
+  shortcuts: Array<{ icons: ManifestIcon[] }>;
+};
+
+function manifestIconUrls(manifest: TestManifest): string[] {
+  return [
+    ...manifest.icons.map((icon) => icon.src),
+    ...manifest.shortcuts.flatMap((shortcut) => shortcut.icons.map((icon) => icon.src)),
+  ];
+}
+
 async function maybeCaptureScreenshot(page: Page, filename: string) {
   const captureDir = process.env.PWA_CAPTURE_DIR;
   if (!captureDir) return;
@@ -503,6 +519,7 @@ test.beforeEach(async ({ context, page, request }) => {
 });
 
 test("serves revalidated PWA metadata and immutable content-hashed install icons", async ({
+  page,
   request,
 }) => {
   const metadataCacheControl = "no-cache, max-age=0, must-revalidate";
@@ -510,10 +527,17 @@ test("serves revalidated PWA metadata and immutable content-hashed install icons
 
   const htmlResponse = await request.get("/");
   expect(htmlResponse.headers()["cache-control"]).toBe(metadataCacheControl);
-  const html = await htmlResponse.text();
-  expect(html).toMatch(/rel="manifest"[^>]+site\.webmanifest/);
-  expect(html).toMatch(/favicon-[0-9a-f]{12}\.svg/);
-  expect(html).toMatch(/apple-touch-icon-[0-9a-f]{12}\.png/);
+  expect(page.locator('head link[rel~="manifest"]')).toHaveCount(1);
+  await expect(page.locator('head link[rel~="manifest"]')).toHaveAttribute(
+    "href",
+    /site\.webmanifest$/,
+  );
+  expect(page.locator('head link[rel~="icon"]')).toHaveCount(1);
+  await expect(page.locator('head link[rel~="icon"]')).toHaveAttribute(
+    "href",
+    /favicon-[0-9a-f]{12}\.svg$/,
+  );
+  expect(page.locator('head link[rel~="apple-touch-icon"]')).toHaveCount(0);
 
   const manifestResponse = await request.get("/site.webmanifest");
   expect(manifestResponse.headers()["cache-control"]).toBe(metadataCacheControl);
@@ -538,6 +562,72 @@ test("serves revalidated PWA metadata and immutable content-hashed install icons
   expect(serviceWorker).toContain("site.webmanifest");
   expect(serviceWorker).not.toMatch(/"url":"[^"]*site\.webmanifest/);
   expect(serviceWorker).not.toMatch(/"url":"[^"]*version\.json/);
+  expect(serviceWorker).not.toMatch(
+    /"url":"[^"]*(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[a-f0-9]{12}\.(?:png|svg)/,
+  );
+  expect(serviceWorker).not.toContain("CacheFirst");
+
+  const cachedPaths = await page.evaluate(async () => {
+    const cacheNames = await caches.keys();
+    const cacheEntries = await Promise.all(
+      cacheNames.map(async (cacheName) => (await caches.open(cacheName)).keys()),
+    );
+    return cacheEntries.flat().map((request) => new URL(request.url).pathname);
+  });
+  expect(cachedPaths).not.toContain("/site.webmanifest");
+  expect(cachedPaths).not.toContain("/version.json");
+  expect(
+    cachedPaths.some((path) =>
+      /\/(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[0-9a-f]{12}\.(?:png|svg)$/.test(
+        path,
+      ),
+    ),
+  ).toBe(false);
+});
+
+test("updates a Chromium-installed PWA to V2 manifest and icons without reinstall", async ({
+  page,
+  request,
+}) => {
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
+
+  const v1Manifest = (await request
+    .get("/site.webmanifest")
+    .then((response) => response.json())) as TestManifest;
+  const v1IconUrls = manifestIconUrls(v1Manifest);
+  const registrationScope = await page.evaluate(
+    async () => (await navigator.serviceWorker.ready).scope,
+  );
+
+  await request.get("/__test/switch?v=2");
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.ready;
+    await registration.update();
+  });
+
+  await expect(page.getByTestId("update-available-banner")).toBeVisible();
+  const v2Manifest = await page.evaluate(async () => {
+    const response = await fetch("/site.webmanifest", { cache: "no-store" });
+    return (await response.json()) as TestManifest;
+  });
+  const v2IconUrls = manifestIconUrls(v2Manifest);
+
+  expect(v2Manifest.id).toBe(v1Manifest.id);
+  expect(v2Manifest.scope).toBe(v1Manifest.scope);
+  expect(v2Manifest.start_url).toBe(v1Manifest.start_url);
+  expect(v2IconUrls).not.toEqual(v1IconUrls);
+  expect(await page.evaluate(async () => (await navigator.serviceWorker.ready).scope)).toBe(
+    registrationScope,
+  );
+
+  for (const iconUrl of v2IconUrls) {
+    expect(iconUrl).toMatch(
+      /(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[0-9a-f]{12}\.(?:png|svg)$/,
+    );
+    const iconResponse = await request.get(new URL(iconUrl, "http://127.0.0.1/").pathname);
+    expect(iconResponse.status()).toBe(200);
+    expect(iconResponse.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+  }
 });
 
 test("shows an install prompt dialog without a header button and routes confirm through native prompt", async ({

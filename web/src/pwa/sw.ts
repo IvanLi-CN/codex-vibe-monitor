@@ -18,9 +18,16 @@ function isRuntimeMetadataPath(pathname: string): boolean {
   return filename === "site.webmanifest" || filename === "version.json";
 }
 
+function isInstallIconPath(pathname: string): boolean {
+  const filename = pathname.slice(pathname.lastIndexOf("/") + 1);
+  return /^(?:favicon|icon-192|icon-512|maskable-192|maskable-512)-[0-9a-f]{12}\.(?:png|svg)$/.test(
+    filename,
+  );
+}
+
 const manifestEntries = self.__WB_MANIFEST.filter((entry) => {
   const pathname = (typeof entry === "string" ? entry : entry.url).split(/[?#]/, 1)[0];
-  return !isRuntimeMetadataPath(pathname);
+  return !isRuntimeMetadataPath(pathname) && !isInstallIconPath(pathname);
 });
 
 cleanupOutdatedCaches();
@@ -34,8 +41,11 @@ registerRoute(
   }),
 );
 
-// Metadata must be revalidated so a new manifest can point installed clients at new icon URLs.
-registerRoute(({ url }) => isRuntimeMetadataPath(url.pathname), new NetworkOnly());
+// Runtime metadata and install icons must stay network-backed so new releases can be discovered.
+registerRoute(
+  ({ url }) => isRuntimeMetadataPath(url.pathname) || isInstallIconPath(url.pathname),
+  new NetworkOnly(),
+);
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") {
