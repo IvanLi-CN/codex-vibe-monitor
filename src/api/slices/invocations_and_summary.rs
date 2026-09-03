@@ -9522,7 +9522,8 @@ fn summary_projection_archive_exact_ranges_with_coverage(
         if is_full_bucket && !exact_buckets.contains(&bucket) {
             let global_covered = hourly_rollup_totals.contains_key(&(bucket, None))
                 && overall_rollup_archive_replayed.is_none_or(|replayed| replayed);
-            let global_usage_covered = hourly_rollup_usage.contains_key(&(bucket, None));
+            let global_usage_covered = hourly_rollup_usage.contains_key(&(bucket, None))
+                && usage_rollup_archive_replayed.is_none_or(|replayed| replayed);
             // Durable archive replay markers prove each response dimension consumed this whole
             // archive. Without them, a present rollup key is not enough: it may be stale or
             // partial, and requiring every durable account would also turn inactive accounts
@@ -10937,22 +10938,18 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             );
             return Ok(());
         }
-        // A coverage fence change is reconciled by the independent AllTime checkpoint. Never
-        // fall back to the generic projection builder here: that builder performs complete live
-        // admission and can reintroduce the cold-start pressure pattern. Keep the already
-        // published rolling projection available while the affected historical scope is proved.
-        if state.subscription_hub.summary_projection().await.is_some() {
-            if let Some(projection) = state.subscription_hub.summary_projection().await {
-                projection.renew_freshness_from_delta_journal();
-            }
-            debug!(
-                ?mode,
-                stage = "coverage_fence_deferred",
-                "summary rolling delta deferred coverage reconciliation without full admission"
-            );
-            return Ok(());
-        }
-        return Ok(());
+        // A fence change may belong only to archive or rollup coverage. Rebuild the bounded
+        // RollingDelta projection so its metadata-only admission can publish a localized gap
+        // for the affected range; it still never performs paged raw archive hydration. A
+        // no-op here would leave the old projection falsely fresh after an archive replay proof
+        // changed underneath it.
+        return refresh_summary_snapshots_with_deadline(
+            state,
+            SummaryProjectionBuildMode::RollingDelta,
+            Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+            true,
+        )
+        .await;
     }
     let deadline = match mode {
         SummaryProjectionBuildMode::HistoricalLiveCoverage
@@ -14220,7 +14217,7 @@ async fn build_summary_projection_once(
                             archive.has_materialized_historical_rollups(),
                             Some(replay_coverage.overall),
                             Some(true),
-                            Some(true),
+                            Some(replay_coverage.usage_breakdown),
                             archive_range,
                             &exact_archive_buckets,
                             &hourly_rollup_totals,
