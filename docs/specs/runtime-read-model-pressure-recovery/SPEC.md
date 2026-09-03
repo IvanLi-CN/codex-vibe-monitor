@@ -9,6 +9,7 @@
 - [ADR 0004: Summary archive publication proof](../../adr/0004-summary-archive-publication-proof.md)
 - [ADR 0005: Staged Summary projection recovery](../../adr/0005-staged-summary-projection-recovery.md)
 - [ADR 0008: Bounded incremental Summary projection recovery](../../adr/0008-bounded-incremental-summary-projection-recovery.md)
+- [ADR 0009: Durable Summary source-change and archive-snapshot recovery](../../adr/0009-durable-summary-source-change-and-archive-snapshot-recovery.md)
 - [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
 
 ## 背景 / 问题陈述
@@ -45,19 +46,27 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   and oracle run on the target commit in PR/Main CI. Release relies on that
   successful CI Main result and runtime-image smoke, never an external receipt
   or production-copy path.
-- A published rolling Projection may consume only a continuous,
-  Summary Delta Journal through `RollingDelta`. Pre-enqueue registration is not
-  readable; only a matching SQLite commit ACK promotes the compact delta. It
-  must not re-admit the complete live source for ordinary terminal tail changes. A
-  bounded journal overflow creates a `DeltaGapProof`: intersecting
-  time/account/current-rank selections are unavailable, while disjoint
-  Exact-Ready selections remain memory-only. A missing cursor without durable
+- A published rolling Projection may consume only a continuous in-memory
+  Summary Delta Journal or durable Summary Source Change Journal tail through
+  `RollingDelta`. Pre-enqueue registration is not readable; only a matching
+  SQLite commit ACK promotes the compact terminal delta. Every committed change
+  to a Projection Generation Fence must atomically append a compact source
+  descriptor or compaction proof in that source transaction. A descriptor must
+  contain bounded reconstruction keys and exact account/time/current-rank
+  impact, never raw text or duplicate Summary rows.
+- The active durable source-journal tail is bounded to 10,000 entries or 64
+  MiB. Compaction must preserve a durable union proof; it must not time-delete
+  entries or silently advance a cursor. An intersecting time/account/current-rank
+  selection is unavailable while its proof is unabsorbed, while a disjoint
+  Exact-Ready selection remains memory-only. A missing cursor without durable
   metadata remains broad unavailable until reconciliation instead of being
   assigned the range of a later entry.
-- `RollingDelta` never authorizes `all`, request-time SQLite/archive/file I/O,
-  partial data, or stale last-good success. Its journal entries are compact
-  in-memory reductions after durable acknowledgement; all-time convergence
-  remains independently owned by ADR 0005's checkpoint.
+- `RollingDelta` may rebuild bounded descriptor keys off-request after restart,
+  but must not re-admit complete live source or raw archive data. It never
+  authorizes `all`, request-time SQLite/archive/file I/O, partial data, or stale
+  last-good success. A descriptor gap starts bounded reconciliation rather than
+  a four-second full Rolling rebuild; all-time convergence remains independently
+  owned by ADR 0005's checkpoint.
 
 ### Non-goals
 
@@ -112,11 +121,13 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
 - 仅为 `current` newest-N 候选而读取的 archive record 若在 current-index admission 中被裁剪，且该 record 已由相同 global/account totals 与 usage compact rollup 完整证明，则其裁剪不得写入 rolling/calendar 的遗漏时间边界；没有该完整 scope proof 的裁剪仍必须 fail closed。
 - archive manifest 或历史 source capacity 超过 bounded source admission 或 shared resident preview capacity 时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
-- `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。
+- `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。新的 archive 在 raw source cleanup 前还必须持久化当前 manifest identity 对应的压缩 Summary Archive Snapshot、coverage proof 与 SHA；任何 Snapshot 压力或失败都保留 authoritative archive 并留下可恢复 checkpoint。
 - Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 fail-closed proof，直至 generation-fenced durable reconciliation 吸收该缺口。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
+- Summary Source Change Journal 的 normal terminal path 必须复用既有批量 source transaction，不得增加额外 transaction、connection 或 request-time read。descriptor/proof 写入失败时 source transaction 不得静默提交；journal WAL bytes、commit latency、lock retry、compaction 和 bounded reconstruction 必须有脱敏 telemetry，并作为 representative-scale acceptance 的容量门。
+- Summary Archive Snapshot 必须只包含重建既有精确 `StatsResponse` 所需的规范化字段，禁止 raw text 与 preview payload。Snapshot 存放在主 SQLite，按 archive 的受限压缩 page 写入；HTTP/SSE 只读取已发布 Projection。Legacy Snapshot Backfill 必须 seek-paged、低优先级、可中断且持久化 cursor；可读取 legacy source 自动回填，缺失或不可读的唯一 authority 保持有限 range-local unavailable。
 - `archive_batches.summary_source_kind` 区分 Summary source role：`authoritative` 表示 live canonical record 已删除，必须满足 Archive Publication Proof；`live_mirror` 表示仅精简详情、canonical record 仍在 live SQLite，永不参与 Summary admission、rollup repair 或 archive backlog；`unknown` legacy manifest 继续按潜在 authoritative source fail closed。正常启动可将 `segment_v1` 的连续 live ID 闭区间作为快速兼容证明；对其余 `unknown` manifest，后台必须验证当前 archive SHA、row count 与每个 archived `(id, invoke_id)` 的 live identity，才可分类为 `live_mirror`。任何缺失、变更、不可读或替换的 identity 保持 `unknown`，并走 authoritative proof recovery。首次 Summary Projection 前必须由 Summary Startup Recovery Gate 捕获稳定的 unknown-manifest ID high-watermark，并以有界、可取消的 identity windows 完成这份快照；独立 proof 可以有界并行，但只持久化已证明的 `live_mirror`。通用低优先级 backfill 在 cold Projection 未发布前不得竞争同一 proof work，周期性 Summary refresh 只在首个 exact Projection 发布后启动。
 - 正常版本启动必须自动发现任一缺少 Archive Publication Proof 的 legacy completed invocation archive，并以文件 SHA 与完整 source/bucket closure 验证或重建其 compact rollup；不得由 `historical_rollups_materialized_at` 或缺失 marker 直接推断 proof，不得要求人工 CLI、SQL 或额外运维步骤。该协调仍在后台、pressure-aware 路径，HTTP/SSE 不参与 I/O。
-- source-record admission 的 range-local unavailable 只适用于外部 source capacity 或不可恢复 source 条件；它不是服务自身创建的 archive publication gap 的稳态语义。
+- source-record admission 的 range-local unavailable 只适用于外部 source capacity 或不可恢复 source 条件；新的 archive lifecycle 不得创建这种 gap。没有任何权威 legacy source 的既有范围保持该局部状态，直到精确 source 恢复。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
 - 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
 - hydration、archive 读取和 reconcile 必须有 deadline、取消点、coalescing 与受控重试，不得在请求路径执行。

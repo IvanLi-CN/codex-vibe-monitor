@@ -27,3 +27,11 @@
 - Historical live coverage now publishes as a generation-fenced Projection proof. Rolling refreshes reuse its unchanged overlap and inspect only the bounded ID delta; a late historical source is range-local unavailable until a separate background coverage pass completes, preventing a repeated full historical group-by from exhausting the rolling freshness budget.
 - Cold maintenance recovery now retains Bootstrap semantics until the first immutable Projection publishes, so a timed-out cold build cannot silently downgrade later retries to the shorter Rolling budget. Bootstrap tail telemetry is stage-bounded and content-free, and the representative fixture crosses 214 MiB of aggregate raw source text.
 - Rolling recovery now consumes a bounded, SQLite-acknowledged Summary Delta Journal for ordinary terminal tail changes. A continuous journal renews the published recent Projection without a complete live admission; capacity or sequence faults become bounded Delta Gap Proofs so only intersecting selections fail closed while all-time remains independently checkpointed. Proof-budget exhaustion retains a broad fail-closed guard, and post-restart terminal replay contributes an exact bounded overlay rather than falling back to full rolling admission.
+- ADR 0009 extends the terminal-only in-memory recovery with one durable global
+  Source Change Journal and cursor for every generation-fence change. It keeps
+  the in-process delta fast path but replaces restart and non-terminal
+  full-Rolling fallback with bounded descriptor reconstruction or a recoverable
+  selection-local proof. It also makes a compact SQLite Summary Archive
+  Snapshot a raw archive cleanup gate, while low-priority legacy backfill
+  recovers readable history and preserves irretrievably missing authority as a
+  finite unavailable range.

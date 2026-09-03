@@ -8,8 +8,16 @@
   batch writer has acknowledged the source record. Its 10,000-entry / 64 MiB
   cap and monotonic cursor make the rolling tail bounded.
 - `RollingDelta` renews a published rolling Projection from that continuous
-  journal instead of entering complete live admission. Direct durable changes
-  without journal evidence retain the existing bounded full Rolling path.
+  journal instead of entering complete live admission. Its durable tail is
+  reconstructed from compact identity descriptors after restart; source changes
+  without descriptor evidence use a bounded legacy tail read plus a scoped proof,
+  never a complete live-admission fallback.
+- ADR 0009's durable Source Change Journal and SQLite-backed Summary Archive
+  Snapshot are implemented as the recovery boundary. The journal appends one
+  identity-only descriptor inside each terminal source transaction, compacts
+  under the 10,000-entry / 64 MiB bound with a durable proof, and the Snapshot
+  API verifies manifest identity, coverage and payload SHA before cleanup can
+  retire an authoritative archive.
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a time/account
   range intersecting a `DeltaGapProof`, is unavailable rather than approximate.
@@ -17,7 +25,11 @@
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.
 - Cold maintenance retries now retain the 30-second Bootstrap mode until the hub has atomically published its first immutable Projection; only published Projections use the four-second Rolling refresh path. Bootstrap telemetry records the current archive admission, runtime overlay, Projection materialization and generation-fence snapshot stages without source content.
 - The representative-scale fixture uses a fixed seed, at least 214 MiB of raw source text, and an independent normalized JSON oracle. It is a CI-contained PR/Main gate; Release consumes the successful CI Main result without production-copy validation or an external receipt.
-- Implementation: existing `failure_class` compatibility writers and backfill are not yet sufficient to make every read model consume one revisioned durable classification fact. Canonical terminal materialization, immutable-archive overlay coverage and shared Summary/rollup consumer migration are the first delivery boundary.
+- Implementation: existing `failure_class` compatibility writers remain a
+  separate migration boundary; Summary source recovery now has transaction
+  descriptors, bounded restart reconstruction and an archive Snapshot gate.
+  Rollup/archive writers that lack descriptor hooks continue through their
+  scoped legacy proof and background reconciliation path.
 - Summary admission foundation keeps the bounded newest-N `current` view separate from rolling exact-boundary records, while enforcing one resident preview-byte budget and a monotonic omission boundary across runtime overlays. Archive coverage-end proof now rejects only a global newest-N that an unadmitted archive can affect; account newest-N remains unavailable until account-specific archive proof exists. Historical persisted terminals also retain independent global/account rollup proof before Summary or SSE removes their overlay. This restores honest high-cardinality admission without claiming canonical classification materialization is complete.
 - Summary admission now evaluates a global archive against the requested newest-N cutoff instead of the configured maximum list size. A historical terminal is removed from a rolling or SSE overlay only when the matching scope has both totals and usage coverage; current-only persisted terminals that can affect exact repair are promoted into the rolling view. The rolling and current resident views preflight against one combined byte budget, so an overflow makes only the affected view unavailable.
 - The required Summary admission delivery boundary separates canonical source-record admission from the shared resident preview-byte budget. Cumulative raw payload text must be processed through finite background source pages without consuming resident-preview capacity; when a source page cannot prove exact coverage, the Projection must publish each independent exact selection and mark only the intersecting rolling/calendar boundary or potentially affected `current` prefix unavailable.
@@ -38,6 +50,24 @@
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
+## Approved Recovery Boundary
+
+- A Summary-affecting terminal transaction appends one compact descriptor in
+  the existing transaction. Normal terminal traffic keeps the current
+  in-memory delta fast path; restart recovery reconstructs only the
+  descriptor's bounded keys and does not perform complete live admission.
+- The global durable cursor checkpoint is monotonic and is written only after a
+  bounded tail has been reconstructed. The active tail remains bounded to
+  `10,000 entries / 64 MiB`; compaction preserves a range/account/current-rank
+  proof, and descriptors/proofs contain no raw text or duplicate Summary rows.
+- Archive maintenance exposes the normalized Snapshot page writer and cleanup
+  proof gate in main SQLite. Snapshot proof includes manifest identity,
+  coverage and payload SHA; a seek-paged legacy backfill can reuse the writer
+  for readable authority, while source loss remains a finite unavailable range.
+- Journal insertion adds no transaction or connection. Descriptor insertion,
+  compaction and Snapshot writes emit only stage, count and byte telemetry;
+  bounded reconstruction duration remains measured by the projection worker.
+
 ## Delivery Boundaries
 
 | Delivery slice                                 | Purpose                                                                                                                                                                        | Integration order                                           | Completion evidence                                                                                    |
@@ -57,7 +87,7 @@
 
 ## Verification Ownership
 
-- Canonical classification and Summary: transaction-atomic terminal materialization, bounded legacy live cursor, immutable archive overlay coverage, rollup recomputation, cross-reader exact-response comparison, >legacy-cardinality admission, bounded recent-index overflow boundaries for rolling/account reads, HTTP SQL/file counters, freshness and last-good behavior.
+- Canonical classification and Summary: transaction-atomic terminal materialization, durable source-descriptor/proof atomicity, restart descriptor reconstruction, bounded legacy live cursor, immutable archive Snapshot coverage and cleanup gate, legacy Snapshot resume, rollup recomputation, cross-reader exact-response comparison, >legacy-cardinality admission, bounded recent-index overflow boundaries for rolling/account reads, HTTP SQL/file counters, freshness and last-good behavior.
 - Pressure: one in-memory scheduler defer deadline per cooldown, no SQLite pre-read or no-op task-run write; Account Activity V2 coverage repair owns one admitted permit across its durable due check, underlying repair, and every post-repair progress operation; repair and retry-progress `BUSY`/`LOCKED` regressions assert one pressure event, no outer task-run audit or generic retry, and no early next-task SQLite access, while a non-lock coverage error remains audited and retried; eligibility wakes recheck durable due state; and real-lock cooldown/backoff separation happens before permit release.
 - Long-term: query-plan assertion, cursor persistence, 512-row transaction cap, pressure/cancel recovery and P1 priority.
 - Observation: `$srv-101-ops` is read-only and only starts after the owner confirms the exact released version is deployed.

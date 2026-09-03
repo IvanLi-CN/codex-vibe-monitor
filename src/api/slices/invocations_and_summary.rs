@@ -7711,6 +7711,18 @@ impl SummaryProjection {
         self.freshness_lease.renew();
     }
 
+    pub(crate) fn contains_persisted_live_terminal_by_row_id(&self, row_id: i64) -> bool {
+        self.records
+            .iter()
+            .chain(self.current_records.iter())
+            .any(|record| record.is_persisted_live_record && record.row.id == row_id)
+    }
+
+    pub(crate) fn mark_historical_live_recovery_required(&mut self) {
+        if let Some(coverage) = self.historical_live_coverage.as_mut() {
+            coverage.reconciliation_required = true;
+        }
+    }
     fn current_selection_cutoff_for_scope(
         &self,
         upstream_account_id: Option<i64>,
@@ -7740,6 +7752,19 @@ impl SummaryProjection {
         deltas: &[DashboardActivityTerminalDelta],
     ) -> bool {
         if limit == 0 {
+            return false;
+        }
+        // A legacy source change may have been reconstructed exactly into the rolling overlay,
+        // even though its descriptor was absent.  The current index can then prove its rank from
+        // the overlay; do not reject that newest-N selection solely because the historical proof
+        // marker is still waiting for background reconciliation.
+        if gap.row_id.is_some_and(|row_id| {
+            deltas.iter().any(|delta| {
+                delta.persisted_row_id == Some(row_id)
+                    && upstream_account_id
+                        .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
+            })
+        }) {
             return false;
         }
         let Some(occurred_at) = parse_to_utc_datetime(&gap.occurred_at) else {
@@ -10521,6 +10546,158 @@ async fn renew_summary_projection_freshness_if_generation_matches(
     Ok(renewed)
 }
 
+/// Reconstruct the bounded durable source tail after a restart or when the in-process delta
+/// queue has been dropped.  Only descriptor identities are read from the journal; the canonical
+/// source row is hydrated in 400-id chunks and exposed through the existing in-memory replay
+/// overlay.  This function deliberately never invokes the full live admission builder.
+async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
+    let mut after_cursor = state.subscription_hub.summary_source_change_cursor().await;
+    if after_cursor == 0 {
+        after_cursor = load_summary_source_change_checkpoint(
+            &state.pool,
+            SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
+        )
+        .await?;
+        if after_cursor > 0 {
+            state
+                .subscription_hub
+                .advance_summary_source_change_cursor(after_cursor)
+                .await;
+        }
+    }
+    let tail = load_summary_source_change_tail(
+        &state.pool,
+        after_cursor,
+        SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES,
+    )
+    .await?;
+    let Some(last_cursor) = tail.last().map(|record| record.cursor) else {
+        return Ok(false);
+    };
+    state
+        .subscription_hub
+        .advance_summary_source_change_cursor(last_cursor)
+        .await;
+
+    let ids = tail
+        .iter()
+        .flat_map(|record| record.descriptor.entries.iter().map(|entry| entry.row_id))
+        .collect::<Vec<_>>();
+    let mut rows_by_id = HashMap::<i64, ApiInvocation>::new();
+    for chunk in ids.chunks(DASHBOARD_ACTIVITY_PREVIEW_ID_HYDRATION_CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut query = build_invocation_select_query();
+        query.push(" WHERE id IN (");
+        {
+            let mut separated = query.separated(", ");
+            for id in chunk {
+                separated.push_bind(*id);
+            }
+        }
+        query.push(") ORDER BY id ASC");
+        for row in query
+            .build_query_as::<ApiInvocation>()
+            .fetch_all(&state.pool)
+            .await
+            .context("summary source descriptor row reconstruction failed")?
+        {
+            rows_by_id.insert(row.id, row);
+        }
+    }
+
+    let mut restored = false;
+    let mut complete = true;
+    for record in tail {
+        if record.descriptor.source_kind != "terminal_batch" {
+            // Archive and rollup descriptors are durable fence evidence for the independent
+            // historical reconciler. They must not be interpreted as live invocation rows.
+            state
+                .subscription_hub
+                .mark_summary_projection_historical_recovery_required()
+                .await;
+            continue;
+        }
+        for entry in record.descriptor.entries {
+            let Some(row) = rows_by_id.get(&entry.row_id) else {
+                complete = false;
+                state
+                    .subscription_hub
+                    .record_summary_source_change_gap(record.cursor)
+                    .await;
+                continue;
+            };
+            let mut delta = persisted_dashboard_activity_terminal_delta(row);
+            delta.persisted_row_id = Some(row.id);
+            state
+                .subscription_hub
+                .acknowledge_replayed_summary_delta(delta)
+                .await;
+            restored = true;
+        }
+    }
+    if complete {
+        store_summary_source_change_checkpoint(
+            &state.pool,
+            SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
+            last_cursor,
+        )
+        .await?;
+    }
+    Ok(restored)
+}
+
+/// Compatibility recovery for source writers predating the durable descriptor hook.  Bound the
+/// read to the legal current prefix and leave a historical reconciliation marker so a missing
+/// descriptor can never silently make an old range look exact.
+async fn restore_legacy_summary_source_tail(state: &AppState) -> Result<bool> {
+    let mut query = build_invocation_select_query();
+    query.push(" ORDER BY occurred_at DESC, id DESC LIMIT ");
+    query.push_bind(state.config.list_limit_max.min(400) as i64);
+    let rows = query
+        .build_query_as::<ApiInvocation>()
+        .fetch_all(&state.pool)
+        .await
+        .context("legacy summary source tail reconstruction failed")?;
+    let projection = state.subscription_hub.summary_projection().await;
+    let Some(projection) = projection else {
+        return Ok(false);
+    };
+    let mut restored = false;
+    for row in rows {
+        if projection.contains_persisted_live_terminal(&row.invoke_id, &row.occurred_at) {
+            continue;
+        }
+        let mut delta = persisted_dashboard_activity_terminal_delta(&row);
+        delta.persisted_row_id = Some(row.id);
+        state
+            .subscription_hub
+            .acknowledge_replayed_summary_delta(delta)
+            .await;
+        // A legacy writer can advance a historical row without a durable descriptor. Keep its
+        // proof scoped to the row's time/account so an independent current selection remains
+        // exact while the background historical reconciliation is in flight.
+        state
+            .subscription_hub
+            .record_summary_source_change_scoped_gap(
+                row.id as u64,
+                row.upstream_account_id,
+                row.occurred_at.clone(),
+                Some(row.id),
+            )
+            .await;
+        restored = true;
+    }
+    if restored {
+        state
+            .subscription_hub
+            .mark_summary_projection_historical_recovery_required()
+            .await;
+    }
+    Ok(restored)
+}
+
 pub(crate) async fn refresh_summary_snapshots_with_mode(
     state: &AppState,
     mode: SummaryProjectionBuildMode,
@@ -10544,11 +10721,35 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             );
             return Ok(());
         }
-        // Do not infer that a direct durable change is represented by an empty or gapped
-        // journal. That recovery still needs the existing fail-closed full rolling path.
+        let mut restored = restore_summary_source_change_tail(state).await?;
+        if !restored {
+            restored = restore_legacy_summary_source_tail(state).await?;
+        }
+        if restored
+            && state
+                .subscription_hub
+                .renew_summary_projection_freshness_from_delta_journal()
+                .await
+        {
+            let (entry_count, gap_count) =
+                state.subscription_hub.summary_delta_journal_counts().await;
+            debug!(
+                ?mode,
+                stage = "durable_source_tail_reconstruct",
+                entry_count,
+                gap_count,
+                "summary projection rolling delta reconstructed from durable source descriptors"
+            );
+            return Ok(());
+        }
+        // A fence change may belong only to archive or rollup coverage. Rebuild the bounded
+        // RollingDelta projection so its metadata-only admission can publish a localized gap
+        // for the affected range; it still never performs paged raw archive hydration. A
+        // no-op here would leave the old projection falsely fresh after an archive replay proof
+        // changed underneath it.
         return refresh_summary_snapshots_with_deadline(
             state,
-            SummaryProjectionBuildMode::Rolling,
+            SummaryProjectionBuildMode::RollingDelta,
             Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
             true,
         )

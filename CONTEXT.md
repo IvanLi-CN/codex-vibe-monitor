@@ -166,6 +166,44 @@ the current recent terminal tail. Rejected enqueue removes its pending entry;
 the journal is not an alternative durable source or request-time fallback.
 _Avoid_: speculative read, dashboard-only truth, durable archive log
 
+**Summary Source Change Journal**:
+The durable, ordered record of every committed source change that can alter a
+Summary Projection Generation Fence. It contains compact batch descriptors,
+not raw source or duplicated Summary rows, and gives recovery a continuous,
+restart-safe account of which selections need replacement without making the
+journal a request-time source or Summary response payload.
+_Avoid_: best-effort invalidation, terminal-only history, raw-payload mirror,
+request-time replay
+
+**Summary Change Descriptor**:
+The compact, transaction-local payload appended to the Source Change Journal.
+It identifies the committed source version and its exact account, UTC-range,
+current-rank, and bounded reconstruction keys. The descriptor or its
+compaction proof commits in the same source transaction; the source change
+cannot commit without one. The in-process terminal delta may carry richer
+data; a restart reconstructs only these keys in bounded pages.
+_Avoid_: duplicate source row, per-request lookup, whole-live admission
+
+**Summary Source Change Cursor**:
+The single global sequence position through the Summary Source Change Journal
+which a Projection or checkpoint has incorporated. A cursor advances only with
+the exact replacement it proves, so a restart or a gap cannot silently skip a
+committed source change.
+_Avoid_: per-source ordering, timestamp watermark, independently advanced cursors
+
+**Summary Source Change Compaction Proof**:
+The durable, bounded replacement for a contiguous compacted interval of Source
+Change Journal entries. It records the union of affected account, UTC-range,
+and current-rank boundaries, so any unabsorbed part remains fail-closed until a
+bounded reconciliation advances past it.
+_Avoid_: time-to-live deletion, silent cursor jump, unbounded event history
+
+**Unrepresented Durable Change**:
+A committed Summary source change for which a published Projection has no
+continuous Summary Source Change Journal proof. It creates a fail-closed
+recovery boundary until bounded reconciliation establishes an exact
+replacement; it never authorizes a stale successful response.
+_Avoid_: harmless cache miss, inferred delta, global stale success
 **Summary Delta Cursor**:
 The monotonic terminal sequence attached to one Summary Delta Journal entry.
 It establishes that a RollingDelta observes a continuous acknowledged tail.
@@ -181,11 +219,34 @@ When the proof budget is exhausted, that broad proof is retained instead of
 evicting an older account/time/rank boundary.
 _Avoid_: inferred range, partial response, stale success
 
+**Summary Archive Snapshot**:
+The immutable, identity-verified compact representation of one completed
+invocation archive containing every field needed to reconstruct exact Summary
+selections without reopening that archive's raw source. It is committed before
+the archive becomes eligible for source cleanup and is not read on the HTTP or
+SSE path.
+_Avoid_: incomplete hourly rollup, raw-text mirror, request-time archive fallback
+
+**Legacy Summary Snapshot Backfill**:
+The low-priority, seek-paged durable recovery that creates Summary Archive
+Snapshots for readable legacy archives during normal maintenance. It resumes
+from its committed cursor and never fabricates a snapshot for a missing or
+unreadable authority; that finite range remains unavailable until an exact
+source exists.
+_Avoid_: release-blocking full scan, invented historical total, manual read path
+
+**Summary Archive Snapshot Coverage Gate**:
+The archive lifecycle condition that prevents source cleanup until the matching
+Summary Archive Snapshot, coverage, and identity proof are durably committed.
+Snapshot pressure or failure retains the authoritative archive and advances a
+recoverable backfill checkpoint; it never creates a new Summary coverage gap.
+_Avoid_: cleanup-before-proof, dropped Snapshot, capacity-driven undercount
+
 **RollingDelta**:
-The bounded in-memory recovery mode that composes an immutable rolling base
-with a continuous Summary Delta Journal. It does not run complete live-source
-admission, archive hydration, or request-time I/O, and it never makes `all`
-ready.
+The bounded recovery mode that composes an immutable rolling base with a
+continuous in-memory Summary Delta Journal or durable Summary Source Change
+Journal descriptor tail. It does not run complete live-source admission,
+archive hydration, or request-time I/O, and it never makes `all` ready.
 _Avoid_: full rolling rebuild, all-time finalization, stale-cache success
 
 **All-Time Coverage Checkpoint**:
