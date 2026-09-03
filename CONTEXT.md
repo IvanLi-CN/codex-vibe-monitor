@@ -169,7 +169,9 @@ The low-priority supervisor that seek-pages completed legacy invocation archives
 into verified Summary Archive Snapshot V2 pages. Its cursor and per-manifest
 outcome are durable: a verified page is exact authority, a missing or mismatched
 source becomes a finite unavailable proof, and a deadline or pressure defer does
-not advance an uncommitted cursor.
+not advance an uncommitted cursor. A committed page also records its next page
+and source row key, so a later attempt resumes after the last verified page
+instead of reopening the archive from the beginning.
 _Avoid_: full historical rebuild, V1 cleanup proof, skipped archive
 **Projection Freshness Renewal**:
 The in-memory extension of an already Exact-Ready Projection only after its

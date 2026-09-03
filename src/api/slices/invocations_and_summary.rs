@@ -7495,12 +7495,14 @@ pub(crate) struct SummaryProjectionGenerationFence {
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     completed_manifest_high_watermark_id: Option<i64>,
+    coverage_revision: i64,
     durable_terminal_sequence_watermark: u64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct SummaryCoverageFence {
     pub(crate) completed_manifest_high_watermark_id: Option<i64>,
+    pub(crate) coverage_revision: i64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -7522,6 +7524,7 @@ impl SummaryProjectionGenerationFence {
     pub(crate) fn coverage_fence(self) -> SummaryCoverageFence {
         SummaryCoverageFence {
             completed_manifest_high_watermark_id: self.completed_manifest_high_watermark_id,
+            coverage_revision: self.coverage_revision,
         }
     }
 
@@ -11608,6 +11611,16 @@ async fn summary_projection_completed_manifest_high_watermark(
     .context("summary projection completed manifest high-watermark hydration failed")
 }
 
+async fn summary_projection_coverage_revision(pool: &Pool<Sqlite>) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection coverage revision hydration failed")
+    .map(|revision| revision.unwrap_or_default())
+}
+
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL: &str = "global";
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT: &str = "account";
 
@@ -11871,6 +11884,7 @@ struct SummaryAllTimeProjectionCheckpointRow {
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     manifest_high_watermark_id: Option<i64>,
+    coverage_revision: i64,
     durable_terminal_sequence_watermark: i64,
     global_manifest_next_id: i64,
     account_manifest_next_id: i64,
@@ -11900,6 +11914,7 @@ impl SummaryAllTimeProjectionCheckpointRow {
             rollup_live_cursor: self.rollup_live_cursor,
             account_rollup_live_cursor: self.account_rollup_live_cursor,
             completed_manifest_high_watermark_id: self.manifest_high_watermark_id,
+            coverage_revision: self.coverage_revision,
             durable_terminal_sequence_watermark: self.durable_terminal_sequence_watermark.max(0)
                 as u64,
         }
@@ -12022,7 +12037,7 @@ async fn load_summary_all_time_projection_checkpoint(
 ) -> Result<Option<SummaryAllTimeProjectionCheckpointRow>> {
     sqlx::query_as::<_, SummaryAllTimeProjectionCheckpointRow>(
         "SELECT live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-                manifest_high_watermark_id, durable_terminal_sequence_watermark, \
+                manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark, \
                 global_manifest_next_id, account_manifest_next_id, global_manifest_complete, \
                 account_manifest_complete, global_rollup_next_rowid, account_rollup_next_rowid, \
                 usage_rollup_next_rowid, global_rollup_complete, account_rollup_complete, \
@@ -12053,13 +12068,14 @@ async fn reset_summary_all_time_projection_checkpoint(
     sqlx::query(
         "INSERT INTO summary_all_time_projection_checkpoint \
          (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-          manifest_high_watermark_id, durable_terminal_sequence_watermark) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+          manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(scope) DO UPDATE SET \
            live_high_watermark_id = excluded.live_high_watermark_id, \
            rollup_live_cursor = excluded.rollup_live_cursor, \
            account_rollup_live_cursor = excluded.account_rollup_live_cursor, \
            manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
+           coverage_revision = excluded.coverage_revision, \
            durable_terminal_sequence_watermark = excluded.durable_terminal_sequence_watermark, \
            global_manifest_next_id = 0, account_manifest_next_id = 0, \
            global_manifest_complete = 0, account_manifest_complete = 0, \
@@ -12074,6 +12090,7 @@ async fn reset_summary_all_time_projection_checkpoint(
     .bind(generation_fence.rollup_live_cursor)
     .bind(generation_fence.account_rollup_live_cursor)
     .bind(generation_fence.completed_manifest_high_watermark_id)
+    .bind(generation_fence.coverage_revision)
     .bind(
         generation_fence
             .durable_terminal_sequence_watermark
@@ -12367,6 +12384,7 @@ async fn load_summary_projection_generation_fence(
             &state.pool,
         )
         .await?,
+        coverage_revision: summary_projection_coverage_revision(&state.pool).await?,
         durable_terminal_sequence_watermark,
     })
 }
@@ -16214,6 +16232,7 @@ async fn build_summary_projection_once(
             rollup_live_cursor,
             account_rollup_live_cursor,
             completed_manifest_high_watermark_id,
+            coverage_revision: summary_projection_coverage_revision(pool).await?,
             durable_terminal_sequence_watermark,
         },
         freshness_lease: SummaryProjectionFreshnessLease::default(),
@@ -34712,6 +34731,32 @@ mod request_compression_query_tests {
         .expect("AllTime live-only aggregate remains exact");
         assert_eq!(response.total_count, 1);
         assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_coverage_revision_changes_when_rollup_proof_changes() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let before = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load initial coverage revision");
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) \
+             VALUES (1, 'proxy', 1, 1, 0, 5, 0.25)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert changed rollup proof");
+        let after = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load updated coverage revision");
+        assert!(
+            after > before,
+            "rollup proof changes must advance coverage fence"
+        );
     }
 
     #[tokio::test]

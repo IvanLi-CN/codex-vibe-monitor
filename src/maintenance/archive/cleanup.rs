@@ -1032,8 +1032,7 @@ async fn load_summary_archive_snapshot_backfill_candidates(
                 FROM summary_archive_snapshot_backfill_outcome AS outcome
                 WHERE outcome.archive_batch_id = batches.id
                   AND outcome.manifest_sha256 = batches.sha256
-                  AND outcome.disposition = 'complete'
-                  AND outcome.next_probe_at > datetime('now')
+                  AND julianday(outcome.next_probe_at) > julianday('now')
           )
         ORDER BY CASE
             WHEN batches.coverage_end_at IS NOT NULL
@@ -1051,14 +1050,63 @@ async fn load_summary_archive_snapshot_backfill_candidates(
     .context("failed to load Summary Snapshot V2 backfill candidates")
 }
 
+async fn load_summary_archive_snapshot_backfill_progress(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+) -> Result<(u32, i64)> {
+    let progress = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT next_page_index, next_row_id
+         FROM summary_archive_snapshot_backfill_outcome
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+    )
+    .bind(candidate.id)
+    .bind(&candidate.sha256)
+    .fetch_optional(pool)
+    .await
+    .context("load Summary Snapshot V2 backfill page progress")?;
+    let Some((page_index, row_id)) = progress else {
+        return Ok((0, 0));
+    };
+    Ok((
+        u32::try_from(page_index.max(0)).unwrap_or(u32::MAX),
+        row_id.max(0),
+    ))
+}
+
 async fn record_summary_archive_snapshot_backfill_outcome(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
     disposition: &str,
     failure_kind: &str,
+    next_page_index: u32,
+    next_row_id: i64,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    record_summary_archive_snapshot_backfill_outcome_tx(
+        tx.as_mut(),
+        candidate,
+        disposition,
+        failure_kind,
+        next_page_index,
+        next_row_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn record_summary_archive_snapshot_backfill_outcome_tx(
+    connection: &mut SqliteConnection,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    disposition: &str,
+    failure_kind: &str,
+    next_page_index: u32,
+    next_row_id: i64,
 ) -> Result<()> {
     let next_probe_at = if disposition == "complete" {
         format_utc_iso(Utc::now() + ChronoDuration::days(365))
+    } else if disposition == "in_progress" {
+        format_utc_iso(Utc::now())
     } else {
         format_utc_iso(
             Utc::now() + ChronoDuration::seconds(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS),
@@ -1066,26 +1114,61 @@ async fn record_summary_archive_snapshot_backfill_outcome(
     };
     sqlx::query(
         "INSERT INTO summary_archive_snapshot_backfill_outcome \
-         (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now')) \
+         (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
+          next_page_index, next_row_id, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now')) \
          ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
            disposition = excluded.disposition, failure_kind = excluded.failure_kind, \
-           next_probe_at = excluded.next_probe_at, updated_at = excluded.updated_at",
+           next_probe_at = excluded.next_probe_at, next_page_index = excluded.next_page_index, \
+           next_row_id = excluded.next_row_id, updated_at = excluded.updated_at",
     )
     .bind(candidate.id)
     .bind(&candidate.sha256)
     .bind(disposition)
     .bind(failure_kind)
     .bind(next_probe_at)
-    .execute(pool)
+    .bind(i64::from(next_page_index))
+    .bind(next_row_id.max(0))
+    .execute(&mut *connection)
     .await
     .context("failed to persist Summary Snapshot V2 backfill outcome")?;
     Ok(())
 }
 
+fn summary_archive_snapshot_backfill_budget_exhausted(
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> bool {
+    started_at.elapsed() >= max_elapsed
+}
+
+fn sha256_hex_file_with_budget(
+    path: &Path,
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> Result<Option<String>> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0_u8; 8192];
+    loop {
+        if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
+            return Ok(None);
+        }
+        let read = file.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+    Ok(Some(format!("{:x}", hasher.finalize())))
+}
+
 async fn backfill_summary_archive_snapshot_v2_candidate(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
+    started_at: Instant,
+    max_elapsed: Duration,
 ) -> Result<&'static str> {
     // A valid V2 page is already an exact authority and does not require reopening the raw
     // archive. Marking it complete here also upgrades V2 pages written by an older process into
@@ -1100,8 +1183,10 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
-    let actual_sha256 = sha256_hex_file(archive_path)
-        .with_context(|| format!("hash Summary Snapshot source {}", candidate.file_path))?;
+    let Some(actual_sha256) = sha256_hex_file_with_budget(archive_path, started_at, max_elapsed)?
+    else {
+        return Ok("deferred:budget");
+    };
     if actual_sha256 != candidate.sha256 {
         return Ok("unavailable:manifest_sha_mismatch");
     }
@@ -1118,20 +1203,25 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     };
 
     let result = async {
-        let archive_columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
+        let archive_columns =
+            load_archive_table_columns(&archive_pool, "codex_invocations").await?;
         let query_sql = build_invocation_archive_rows_chunk_query(&archive_columns);
-        sqlx::query(
-            "DELETE FROM summary_archive_snapshot WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+        let (mut page_index, mut after_id) =
+            load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
+        let mut total_rows = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT SUM(row_count) FROM summary_archive_snapshot
+             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND page_index < ?3",
         )
         .bind(candidate.id)
         .bind(&candidate.sha256)
-        .execute(pool)
-        .await?;
-
-        let mut after_id = 0_i64;
-        let mut page_index = 0_u32;
-        let mut total_rows = 0_i64;
+        .bind(i64::from(page_index))
+        .fetch_one(pool)
+        .await?
+        .unwrap_or_default();
         loop {
+            if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
+                return Ok("deferred:budget");
+            }
             let (rows, has_more) =
                 load_invocation_archive_rows_chunk(&archive_pool, &query_sql, after_id).await?;
             if rows.is_empty() {
@@ -1190,6 +1280,15 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             };
             let mut tx = pool.begin().await?;
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page).await?;
+            record_summary_archive_snapshot_backfill_outcome_tx(
+                tx.as_mut(),
+                candidate,
+                "in_progress",
+                "",
+                page_index.saturating_add(1),
+                rows.last().map(|row| row.id).unwrap_or(after_id),
+            )
+            .await?;
             tx.commit().await?;
             total_rows = total_rows.saturating_add(i64::try_from(rows.len())?);
             after_id = rows
@@ -1211,7 +1310,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         if !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256).await? {
             bail!("Summary Snapshot V2 proof validation failed after backfill");
         }
-        Result::<()>::Ok(())
+        Ok("complete")
     }
     .await;
     archive_pool.close().await;
@@ -1267,19 +1366,33 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             break;
         }
         result.scanned_archive_batches += 1;
-        let outcome = backfill_summary_archive_snapshot_v2_candidate(pool, &candidate).await?;
+        let outcome = backfill_summary_archive_snapshot_v2_candidate(
+            pool,
+            &candidate,
+            started_at,
+            max_elapsed,
+        )
+        .await?;
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
+            if disposition == "deferred" {
+                result.hit_budget = true;
+                break;
+            }
             record_summary_archive_snapshot_backfill_outcome(
                 pool,
                 &candidate,
                 disposition,
                 failure_kind,
+                0,
+                0,
             )
             .await?;
             result.unavailable_archive_batches += 1;
         } else {
-            record_summary_archive_snapshot_backfill_outcome(pool, &candidate, "complete", "")
-                .await?;
+            record_summary_archive_snapshot_backfill_outcome(
+                pool, &candidate, "complete", "", 0, 0,
+            )
+            .await?;
             result.materialized_archive_batches += 1;
         }
         result.next_cursor_id = candidate.id;
@@ -3078,6 +3191,54 @@ mod tests {
         .await
         .expect("load verified V2 outcome");
         assert_eq!(disposition, "complete");
+    }
+
+    #[tokio::test]
+    async fn summary_archive_snapshot_backfill_retry_timestamp_is_sqlite_comparable() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, coverage_start_at, coverage_end_at
+            )
+            VALUES (1, 'codex_invocations', '2026-08',
+                    '/legacy/retryable-summary-authority.sqlite.gz', 'retryable', 1,
+                    'completed', 'unknown', '2026-08-01 00:00:00',
+                    '2026-08-01 01:00:00')
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("seed retryable Summary archive authority");
+        let candidate = load_summary_archive_snapshot_backfill_candidates(&pool, 0, 1)
+            .await
+            .expect("load candidate before outcome")[0]
+            .clone();
+        record_summary_archive_snapshot_backfill_outcome(
+            &pool,
+            &candidate,
+            "unavailable",
+            "missing_source",
+            0,
+            0,
+        )
+        .await
+        .expect("persist retry outcome");
+        let candidates = load_summary_archive_snapshot_backfill_candidates(&pool, 0, 1)
+            .await
+            .expect("load candidates after retry outcome");
+        assert!(
+            candidates.is_empty(),
+            "future RFC3339 retry timestamp must be compared numerically by SQLite"
+        );
     }
 
     #[tokio::test]

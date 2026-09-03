@@ -77,8 +77,10 @@
 - The all-time coverage fence is scope-local across manifest, rollup, replay and
   Snapshot V2 proof versions. A terminal tail changes only the live-tail cursor
   and bounded overlay; it never cancels an in-flight historical page. The
-  backfill outcome index stores only disposition, failure class and next probe,
-  never archive payload or source text.
+  backfill outcome index stores only disposition, failure class, next probe and
+  the next page/row seek key, never archive payload or source text. Archive
+  hashing and page iteration check the bounded maintenance budget; a deferred
+  archive resumes after its last verified page without monopolizing the worker.
 - Journal insertion adds no transaction or connection. Descriptor insertion,
   compaction and Snapshot writes emit only stage, count and byte telemetry;
   bounded reconstruction duration remains measured by the projection worker.
