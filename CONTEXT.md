@@ -467,6 +467,18 @@ _Avoid_: 请求排队, 等待迁移, 阻塞对话
 The exact pair of a sticky conversation and its requested model. It is the unit of an automatic priority handoff; another model in the same conversation is independent.
 _Avoid_: 整个对话换号, 账号级迁移
 
+**权威 Sticky 来源（Authoritative Sticky Source）**:
+The persisted upstream currently assigned to a Conversation-Model Route. A cache miss, qualification failure, or uncertain promotion metadata does not turn it into a new assignment; while eligible, only an admitted Priority Handoff or an established Fault Failover may replace it.
+_Avoid_: 临时候选, 缓存命中, 新分配来源
+
+**Sticky 所有权栅栏（Sticky Ownership Fence）**:
+The generation check that prevents a completed older request from replacing a newer Authoritative Sticky Source. A target's valid success evidence may still affect its account-model health and current recovery generation even when this fence rejects the binding mutation.
+_Avoid_: 旧请求覆盖新绑定, 绑定失败即否定目标成功, 完成顺序决定所有权
+
+**未准入来源置换（Unadmitted Source Displacement）**:
+An invalid routing outcome in which a request with an Authoritative Sticky Source is treated as a fresh assignment and moves to another upstream without handoff admission or an established source failure.
+_Avoid_: 故障切换, 真正新分配, 正常优先级迁移
+
 **闸门模型键（Handoff Gate Model Key）**:
 The target account paired with the same normalized requested-model key used by current model-route health. Model mapping occurs after candidate selection and does not create an independent gate key or alias aggregation.
 _Avoid_: 映射后模型键, 别名合并闸门, 账号全局闸门
@@ -480,15 +492,31 @@ The period beginning when a target becomes a higher-priority eligible choice thr
 _Avoid_: 永久串行, 仅故障恢复, 账号全局周期
 
 **恢复验证期（Recovery Verification Phase）**:
-The serialized portion of a priority attraction epoch after a model-route cooldown expires or an operator resets health. It requires three consecutive complete terminal successes from gate-admitted automatic priority handoffs or fresh assignments before ordinary priority admission resumes; a failed admitted attempt immediately returns the exact target account-model pair to its model-route cooldown. A route already rebound by a successful handoff continues directly on its new sticky target; the gate controls new target admission rather than all target traffic.
+The serialized portion of a priority attraction epoch after a temporary model-route degradation, an expired model-route cooldown, or an operator health reset. It requires three consecutive complete terminal successes from gate-admitted automatic priority handoffs or fresh assignments before ordinary priority admission resumes; the first complete recovery success counts as the first of those three. A route already rebound by a successful handoff continues directly on its new sticky target because the gate controls new target admission rather than all target traffic.
 _Avoid_: 一次成功即全面开放, 固定等待时长, 无限制恢复流量
+
+**恢复吸引候选（Recovery Attraction Candidate）**:
+A strictly higher-priority API Key account-model target whose ordinary hard eligibility still holds but whose existing temporary model-route failure evidence currently demotes it. It may seek Request-Driven Recovery Admission without becoming an unrestricted routing winner; cache protection, unsupported capability, hard account failure, and caller cancellation do not create this status.
+_Avoid_: 普通健康候选, 后台探针, 硬错误重试, 故障切换目标
+
+**恢复首选目标（Preferred Recovery Target）**:
+The single highest-ranked Recovery Attraction Candidate for one routing decision after effective priority and existing same-tier ordering are applied. Only this target may seek recovery admission; a busy or cooling permit does not make a lower-ranked recovery candidate the preferred target for that request.
+_Avoid_: 恢复候选列表轮询, 许可忙后改试次优目标, 并行多目标探测
+
+**请求驱动恢复准入（Request-Driven Recovery Admission）**:
+The admission of one eligible real request to a Recovery Attraction Candidate through the existing target account-model Handoff Permit. A degraded target may seek it immediately and a cooling target only after cooldown expiry; a busy or cooling gate never queues the request, and no background probe is created.
+_Avoid_: 后台健康检查, 定时探针, 恢复请求队列, 全量目标并发锁
+
+**恢复代际栅栏（Recovery Generation Fence）**:
+The local recovery-verification boundary created by each newly accepted temporary model-route failure. Request-start time and existing reset fences decide whether terminal evidence belongs after the latest failure; an older in-flight permit remains exclusive until completion but its result cannot recover health or contribute success evidence to the newer generation.
+_Avoid_: 发生时间无关的计数, 旧请求覆盖新故障, 重置即并发放行
 
 **机会式优先级迁移（Opportunistic Priority Handoff）**:
 A handoff whose next candidate is the next eligible real request, not a durable FIFO list of conversations.
 _Avoid_: 严格迁移队列, 后台迁移任务
 
 **迁移确认（Handoff Confirmation）**:
-A complete terminal success from the target request. It commits that target as the conversation-model route's new sticky upstream and releases the handoff permit; partial output or elapsed time does not change the binding.
+A complete terminal success from the target request. It releases the handoff permit and provides target account-model success evidence; it commits the target as the new sticky upstream only when the Sticky Ownership Fence still permits that mutation. Partial output or elapsed time confirms neither result.
 _Avoid_: 首字节成功, 请求已发出, 目标已选中, 时间阈值
 
 **单次迁移尝试（Single-Attempt Handoff）**:
@@ -496,7 +524,7 @@ The one target-upstream request made under a handoff permit. It never enters aut
 _Avoid_: 同账号重试, 429 重试, 自动故障切换
 
 **迁移许可（Handoff Permit）**:
-The process-local exclusive permission held by one single-attempt handoff while an automatic migration is being evaluated. Optional database coordination is secondary and never blocks acquiring or releasing it; client cancellation releases the permit without changing the source binding or recording a target failure.
+The process-local exclusive permission held by one single-attempt handoff or Request-Driven Recovery Admission while a new target admission is being evaluated. It does not limit traffic from Conversation-Model Routes already bound to the target; optional database coordination is secondary and client cancellation releases the permit without changing the source binding or recording a target failure.
 _Avoid_: HTTP 请求锁, 必需数据库锁, 持有至超时, 取消即失败, 全局上游锁
 
 **迁移失败冷却（Handoff Failure Cooldown）**:
@@ -516,7 +544,7 @@ The behavior for another request of a conversation-model route while its priorit
 _Avoid_: 对话请求排队, 等待迁移, 并发迁移
 
 **易失迁移许可（Ephemeral Handoff Permit）**:
-A handoff permit whose lifetime is confined to the current process. Process restart discards it rather than recovering it from persistent storage, and new priority movement starts recovery verification before unrestricted admission resumes.
+A handoff permit whose lifetime is confined to the current process. Process restart discards permits and success counts rather than recovering them from persistent storage, starts local verification at `0/3`, and uses persisted model health only to decide whether the next target opportunity is degraded, cooling, or ordinarily eligible.
 _Avoid_: 持久锁, 启动恢复锁, 重启即全面开放, 数据库依赖许可
 
 **受控人工重开（Controlled Manual Re-entry）**:
@@ -528,13 +556,13 @@ Selecting another healthy eligible upstream for a new conversation while a prefe
 _Avoid_: 等待迁移, 绕过闸门, 并发恢复
 
 **故障切换（Fault Failover）**:
-The existing recovery path for a request whose assigned upstream has actually failed. It is not a priority handoff and does not enter the priority-handoff gate, but continues to observe ordinary account-model health eligibility.
-_Avoid_: 优先级迁移, 等待迁移许可, 原上游可用时的迁移
+The existing recovery path for a request whose Authoritative Sticky Source has actually failed or become ordinarily ineligible. It may replace that source without waiting for the priority-handoff gate, even while a recovery permit exists for the same target, but continues to observe ordinary model-health eligibility; a higher-priority target, a cache miss, or uncertain routing metadata is not Fault Failover.
+_Avoid_: 优先级迁移, 等待迁移许可, 原上游可用时的迁移, 未准入来源置换
 
 **无阻断迁移审计（Non-Blocking Handoff Audit）**:
-Best-effort diagnostic records on the existing routing-audit path. They use safe structured reason codes and recovery progress for handoff admission, deferral, verification, and cooldown; a persistence failure never changes routing, permit acquisition, or release.
+Best-effort diagnostic records on the existing routing-audit path. Its trigger records why admission was considered, independently from the decision made by the gate; safe reason codes and recovery progress cover admission, deferral, verification, and cooldown, while a persistence failure never changes routing, permit acquisition, or release.
 _Avoid_: 审计数据库锁, 诊断失败即拒绝请求, 原始上游错误泄露
 
 **全局本地镜像迁移开关（Globally Mirrored Handoff Switch）**:
-One operator-controlled global setting exposed through the existing settings surface and enabled by default. Persistent storage holds the desired configuration, while routing reads a process-local runtime mirror; a database outage cannot block active request routing, permit transitions, or the last known switch state. Disabling restores the pre-gate routing behavior; re-enabling starts a new local verification generation without cancelling an in-flight request.
+One operator-controlled global setting exposed through the existing settings surface and enabled by default. Disabling restores pre-gate routing without cancelling an in-flight request; that request may still publish current health evidence and a generation-safe sticky mutation, but cannot contribute success evidence after the switch generation changes. Re-enabling starts local verification at `0/3`.
 _Avoid_: 热路径查数据库, 数据库不可用即停流, 按账号模型开关, WebSocket 开关

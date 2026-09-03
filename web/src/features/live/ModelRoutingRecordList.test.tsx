@@ -37,6 +37,7 @@ const records: ModelRoutingTimelineRecord[] = [
         phase: "verifying",
         verificationSuccessCount: 1,
         generation: 3,
+        trigger: "modelRouteRecovery",
       },
       excludedCandidates: [
         {
@@ -143,7 +144,8 @@ describe("ModelRoutingRecordList", () => {
 
     expect(attempt?.textContent).toContain("有效负载最低");
     expect(attempt?.textContent).toContain("与 Borealis 比较");
-    expect(attempt?.textContent).toContain("迁移准入 已准入 · 验证中 · 已验证 1/3");
+    expect(attempt?.textContent).toContain("模型路由恢复");
+    expect(attempt?.textContent).toContain("迁移准入 模型路由恢复 · 已准入 · 验证中 · 已验证 1/3");
     expect(attempt?.textContent).toContain("Cedar (冷却中)");
     expect(attempt?.textContent).toContain("冷却中 → 可用");
     expect(attempt?.textContent).toContain("排除 → 正常");

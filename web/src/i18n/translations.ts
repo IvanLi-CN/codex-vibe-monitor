@@ -2498,6 +2498,10 @@ const baseTranslations = {
     "live.routing.record.excluded": "{{count}} excluded",
     "live.routing.record.handoffAdmission": "Handoff admission",
     "live.routing.record.handoffAdmissionValue": "{{decision}} · {{phase}} · {{count}}/3 verified",
+    "live.routing.record.handoffAdmissionValueWithTrigger":
+      "{{trigger}} · {{decision}} · {{phase}} · {{count}}/3 verified",
+    "live.routing.record.handoffTriggers.priorityAttraction": "Priority attraction",
+    "live.routing.record.handoffTriggers.modelRouteRecovery": "Model-route recovery",
     "live.routing.record.handoffDecisions.admitted": "Admitted",
     "live.routing.record.handoffDecisions.deferredPermitBusy": "Deferred: permit busy",
     "live.routing.record.handoffDecisions.deferredCooldown": "Deferred: cooldown",
@@ -3165,6 +3169,8 @@ const baseTranslations = {
       "{{account}} had fewer recent route failures than {{comparedAccount}}.",
     "table.poolAttempts.routingDecision.winnerReasons.lowerModelRoutePenalty":
       "{{account}} had a lower model-routing penalty than {{comparedAccount}}.",
+    "table.poolAttempts.routingDecision.winnerReasons.requestDrivenRecoveryAdmission":
+      "{{account}} was admitted as a request-driven recovery target before the ordinary winner.",
     "table.poolAttempts.routingDecision.winnerReasons.higherRoutingPriority":
       "{{account}} had higher routing priority than {{comparedAccount}}.",
     "table.poolAttempts.routingDecision.winnerReasons.higherEligibility":
@@ -3218,6 +3224,8 @@ const baseTranslations = {
       "{{account}} did not have an available forward proxy.",
     "table.poolAttempts.routingDecision.exclusionReasons.modelTemporarilyExcluded":
       "{{account}} was temporarily excluded for this model.",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelRecoveryDeferred":
+      "{{account}} was not selected because recovery admission was already deferred.",
     "table.poolAttempts.routingDecision.exclusionReasons.notAssignable":
       "{{account}} was not assignable.",
     "table.poolAttempts.routingDecision.exclusionReasons.unknown":
@@ -5649,6 +5657,10 @@ const baseTranslations = {
     "live.routing.record.excluded": "排除 {{count}} 个候选",
     "live.routing.record.handoffAdmission": "迁移准入",
     "live.routing.record.handoffAdmissionValue": "{{decision}} · {{phase}} · 已验证 {{count}}/3",
+    "live.routing.record.handoffAdmissionValueWithTrigger":
+      "{{trigger}} · {{decision}} · {{phase}} · 已验证 {{count}}/3",
+    "live.routing.record.handoffTriggers.priorityAttraction": "优先级吸引",
+    "live.routing.record.handoffTriggers.modelRouteRecovery": "模型路由恢复",
     "live.routing.record.handoffDecisions.admitted": "已准入",
     "live.routing.record.handoffDecisions.deferredPermitBusy": "延后：许可占用",
     "live.routing.record.handoffDecisions.deferredCooldown": "延后：冷却中",
@@ -6284,6 +6296,8 @@ const baseTranslations = {
       "{{account}} 近期路由失败惩罚低于 {{comparedAccount}}。",
     "table.poolAttempts.routingDecision.winnerReasons.lowerModelRoutePenalty":
       "{{account}} 的模型路由惩罚低于 {{comparedAccount}}。",
+    "table.poolAttempts.routingDecision.winnerReasons.requestDrivenRecoveryAdmission":
+      "{{account}} 作为请求驱动的恢复目标，在普通胜者前获得准入。",
     "table.poolAttempts.routingDecision.winnerReasons.higherRoutingPriority":
       "{{account}} 的路由优先级高于 {{comparedAccount}}。",
     "table.poolAttempts.routingDecision.winnerReasons.higherEligibility":
@@ -6336,6 +6350,8 @@ const baseTranslations = {
       "{{account}} 没有可用的正向代理。",
     "table.poolAttempts.routingDecision.exclusionReasons.modelTemporarilyExcluded":
       "{{account}} 被当前模型临时排除。",
+    "table.poolAttempts.routingDecision.exclusionReasons.modelRecoveryDeferred":
+      "{{account}} 未被选择，因为恢复准入已延后。",
     "table.poolAttempts.routingDecision.exclusionReasons.notAssignable":
       "{{account}} 当前不可分配。",
     "table.poolAttempts.routingDecision.exclusionReasons.unknown":

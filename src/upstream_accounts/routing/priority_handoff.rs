@@ -266,7 +266,10 @@ pub(crate) fn set_priority_handoff_admission_enabled(enabled: bool) {
     }
 }
 
-pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model: &str) {
+pub(crate) fn restart_priority_handoff_verification_for_model(
+    account_id: i64,
+    requested_model: &str,
+) {
     let Some(model_key) = normalize_model_key(Some(requested_model)) else {
         return;
     };
@@ -296,6 +299,10 @@ pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model:
     entry.failure_streak = 0;
     entry.cooldown_until = None;
     entry.pending_failure_cooldown = false;
+}
+
+pub(crate) fn reset_priority_handoff_for_model(account_id: i64, requested_model: &str) {
+    restart_priority_handoff_verification_for_model(account_id, requested_model);
 }
 
 pub(crate) fn admit_priority_handoff(
@@ -664,7 +671,8 @@ pub(crate) async fn complete_priority_handoff_from_attempt(
     success: bool,
     cooldown: bool,
 ) {
-    complete_priority_handoff_from_attempt_inner(pool, attempt_id, success, cooldown, false).await;
+    complete_priority_handoff_from_attempt_inner(pool, attempt_id, success, cooldown, false, None)
+        .await;
 }
 
 async fn complete_priority_handoff_from_attempt_inner(
@@ -673,6 +681,7 @@ async fn complete_priority_handoff_from_attempt_inner(
     success: bool,
     cooldown: bool,
     defer_failure: bool,
+    model_route_recovered: Option<bool>,
 ) {
     let Some(attempt_id) = attempt_id else {
         return;
@@ -774,6 +783,14 @@ async fn complete_priority_handoff_from_attempt_inner(
     }
     if let Some(context) = take_priority_handoff_attempt(attempt_id) {
         if success {
+            if model_route_recovered == Some(false) {
+                release_priority_handoff_for_key(
+                    context.account_id,
+                    &context.model_key,
+                    context.generation,
+                );
+                return;
+            }
             let reason_code = complete_priority_handoff_for_request(
                 context.account_id,
                 Some(context.model_key.as_str()),
@@ -895,6 +912,20 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke(
     success: bool,
     cooldown: bool,
 ) {
+    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
+        pool, attempt_id, invoke_id, success, cooldown, None,
+    )
+    .await;
+}
+
+pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    success: bool,
+    cooldown: bool,
+    model_route_recovered: Option<bool>,
+) {
     if let Some(attempt_id) = attempt_id {
         complete_priority_handoff_from_attempt_inner(
             pool,
@@ -902,6 +933,7 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke(
             success,
             cooldown,
             true,
+            model_route_recovered,
         )
         .await;
         return;
@@ -913,6 +945,14 @@ pub(crate) async fn complete_priority_handoff_from_attempt_or_invoke(
         return;
     };
     if success {
+        if model_route_recovered == Some(false) {
+            release_priority_handoff_for_key(
+                context.account_id,
+                &context.model_key,
+                context.generation,
+            );
+            return;
+        }
         let reason_code = complete_priority_handoff_for_request(
             context.account_id,
             Some(context.model_key.as_str()),
@@ -1100,6 +1140,133 @@ mod tests {
             ("verifying".to_string(), 1)
         );
         drop(new_permit);
+    }
+
+    #[test]
+    fn request_driven_priority_recovery_keeps_one_permit_and_restarts_at_zero() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        restart_priority_handoff_verification_for_model(9_016, "gpt-5.6-terra");
+
+        let (decision, old_permit) = admit_priority_handoff(9_016, Some("gpt-5.6-terra"));
+        assert!(matches!(
+            decision,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        let old_permit = old_permit.expect("first recovery permit");
+        let (busy, _) = admit_priority_handoff(9_016, Some("gpt-5.6-terra"));
+        assert_eq!(busy, PriorityHandoffAdmissionDecision::PermitBusy);
+
+        restart_priority_handoff_verification_for_model(9_016, "gpt-5.6-terra");
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_016, Some("gpt-5.6-terra")),
+            ("verifying".to_string(), 0)
+        );
+        assert!(old_permit.complete_success().is_none());
+
+        let (next, new_permit) = admit_priority_handoff(9_016, Some("gpt-5.6-terra"));
+        assert!(matches!(
+            next,
+            PriorityHandoffAdmissionDecision::Admitted { .. }
+        ));
+        drop(new_permit);
+    }
+
+    #[test]
+    fn routing_handoff_audit_compatibility_accepts_optional_trigger() {
+        let old = serde_json::json!({
+            "selectedAccountId": 11,
+            "selectedAccountName": "Aster",
+            "eligibleCandidateCount": 1,
+            "winnerReasonCode": "onlyEligibleCandidate",
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": 3
+            },
+            "excludedCandidates": []
+        });
+        let old_audit: PoolRoutingSelectionAudit =
+            serde_json::from_value(old).expect("historical audit remains readable");
+        assert_eq!(old_audit.handoff_admission.unwrap().trigger, None);
+
+        let current = serde_json::json!({
+            "selectedAccountId": 2918,
+            "selectedAccountName": "Ciii2",
+            "eligibleCandidateCount": 2,
+            "winnerReasonCode": "requestDrivenRecoveryAdmission",
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 1,
+                "generation": 8,
+                "trigger": "modelRouteRecovery"
+            },
+            "excludedCandidates": []
+        });
+        let current_audit: PoolRoutingSelectionAudit =
+            serde_json::from_value(current).expect("current audit remains readable");
+        assert_eq!(
+            current_audit.handoff_admission.unwrap().trigger.as_deref(),
+            Some("modelRouteRecovery")
+        );
+    }
+
+    #[tokio::test]
+    async fn priority_handoff_recovery_generation_releases_fenced_success_without_counting() {
+        let _guard = test_guard();
+        set_priority_handoff_admission_enabled(true);
+        let (decision, permit) = admit_priority_handoff(9_017, Some("gpt-5.6-terra"));
+        let PriorityHandoffAdmissionDecision::Admitted { generation } = decision else {
+            panic!("expected recovery admission");
+        };
+        let audit_json = serde_json::json!({
+            "selectedAccountId": 9_017,
+            "selectedAccountName": "Ciii2",
+            "eligibleCandidateCount": 2,
+            "winnerReasonCode": "requestDrivenRecoveryAdmission",
+            "handoffAdmission": {
+                "decision": "admitted",
+                "phase": "verifying",
+                "verificationSuccessCount": 0,
+                "generation": generation,
+                "trigger": "modelRouteRecovery"
+            },
+            "excludedCandidates": []
+        })
+        .to_string();
+        remember_priority_handoff_attempt(
+            None,
+            Some("fenced-success"),
+            9_017,
+            Some("gpt-5.6-terra"),
+            Some(audit_json.as_str()),
+        );
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite pool");
+
+        complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
+            &pool,
+            None,
+            Some("fenced-success"),
+            true,
+            false,
+            Some(false),
+        )
+        .await;
+
+        assert_eq!(
+            priority_handoff_admission_snapshot(9_017, Some("gpt-5.6-terra")),
+            ("verifying".to_string(), 0)
+        );
+        let (_, next) = admit_priority_handoff(9_017, Some("gpt-5.6-terra"));
+        assert!(next.is_some());
+        drop(permit);
+        drop(next);
     }
 
     #[tokio::test]

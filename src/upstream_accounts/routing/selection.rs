@@ -416,6 +416,81 @@ fn fresh_assignment_is_priority_attraction(
             .any(|candidate| candidate.score.routing_priority_rank > winner_rank)
 }
 
+fn model_route_is_request_driven_recovery_candidate(
+    snapshot: &PoolRoutingRuntimeCache,
+    account_id: i64,
+    requested_model: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(model) = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        return false;
+    };
+    snapshot
+        .model_routing
+        .model_route_runtime
+        .get(&(account_id, model.to_string()))
+        .is_some_and(|route| route.is_request_driven_recovery_candidate_at(now))
+}
+
+fn compare_request_driven_recovery_targets(
+    lhs: &LivePoolCandidateEvaluation,
+    rhs: &LivePoolCandidateEvaluation,
+) -> std::cmp::Ordering {
+    lhs.score
+        .routing_priority_rank
+        .cmp(&rhs.score.routing_priority_rank)
+        .then_with(|| {
+            let mut lhs_score = lhs.score.clone();
+            let mut rhs_score = rhs.score.clone();
+            lhs_score.model_route_penalty = ModelRoutePenalty::Normal.score() as u8;
+            rhs_score.model_route_penalty = ModelRoutePenalty::Normal.score() as u8;
+            compare_pool_routing_candidate_scores(&lhs_score, &rhs_score)
+        })
+}
+
+fn request_driven_recovery_target_index(
+    candidates: &[LivePoolCandidateEvaluation],
+    routing_snapshot: &PoolRoutingRuntimeCache,
+    requested_model: Option<&str>,
+    now: DateTime<Utc>,
+    sticky_source_rule: Option<&EffectiveRoutingRule>,
+    sticky_fallback_handoff_enabled: bool,
+    fresh_assignment_handoff_enabled: bool,
+) -> Option<usize> {
+    if !sticky_fallback_handoff_enabled && !fresh_assignment_handoff_enabled {
+        return None;
+    }
+    let ordinary_winner_rank = candidates.first()?.score.routing_priority_rank;
+    let required_higher_rank = if sticky_fallback_handoff_enabled {
+        sticky_source_rule?.priority_tier.routing_rank()
+    } else {
+        ordinary_winner_rank
+    };
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            let Some(account) = candidate.resolved_account.as_ref() else {
+                return false;
+            };
+            account.routing_source == PoolRoutingSelectionSource::FreshAssignment
+                && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                && candidate.score.routing_priority_rank < required_higher_rank
+                && candidate.score.model_route_penalty == ModelRoutePenalty::Demoted.score() as u8
+                && model_route_is_request_driven_recovery_candidate(
+                    routing_snapshot,
+                    account.account_id,
+                    requested_model,
+                    now,
+                )
+        })
+        .min_by(|(_, lhs), (_, rhs)| compare_request_driven_recovery_targets(lhs, rhs))
+        .map(|(index, _)| index)
+}
+
 pub(crate) fn compare_reset_proximity_for_rotation_candidates(
     lhs_enabled: bool,
     lhs_reset: Option<i64>,
@@ -2231,13 +2306,90 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         && resolved_candidates.first().is_some_and(|winner| {
             fresh_assignment_is_priority_attraction(winner, &resolved_candidates)
         });
+    let request_driven_recovery_target_index =
+        if priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime") {
+            request_driven_recovery_target_index(
+                &resolved_candidates,
+                &routing_runtime,
+                requested_model,
+                now,
+                sticky_source_rule.as_ref(),
+                sticky_fallback_handoff_enabled,
+                fresh_assignment_handoff_enabled,
+            )
+        } else {
+            None
+        };
+    let request_driven_recovery_target_id =
+        request_driven_recovery_target_index.and_then(|index| {
+            resolved_candidates
+                .get(index)
+                .and_then(|candidate| candidate.resolved_account.as_ref())
+                .map(|account| account.account_id)
+        });
+    if request_driven_recovery_target_id.is_some()
+        && selection_audit.is_none()
+        && let Some(winner) = resolved_candidates.first()
+    {
+        let account = winner
+            .resolved_account
+            .as_ref()
+            .expect("recovery target requires a resolved ordinary winner");
+        let runner_up = resolved_candidates
+            .get(1)
+            .and_then(|candidate| candidate.resolved_account.as_ref());
+        selection_audit = Some(PoolRoutingSelectionAudit {
+            selected_account_id: account.account_id,
+            selected_account_name: account.display_name.clone(),
+            eligible_candidate_count: resolved_candidates.len(),
+            winner_reason_code: pool_routing_selection_winner_reason(
+                &winner.score,
+                resolved_candidates.get(1).map(|candidate| &candidate.score),
+            )
+            .to_string(),
+            compared_account_id: runner_up.map(|candidate| candidate.account_id),
+            compared_account_name: runner_up.map(|candidate| candidate.display_name.clone()),
+            selected_score: Some(routing_selection_score_snapshot(&winner.score)),
+            compared_score: resolved_candidates
+                .get(1)
+                .map(|candidate| routing_selection_score_snapshot(&candidate.score)),
+            handoff_admission: None,
+            excluded_candidates: selection_audit_exclusions
+                .iter()
+                .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)
+                .cloned()
+                .collect(),
+        });
+    }
+    if let Some(index) = request_driven_recovery_target_index {
+        let recovery_target = resolved_candidates.remove(index);
+        resolved_candidates.insert(0, recovery_target);
+    }
     let mut resolved_candidates = resolved_candidates.into_iter();
+    let mut request_driven_recovery_admitted = false;
+    let mut request_driven_recovery_deferred = false;
     while let Some(evaluation) = resolved_candidates.next() {
         if let Some(mut account) = evaluation.resolved_account {
             if priority_handoff_deferred_for_sticky
                 && sticky_source_id.is_some()
                 && account.routing_source != PoolRoutingSelectionSource::StickyReuse
             {
+                continue;
+            }
+            if request_driven_recovery_deferred
+                && account.routing_source == PoolRoutingSelectionSource::FreshAssignment
+                && evaluation.score.model_route_penalty == ModelRoutePenalty::Demoted.score() as u8
+            {
+                if !selection_audit_exclusions
+                    .iter()
+                    .any(|candidate| candidate.account_id == account.account_id)
+                {
+                    selection_audit_exclusions.push(PoolRoutingSelectionAuditExcludedCandidate {
+                        account_id: account.account_id,
+                        account_name: account.display_name.clone(),
+                        reason_code: "modelRecoveryDeferred".to_string(),
+                    });
+                }
                 continue;
             }
             let mut priority_handoff_permit = None;
@@ -2249,10 +2401,17 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let should_gate_priority_handoff = priority_handoff_enabled
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
                 && priority_handoff_model_available
-                && (sticky_fallback_handoff_enabled
+                && !request_driven_recovery_deferred
+                && (Some(account.account_id) == request_driven_recovery_target_id
+                    || sticky_fallback_handoff_enabled
                     || fresh_assignment_priority_attraction
                     || priority_handoff_deferred_any)
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment;
+            let handoff_trigger = if Some(account.account_id) == request_driven_recovery_target_id {
+                "modelRouteRecovery"
+            } else {
+                "priorityAttraction"
+            };
             if should_preserve_sticky_without_model {
                 if !selection_audit_exclusions
                     .iter()
@@ -2281,6 +2440,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     verification_success_count,
                     generation: priority_handoff_generation(account.account_id, requested_model)
                         .unwrap_or_default(),
+                    trigger: Some("priorityAttraction".to_string()),
                 });
             }
             if should_gate_priority_handoff {
@@ -2299,8 +2459,11 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 phase,
                                 verification_success_count,
                                 generation,
+                                trigger: Some(handoff_trigger.to_string()),
                             });
                         }
+                        request_driven_recovery_admitted =
+                            Some(account.account_id) == request_driven_recovery_target_id;
                         priority_handoff_permit = Some(permit);
                     }
                     (
@@ -2308,7 +2471,13 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                         | PriorityHandoffAdmissionDecision::CoolingDown),
                         None,
                     ) => {
-                        priority_handoff_deferred_any = true;
+                        let is_recovery_target =
+                            Some(account.account_id) == request_driven_recovery_target_id;
+                        if is_recovery_target {
+                            request_driven_recovery_deferred = true;
+                        } else {
+                            priority_handoff_deferred_any = true;
+                        }
                         let reason_code = match decision {
                             PriorityHandoffAdmissionDecision::CoolingDown => "deferredCooldown",
                             _ => "deferredPermitBusy",
@@ -2327,6 +2496,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 requested_model,
                             )
                             .unwrap_or_default(),
+                            trigger: Some(handoff_trigger.to_string()),
                         };
                         if let Some(audit) = selection_audit.as_mut() {
                             audit.handoff_admission = Some(handoff_admission.clone());
@@ -2475,7 +2645,12 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 audit.selected_account_id = account.account_id;
                 audit.selected_account_name = account.display_name.clone();
                 audit.selected_score = Some(routing_selection_score_snapshot(&evaluation.score));
-                if priority_handoff_deferred_any {
+                if request_driven_recovery_admitted {
+                    audit.winner_reason_code = "requestDrivenRecoveryAdmission".to_string();
+                    audit.compared_account_id = None;
+                    audit.compared_account_name = None;
+                    audit.compared_score = None;
+                } else if priority_handoff_deferred_any {
                     audit.winner_reason_code = "priorityHandoffDeferred".to_string();
                     audit.compared_account_id = None;
                     audit.compared_account_name = None;
@@ -2509,6 +2684,10 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 audit.selected_account_name = account.display_name.clone();
                 audit.selected_score = Some(routing_selection_score_snapshot(&evaluation.score));
                 audit.handoff_admission = Some(handoff_admission);
+                audit.winner_reason_code = "priorityHandoffDeferred".to_string();
+                audit.compared_account_id = None;
+                audit.compared_account_name = None;
+                audit.compared_score = None;
                 audit.excluded_candidates = selection_audit_exclusions
                     .iter()
                     .take(POOL_ROUTING_SELECTION_AUDIT_EXCLUSION_LIMIT)

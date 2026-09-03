@@ -7155,6 +7155,89 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
     clippy::await_holding_lock,
     reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
 )]
+async fn resolver_request_driven_priority_recovery_precedes_healthy_lower_priority_winner() {
+    let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let recovery_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Degraded Primary Recovery Target",
+        "sk-request-recovery-target",
+        Some("request-driven-recovery"),
+        Some("https://request-recovery-target.example.com/backend-api/codex"),
+    )
+    .await;
+    let healthy_account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Healthy Normal Winner",
+        "sk-request-recovery-healthy",
+        Some("request-driven-recovery"),
+        Some("https://request-recovery-healthy.example.com/backend-api/codex"),
+    )
+    .await;
+    for (account_id, tier) in [
+        (recovery_account_id, TagPriorityTier::Primary),
+        (healthy_account_id, TagPriorityTier::Normal),
+    ] {
+        sqlx::query("UPDATE pool_upstream_accounts SET policy_priority_tier = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind(tier.as_str())
+            .execute(&state.pool)
+            .await
+            .expect("set request recovery priority");
+    }
+    let requested_model = "gpt-request-driven-recovery";
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_failure_at, last_failure_kind, last_failure_message) VALUES (?1, ?2, 'degraded', 'demoted', 1, ?3, ?3, ?3, 'model_unavailable', 'model unavailable')",
+    )
+    .bind(recovery_account_id)
+    .bind(requested_model)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("seed degraded recovery model route");
+
+    let resolution = resolve_pool_account_for_request_with_route_requirement_and_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+        &state,
+        None,
+        Some(requested_model),
+        &[],
+        &HashSet::new(),
+        None,
+        None,
+        None,
+        "/v1/responses",
+        crate::ImageIntent::Unknown,
+        false,
+        None,
+    )
+    .await
+    .expect("resolve request-driven recovery");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("expected recovery target to be admitted, got {resolution:?}");
+    };
+    assert_eq!(account.account_id, recovery_account_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::PriorityHandoff
+    );
+    let audit = account
+        .routing_selection_audit
+        .expect("recovery admission should carry an audit");
+    assert_eq!(audit.winner_reason_code, "requestDrivenRecoveryAdmission");
+    let admission = audit
+        .handoff_admission
+        .expect("recovery admission should be recorded");
+    assert_eq!(admission.trigger.as_deref(), Some("modelRouteRecovery"));
+    assert_eq!(admission.verification_success_count, 0);
+    assert_ne!(account.account_id, healthy_account_id);
+}
+
+#[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
+)]
 async fn resolver_admits_first_untracked_priority_fresh_assignment() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;

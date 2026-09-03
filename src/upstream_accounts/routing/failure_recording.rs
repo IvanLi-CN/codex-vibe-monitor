@@ -27,6 +27,7 @@ pub(crate) enum UpstreamCapabilityAxis {
 struct PoolRouteSuccessOutcome {
     sticky_mutation: RuntimeStickyMutation,
     availability_increased: bool,
+    model_route_recovered: bool,
 }
 
 fn route_failure_precedes_request(
@@ -213,12 +214,13 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
             return Err(error);
         }
     };
-    complete_priority_handoff_from_attempt_or_invoke(
+    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
         &state.pool,
         attempt_id,
         invoke_id,
         true,
         false,
+        attempt_id.map(|_| outcome.model_route_recovered),
     )
     .await;
     if outcome.sticky_mutation.writes_conversation_operation() {
@@ -262,7 +264,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    match record_pool_route_success_inner(
+    let outcome = match record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,
@@ -274,7 +276,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
     )
     .await
     {
-        Ok(_) => {}
+        Ok(outcome) => outcome,
         Err(error) => {
             forget_priority_handoff_attempt(attempt_id);
             if let Some(invoke_id) = invoke_id {
@@ -282,9 +284,16 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
             }
             return Err(error);
         }
-    }
-    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
-        .await;
+    };
+    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
+        pool,
+        attempt_id,
+        invoke_id,
+        true,
+        false,
+        attempt_id.map(|_| outcome.model_route_recovered),
+    )
+    .await;
     Ok(())
 }
 
@@ -340,6 +349,7 @@ async fn record_pool_route_success_inner(
         return Ok(PoolRouteSuccessOutcome {
             sticky_mutation: RuntimeStickyMutation::Unchanged,
             availability_increased: false,
+            model_route_recovered,
         });
     };
     let last_route_failure_at = account.try_get::<Option<String>, _>("last_route_failure_at")?;
@@ -352,6 +362,7 @@ async fn record_pool_route_success_inner(
             // A newer or ambiguous account failure keeps the account out of
             // routing even if model evidence independently recovered.
             availability_increased: false,
+            model_route_recovered,
         });
     }
     let account_recovered = account.try_get::<String, _>("status")?
@@ -440,6 +451,7 @@ async fn record_pool_route_success_inner(
     Ok(PoolRouteSuccessOutcome {
         sticky_mutation,
         availability_increased: model_route_recovered || account_recovered,
+        model_route_recovered,
     })
 }
 
@@ -520,7 +532,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<()> {
-    match record_pool_route_success_inner(
+    let outcome = match record_pool_route_success_inner(
         pool,
         account_id,
         request_started_at_utc,
@@ -532,7 +544,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     )
     .await
     {
-        Ok(_) => {}
+        Ok(outcome) => outcome,
         Err(error) => {
             forget_priority_handoff_attempt(attempt_id);
             if let Some(invoke_id) = invoke_id {
@@ -540,9 +552,16 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
             }
             return Err(error);
         }
-    }
-    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, true, false)
-        .await;
+    };
+    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
+        pool,
+        attempt_id,
+        invoke_id,
+        true,
+        false,
+        attempt_id.map(|_| outcome.model_route_recovered),
+    )
+    .await;
     record_pool_route_success_capability_observations(
         pool,
         account_id,
@@ -587,12 +606,13 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
             return Err(error);
         }
     };
-    complete_priority_handoff_from_attempt_or_invoke(
+    complete_priority_handoff_from_attempt_or_invoke_with_model_recovery(
         &state.pool,
         attempt_id,
         invoke_id,
         true,
         false,
+        attempt_id.map(|_| outcome.model_route_recovered),
     )
     .await;
     record_pool_route_success_capability_observations(
