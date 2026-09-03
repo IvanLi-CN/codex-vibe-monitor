@@ -15,6 +15,62 @@ pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES: usize = 10_000;
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION: i64 = 1;
 pub(crate) const SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE: &str = "summary-global";
+// V1 pages remain useful as backfill input but are intentionally not accepted as an archive
+// cleanup proof. Newly written pages use V2 only after semantic records are verified.
+pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_V1: i64 = 1;
+pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_V2: i64 = 2;
+
+/// The raw-free, versioned Summary input retained for an archive page. This is deliberately
+/// shared by the retention writer and off-request projection reader so cleanup and recovery use
+/// the same semantic field set.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SummaryArchiveSnapshotV2Record {
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) source: String,
+    pub(crate) model: Option<String>,
+    pub(crate) response_model: Option<String>,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: Option<f64>,
+    pub(crate) cost_input: Option<f64>,
+    pub(crate) cost_cache_write: Option<f64>,
+    pub(crate) cost_cache_read: Option<f64>,
+    pub(crate) cost_output: Option<f64>,
+    pub(crate) cost_reasoning: Option<f64>,
+    pub(crate) status: String,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) is_actionable: bool,
+    pub(crate) upstream_account_id: Option<i64>,
+}
+
+pub(crate) fn decode_summary_archive_snapshot_v2_payload(
+    payload: &[u8],
+) -> Result<Vec<SummaryArchiveSnapshotV2Record>> {
+    let decoded = zstd::stream::decode_all(payload).context("decode V2 Summary Snapshot page")?;
+    let records = serde_json::from_slice::<Vec<SummaryArchiveSnapshotV2Record>>(&decoded)
+        .context("parse V2 Summary Snapshot records")?;
+    if records.is_empty() {
+        bail!("V2 Summary Snapshot page cannot be empty");
+    }
+    if records.iter().any(|record| {
+        record.invoke_id.trim().is_empty()
+            || record.occurred_at.trim().is_empty()
+            || record.source.trim().is_empty()
+            || record.status.trim().is_empty()
+    }) {
+        bail!("V2 Summary Snapshot page contains incomplete semantic record");
+    }
+    Ok(records)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +136,13 @@ impl SummarySourceChangeDescriptor {
         Self::source_change("terminal_batch", source_revision, entries)
     }
 
+    pub(crate) fn coverage_change(
+        source_revision: u64,
+        entries: Vec<SummarySourceChangeEntry>,
+    ) -> Result<Self> {
+        Self::source_change("coverage_change", source_revision, entries)
+    }
+
     pub(crate) fn encoded_len(&self) -> Result<usize> {
         Ok(serde_json::to_vec(self)?.len())
     }
@@ -130,8 +193,8 @@ pub(crate) async fn store_summary_archive_snapshot_page_tx(
     sqlx::query(
         "INSERT OR REPLACE INTO summary_archive_snapshot \
          (archive_batch_id, manifest_sha256, page_index, coverage_start, coverage_end, \
-          row_count, payload, payload_bytes, snapshot_sha256) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+          row_count, payload, payload_bytes, snapshot_sha256, format_version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(page.archive_batch_id)
     .bind(&page.manifest_sha256)
@@ -142,6 +205,7 @@ pub(crate) async fn store_summary_archive_snapshot_page_tx(
     .bind(&page.payload)
     .bind(i64::try_from(page.payload.len()).context("snapshot byte count overflow")?)
     .bind(page.snapshot_sha256())
+    .bind(SUMMARY_ARCHIVE_SNAPSHOT_V1)
     .execute(&mut *connection)
     .await
     .context("store summary archive snapshot page")?;
@@ -155,13 +219,96 @@ pub(crate) async fn store_summary_archive_snapshot_page_tx(
     Ok(())
 }
 
+/// Store a page that has been decoded and validated against the V2 semantic Summary record
+/// contract. Keeping this separate from the legacy writer makes it impossible for an old page
+/// to accidentally become a cleanup authority during migration.
+pub(crate) async fn store_summary_archive_snapshot_page_v2_tx(
+    connection: &mut SqliteConnection,
+    page: &SummaryArchiveSnapshotPage,
+) -> Result<()> {
+    if page.payload.len() > SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES {
+        bail!("summary archive snapshot page byte budget exceeded");
+    }
+    if page.manifest_sha256.trim().is_empty()
+        || page.coverage_start.trim().is_empty()
+        || page.coverage_end.trim().is_empty()
+    {
+        bail!("summary archive snapshot page is missing identity or coverage proof");
+    }
+    let records = decode_summary_archive_snapshot_v2_payload(&page.payload)?;
+    if records.len() != page.row_count as usize {
+        bail!("V2 Summary Snapshot row count does not match payload");
+    }
+    let coverage_start = parse_snapshot_coverage_at(&page.coverage_start)
+        .ok_or_else(|| anyhow::anyhow!("invalid V2 Summary Snapshot coverage start"))?;
+    let coverage_end = parse_snapshot_coverage_at(&page.coverage_end)
+        .ok_or_else(|| anyhow::anyhow!("invalid V2 Summary Snapshot coverage end"))?;
+    // Archive manifests store the last row's timestamp as an inclusive endpoint. A page with a
+    // single row therefore legitimately has equal start and end coverage markers.
+    if coverage_start > coverage_end
+        || records.iter().any(|record| {
+            parse_snapshot_coverage_at(&record.occurred_at).is_none_or(|occurred_at| {
+                occurred_at < coverage_start || occurred_at > coverage_end
+            })
+        })
+    {
+        bail!("V2 Summary Snapshot records exceed page coverage");
+    }
+    sqlx::query(
+        "INSERT OR REPLACE INTO summary_archive_snapshot \
+         (archive_batch_id, manifest_sha256, page_index, coverage_start, coverage_end, \
+          row_count, payload, payload_bytes, snapshot_sha256, format_version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )
+    .bind(page.archive_batch_id)
+    .bind(&page.manifest_sha256)
+    .bind(i64::from(page.page_index))
+    .bind(&page.coverage_start)
+    .bind(&page.coverage_end)
+    .bind(i64::from(page.row_count))
+    .bind(&page.payload)
+    .bind(i64::try_from(page.payload.len()).context("snapshot byte count overflow")?)
+    .bind(page.snapshot_sha256())
+    .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+    .execute(&mut *connection)
+    .await
+    .context("store V2 summary archive snapshot page")?;
+    tracing::debug!(
+        stage = "summary_archive_snapshot_v2_page",
+        page_index = page.page_index,
+        row_count = page.row_count,
+        payload_bytes = page.payload.len(),
+        "stored verified Summary Archive Snapshot V2 page"
+    );
+    Ok(())
+}
+
 pub(crate) async fn summary_archive_snapshot_has_proof(
     pool: &Pool<Sqlite>,
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
+    let Some((dataset, manifest, manifest_row_count, status, manifest_start, manifest_end)) =
+        sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>)>(
+            "SELECT dataset, sha256, row_count, status, coverage_start_at, coverage_end_at \
+             FROM archive_batches WHERE id = ?1",
+        )
+        .bind(archive_batch_id)
+        .fetch_optional(pool)
+        .await
+        .context("load Summary Snapshot archive manifest proof")?
+    else {
+        return Ok(false);
+    };
+    if dataset != "codex_invocations"
+        || manifest != manifest_sha256
+        || status != "completed"
+        || manifest_row_count < 0
+    {
+        return Ok(false);
+    }
     let row = sqlx::query(
-        "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes \
+        "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
          FROM summary_archive_snapshot \
          WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
     )
@@ -173,23 +320,93 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     if row.is_empty() {
         return Ok(false);
     }
+    let manifest_start = manifest_start.and_then(|value| parse_snapshot_coverage_at(&value));
+    let manifest_end = manifest_end.and_then(|value| parse_snapshot_coverage_at(&value));
+    let mut first_page_start = None;
+    let mut last_page_end = None;
+    let mut previous_page_end = None;
+    let mut previous_record_key = None;
+    let mut total_rows = 0_i64;
+    let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_invoke_ids = std::collections::HashSet::<String>::new();
     for (expected_page, row) in row.into_iter().enumerate() {
         if row.get::<i64, _>("page_index") != i64::try_from(expected_page).unwrap_or(-1) {
             return Ok(false);
         }
+        if row.get::<i64, _>("format_version") != SUMMARY_ARCHIVE_SNAPSHOT_V2 {
+            return Ok(false);
+        }
         let payload = row.get::<Vec<u8>, _>("payload");
+        let row_count = row.get::<i64, _>("row_count");
         let mut hasher = Sha256::new();
         hasher.update(&payload);
         let computed = format!("{:x}", hasher.finalize());
         if row.get::<String, _>("snapshot_sha256") != computed
             || row.get::<i64, _>("payload_bytes") != i64::try_from(payload.len()).unwrap_or(-1)
+            || row_count < 0
             || row.get::<String, _>("coverage_start").trim().is_empty()
             || row.get::<String, _>("coverage_end").trim().is_empty()
         {
             return Ok(false);
         }
+        let Some(coverage_start) = parse_snapshot_coverage_at(row.get("coverage_start")) else {
+            return Ok(false);
+        };
+        let Some(coverage_end) = parse_snapshot_coverage_at(row.get("coverage_end")) else {
+            return Ok(false);
+        };
+        if coverage_start > coverage_end {
+            return Ok(false);
+        }
+        if previous_page_end.is_some_and(|previous_end| coverage_start < previous_end) {
+            return Ok(false);
+        }
+        first_page_start.get_or_insert(coverage_start);
+        last_page_end = Some(coverage_end);
+        previous_page_end = Some(coverage_end);
+        let records = match decode_summary_archive_snapshot_v2_payload(&payload) {
+            Ok(records) => records,
+            Err(_) => return Ok(false),
+        };
+        if i64::try_from(records.len()).unwrap_or(-1) != row_count {
+            return Ok(false);
+        }
+        total_rows = total_rows.saturating_add(row_count);
+        if records.iter().any(|record| {
+            let Some(occurred_at) = parse_snapshot_coverage_at(&record.occurred_at) else {
+                return true;
+            };
+            let key = (occurred_at, record.id);
+            if previous_record_key.is_some_and(|previous| key < previous) {
+                return true;
+            }
+            previous_record_key = Some(key);
+            !seen_ids.insert(record.id)
+                || !seen_invoke_ids.insert(record.invoke_id.clone())
+                || occurred_at < coverage_start
+                || occurred_at > coverage_end
+        }) {
+            return Ok(false);
+        }
+    }
+    if total_rows != manifest_row_count
+        || manifest_start.is_some_and(|start| first_page_start != Some(start))
+        || manifest_end.is_some_and(|end| last_page_end != Some(end))
+    {
+        return Ok(false);
     }
     Ok(true)
+}
+
+pub(crate) fn parse_snapshot_coverage_at(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|value| value.and_utc())
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,11 +493,17 @@ mod tests {
         .await
         .expect("cursor table");
         sqlx::query(
-            "CREATE TABLE summary_archive_snapshot (archive_batch_id INTEGER NOT NULL, manifest_sha256 TEXT NOT NULL, page_index INTEGER NOT NULL, coverage_start TEXT NOT NULL, coverage_end TEXT NOT NULL, row_count INTEGER NOT NULL, payload BLOB NOT NULL, payload_bytes INTEGER NOT NULL, snapshot_sha256 TEXT NOT NULL, PRIMARY KEY (archive_batch_id, manifest_sha256, page_index))",
+            "CREATE TABLE summary_archive_snapshot (archive_batch_id INTEGER NOT NULL, manifest_sha256 TEXT NOT NULL, page_index INTEGER NOT NULL, coverage_start TEXT NOT NULL, coverage_end TEXT NOT NULL, row_count INTEGER NOT NULL, payload BLOB NOT NULL, payload_bytes INTEGER NOT NULL, snapshot_sha256 TEXT NOT NULL, format_version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (archive_batch_id, manifest_sha256, page_index))",
         )
         .execute(&pool)
         .await
         .expect("snapshot table");
+        sqlx::query(
+            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("archive manifest table");
         pool
     }
 
@@ -328,6 +551,33 @@ mod tests {
     #[tokio::test]
     async fn archive_snapshot_cleanup_gate_requires_matching_sha() {
         let pool = pool().await;
+        let normalized = serde_json::to_vec(&vec![SummaryArchiveSnapshotV2Record {
+            id: 9,
+            invoke_id: "invoke-9".to_string(),
+            occurred_at: "2026-08-01T00:30:00Z".to_string(),
+            source: "proxy".to_string(),
+            model: None,
+            response_model: None,
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_input_tokens: 0,
+            reasoning_tokens: 0,
+            reasoning_effort: None,
+            total_tokens: 3,
+            cost: Some(0.1),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            status: "success".to_string(),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: false,
+            upstream_account_id: None,
+        }])
+        .expect("serialize V2 snapshot record");
         let page = SummaryArchiveSnapshotPage {
             archive_batch_id: 9,
             manifest_sha256: "manifest-9".to_string(),
@@ -335,10 +585,28 @@ mod tests {
             coverage_start: "2026-08-01T00:00:00Z".to_string(),
             coverage_end: "2026-08-01T01:00:00Z".to_string(),
             row_count: 1,
-            payload: b"normalized-summary".to_vec(),
+            payload: zstd::stream::encode_all(normalized.as_slice(), 1)
+                .expect("compress V2 snapshot record"),
         };
+        sqlx::query(
+            "INSERT INTO archive_batches (id, dataset, sha256, row_count, status, coverage_start_at, coverage_end_at) VALUES (9, 'codex_invocations', 'manifest-9', 1, 'completed', '2026-08-01T00:00:00Z', '2026-08-01T01:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("store archive manifest");
         let mut tx = pool.begin().await.expect("snapshot transaction");
         store_summary_archive_snapshot_page_tx(tx.as_mut(), &page)
+            .await
+            .expect("store legacy snapshot");
+        tx.commit().await.expect("commit legacy snapshot");
+        assert!(
+            !summary_archive_snapshot_has_proof(&pool, 9, "manifest-9")
+                .await
+                .expect("legacy snapshot proof"),
+            "V1 pages must never become cleanup authority"
+        );
+        let mut tx = pool.begin().await.expect("snapshot V2 transaction");
+        store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page)
             .await
             .expect("store snapshot");
         tx.commit().await.expect("commit snapshot");

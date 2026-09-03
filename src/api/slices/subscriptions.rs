@@ -3787,7 +3787,7 @@ impl SubscriptionHub {
         )
     }
 
-    async fn summary_projection_with_terminal_overlay(
+    pub(crate) async fn summary_projection_with_terminal_overlay(
         &self,
         all_time: bool,
         upstream_account_id: Option<i64>,

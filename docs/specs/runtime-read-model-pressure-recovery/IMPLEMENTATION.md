@@ -18,6 +18,10 @@
   under the 10,000-entry / 64 MiB bound with a durable proof, and the Snapshot
   API verifies manifest identity, coverage and payload SHA before cleanup can
   retire an authoritative archive.
+- ADR 0010 separates the immutable Summary Coverage Fence from the bounded live
+  tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
+  AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
+  archive cleanup proof; V1 pages remain backfill input only.
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a time/account
   range intersecting a `DeltaGapProof`, is unavailable rather than approximate.

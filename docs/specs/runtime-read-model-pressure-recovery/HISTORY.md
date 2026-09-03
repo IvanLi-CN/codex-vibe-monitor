@@ -35,3 +35,6 @@
   Snapshot a raw archive cleanup gate, while low-priority legacy backfill
   recovers readable history and preserves irretrievably missing authority as a
   finite unavailable range.
+- ADR 0010 separates the historical Coverage Fence from the live-tail cursor,
+  keeps raw boundary hydration exclusive to AllTime recovery, and quarantines
+  V1 Snapshot pages from cleanup until a semantically verified V2 page exists.
