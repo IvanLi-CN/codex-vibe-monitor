@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.13",
+  "base_stable_version": "2.69.12",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-03T03:36:17Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.13",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2cd60db010599b1d7aebab37cd4c1a146ccce45a",
+  "pr_number": 897,
+  "pr_title": "fix(summary): persist durable source recovery",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.13",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.13",
+  "target_sha": "dc093de9dc08fa91a1d38f8c4da9aeccbc469cec",
+  "type_label": "type:patch"
+}
