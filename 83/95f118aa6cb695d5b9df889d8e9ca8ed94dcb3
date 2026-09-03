@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.17",
+  "base_stable_version": "2.69.16",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-03T17:31:09Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.17",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "24136f76c6c5fbe4d149303fa1f7114421a0c491",
+  "pr_number": 901,
+  "pr_title": "fix(web): derive upstream account recent window",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.17",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.17",
+  "target_sha": "8395f118aa6cb695d5b9df889d8e9ca8ed94dcb3",
+  "type_label": "type:patch"
+}
