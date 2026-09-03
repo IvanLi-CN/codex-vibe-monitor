@@ -1,11 +1,12 @@
 import type {
   ApiInvocation,
+  InvocationPhaseCounts,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationManualBinding,
   PromptCacheConversationsResponse,
 } from "./api";
-import { resolveInvocationLivePhase } from "./invocationPhase";
+import { EMPTY_INVOCATION_PHASE_COUNTS, resolveInvocationLivePhase } from "./invocationPhase";
 import { resolveInvocationDisplayStatus } from "./invocationStatus";
 import { buildInvocationFromPromptCachePreview } from "./promptCacheLive";
 
@@ -54,6 +55,7 @@ export interface DashboardWorkingConversationCardModel {
   requestCount: number;
   totalTokens: number;
   totalCost: number;
+  inFlightPhaseCounts: InvocationPhaseCounts;
 }
 
 export interface DashboardWorkingConversationInvocationSelection {
@@ -214,6 +216,7 @@ function buildPendingCardModel(
     requestCount: conversation.requestCount,
     totalTokens: conversation.totalTokens,
     totalCost: conversation.totalCost,
+    inFlightPhaseCounts: conversation.inFlightPhaseCounts ?? EMPTY_INVOCATION_PHASE_COUNTS,
   };
 }
 

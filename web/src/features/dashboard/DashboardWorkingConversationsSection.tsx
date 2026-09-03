@@ -75,6 +75,7 @@ import {
   type InvocationCompactTimingPresentation,
   reconcileInvocationCompactTiming,
 } from "../../lib/invocationCompactTiming";
+import { sumInvocationPhaseCounts } from "../../lib/invocationPhase";
 import { isFinitePositiveMilliseconds } from "../../lib/invocationTiming";
 import {
   compactUpstreamPlanLabel,
@@ -5922,20 +5923,25 @@ export function DashboardWorkingConversationsSection({
                                 </div>
                                 <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
                                   <span className="font-mono">{sortAnchorLabel}</span>
-                                  {card.currentInvocation.livePhase ? (
-                                    <InvocationPhaseChip
-                                      phase={card.currentInvocation.livePhase}
-                                      appearance="inline"
-                                      motion="dynamic"
-                                      showLabel={false}
-                                    />
-                                  ) : (
+                                  {card.inFlightPhaseCounts &&
+                                  sumInvocationPhaseCounts(card.inFlightPhaseCounts) > 0 ? (
+                                    <span data-testid="dashboard-working-conversation-phase-summary">
+                                      <InvocationPhaseSegments
+                                        counts={card.inFlightPhaseCounts}
+                                        appearance="inline"
+                                        motion="static"
+                                        showLabel={false}
+                                        showZero={false}
+                                        countVisibility="multipleOnly"
+                                      />
+                                    </span>
+                                  ) : card.inFlightPhaseCounts ? (
                                     <InlineInvocationStatus
                                       meta={currentStatusMeta}
                                       label={currentStatusLabel}
                                       showLabel={false}
                                     />
-                                  )}
+                                  ) : null}
                                 </div>
                               </div>
 

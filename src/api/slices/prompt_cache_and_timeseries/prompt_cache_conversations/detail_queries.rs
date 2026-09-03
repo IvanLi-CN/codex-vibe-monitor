@@ -1,6 +1,78 @@
 use super::*;
 use sqlx::Executor;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptCacheInFlightPhaseRecord {
+    pub(crate) identity: String,
+    pub(crate) prompt_cache_key: String,
+    pub(crate) phase: Option<String>,
+}
+
+pub(crate) async fn query_prompt_cache_in_flight_phase_records<'e, E>(
+    executor: E,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
+) -> Result<Vec<PromptCacheInFlightPhaseRecord>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let live_phase_sql = invocation_live_phase_sql("inv");
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT inv.invoke_id, inv.occurred_at, live.prompt_cache_key, ",
+    );
+    query.push(live_phase_sql).push(
+        " AS live_phase FROM invocation_in_progress_live AS live \
+         INNER JOIN codex_invocations AS inv ON inv.id = live.invocation_id \
+         WHERE live.prompt_cache_key IS NOT NULL AND live.prompt_cache_key <> ''",
+    );
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND inv.source = ").push_bind(SOURCE_PROXY);
+    }
+    if let Some(snapshot) = snapshot {
+        let filter = PromptCacheConversationSnapshotFilter {
+            snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+            snapshot_created_at_upper_bound: snapshot
+                .snapshot_created_at_upper_bound
+                .map(str::to_string),
+            snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+        };
+        query.push(" AND ");
+        push_snapshot_invocation_visibility_clause(
+            &mut query,
+            "inv.occurred_at",
+            "inv.id",
+            "inv.created_at",
+            Some(&filter),
+        );
+    }
+    query.push(" AND live.prompt_cache_key IN (");
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") ORDER BY live.prompt_cache_key, inv.id");
+    let rows = query
+        .build_query_as::<(String, String, String, Option<String>)>()
+        .fetch_all(executor)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(invoke_id, occurred_at, prompt_cache_key, phase)| PromptCacheInFlightPhaseRecord {
+                identity: format!("{invoke_id}\0{occurred_at}"),
+                prompt_cache_key,
+                phase,
+            },
+        )
+        .collect())
+}
+
 pub(crate) async fn query_prompt_cache_conversation_events<'e, E>(
     executor: E,
     range_start_bound: &str,

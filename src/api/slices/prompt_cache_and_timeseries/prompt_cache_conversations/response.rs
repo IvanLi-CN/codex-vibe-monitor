@@ -143,7 +143,7 @@ pub(crate) fn runtime_prompt_cache_overlay_records(
         .collect()
 }
 
-fn runtime_prompt_cache_overlay_records_at_snapshot(
+pub(crate) fn runtime_prompt_cache_overlay_records_at_snapshot(
     state: &AppState,
     source_scope: InvocationSourceScope,
     range_start_bound: &str,

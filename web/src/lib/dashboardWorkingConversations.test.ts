@@ -69,6 +69,11 @@ function createConversation(
       overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
     lastTerminalAt: hasLastTerminalAt ? (overrides.lastTerminalAt ?? null) : undefined,
     lastInFlightAt: hasLastInFlightAt ? (overrides.lastInFlightAt ?? null) : undefined,
+    inFlightPhaseCounts: overrides.inFlightPhaseCounts ?? {
+      queued: 0,
+      requesting: 0,
+      responding: 0,
+    },
     manualBinding: overrides.manualBinding ?? null,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
