@@ -64,13 +64,15 @@ const freshAssignmentAttempt: ApiPoolUpstreamRequestAttempt = {
 function StoryCard() {
   const { t } = useTranslation();
   return (
-    <div className="max-w-3xl bg-blue-200 p-6">
-      <PoolAttemptRecordCard
-        attempt={freshAssignmentAttempt}
-        proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
-        t={t}
-        testId="fresh-assignment-routing-decision"
-      />
+    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+      <div className="mx-auto w-full max-w-3xl">
+        <PoolAttemptRecordCard
+          attempt={freshAssignmentAttempt}
+          proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
+          t={t}
+          testId="fresh-assignment-routing-decision"
+        />
+      </div>
     </div>
   );
 }
@@ -111,8 +113,11 @@ export const FreshAssignmentRoutingDecision: Story = {
 function RecoveryStoryCard() {
   const { t } = useTranslation();
   return (
-    <div data-visual-evidence-surface className="max-w-3xl bg-blue-200 p-6">
-      <div data-visual-evidence-target>
+    <div
+      data-visual-evidence-surface
+      className="min-h-screen bg-base-200 px-6 py-6 text-base-content"
+    >
+      <div data-visual-evidence-target className="mx-auto w-full max-w-3xl">
         <PoolAttemptRecordCard
           attempt={{
             ...freshAssignmentAttempt,
@@ -169,21 +174,23 @@ export const HistoricalDecisionWithoutScore: Story = {
 function HistoricalStoryCard() {
   const { t } = useTranslation();
   return (
-    <div className="max-w-3xl bg-blue-200 p-6">
-      <PoolAttemptRecordCard
-        attempt={{
-          ...freshAssignmentAttempt,
-          attemptId: "HISTORICAL1",
-          routingSelectionAudit: {
-            ...freshAssignmentAttempt.routingSelectionAudit!,
-            selectedScore: null,
-            comparedScore: null,
-          },
-        }}
-        proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
-        t={t}
-        testId="historical-routing-decision"
-      />
+    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+      <div className="mx-auto w-full max-w-3xl">
+        <PoolAttemptRecordCard
+          attempt={{
+            ...freshAssignmentAttempt,
+            attemptId: "HISTORICAL1",
+            routingSelectionAudit: {
+              ...freshAssignmentAttempt.routingSelectionAudit!,
+              selectedScore: null,
+              comparedScore: null,
+            },
+          }}
+          proxyDisplay={{ value: "Direct", title: "Direct", resolved: true }}
+          t={t}
+          testId="historical-routing-decision"
+        />
+      </div>
     </div>
   );
 }

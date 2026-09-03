@@ -2,7 +2,7 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，主题局部演进见 `./HISTORY.md`，持久决策的完整取舍见关联 ADR。
 
-## 背景 / 问题陈述
+## Context and Scope
 
 现有 sticky 路由会让可复用的 `Fallback` 来源在每次请求时与更高优先级候选比较。目标在恢复、提升优先级或新近变为可用时，多个对话模型路由可以同时开始向同一目标尝试。sticky 写入虽只在成功后提交，却不限制这些并发尝试；一个不可靠而缓慢的目标因此可能在健康状态收敛前承接大量长请求。
 
@@ -50,7 +50,18 @@
 
 - [ADR 0002: Stage automatic priority handoffs through local permits](../../adr/0002-stage-automatic-priority-handoffs.md)
 
-## 需求（Requirements）
+## Requirements
+
+### Stable requirement identifiers
+
+- REQ-001: API Key 路由必须按精确请求模型复用既有模型健康事实，并只允许严格更高优先级的临时故障目标进入恢复准入。
+- REQ-002: 每个目标账号模型组合必须使用一个不可等待、不可排队的本地单槽许可，许可忙或冷却时不得级联到次优恢复目标。
+- REQ-003: 恢复准入必须由下一个合格真实请求驱动；`degraded` 可立即尝试，未到期 `cooling_down` 必须排除，普通比较器不得改变。
+- REQ-004: 新接受的临时故障必须重启恢复代际并保留旧在途许可的排他性；旧终态不得污染新代际。
+- REQ-005: 只有通过请求开始时间、reset fence 和 Sticky generation 栅栏的完整终态成功，才能恢复模型健康、推进 `1/3 -> 3/3` 并安全提交绑定。
+- REQ-006: 取消、交付不确定、Fault Failover、WebSocket、非 API Key 与数据库写入失败必须保持既有非等待和保守语义。
+- REQ-007: `handoffAdmission.trigger` 与恢复 winner reason 必须以向后兼容的审计字段和可读 Web 诊断暴露，且不得记录敏感上游正文。
+- REQ-008: 全局设置与进程重启必须仅重置本地恢复代际，不得恢复持久许可、计数或隐式开放状态。
 
 ### MUST
 
@@ -138,7 +149,17 @@
 - 请求驱动恢复准入选中目标时，`routingSelectionAudit.winnerReasonCode` 必须为 `requestDrivenRecoveryAdmission`；普通优先级迁移继续使用既有胜出原因。
 - 现有模型路由事件新增安全 reason code，以表达 `priorityHandoffSucceeded`、`priorityHandoffFailureCooldown` 与 `priorityHandoffRecoveryProgress`。事件仅携带既有安全上下文和模型范围，不携带原始上游错误。
 
-## 验收标准（Acceptance Criteria）
+## Verification
+
+### Verification traceability
+
+- VER-001 covers: REQ-001, REQ-002, REQ-003. `request_driven_priority_recovery` 验证降权目标的即时准入、冷却到期准入、单一恢复目标和忙时无等待语义。
+- VER-002 covers: REQ-004, REQ-005. `priority_handoff_recovery_generation` 验证新故障清零、旧许可释放、成功证据栅栏和 `1/3` 恢复进度。
+- VER-003 covers: REQ-006. `routing_handoff_audit_compatibility` 与既有 Fault Failover/取消回归验证不改变兼容路径。
+- VER-004 covers: REQ-007. Rust serde 与 `normalizePoolRoutingSelectionAudit` 验证历史缺字段兼容、独立 trigger/decision 和安全 reason code。
+- VER-005 covers: REQ-008. 设置切换、进程重启和 stateful SQLite profile 验证本地代际不从持久状态推断恢复开放。
+
+### Behavioral scenarios
 
 - Given 多个可用 `Fallback` 对话模型路由同时将同一 API Key 目标视为首选，When 目标处于恢复验证期，Then 同一进程最多一个请求向该目标发送，其他 sticky 请求立即在各自来源继续，没有迁移 FIFO 或 HTTP 等待。
 
@@ -182,14 +203,7 @@
 
 - Given WebSocket 或非 API Key 账号请求，When 解析路由，Then 它们维持升级前的路由、重试和完成语义。
 
-## 验收清单（Acceptance checklist）
-
-- [ ] 核心路径的长期行为已被明确描述。
-- [ ] 关键边界、取消、交付不确定、数据库不可用与进程重启场景已被覆盖。
-- [ ] Settings 与审计接口契约已写清楚。
-- [ ] 相关验收条件可以用于实现与 review 对齐。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
+## Verification Details
 
 ### Testing
 
@@ -217,41 +231,39 @@
 
 ## Visual Evidence
 
-实现已落在既有 Pool Routing Settings 卡片；视觉证据来自 Storybook mock canvas，覆盖已通过。
+实现已落在既有记录详情卡；视觉证据来自 Storybook mock canvas，覆盖已通过。
 
 桌面证据：
 
 - `source=storybook_canvas`
-- `story=settings-components-pool-routing-settings-card--priority-handoff-admission-disabled`
+- `story=invocations-poolattemptrecordcard--request-driven-recovery-admission`
 - `requested_viewport=1280x900`
 - `viewport_strategy=storybook-viewport`
-- `capture_scope=focused priority-handoff section`
+- `capture_scope=declared visual-evidence surface`
 - `margin_policy=require_margin`
-- `normalization=unchanged; outer margin already satisfied`
-- `target_program=Storybook mock canvas`
-- `PR: none`
+- `normalization=DOM-geometry crop within declared surface; 48px maximum outer margin`
+- `target_program=mock-only Storybook canvas`
+- `surface_selector=[data-visual-evidence-surface]`
+- `target_selector=[data-visual-evidence-target]`
 
-![优先级迁移准入控制桌面状态](assets/priority-handoff-desktop.png)
+![请求驱动模型路由恢复准入桌面状态](assets/request-driven-recovery-admission.png)
 
 移动证据：
 
 - `source=storybook_canvas`
-- `story=settings-components-pool-routing-settings-card--priority-handoff-admission-mobile`
+- `story=invocations-poolattemptrecordcard--request-driven-recovery-admission`
 - `requested_viewport=393x852`
 - `viewport_strategy=storybook-viewport`
-- `capture_scope=focused priority-handoff section`
+- `capture_scope=declared visual-evidence surface`
 - `margin_policy=require_margin`
-- `normalization=unchanged; outer margin already satisfied`
-- `target_program=Storybook mock canvas`
-- `PR: none`
+- `normalization=unchanged; target margins satisfy the source-managed surface contract`
+- `target_program=mock-only Storybook canvas`
+- `surface_selector=[data-visual-evidence-surface]`
+- `target_selector=[data-visual-evidence-target]`
 
-![优先级迁移准入控制移动状态](assets/priority-handoff-mobile.png)
+![请求驱动模型路由恢复准入窄屏状态](assets/request-driven-recovery-admission-narrow.png)
 
-视觉确认：主人已确认当前截图准确反映本次改动；截图已通过不可变聊天快照展示并落盘为 Spec 资产。历史基线不存在，因此本次视觉比较记录为“需确认”，不宣称与历史版本一致。
-
-## Related PRs
-
-- None
+视觉确认：主人已批准当前截图准确反映本次改动；截图已通过不可变聊天快照展示并落盘为 Spec 资产。历史基线不存在，因此本次视觉比较记录为“需确认”，不宣称与历史版本一致。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
