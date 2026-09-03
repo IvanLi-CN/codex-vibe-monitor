@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.15",
+  "base_stable_version": "2.69.14",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-03T10:34:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.15",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e4bcf32849a0d8a96464bf7ca3df572f73d5155f",
+  "pr_number": 898,
+  "pr_title": "feat(dashboard): summarize conversation in-flight phases",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.15",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.15",
+  "target_sha": "adffe8b44210f37c1087fa436fd8d47432aa2f74",
+  "type_label": "type:patch"
+}
