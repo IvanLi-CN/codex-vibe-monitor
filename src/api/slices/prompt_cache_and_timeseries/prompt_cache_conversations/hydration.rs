@@ -120,6 +120,31 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
+    let mut in_flight_phase_counts_by_key = HashMap::<String, InvocationPhaseCountsResponse>::new();
+    for record in query_prompt_cache_in_flight_phase_records(
+        &mut *connection,
+        source_scope,
+        &selected_keys,
+        snapshot,
+    )
+    .await?
+    {
+        in_flight_phase_counts_by_key
+            .entry(record.prompt_cache_key)
+            .or_default()
+            .increment_phase_name(record.phase.as_deref());
+    }
+    for record in runtime_overlay_records {
+        if prompt_cache_runtime_record_is_in_flight(record)
+            && let Some(prompt_cache_key) = record.prompt_cache_key.as_deref()
+            && selected_keys.iter().any(|key| key == prompt_cache_key)
+        {
+            in_flight_phase_counts_by_key
+                .entry(prompt_cache_key.to_string())
+                .or_default()
+                .increment_phase_name(runtime_record_live_phase(record));
+        }
+    }
     let recent_invocation_limit = match detail_level {
         PromptCacheConversationDetailLevel::Full => recent_invocation_limit
             .unwrap_or(PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64),
@@ -467,6 +492,10 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
                 last_activity_at: row.last_activity_at,
                 last_terminal_at: row.last_terminal_at,
                 last_in_flight_at: row.last_in_flight_at,
+                in_flight_phase_counts: in_flight_phase_counts_by_key
+                    .get(&row.prompt_cache_key)
+                    .copied()
+                    .unwrap_or_default(),
                 cursor: None,
                 has_encrypted_session_owner: owner.is_some(),
                 encrypted_owner_account_id: owner

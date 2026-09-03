@@ -452,6 +452,12 @@ _Avoid_: Tooltip 明细, 原始数据
 统计卡片扣除内边距、图标及间距后，数值文本实际可占用的单行宽度；它不是固定视口或卡片断点。
 _Avoid_: 窄卡片阈值, 固定像素宽度
 
+## Dashboard 对话状态
+
+**会话进行中相位摘要（Conversation In-Flight Phase Summary）**:
+同一 Prompt Cache 对话内处于 `queued`、`requesting`、`responding` 的调用数量。它只描述当前未终结调用；只要任一数量非零，卡片头部以该摘要表达实时状态而不表达成功、失败或其他终态。
+_Avoid_: 最新记录状态, 最近调用列表统计, 前端状态计数, 对话终态摘要
+
 ## Release Automation
 
 **Release 正文**:

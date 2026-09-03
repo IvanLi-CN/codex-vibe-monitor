@@ -17,6 +17,7 @@
 - 将 working-conversations Storybook 的默认 workspace view 固定为 `conversations`，并让移动视觉证据沿用 `bg-base-200` 边距，避免前序 Story 的持久化视图或临时截图边框制造错误的留白状态。
 - 将账号详情调用的页面级视觉证据从 `InvocationTable` 组件 Story 外壳迁回 mock-only `ui_demo`；Demo runtime 因而必须覆盖账号 `call-attempts` 接口，并用首 token 已到达、流耗时未完成的记录验证响应中展示。
 - 将 System Status additive 诊断视为允许的 owner-facing 只读变更；Dashboard 的既有交互和公开数据合同保持不变。
+- 将 Prompt Cache 对话进行中摘要收敛为服务端完整 identity 索引与按 key 计数器；首屏精确 hydration、typed delta 生命周期和 dirty last-good 闭锁由 ADR 0010 固化，Web 仅渲染后端字段。
 
 ## Key Reasons / Replacements
 

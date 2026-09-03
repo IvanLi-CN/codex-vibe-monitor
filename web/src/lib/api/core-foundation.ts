@@ -1953,6 +1953,7 @@ export interface PromptCacheConversation {
   lastActivityAt: string;
   lastTerminalAt?: string | null;
   lastInFlightAt?: string | null;
+  inFlightPhaseCounts?: InvocationPhaseCounts | null;
   cursor?: string | null;
   hasEncryptedSessionOwner: boolean;
   encryptedOwnerAccountId?: number | null;
@@ -3375,6 +3376,11 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
     lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
     lastTerminalAt: typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
     lastInFlightAt: typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
+    inFlightPhaseCounts: normalizeInvocationPhaseCounts(payload.inFlightPhaseCounts) ?? {
+      queued: 0,
+      requesting: 0,
+      responding: 0,
+    },
     cursor: typeof payload.cursor === "string" ? payload.cursor : null,
     hasEncryptedSessionOwner:
       typeof payload.hasEncryptedSessionOwner === "boolean"

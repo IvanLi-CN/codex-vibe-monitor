@@ -5089,8 +5089,12 @@ describe("DashboardWorkingConversationsSection", () => {
       slotHeader.querySelector('[data-testid="dashboard-compact-latency-response"]'),
     ).toBeInstanceOf(HTMLElement);
 
-    const phaseLabels = Array.from(card.querySelectorAll('[data-testid="invocation-phase-badge"]'));
-    expect(phaseLabels.length).toBeGreaterThanOrEqual(2);
+    const phaseLabels = Array.from(
+      card.querySelectorAll(
+        '[data-testid="dashboard-working-conversation-slot"] [data-testid="invocation-phase-badge"]',
+      ),
+    );
+    expect(phaseLabels.length).toBeGreaterThanOrEqual(1);
     for (const phaseLabel of phaseLabels) {
       expect(phaseLabel.className).toContain("inline-flex");
       expect(phaseLabel.className).toMatch(/\brounded-full\b/);

@@ -1997,6 +1997,8 @@ struct DashboardWorkingConversationsMaterializerState {
     recent_invocation_limit: usize,
     blocked_binding_filter: Option<PromptCacheConversationBlockedBindingFilter>,
     baseline_has_more: bool,
+    in_flight_by_identity: HashMap<String, PromptCacheInFlightPhaseRecord>,
+    in_flight_phase_counts_by_key: HashMap<String, InvocationPhaseCountsResponse>,
 }
 
 impl DashboardWorkingConversationsMaterializerState {
@@ -2007,13 +2009,112 @@ impl DashboardWorkingConversationsMaterializerState {
         blocked_binding_filter: Option<PromptCacheConversationBlockedBindingFilter>,
     ) -> Self {
         let baseline_has_more = response.has_more;
+        let in_flight_phase_counts_by_key = response
+            .conversations
+            .iter()
+            .map(|conversation| {
+                (
+                    conversation.prompt_cache_key.clone(),
+                    conversation.in_flight_phase_counts,
+                )
+            })
+            .collect();
         Self {
             response,
             page_size: page_size.max(0) as usize,
             recent_invocation_limit: recent_invocation_limit.max(0) as usize,
             blocked_binding_filter,
             baseline_has_more,
+            in_flight_by_identity: HashMap::new(),
+            in_flight_phase_counts_by_key,
         }
+    }
+
+    fn install_in_flight_phase_records(
+        &mut self,
+        records: impl IntoIterator<Item = PromptCacheInFlightPhaseRecord>,
+    ) {
+        self.in_flight_by_identity.clear();
+        self.in_flight_phase_counts_by_key.clear();
+        for record in records {
+            self.in_flight_phase_counts_by_key
+                .entry(record.prompt_cache_key.clone())
+                .or_default()
+                .increment_phase_name(record.phase.as_deref());
+            self.in_flight_by_identity
+                .insert(record.identity.clone(), record);
+        }
+        self.sync_in_flight_phase_counts_to_response();
+    }
+
+    fn sync_in_flight_phase_counts_to_response(&mut self) {
+        for conversation in &mut self.response.conversations {
+            conversation.in_flight_phase_counts = self
+                .in_flight_phase_counts_by_key
+                .get(&conversation.prompt_cache_key)
+                .copied()
+                .unwrap_or_default();
+        }
+    }
+
+    fn apply_in_flight_phase_delta(&mut self, record: &PromptCacheTopicDelta) -> bool {
+        let mut affected_keys = BTreeSet::new();
+        if let Some(previous) = self.in_flight_by_identity.remove(&record.identity) {
+            self.in_flight_phase_counts_by_key
+                .entry(previous.prompt_cache_key.clone())
+                .or_default()
+                .decrement_phase_name(previous.phase.as_deref());
+            affected_keys.insert(previous.prompt_cache_key);
+        }
+        let is_in_flight = !record.is_runtime_removed
+            && !record.is_terminal
+            && matches!(
+                record.status.trim().to_ascii_lowercase().as_str(),
+                "running" | "pending"
+            );
+        if is_in_flight
+            && let Some(prompt_cache_key) = record
+                .prompt_cache_key
+                .as_deref()
+                .filter(|key| !key.is_empty())
+        {
+            let phase = record
+                .preview
+                .as_ref()
+                .and_then(|preview| preview.live_phase.clone());
+            let entry = PromptCacheInFlightPhaseRecord {
+                identity: record.identity.clone(),
+                prompt_cache_key: prompt_cache_key.to_string(),
+                phase,
+            };
+            self.in_flight_phase_counts_by_key
+                .entry(entry.prompt_cache_key.clone())
+                .or_default()
+                .increment_phase_name(entry.phase.as_deref());
+            affected_keys.insert(entry.prompt_cache_key.clone());
+            self.in_flight_by_identity
+                .insert(entry.identity.clone(), entry);
+        }
+        let mut changed = false;
+        for key in affected_keys {
+            if let Some(conversation) = self
+                .response
+                .conversations
+                .iter_mut()
+                .find(|conversation| conversation.prompt_cache_key == key)
+            {
+                let next = self
+                    .in_flight_phase_counts_by_key
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_default();
+                if conversation.in_flight_phase_counts != next {
+                    conversation.in_flight_phase_counts = next;
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     fn apply_deltas(
@@ -2081,6 +2182,10 @@ impl DashboardWorkingConversationsMaterializerState {
         }
 
         let mut changed = false;
+
+        for record in records {
+            changed |= self.apply_in_flight_phase_delta(record);
+        }
 
         for record in records {
             let Some(prompt_cache_key) = record.prompt_cache_key.as_deref() else {
@@ -4954,16 +5059,53 @@ impl SubscriptionHub {
                 Some(baseline_row_id),
             )
             .await?;
+            let source_scope = resolve_default_source_scope(&state.pool).await?;
+            let range_start_bound = db_occurred_at_lower_bound(
+                snapshot_at
+                    - ChronoDuration::minutes(
+                        SUBSCRIPTION_DEFAULT_WORKING_CONVERSATIONS_ACTIVITY_MINUTES,
+                    ),
+            );
+            let runtime_records = runtime_prompt_cache_overlay_records_at_snapshot(
+                state.as_ref(),
+                source_scope,
+                &range_start_bound,
+                blocked_binding_filter.as_ref(),
+                snapshot_at,
+            );
+            let selected_keys = response
+                .conversations
+                .iter()
+                .map(|conversation| conversation.prompt_cache_key.clone())
+                .collect::<Vec<_>>();
+            let mut in_flight_records = query_prompt_cache_in_flight_phase_records(
+                transaction.as_mut(),
+                source_scope,
+                &selected_keys,
+                None,
+            )
+            .await?;
+            in_flight_records.extend(runtime_records.into_iter().filter_map(|record| {
+                if !prompt_cache_runtime_record_is_in_flight(&record) {
+                    return None;
+                }
+                let prompt_cache_key = record.prompt_cache_key.as_deref()?.to_string();
+                Some(PromptCacheInFlightPhaseRecord {
+                    identity: format!("{}\0{}", record.invoke_id, record.occurred_at),
+                    prompt_cache_key,
+                    phase: runtime_record_live_phase(&record).map(str::to_string),
+                })
+            }));
+            let mut materializer = DashboardWorkingConversationsMaterializerState::new(
+                response,
+                *page_size,
+                *recent_invocation_limit,
+                blocked_binding_filter,
+            );
+            materializer.install_in_flight_phase_records(in_flight_records);
             let payload = BuiltSubscriptionTopicPayload::Dashboard(
                 DashboardTopicMaterializer::WorkingConversations {
-                    state: Arc::new(StdMutex::new(
-                        DashboardWorkingConversationsMaterializerState::new(
-                            response,
-                            *page_size,
-                            *recent_invocation_limit,
-                            blocked_binding_filter,
-                        ),
-                    )),
+                    state: Arc::new(StdMutex::new(materializer)),
                 },
             );
             let candidate_identities = {
@@ -21121,6 +21263,7 @@ mod tests {
                     last_activity_at: occurred_at.to_string(),
                     last_terminal_at: None,
                     last_in_flight_at: None,
+                    in_flight_phase_counts: InvocationPhaseCountsResponse::default(),
                     cursor: None,
                     has_encrypted_session_owner: false,
                     encrypted_owner_account_id: None,
@@ -22446,6 +22589,185 @@ mod tests {
             account.get("currentAvgResponseMs"),
             None,
             "account stale currentAvgResponseMs should be removed",
+        );
+    }
+
+    fn phase_summary_test_state(key: &str) -> DashboardWorkingConversationsMaterializerState {
+        let now = Utc::now();
+        DashboardWorkingConversationsMaterializerState::new(
+            PromptCacheConversationsResponse {
+                range_start: format_utc_iso(now - ChronoDuration::minutes(5)),
+                range_end: format_utc_iso(now),
+                snapshot_at: None,
+                selection_mode: PromptCacheConversationSelectionMode::ActivityWindow,
+                selected_limit: None,
+                selected_activity_hours: None,
+                selected_activity_minutes: Some(5),
+                implicit_filter: PromptCacheConversationImplicitFilter {
+                    kind: None,
+                    filtered_count: 0,
+                },
+                total_matched: Some(1),
+                has_more: false,
+                next_cursor: None,
+                conversations: vec![PromptCacheConversationResponse {
+                    prompt_cache_key: key.to_string(),
+                    request_count: 0,
+                    total_tokens: 0,
+                    total_cost: 0.0,
+                    created_at: format_utc_iso(now),
+                    last_activity_at: format_utc_iso(now),
+                    last_terminal_at: None,
+                    last_in_flight_at: None,
+                    in_flight_phase_counts: InvocationPhaseCountsResponse::default(),
+                    cursor: None,
+                    has_encrypted_session_owner: false,
+                    encrypted_owner_account_id: None,
+                    encrypted_owner_account_name: None,
+                    encrypted_owner_group_name: None,
+                    manual_binding: None,
+                    blocked_binding: None,
+                    upstream_accounts: Vec::new(),
+                    recent_invocations: Vec::new(),
+                    last24h_requests: Vec::new(),
+                }],
+            },
+            20,
+            16,
+            None,
+        )
+    }
+
+    fn phase_summary_test_delta(
+        identity: &str,
+        key: Option<&str>,
+        status: &str,
+        removed: bool,
+    ) -> PromptCacheTopicDelta {
+        PromptCacheTopicDelta {
+            row_id: 0,
+            identity: identity.to_string(),
+            invoke_id: identity.to_string(),
+            prompt_cache_key: key.map(str::to_string),
+            sticky_key: None,
+            occurred_at: "2026-09-03T10:00:00Z".to_string(),
+            is_runtime_removed: removed,
+            status: status.to_string(),
+            is_terminal: status == "success",
+            is_success: status == "success",
+            request_tokens: 0,
+            cost: 0.0,
+            upstream_account_id: None,
+            upstream_account_name: None,
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn working_conversation_phase_summary_covers_all_in_flight_identities() {
+        let mut state = phase_summary_test_state("phase-summary");
+        state.install_in_flight_phase_records((0..20).map(|index| {
+            PromptCacheInFlightPhaseRecord {
+                identity: format!("identity-{index}"),
+                prompt_cache_key: "phase-summary".to_string(),
+                phase: Some(if index == 0 { "queued" } else { "requesting" }.to_string()),
+            }
+        }));
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .queued,
+            1
+        );
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .requesting,
+            19
+        );
+    }
+
+    #[test]
+    fn working_conversation_phase_summary_ignores_recent_preview_limit() {
+        let mut state = phase_summary_test_state("phase-summary");
+        state.recent_invocation_limit = 1;
+        state.install_in_flight_phase_records((0..4).map(|index| PromptCacheInFlightPhaseRecord {
+            identity: format!("identity-{index}"),
+            prompt_cache_key: "phase-summary".to_string(),
+            phase: Some("requesting".to_string()),
+        }));
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .requesting,
+            4
+        );
+    }
+
+    #[test]
+    fn working_conversation_phase_summary_updates_on_runtime_transition() {
+        let mut state = phase_summary_test_state("phase-summary");
+        let mut runtime = dashboard_runtime_topology_live_record("2026-09-03T10:00:00Z");
+        runtime.invoke_id = "identity".to_string();
+        runtime.prompt_cache_key = Some("phase-summary".to_string());
+        runtime.status = Some("running".to_string());
+        runtime.live_phase = Some("responding".to_string());
+        runtime.first_token_ms = Some(1.0);
+        let delta = PromptCacheTopicDelta::from_record(&runtime)
+            .expect("build phase transition delta")
+            .expect("phase transition delta");
+        state.install_in_flight_phase_records([PromptCacheInFlightPhaseRecord {
+            identity: delta.identity.clone(),
+            prompt_cache_key: "phase-summary".to_string(),
+            phase: Some("requesting".to_string()),
+        }]);
+        let _changed = state.apply_in_flight_phase_delta(&delta);
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .requesting,
+            0
+        );
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .responding,
+            1
+        );
+    }
+
+    #[test]
+    fn working_conversation_phase_summary_retracts_terminal_and_runtime_removal() {
+        let mut state = phase_summary_test_state("phase-summary");
+        state.install_in_flight_phase_records([PromptCacheInFlightPhaseRecord {
+            identity: "identity".to_string(),
+            prompt_cache_key: "phase-summary".to_string(),
+            phase: Some("responding".to_string()),
+        }]);
+        let terminal =
+            phase_summary_test_delta("identity", Some("phase-summary"), "success", false);
+        assert!(state.apply_in_flight_phase_delta(&terminal));
+        assert_eq!(
+            state.response.conversations[0].in_flight_phase_counts,
+            InvocationPhaseCountsResponse::default()
+        );
+    }
+
+    #[test]
+    fn working_conversation_phase_summary_recovery_retains_last_good() {
+        let mut state = phase_summary_test_state("phase-summary");
+        state.install_in_flight_phase_records([PromptCacheInFlightPhaseRecord {
+            identity: "identity".to_string(),
+            prompt_cache_key: "phase-summary".to_string(),
+            phase: Some("requesting".to_string()),
+        }]);
+        let unknown_removal = phase_summary_test_delta("unknown", None, "unknown", true);
+        assert!(!state.apply_in_flight_phase_delta(&unknown_removal));
+        assert_eq!(
+            state.response.conversations[0]
+                .in_flight_phase_counts
+                .requesting,
+            1
         );
     }
 }

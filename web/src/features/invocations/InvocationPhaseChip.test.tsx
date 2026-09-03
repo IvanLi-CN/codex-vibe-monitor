@@ -80,4 +80,21 @@ describe("InvocationPhaseSegments", () => {
     expect(html).not.toContain(">请求中<");
     expect(html).not.toContain(">响应中<");
   });
+
+  it("hides singleton values while preserving accessible counts", () => {
+    const html = renderMarkup(
+      <InvocationPhaseSegments
+        counts={{ queued: 1, requesting: 3, responding: 0 }}
+        appearance="inline"
+        showLabel={false}
+        showZero={false}
+        countVisibility="multipleOnly"
+      />,
+    );
+
+    expect(html).toContain('data-phase="queued"');
+    expect(html).toContain('aria-label="排队中 1"');
+    expect(html).not.toContain(">1</span>");
+    expect(html).toContain(">3</span>");
+  });
 });

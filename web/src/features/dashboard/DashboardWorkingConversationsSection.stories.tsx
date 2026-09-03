@@ -359,6 +359,11 @@ function createConversation(
       overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
     lastTerminalAt: overrides.lastTerminalAt ?? lastTerminalPreview?.occurredAt ?? null,
     lastInFlightAt: overrides.lastInFlightAt ?? lastInFlightPreview?.occurredAt ?? null,
+    inFlightPhaseCounts: overrides.inFlightPhaseCounts ?? {
+      queued: 0,
+      requesting: 0,
+      responding: 0,
+    },
     cursor: overrides.cursor ?? promptCacheKey,
     manualBinding: overrides.manualBinding ?? null,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
@@ -3900,7 +3905,7 @@ export const ManualBindingBadges: Story = {
             createPreview({
               id: 8101,
               invokeId: "story-manual-binding-group",
-              occurredAt: createRelativeStoryIso(-5_000),
+              occurredAt: "2026-04-04T10:04:55Z",
               status: "running",
               upstreamAccountId: 42,
               upstreamAccountName: "pool-alpha@example.com",
@@ -7059,6 +7064,77 @@ export const HeadInsertAnchorCompensation: Story = {
       const nextTop = (nextAnchor?.getBoundingClientRect().top ?? 0) - containerTopBoundary;
       expect(Math.abs(nextTop - anchorTop)).toBeLessThanOrEqual(12);
     });
+  },
+};
+
+export const PhaseSummary: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "desktop1660x900" },
+  },
+  args: {
+    activeRange: "today",
+    cards: buildCards(
+      createResponse([
+        createConversation(
+          "pck-phase-summary-mixed",
+          [
+            createPreview({
+              id: 91_001,
+              invokeId: "phase-summary-mixed-requesting",
+              occurredAt: createRelativeStoryIso(-5_000),
+              status: "running",
+              livePhase: "requesting",
+            }),
+          ],
+          { inFlightPhaseCounts: { queued: 1, requesting: 3, responding: 0 } },
+        ),
+        createConversation(
+          "pck-phase-summary-responding",
+          [
+            createPreview({
+              id: 91_002,
+              invokeId: "phase-summary-responding",
+              occurredAt: "2026-04-04T10:04:57Z",
+              status: "running",
+              livePhase: "responding",
+            }),
+          ],
+          { inFlightPhaseCounts: { queued: 0, requesting: 1, responding: 1 } },
+        ),
+      ]),
+    ),
+    isLoading: false,
+    error: null,
+  },
+  render: (args) => (
+    <div data-visual-evidence-surface="dashboard-phase-summary" className="bg-base-200 px-8 py-8">
+      <div data-visual-evidence-target="dashboard-phase-summary-cards">
+        <DashboardWorkingConversationsSection {...args} />
+      </div>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const summaries = canvasElement.querySelectorAll(
+      '[data-testid="dashboard-working-conversation-phase-summary"]',
+    );
+    await expect(summaries).toHaveLength(2);
+    const mixed = Array.from(summaries).find((summary) =>
+      summary.querySelector('[data-phase="requesting"]')?.textContent?.includes("3"),
+    );
+    if (!(mixed instanceof HTMLElement)) throw new Error("missing mixed phase summary");
+    await expect(mixed.querySelector('[data-phase="queued"]')).toBeInTheDocument();
+    await expect(mixed.querySelector('[data-phase="requesting"]')).toBeInTheDocument();
+    await expect(mixed.querySelector('[data-phase="responding"]')).toBeNull();
+    await expect(mixed.querySelector('[data-phase="requesting"]')?.textContent).toContain("3");
+    const coexist = Array.from(summaries).find(
+      (summary) =>
+        summary.querySelector('[data-phase="responding"]') != null &&
+        !summary.querySelector('[data-phase="requesting"]')?.textContent?.includes("3"),
+    );
+    if (!(coexist instanceof HTMLElement)) throw new Error("missing coexist phase summary");
+    await expect(coexist.querySelector('[data-phase="requesting"]')).toBeInTheDocument();
+    await expect(coexist.querySelector('[data-phase="responding"]')).toBeInTheDocument();
   },
 };
 
