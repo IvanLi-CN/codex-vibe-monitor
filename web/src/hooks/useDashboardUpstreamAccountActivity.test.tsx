@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { DashboardActivityLiveSnapshot, DashboardActivityResponse } from "../lib/api";
 import {
   mergeDashboardActivityLiveSnapshot,
+  resolveUpstreamAccountRecentPreviewLimit,
   useDashboardActivitySnapshot,
 } from "./useDashboardUpstreamAccountActivity";
 
@@ -180,7 +181,7 @@ function createResponse(inProgressCount: number): DashboardActivityResponse {
 }
 
 function Probe({ range }: { range: string }) {
-  const snapshot = useDashboardActivitySnapshot(range, true, true, 8, true);
+  const snapshot = useDashboardActivitySnapshot(range, true, true, true);
 
   return (
     <div>
@@ -215,7 +216,7 @@ describe("useDashboardActivitySnapshot", () => {
     expect(text("accounts")).toBe("1");
     expect(text("recent-limit")).toBe("6");
     expect(topicMocks.state.data?.accounts?.[0]?.recentInvocations).toHaveLength(16);
-    expect(text("visible-recent-count")).toBe("8");
+    expect(text("visible-recent-count")).toBe("6");
   });
 
   it("falls back to HTTP for the closed yesterday window", async () => {
@@ -227,8 +228,33 @@ describe("useDashboardActivitySnapshot", () => {
     expect(topicMocks.lastDescriptor).toBeNull();
     expect(topicMocks.lastEnabled).toBe(false);
     expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchDashboardActivity).toHaveBeenCalledWith(
+      "yesterday",
+      expect.objectContaining({
+        recentLimit: 16,
+        includeAccounts: true,
+        includeRecent: true,
+      }),
+    );
     expect(text("total")).toBe("5");
     expect(text("recent-limit")).toBe("4");
+  });
+});
+
+describe("resolveUpstreamAccountRecentPreviewLimit", () => {
+  it.each([
+    { counts: [], expected: 4 },
+    { counts: [1, 3], expected: 4 },
+    { counts: [4, 2], expected: 4 },
+    { counts: [3, 7, 2], expected: 7 },
+    { counts: [16, 12], expected: 16 },
+    { counts: [17, 5], expected: 16 },
+  ])("clamps the maximum in-progress count %#", ({ counts, expected }) => {
+    expect(
+      resolveUpstreamAccountRecentPreviewLimit(
+        counts.map((inProgressInvocationCount) => ({ inProgressInvocationCount })),
+      ),
+    ).toBe(expected);
   });
 });
 

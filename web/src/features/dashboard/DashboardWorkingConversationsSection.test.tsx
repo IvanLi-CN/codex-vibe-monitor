@@ -88,21 +88,22 @@ const upstreamAccountActivityMock = vi.hoisted(() => ({
   calls: [] as Array<{
     range: string;
     enabled: boolean;
-    recentInvocationLimit?: number;
   }>,
 }));
 
 vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
-  useDashboardUpstreamAccountActivity: (
-    range: string,
-    enabled: boolean,
-    recentInvocationLimit?: number,
-  ) => {
-    upstreamAccountActivityMock.calls.push({
-      range,
-      enabled,
-      recentInvocationLimit,
-    });
+  resolveUpstreamAccountRecentPreviewLimit: (
+    accounts: Array<{ inProgressInvocationCount: number | null }>,
+  ) =>
+    Math.min(
+      16,
+      Math.max(
+        4,
+        Math.max(0, ...accounts.map((account) => account.inProgressInvocationCount ?? 0)),
+      ),
+    ),
+  useDashboardUpstreamAccountActivity: (range: string, enabled: boolean) => {
+    upstreamAccountActivityMock.calls.push({ range, enabled });
     return {
       data: upstreamAccountActivityMock.data,
       isLoading: upstreamAccountActivityMock.isLoading,
@@ -112,7 +113,6 @@ vi.mock("../../hooks/useDashboardUpstreamAccountActivity", () => ({
       error: upstreamAccountActivityMock.error,
       recentInvocationLimit:
         upstreamAccountActivityMock.resolvedRecentInvocationLimit ??
-        recentInvocationLimit ??
         upstreamAccountActivityMock.data?.accounts[0]?.recentInvocations.length ??
         4,
       hasActivated: enabled,
@@ -1225,7 +1225,6 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(upstreamAccountActivityMock.calls[0]).toEqual({
       range: "today",
       enabled: false,
-      recentInvocationLimit: 4,
     });
     expect(host?.textContent).toContain("当前对话 1 条");
 
@@ -1243,7 +1242,6 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
       range: "today",
       enabled: true,
-      recentInvocationLimit: 4,
     });
     expect(host?.textContent).toContain("当前活动账号 1 个");
     expect(host?.textContent).toContain("最近 4 条调用");
@@ -2147,8 +2145,9 @@ describe("DashboardWorkingConversationsSection", () => {
     });
   });
 
-  it("passes the dynamic recent preview limit into upstream account activity", () => {
+  it("keeps the account recent window independent from the working conversation window", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    upstreamAccountActivityMock.resolvedRecentInvocationLimit = 7;
 
     renderSection(
       createResponse([
@@ -2161,7 +2160,7 @@ describe("DashboardWorkingConversationsSection", () => {
           }),
         ]),
       ]),
-      { recentPreviewLimit: 7 },
+      { recentPreviewLimit: 4 },
     );
 
     const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
@@ -2178,9 +2177,58 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(upstreamAccountActivityMock.calls.at(-1)).toEqual({
       range: "today",
       enabled: true,
-      recentInvocationLimit: 7,
     });
     expect(host?.textContent).toContain("最近 7 条调用");
+  });
+
+  it("derives an external account window without reading the working conversation limit", () => {
+    const response = createUpstreamAccountActivityResponse();
+    response.accounts[0] = {
+      ...response.accounts[0]!,
+      inProgressInvocationCount: 7,
+      recentInvocations: Array.from({ length: 7 }, (_, index) =>
+        createPreview({
+          id: 9700 + index,
+          invokeId: `external-account-${index + 1}`,
+          occurredAt: `2026-04-04T10:${String(59 - index).padStart(2, "0")}:00Z`,
+          status: "running",
+          upstreamAccountName: "Pool Alpha",
+        }),
+      ),
+    };
+
+    renderSection(
+      createResponse([
+        createConversation("pck-upstream-external-window", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-upstream-external-window",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+      {
+        recentPreviewLimit: 4,
+        upstreamAccountActivity: response,
+      },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    expect(host?.textContent).toContain("最近 7 条调用");
+    expect(
+      host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-row"]'),
+    ).toHaveLength(7);
   });
 
   it("renders upstream account cards with their own resolved recent preview limit", () => {

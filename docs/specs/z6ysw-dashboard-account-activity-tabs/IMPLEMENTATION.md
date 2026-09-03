@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 已实现，待提交收口
+- Implementation: 已实现，代码已提交，待 PR 收口
 - Lifecycle: active
 - Catalog note: dashboard workspace dual tabs, account activity aggregation, invocation-based in-progress semantics
 
@@ -29,14 +29,15 @@
 
 - 已实现：Dashboard 页面提升并共享顶部 range 状态，工作区 section 接入 `对话 / 上游账号` 双 tabs，并保留既有对话 working-set 行为。
 - 已实现：Dashboard 工作区 tabs 额外持久化用户上次主动选择的视图；重新打开 Dashboard 或切回总览页时，在当前 range 允许的前提下恢复该视图；`usage` 仅临时强制回退到 `对话`，不会覆盖已记住的 `上游账号` 偏好。
-- 已实现：新增 `GET /api/stats/upstream-account-activity` 批量接口，返回账号级聚合摘要、recent 4 bounded query，以及 `yesterday` closed-range 的空 live count 语义。
+- 已实现：账号活动 recent 读取容量固定为 16；前端在同一快照内按 `N = clamp(max(accounts[].inProgressInvocationCount), 4, 16)` 统一截断每张账号卡，并由 N 同时驱动标题、recent 行和 skeleton。返回不足 N 条时只显示实际行数。
+- 已实现：新增 `GET /api/stats/upstream-account-activity` 批量接口，返回账号级聚合摘要与最多 16 条 bounded recent query，以及 `yesterday` closed-range 的空 live count 语义。
 - 已实现：summary `inProgressConversationCount` / `inProgressRetryConversationCount` 改为 invocation-based 语义，Dashboard owner-facing 文案同步为“进行中调用 / 重试调用”。
 - 已实现：账号 tab 懒加载、`usage` disabled + 自动回退、独立账号卡布局、Storybook 交互场景、视觉证据与 targeted validation。
 - 已实现：账号卡收敛为紧凑信息卡，移除状态说明条和解释性废话；请求数 / Token 分解仅保留色点与数值，连单字 / 缩写短标签也不常驻显示，完整标签通过 hover 暴露；recent 区标题行右侧统计保留完整状态文字并与标题垂直对齐。
 - 已实现：账号卡内部结构描边统一压回低对比中性边框，外框、摘要格子、recent 行与分隔线不再复用主题蓝或其他语义色作为结构边界；颜色仅保留在状态点、数值和 badge 上。
-- 已实现：账号卡底部 4 条 recent 调用记录全部留在卡内可见，单条 recent 行复用对话卡片同一套 `Hit · Token · $` 摘要 contract；旧的 `IN / CW / C / O / T` 与 `RQ / UP / ED / TT` 正文已退出常驻卡面，明细改保留在 hover/title/aria。
+- 已实现：账号卡底部按统一动态窗口 N 展示 recent 调用记录并全部留在卡内可见，单条 recent 行复用对话卡片同一套 `Hit · Token · $` 摘要 contract；旧的 `IN / CW / C / O / T` 与 `RQ / UP / ED / TT` 正文已退出常驻卡面，明细改保留在 hover/title/aria。
 - 已实现：单次调用摘要的 `Hit` 与成本着色已统一走共享阈值 helper：`Hit < 90%` 为 warning、`Hit < 50%` 为 error；`cost > 0.1` 为 warning、`cost > 0.5` 为 error；四个边界值按严格比较停留在较低一档。
-- 已实现：桌面宽屏账号卡固定高度收敛到更紧凑值，避免整页面板观感，同时保持 4 条 recent 记录完整可见。
+- 已实现：桌面宽屏账号卡固定高度收敛到更紧凑值，避免整页面板观感，同时保持动态 N 条 recent 记录（或返回的更少记录）完整可见。
 - 已实现：上游账号 recent 行改为“对话短 ID + 请求 ID”主标识布局，短 ID 基于真实 `promptCacheKey` 计算并去掉 `WC-` 前缀；点击详情时传递的 `selection.promptCacheKey` 也已修正为真实对话键。
 - 已实现：上游账号 recent 行的对话短 ID 从“连续色圆点 + 短码”收口为轻量 identity chip；chip 以短码文本为主识别，颜色降为离散辅助槽位，不再与状态徽标混淆语义。
 - 已实现：上游账号 recent 行的 identity chip 不再继承整行的调用详情点击语义；chip 现作为独立对话详情入口，点击或键盘触发时只打开对应 `promptCacheKey` 的对话抽屉，而 recent 行其余区域仍保持打开调用详情。

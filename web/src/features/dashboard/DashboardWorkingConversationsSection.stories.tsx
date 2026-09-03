@@ -48,6 +48,17 @@ function StorySurface({ children }: { children: ReactNode }) {
   );
 }
 
+function DashboardAccountWindowEvidenceSurface({ children }: { children: ReactNode }) {
+  return (
+    <div
+      data-visual-evidence-surface="dashboard-upstream-account-window"
+      className="bg-base-200 p-10 text-base-content"
+    >
+      <div data-visual-evidence-target="dashboard-upstream-account-window-target">{children}</div>
+    </div>
+  );
+}
+
 const DASHBOARD_STORY_PROMPT_CACHE_BINDING_ACCOUNTS = [
   {
     id: 21,
@@ -2896,6 +2907,7 @@ function DrawerPreviewStory({
   upstreamAccountActivityRefreshing,
   upstreamAccountRecentLoading,
   upstreamAccountRecentError,
+  upstreamAccountRecentPreviewLimit,
   recentPreviewLimit = 4,
   theme,
 }: {
@@ -2913,6 +2925,7 @@ function DrawerPreviewStory({
   upstreamAccountActivityRefreshing?: boolean;
   upstreamAccountRecentLoading?: boolean;
   upstreamAccountRecentError?: string | null;
+  upstreamAccountRecentPreviewLimit?: number;
   recentPreviewLimit?: number;
   theme?: "vibe-light" | "vibe-dark";
 }) {
@@ -3405,6 +3418,7 @@ function DrawerPreviewStory({
           upstreamAccountActivityRefreshing={upstreamAccountActivityRefreshing}
           upstreamAccountRecentLoading={upstreamAccountRecentLoading}
           upstreamAccountRecentError={upstreamAccountRecentError}
+          upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
           onRetryUpstreamAccountRecent={() => undefined}
           onOpenUpstreamAccount={(
             accountId: number,
@@ -6194,22 +6208,25 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
 export const UpstreamAccountTabDynamicSeven: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
-    <DrawerPreviewStory
-      response={createResponse([
-        createConversation("pck-story-upstream-account-seven", [
-          createPreview({
-            id: 9811,
-            invokeId: "story-working-seven",
-            occurredAt: "2026-04-04T10:05:00Z",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-        ]),
-      ])}
-      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(7)}
-      recentPreviewLimit={7}
-    />
+    <DashboardAccountWindowEvidenceSurface>
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-seven", [
+            createPreview({
+              id: 9811,
+              invokeId: "story-working-seven",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(7)}
+        recentPreviewLimit={4}
+        upstreamAccountRecentPreviewLimit={7}
+      />
+    </DashboardAccountWindowEvidenceSurface>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -6237,22 +6254,25 @@ export const UpstreamAccountTabDynamicSeven: Story = {
 export const UpstreamAccountTabMaxSixteen: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
-    <DrawerPreviewStory
-      response={createResponse([
-        createConversation("pck-story-upstream-account-sixteen", [
-          createPreview({
-            id: 9821,
-            invokeId: "story-working-sixteen",
-            occurredAt: "2026-04-04T10:05:00Z",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-        ]),
-      ])}
-      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(16)}
-      recentPreviewLimit={16}
-    />
+    <DashboardAccountWindowEvidenceSurface>
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-account-sixteen", [
+            createPreview({
+              id: 9821,
+              invokeId: "story-working-sixteen",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(16)}
+        recentPreviewLimit={4}
+        upstreamAccountRecentPreviewLimit={16}
+      />
+    </DashboardAccountWindowEvidenceSurface>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

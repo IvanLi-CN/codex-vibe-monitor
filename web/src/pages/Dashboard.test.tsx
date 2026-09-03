@@ -725,6 +725,13 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("does not pass the working conversation recent window to the account snapshot hook", () => {
+    installSummaryMocks();
+    render(<DashboardPage />);
+
+    expect(hookMocks.useDashboardActivitySnapshot).toHaveBeenCalledWith("today", true, true, false);
+  });
+
   it("keeps today inside the shared overview card instead of as a standalone top card", () => {
     installSummaryMocks();
     const setRefreshTargetCount = vi.fn();
