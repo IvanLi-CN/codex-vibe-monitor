@@ -4,9 +4,9 @@
 
 ## Related ADRs
 
-- None
+- [ADR 0010: Prompt Cache In-Flight Phase Index](../../adr/0010-prompt-cache-in-flight-phase-index.md)
 
-## 背景 / 问题陈述
+## Context and Scope
 
 Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 activity、summary 和 network topic 的 typed materializer。working-conversations、parallel-work 与 open-window timeseries 仍可能由任意 invocation mutation 触发通用 JSON 或 SQLite builder，导致页面活跃时重复执行完整快照构建、序列化和数据库读取。
 
@@ -46,12 +46,18 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - 非 Dashboard 订阅面和 owner 配置写路径。
 - 数据库、连接池、保留策略或 SSE envelope 的迁移。
 
-## 需求（Requirements）
+## Requirements
+
+- REQ-PHASE-SUMMARY: 每个 working conversation 必须由后端完整进行中 identity 索引提供 `inFlightPhaseCounts`，覆盖 recent preview 上限之外的调用。
+- REQ-PHASE-LIFECYCLE: 相位、Prompt Cache key、终态、运行时移除、prune 与 replay 变化必须精确撤销并加入内存计数；恢复失败必须保留 last-good 摘要。
+- REQ-PHASE-UI: 卡片头部必须按 `queued`、`requesting`、`responding` 顺序渲染非零相位，数量大于 1 才显示数值，活跃时抑制终态图标。
 
 ### MUST
 
 - `HotProjection` 必须提供 typed materializer；穷举分派不得落入通用 `build_payload`、通用 JSON overlay 或健康路径 SQL fallback。
 - working-conversations 首订阅必须建立同一事务 cursor baseline，后续只应用 compact delta；旧 key 重入、metadata 变化和候选补位只允许按 key 或 identity 有界 hydrate。
+- working-conversations 每个对话 MUST 输出后端权威 `inFlightPhaseCounts`，由完整进行中 identity 索引按 `queued`、`requesting`、`responding` 计数；该摘要不得从 `recentInvocations`、三槽位或 Web 可见列表推导。
+- materializer MUST 在 identity 的相位、Prompt Cache key、终态、运行时移除、prune 和 replay 变化时撤销旧贡献并加入新贡献；初次 baseline、键级 hydration 和 dirty recovery MUST 使用精确查询。恢复不完整时 MUST 保留 last-good 摘要，不得发布伪造的零计数或终态。
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
 - working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留与普通无方案调用行相同的 `57px` 槽位基线，且该高度不包含相邻槽位的既有间距。缺失历史必须显示明确的静态“暂无上一条调用”或“暂无更早调用”状态，不得使用骨架条、spinner、pulse 或其他加载暗示。该展示数量不改变 HTTP/SSE wire shape、`recentInvocationLimit=16` 或后端 compact 默认值。
 - 三个槽位的正常/进行中记录保留两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。缺失槽位使用静态历史说明垂直居中，并保持 `role="group"` 的无交互语义、准确可访问名称和与普通无方案行不超过 1px 的高度差。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。
@@ -93,6 +99,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - Timezone、DST、account scope、unassigned 和 conversation spans 必须与既有 exact builder 保持精确一致。
 - SSE selection 只有显式导航、分页、range 或 filter 变化时才允许触发 `topic-change` reconnect；recent 可见数量变化不得改变连接签名。
 - 三槽位选择的 `slotKind` 为 `current | previous | earlier`；第三槽位在详情抽屉、aria 名称和缺失说明中称为“更早调用”，但卡片表面不显示该槽位名称。第三槽位仍参与进行中与 blocked-binding 诊断。
+- 当 `inFlightPhaseCounts` 总数大于零时，卡片头部 MUST 按 `queued → requesting → responding` 显示所有非零相位；数量为 1 只显示图标，数量大于 1 在图标后显示数量，并抑制成功/失败等终态图标。只有已知精确零计数时才显示终态图标。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -116,15 +123,11 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - Given recent 可见数量在 4 到 16 之间变化，When 用户没有显式导航或筛选，Then SSE connection signature 不变且 `topic-change` reconnect 为零。
 - Given 任一 hot fallback、live DB read、持续 cadence miss 或 SSE churn，When 读取 System Status，Then `dashboardHotTopics` 与总体 runtime health 不得报告 healthy。
 
-## 验收清单（Acceptance checklist）
+## Verification
 
-- [ ] 三条 HotProjection 均具有 typed projection 和 materializer。
-- [ ] HotProjection 穷举分派不能落入通用 SQL/JSON builder。
-- [ ] Wire shape、排序、range、recent 与 cursor 语义保持兼容。
-- [ ] System Status 能准确展示 healthy、deferred、hot-DB-read 与 cadence-miss。
-- [ ] 完整 Dashboard topic bundle 的性能门禁通过。
-
-## 非功能性验收 / 质量门槛（Quality Gates）
+- VER-PHASE-SUMMARY covers: REQ-PHASE-SUMMARY. Rust contract tests verify complete identity coverage and independence from the recent preview limit; HTTP/SSE tests verify the additive response field.
+- VER-PHASE-LIFECYCLE covers: REQ-PHASE-LIFECYCLE. Rust lifecycle tests verify transition replacement, terminal/runtime removal retraction, and last-good recovery retention.
+- VER-PHASE-UI covers: REQ-PHASE-UI. Web unit tests and the `Dashboard/WorkingConversationsSection/PhaseSummary` Storybook state verify ordering, selective counts, terminal suppression, and responsive layout.
 
 ### Testing
 
@@ -185,11 +188,38 @@ viewport_strategy: storybook-viewport
 margin_policy: require_margin
 evidence_surface: component
 sensitive_exclusion: N/A
+story_id_or_title: Dashboard/WorkingConversationsSection/PhaseSummary
+state: mixed queued, requesting, and responding conversation summaries
+evidence_note: The source-managed Storybook canvas shows queued and requesting phases together with only the requesting count `3`, plus a separate conversation where requesting and responding coexist without a terminal icon.
+
+![Dashboard working conversations in-flight phase summary desktop](./assets/dashboard-working-conversations-phase-summary-desktop.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: element
+requested_viewport: 393x852
+viewport_strategy: storybook-viewport
+margin_policy: require_margin
+evidence_surface: component
+sensitive_exclusion: N/A
+story_id_or_title: Dashboard/WorkingConversationsSection/PhaseSummary
+state: mixed phase summaries at the mobile breakpoint
+evidence_note: The source-managed mobile canvas keeps the phase cluster and selective `3` count inside both cards without overlap or horizontal overflow.
+
+![Dashboard working conversations in-flight phase summary mobile](./assets/dashboard-working-conversations-phase-summary-mobile.png)
+
+source_type: storybook_canvas
+target_program: mock-only
+capture_scope: element
+requested_viewport: 1660x900
+viewport_strategy: storybook-viewport
+margin_policy: require_margin
+evidence_surface: component
+sensitive_exclusion: N/A
 story_id_or_title: dashboard-workingconversationssection--current-and-previous
 state: current invocation with static previous and earlier missing-history slots
 evidence_note: Storybook canvas element capture at the desktop1660 viewport shows the three-slot card with shared 57px slot baselines, static history labels, and no skeleton treatment.
 
-PR: include
 ![Dashboard working conversations missing history desktop](./assets/dashboard-working-conversations-missing-history-desktop.png)
 
 source_type: storybook_canvas
@@ -204,7 +234,6 @@ story_id_or_title: dashboard-workingconversationssection--four-card-parallel-thr
 state: native four-card row with a current/previous/earlier three-real-invocation card
 evidence_note: This capture matches the main application shell maximum and `desktop1660` breakpoint. The 1612px workspace contains four 380.5px cards in one row with 0px horizontal overflow. The fourth card contains three real invocation slots and no placeholders.
 
-PR: include
 ![Dashboard working conversations four cards and three real slots](./assets/dashboard-working-conversations-four-card-parallel-three-slots-desktop.png)
 
 source_type: storybook_canvas
@@ -219,7 +248,6 @@ story_id_or_title: dashboard-workingconversationssection--current-only-placehold
 state: one invocation with static previous and earlier missing-history labels
 evidence_note: Storybook canvas element capture at 393x852 keeps the real invocation and both static history labels readable, with no skeleton, spinner, pulse, aria-live, or horizontal overflow.
 
-PR: include
 ![Dashboard working conversations missing history mobile](./assets/dashboard-working-conversations-missing-history-mobile.png)
 
 source_type: storybook_canvas
@@ -234,7 +262,6 @@ story_id_or_title: dashboard-workingconversationssection--requesting-conversatio
 state: requesting
 evidence_note: Final Chrome capture shows the in-flight row with only the blue request elapsed metric, the non-status `clock-outline` icon, and the confirmed 6px separation from the preceding chip.
 
-PR: include
 ![Dashboard compact timing requesting desktop](./assets/dashboard-working-conversations-compact-timing-requesting-desktop.png)
 
 source_type: storybook_canvas
@@ -249,7 +276,6 @@ story_id_or_title: dashboard-workingconversationssection--requesting-conversatio
 state: requesting mobile
 evidence_note: Mobile capture preserves the same request-only metric and chip spacing with no horizontal overflow.
 
-PR: include
 ![Dashboard compact timing requesting mobile](./assets/dashboard-working-conversations-compact-timing-requesting-mobile.png)
 
 source_type: storybook_canvas
@@ -264,7 +290,6 @@ story_id_or_title: dashboard-workingconversationssection--running-only-conversat
 state: responding
 evidence_note: Final Chrome capture shows the green TTFT timer and secondary response speedometer together, with distinct icon colors, non-status iconography, and the widened chip-to-metrics gap.
 
-PR: include
 ![Dashboard compact timing responding desktop](./assets/dashboard-working-conversations-compact-timing-responding-desktop.png)
 
 source_type: storybook_canvas
@@ -279,7 +304,6 @@ story_id_or_title: dashboard-workingconversationssection--running-only-conversat
 state: responding mobile
 evidence_note: Mobile capture keeps TTFT and response metrics readable and fully within the compact row without overlap or overflow.
 
-PR: include
 ![Dashboard compact timing responding mobile](./assets/dashboard-working-conversations-compact-timing-responding-mobile.png)
 
 ### Dashboard upstream account recents
@@ -296,7 +320,6 @@ story_id_or_title: dashboard-workingconversationssection--upstream-account-recen
 state: upstream account card with completed, failed, and in-flight recent invocations
 evidence_note: Storybook canvas element capture keeps the upstream account recent rows readable while applying the same compact no-space seconds and 4px TTFT/response group spacing; TTFT remains green and an in-flight response duration remains `--`.
 
-PR: include
 ![Dashboard upstream account recent compact invocation layout](./assets/dashboard-upstream-account-recent-compact-desktop.png)
 
 ### Account detail invocations
@@ -313,7 +336,6 @@ demo_route: /account-pool/upstream-accounts?upstreamAccountId=101&demoScene=oper
 state: account request timeline with responding and completed attempts
 evidence_note: The deterministic account detail request panel loads without a 501 response, has no horizontal overflow, and keeps in-flight first-token data separate from an unavailable completed stream duration.
 
-PR: include
 ![Account detail invocation in-flight timing unavailable desktop](./assets/account-detail-invocation-inflight-timing-desktop.png)
 
 source_type: storybook_canvas
@@ -328,7 +350,6 @@ story_id_or_title: account-pool-components-upstream-account-attempt-timeline--fu
 state: focused successful account attempt after request and response body details are closed
 evidence_note: The account attempt focus outline is rendered above its full-width detail block, so all four rounded sides remain visible while the inner rail keeps its own clipping behavior.
 
-PR: include
 ![Account detail invocation focus outline desktop](./assets/account-detail-invocation-focus-outline-desktop.png)
 
 ### Live invocation timing
@@ -345,12 +366,7 @@ demo_route: /live?demoScene=operational&demoTheme=dark&demoEmbed=1
 state: responding invocation with measured `firstTokenMs` and no `tUpstreamStreamMs`
 evidence_note: The product invocation list shows a green measured TTFT and `响应 --` for an in-flight response, without using elapsed time as a response duration.
 
-PR: include
 ![Live invocation in-flight timing unavailable](./assets/live-invocation-inflight-timing-demo.png)
-
-## Related PRs
-
-- None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

@@ -1018,6 +1018,7 @@ pub(crate) struct PromptCacheConversationResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) last_in_flight_at: Option<String>,
+    pub(crate) in_flight_phase_counts: InvocationPhaseCountsResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cursor: Option<String>,
     pub(crate) has_encrypted_session_owner: bool,

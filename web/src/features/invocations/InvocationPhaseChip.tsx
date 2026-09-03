@@ -123,6 +123,7 @@ interface InvocationPhaseSegmentsProps {
   appearance?: "badge" | "inline";
   motion?: InvocationPhaseMotion;
   showLabel?: boolean;
+  countVisibility?: "always" | "multipleOnly";
 }
 
 export function InvocationPhaseSegments({
@@ -133,6 +134,7 @@ export function InvocationPhaseSegments({
   appearance = "badge",
   motion = "static",
   showLabel = true,
+  countVisibility = "always",
 }: InvocationPhaseSegmentsProps) {
   const { t } = useTranslation();
   if (counts == null) return null;
@@ -192,7 +194,9 @@ export function InvocationPhaseSegments({
                 className={sharedClassName}
               >
                 {icon}
-                <span className="font-mono text-base-content/86">{item.value}</span>
+                {countVisibility === "always" || item.value > 1 ? (
+                  <span className="font-mono text-base-content/86">{item.value}</span>
+                ) : null}
               </span>
             );
           }

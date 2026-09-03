@@ -660,6 +660,7 @@ function createWorkingConversationCard(options?: {
     requestCount: 1,
     totalTokens: 120,
     totalCost: 0.01,
+    inFlightPhaseCounts: { queued: 0, requesting: 0, responding: 0 },
   };
 }
 
