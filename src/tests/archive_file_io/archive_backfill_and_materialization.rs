@@ -9,6 +9,37 @@ async fn insert_summary_archive_snapshot_proof(
     coverage_end: &str,
     row_count: u32,
 ) {
+    let normalized = serde_json::to_vec(
+        &(0..row_count)
+            .map(|offset| SummaryArchiveSnapshotV2Record {
+                id: i64::from(offset),
+                invoke_id: format!("snapshot-proof-{offset}"),
+                occurred_at: coverage_start.to_string(),
+                source: "proxy".to_string(),
+                model: None,
+                response_model: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_input_tokens: 0,
+                reasoning_tokens: 0,
+                reasoning_effort: None,
+                total_tokens: 0,
+                cost: None,
+                cost_input: None,
+                cost_cache_write: None,
+                cost_cache_read: None,
+                cost_output: None,
+                cost_reasoning: None,
+                status: "success".to_string(),
+                error_message: None,
+                failure_kind: None,
+                failure_class: None,
+                is_actionable: false,
+                upstream_account_id: None,
+            })
+            .collect::<Vec<_>>(),
+    )
+    .expect("serialize Summary Snapshot proof records");
     let page = SummaryArchiveSnapshotPage {
         archive_batch_id,
         manifest_sha256: manifest_sha256.to_string(),
@@ -16,13 +47,14 @@ async fn insert_summary_archive_snapshot_proof(
         coverage_start: coverage_start.to_string(),
         coverage_end: coverage_end.to_string(),
         row_count,
-        payload: b"normalized-summary-test-fixture".to_vec(),
+        payload: zstd::stream::encode_all(normalized.as_slice(), 1)
+            .expect("compress Summary Snapshot proof records"),
     };
     let mut tx = pool
         .begin()
         .await
         .expect("begin Summary Snapshot proof transaction");
-    store_summary_archive_snapshot_page_tx(tx.as_mut(), &page)
+    store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page)
         .await
         .expect("store Summary Snapshot proof");
     tx.commit().await.expect("commit Summary Snapshot proof");

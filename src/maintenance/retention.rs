@@ -819,6 +819,7 @@ pub(crate) struct InvocationDetailPruneCandidate {
 #[derive(Debug, FromRow, Clone)]
 pub(crate) struct InvocationArchiveCandidate {
     pub(crate) id: i64,
+    pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) source: String,
     pub(crate) status: Option<String>,
@@ -874,39 +875,69 @@ fn invocation_archive_candidate_to_hourly_source_record(
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SummaryArchiveSnapshotRecord {
-    row_id: i64,
-    occurred_at: String,
-    source: String,
-    status: Option<String>,
-    input_tokens: Option<i64>,
-    output_tokens: Option<i64>,
-    cache_input_tokens: Option<i64>,
-    reasoning_tokens: Option<i64>,
-    total_tokens: Option<i64>,
-    cost: Option<f64>,
-    first_token_ms: Option<f64>,
-}
-
-fn encode_summary_archive_snapshot_payload(
+fn encode_summary_archive_snapshot_v2_payload(
     rows: &[InvocationHourlySourceRecord],
+    invoke_ids_by_row_id: &HashMap<i64, String>,
 ) -> Result<Vec<u8>> {
     let records = rows
         .iter()
-        .map(|row| SummaryArchiveSnapshotRecord {
-            row_id: row.id,
-            occurred_at: row.occurred_at.clone(),
-            source: row.source.clone(),
-            status: row.status.clone(),
-            input_tokens: row.input_tokens,
-            output_tokens: row.output_tokens,
-            cache_input_tokens: row.cache_input_tokens,
-            reasoning_tokens: row.reasoning_tokens,
-            total_tokens: row.total_tokens,
-            cost: row.cost,
-            first_token_ms: row.first_token_ms,
+        .map(|row| {
+            let payload = row
+                .payload
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok());
+            SummaryArchiveSnapshotV2Record {
+                id: row.id,
+                // Preserve the durable invocation identity so a Snapshot fallback can deduplicate
+                // against a live row that has not yet crossed the archive cleanup boundary.
+                invoke_id: invoke_ids_by_row_id
+                    .get(&row.id)
+                    .cloned()
+                    .or_else(|| {
+                        payload
+                            .as_ref()
+                            .and_then(|value| value.get("invokeId"))
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| format!("archive-row-{}", row.id)),
+                occurred_at: row.occurred_at.clone(),
+                source: row.source.clone(),
+                model: row.model.clone().or_else(|| {
+                    payload
+                        .as_ref()
+                        .and_then(|value| value.get("model"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                }),
+                response_model: payload
+                    .as_ref()
+                    .and_then(|value| value.get("responseModel"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                input_tokens: row.input_tokens.unwrap_or_default(),
+                output_tokens: row.output_tokens.unwrap_or_default(),
+                cache_input_tokens: row.cache_input_tokens.unwrap_or_default(),
+                reasoning_tokens: row.reasoning_tokens.unwrap_or_default(),
+                reasoning_effort: payload
+                    .as_ref()
+                    .and_then(|value| value.get("reasoningEffort"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                total_tokens: row.total_tokens.unwrap_or_default(),
+                cost: row.cost,
+                cost_input: row.cost_input,
+                cost_cache_write: row.cost_cache_write,
+                cost_cache_read: row.cost_cache_read,
+                cost_output: row.cost_output,
+                cost_reasoning: row.cost_reasoning,
+                status: row.status.clone().unwrap_or_else(|| "unknown".to_string()),
+                error_message: row.error_message.clone(),
+                failure_kind: row.failure_kind.clone(),
+                failure_class: row.failure_class.clone(),
+                is_actionable: row.is_actionable.unwrap_or_default() != 0,
+                upstream_account_id: row.resolved_upstream_account_id(),
+            }
         })
         .collect::<Vec<_>>();
     let normalized =
@@ -923,6 +954,7 @@ mod ttft_retention_tests {
     fn archived_invocation_keeps_ttft_for_rollup_materialization() {
         let candidate = InvocationArchiveCandidate {
             id: 7,
+            invoke_id: "invoke-7".to_string(),
             occurred_at: "2026-07-25 12:00:00".to_string(),
             source: SOURCE_PROXY.to_string(),
             status: Some("success".to_string()),
@@ -3081,6 +3113,7 @@ pub(crate) async fn archive_old_invocations(
             r#"
             SELECT
                 id,
+                invoke_id,
                 occurred_at,
                 source,
                 status,
@@ -3142,6 +3175,7 @@ pub(crate) async fn archive_old_invocations(
             r#"
             SELECT
                 id,
+                invoke_id,
                 occurred_at,
                 source,
                 status,
@@ -3292,7 +3326,14 @@ pub(crate) async fn archive_old_invocations(
                 &archive_outcome.file_path,
             )
             .await?;
-            let snapshot_payload = encode_summary_archive_snapshot_payload(&materialized_rows)?;
+            let invoke_ids_by_row_id = group
+                .iter()
+                .map(|candidate| (candidate.id, candidate.invoke_id.clone()))
+                .collect::<HashMap<_, _>>();
+            let snapshot_payload = encode_summary_archive_snapshot_v2_payload(
+                &materialized_rows,
+                &invoke_ids_by_row_id,
+            )?;
             let snapshot_page = SummaryArchiveSnapshotPage {
                 archive_batch_id: snapshot_archive_batch_id,
                 manifest_sha256: archive_outcome.sha256.clone(),
@@ -3307,7 +3348,7 @@ pub(crate) async fn archive_old_invocations(
                     .context("Summary Archive Snapshot row count overflow")?,
                 payload: snapshot_payload,
             };
-            store_summary_archive_snapshot_page_tx(tx.as_mut(), &snapshot_page).await?;
+            store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &snapshot_page).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),

@@ -3798,6 +3798,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             payload BLOB NOT NULL,
             payload_bytes INTEGER NOT NULL,
             snapshot_sha256 TEXT NOT NULL,
+            format_version INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (archive_batch_id, manifest_sha256, page_index)
         )
@@ -3806,6 +3807,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure summary_archive_snapshot table existence")?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot",
+        "format_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_summary_archive_snapshot_manifest \
          ON summary_archive_snapshot (manifest_sha256, archive_batch_id, page_index)",

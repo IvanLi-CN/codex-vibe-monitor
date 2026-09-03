@@ -1051,8 +1051,7 @@ async fn upsert_archive_batch_manifest_with_status(
             &deduped_upstream_last_activity,
         )
         .await?;
-        let descriptor = SummarySourceChangeDescriptor::source_change(
-            "archive_manifest",
+        let descriptor = SummarySourceChangeDescriptor::coverage_change(
             u64::try_from(archive_batch_id).context("archive batch source revision overflow")?,
             vec![SummarySourceChangeEntry {
                 row_id: archive_batch_id,

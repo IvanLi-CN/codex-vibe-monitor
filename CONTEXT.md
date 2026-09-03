@@ -150,6 +150,19 @@ Projection pass. A later generation never extends an older coverage claim; it
 starts a new bounded reconciliation from its own fence.
 _Avoid_: mixed-source snapshot, implicit catch-up
 
+**Summary Coverage Fence**:
+The immutable archive-manifest high-watermark that defines the historical
+coverage generation for an all-time checkpoint. A committed terminal tail does
+not invalidate this fence; only a changed coverage input starts a new coverage
+reconciliation.
+_Avoid_: live-tail watermark, full-history reset, mixed-generation proof
+
+**Summary Live Tail Cursor**:
+The bounded live and rollup cursor set after a Summary Coverage Fence. It tracks
+the committed terminal tail that `RollingDelta` can reconstruct without
+re-reading historical archive pages.
+_Avoid_: archive coverage fence, request-time cursor, raw-source replay
+
 **Projection Freshness Renewal**:
 The in-memory extension of an already Exact-Ready Projection only after its
 current Projection Generation Fence still matches durable state. It does not
@@ -226,6 +239,13 @@ selections without reopening that archive's raw source. It is committed before
 the archive becomes eligible for source cleanup and is not read on the HTTP or
 SSE path.
 _Avoid_: incomplete hourly rollup, raw-text mirror, request-time archive fallback
+
+**Summary Archive Snapshot V1 / V2**:
+V1 is a legacy payload marker usable only to identify backfill work and never a
+cleanup authority. V2 is the compressed, semantically decoded field set whose
+page order, manifest identity, coverage, row count and SHA proof are all
+verified before cleanup or off-request projection recovery can rely on it.
+_Avoid_: V1 cleanup proof, raw-text snapshot, marker-only verification
 
 **Legacy Summary Snapshot Backfill**:
 The low-priority, seek-paged durable recovery that creates Summary Archive
