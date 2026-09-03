@@ -171,7 +171,6 @@ outcome are durable: a verified page is exact authority, a missing or mismatched
 source becomes a finite unavailable proof, and a deadline or pressure defer does
 not advance an uncommitted cursor.
 _Avoid_: full historical rebuild, V1 cleanup proof, skipped archive
-
 **Projection Freshness Renewal**:
 The in-memory extension of an already Exact-Ready Projection only after its
 current Projection Generation Fence still matches durable state. It does not
