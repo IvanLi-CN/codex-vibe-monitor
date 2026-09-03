@@ -7,6 +7,7 @@
 - Implementation: the original admission gate, request-driven recovery path, generation fences, audit contract, and record-detail diagnostics are implemented
 - Lifecycle: active
 - Catalog note: topic anchor: API Key / routing / sticky priority handoff
+- Owner-facing surface: recovery admission diagnostics are shown in record details; the existing global Settings control remains the only control-plane toggle.
 
 ## Coverage / rollout summary
 
