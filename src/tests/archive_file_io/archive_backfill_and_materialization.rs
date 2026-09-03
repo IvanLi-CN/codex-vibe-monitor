@@ -61,6 +61,85 @@ async fn insert_summary_archive_snapshot_proof(
 }
 
 #[tokio::test]
+async fn legacy_summary_snapshot_backfill_materializes_v2_before_raw_source_loss() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("summary-snapshot-v2-backfill").await;
+    let archive_db_path = temp_dir.join("legacy-summary-v2-backfill.sqlite");
+    let archive_path = temp_dir.join("legacy-summary-v2-backfill.sqlite.gz");
+    fs::File::create(&archive_db_path).expect("create legacy Summary archive sqlite");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open legacy Summary archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create legacy Summary archive schema");
+    let occurred_at = "2026-08-01 00:00:00";
+    sqlx::query(
+        "INSERT INTO codex_invocations
+         (id, invoke_id, occurred_at, raw_response, created_at, payload)
+         VALUES (1, 'legacy-summary-v2-row', ?1, '{}', ?1, NULL)",
+    )
+    .bind(occurred_at)
+    .execute(&archive_pool)
+    .await
+    .expect("insert legacy Summary archive row");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress legacy Summary archive");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash legacy Summary archive");
+    sqlx::query(
+        "INSERT INTO archive_batches
+         (id, dataset, month_key, file_path, sha256, row_count, status,
+          summary_source_kind, coverage_start_at, coverage_end_at)
+         VALUES (1, 'codex_invocations', '2026-08', ?1, ?2, 1, 'completed',
+                 'unknown', ?3, ?3)",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(&archive_sha256)
+    .bind(occurred_at)
+    .execute(&pool)
+    .await
+    .expect("seed legacy Summary archive manifest");
+
+    let result = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(5))
+        .await
+        .expect("backfill legacy Summary archive Snapshot V2");
+    assert_eq!(result.materialized_archive_batches, 1);
+    assert!(
+        summary_archive_snapshot_has_proof(&pool, 1, &archive_sha256)
+            .await
+            .expect("validate backfilled V2 proof")
+    );
+    let (snapshot_format, snapshot_payload): (i64, Vec<u8>) = sqlx::query_as(
+        "SELECT format_version, payload FROM summary_archive_snapshot
+         WHERE archive_batch_id = 1 AND manifest_sha256 = ?1",
+    )
+    .bind(&archive_sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled Snapshot format");
+    assert_eq!(snapshot_format, SUMMARY_ARCHIVE_SNAPSHOT_V2);
+    let snapshot_records = decode_summary_archive_snapshot_v2_payload(&snapshot_payload)
+        .expect("decode backfilled Snapshot payload");
+    assert_eq!(snapshot_records[0].invoke_id, "legacy-summary-v2-row");
+
+    fs::remove_file(&archive_path).expect("remove legacy raw source after V2 proof");
+    let second = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("reuse V2 authority after raw source loss");
+    assert_eq!(second.materialized_archive_batches, 0);
+    assert_eq!(second.unavailable_archive_batches, 0);
+    assert!(
+        summary_archive_snapshot_has_proof(&pool, 1, &archive_sha256)
+            .await
+            .expect("retain V2 proof after raw source loss")
+    );
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("archive-manifest-refresh-dedupe").await;

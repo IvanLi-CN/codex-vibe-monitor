@@ -875,7 +875,7 @@ fn invocation_archive_candidate_to_hourly_source_record(
     }
 }
 
-fn encode_summary_archive_snapshot_v2_payload(
+pub(crate) fn encode_summary_archive_snapshot_v2_payload(
     rows: &[InvocationHourlySourceRecord],
     invoke_ids_by_row_id: &HashMap<i64, String>,
 ) -> Result<Vec<u8>> {

@@ -3547,6 +3547,16 @@ impl SubscriptionHub {
         })
     }
 
+    pub(crate) async fn renew_summary_projection_freshness_if_coverage_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let guard = self.state.lock().await;
+        guard.summary_projection.as_ref().is_some_and(|projection| {
+            projection.renew_freshness_if_coverage_matches(generation_fence)
+        })
+    }
+
     // Only acknowledged terminal deltas are admitted to this queue. When it remains bounded
     // and contains an identity the immutable baseline has not absorbed, its values are the
     // exact delta between that baseline and the rolling read model.

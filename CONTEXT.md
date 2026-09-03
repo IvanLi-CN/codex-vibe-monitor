@@ -151,10 +151,11 @@ starts a new bounded reconciliation from its own fence.
 _Avoid_: mixed-source snapshot, implicit catch-up
 
 **Summary Coverage Fence**:
-The immutable archive-manifest high-watermark that defines the historical
-coverage generation for an all-time checkpoint. A committed terminal tail does
+The immutable, scope-local coverage version for an all-time checkpoint. It
+binds the archive-manifest, rollup, replay and verified Snapshot V2 proof
+inputs that establish historical exactness. A committed terminal tail does
 not invalidate this fence; only a changed coverage input starts a new coverage
-reconciliation.
+reconciliation for the affected global or account scope.
 _Avoid_: live-tail watermark, full-history reset, mixed-generation proof
 
 **Summary Live Tail Cursor**:
@@ -162,6 +163,14 @@ The bounded live and rollup cursor set after a Summary Coverage Fence. It tracks
 the committed terminal tail that `RollingDelta` can reconstruct without
 re-reading historical archive pages.
 _Avoid_: archive coverage fence, request-time cursor, raw-source replay
+
+**Legacy Summary Coverage Recovery**:
+The low-priority supervisor that seek-pages completed legacy invocation archives
+into verified Summary Archive Snapshot V2 pages. Its cursor and per-manifest
+outcome are durable: a verified page is exact authority, a missing or mismatched
+source becomes a finite unavailable proof, and a deadline or pressure defer does
+not advance an uncommitted cursor.
+_Avoid_: full historical rebuild, V1 cleanup proof, skipped archive
 
 **Projection Freshness Renewal**:
 The in-memory extension of an already Exact-Ready Projection only after its

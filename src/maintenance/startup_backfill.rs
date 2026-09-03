@@ -2240,8 +2240,18 @@ pub(crate) async fn run_startup_backfill_task(
                 Duration::from_secs(STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS),
             )
             .await?;
+            // Historical rollup replay alone does not create the V2 Summary authority for
+            // legacy archives. Run the independent seek-paged snapshot backfill after the
+            // rollup window; it has its own durable cursor and never gates recent Projection
+            // publication.
+            let snapshot_window =
+                backfill_summary_archive_snapshots_v2_window(&state.pool, Duration::from_secs(2))
+                    .await?;
             let summary = window.summary;
-            let updated = window.changed_path_count as u64;
+            let updated = window
+                .changed_path_count
+                .saturating_add(snapshot_window.materialized_archive_batches)
+                as u64;
             info!(
                 task = StartupBackfillTask::HistoricalRollups.log_label(),
                 candidate_limit = 32_u64,
@@ -2253,6 +2263,11 @@ pub(crate) async fn run_startup_backfill_task(
                 changed_path_count = window.changed_path_count,
                 wrapped = window.wrapped,
                 blocked_archive_batches = summary.blocked_archive_batches,
+                snapshot_candidate_count = snapshot_window.candidate_count,
+                snapshot_materialized_archive_batches =
+                    snapshot_window.materialized_archive_batches,
+                snapshot_unavailable_archive_batches = snapshot_window.unavailable_archive_batches,
+                snapshot_hit_budget = snapshot_window.hit_budget,
                 "startup historical rollup keyset pass completed"
             );
             Ok((
@@ -2263,17 +2278,21 @@ pub(crate) async fn run_startup_backfill_task(
                     hit_scan_limit: updated > 0
                         && (window.candidate_count >= 32
                             || summary.scanned_archive_batches
-                                >= STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT as usize),
+                                >= STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT as usize)
+                        || snapshot_window.hit_budget
+                        || snapshot_window.candidate_count > 0,
                     retry_soon: historical_rollup_should_retry_soon(
-                        window.hit_budget,
-                        window.candidate_count,
+                        window.hit_budget || snapshot_window.hit_budget,
+                        window
+                            .candidate_count
+                            .saturating_add(snapshot_window.candidate_count),
                     ),
-                    force_idle: window.candidate_count == 0,
+                    force_idle: window.candidate_count == 0 && snapshot_window.candidate_count == 0,
                     source_unavailable: false,
                     samples: Vec::new(),
                 },
                 format!(
-                    "candidate_count={} inspected_path_count={} changed_path_count={} hit_budget={} wrapped={} next_cursor_id={} materialized_archive_batches={} blocked_archive_batches={}",
+                    "candidate_count={} inspected_path_count={} changed_path_count={} hit_budget={} wrapped={} next_cursor_id={} materialized_archive_batches={} blocked_archive_batches={} snapshot_materialized_archive_batches={} snapshot_unavailable_archive_batches={}",
                     window.candidate_count,
                     window.inspected_path_count,
                     window.changed_path_count,
@@ -2282,6 +2301,8 @@ pub(crate) async fn run_startup_backfill_task(
                     window.next_cursor_id,
                     summary.materialized_archive_batches,
                     summary.blocked_archive_batches,
+                    snapshot_window.materialized_archive_batches,
+                    snapshot_window.unavailable_archive_batches,
                 ),
             ))
         }

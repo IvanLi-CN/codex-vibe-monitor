@@ -3839,6 +3839,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS summary_archive_snapshot_backfill_outcome (
+            archive_batch_id INTEGER NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            failure_kind TEXT NOT NULL DEFAULT '',
+            next_probe_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_batch_id, manifest_sha256)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_archive_snapshot_backfill_outcome table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_all_time_projection_checkpoint (
             scope TEXT PRIMARY KEY,
             live_high_watermark_id INTEGER NOT NULL,

@@ -22,6 +22,12 @@
   tail cursor. Bootstrap and rolling refreshes defer raw archive boundaries to
   AllTime recovery, and only semantically verified Snapshot V2 pages can satisfy
   archive cleanup proof; V1 pages remain backfill input only.
+- Legacy Summary Coverage Recovery now runs as a seek-paged maintenance window
+  with its own durable cursor and per-manifest outcome. It first reuses an
+  already verified V2 page without opening raw source, otherwise validates the
+  archive SHA and materializes bounded V2 pages. Missing, unreadable or
+  mismatched authority is recorded as a finite unavailable outcome and remains
+  retryable; a budget boundary leaves the cursor at the last committed page.
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a time/account
   range intersecting a `DeltaGapProof`, is unavailable rather than approximate.
@@ -68,6 +74,11 @@
   proof gate in main SQLite. Snapshot proof includes manifest identity,
   coverage and payload SHA; a seek-paged legacy backfill can reuse the writer
   for readable authority, while source loss remains a finite unavailable range.
+- The all-time coverage fence is scope-local across manifest, rollup, replay and
+  Snapshot V2 proof versions. A terminal tail changes only the live-tail cursor
+  and bounded overlay; it never cancels an in-flight historical page. The
+  backfill outcome index stores only disposition, failure class and next probe,
+  never archive payload or source text.
 - Journal insertion adds no transaction or connection. Descriptor insertion,
   compaction and Snapshot writes emit only stage, count and byte telemetry;
   bounded reconstruction duration remains measured by the projection worker.

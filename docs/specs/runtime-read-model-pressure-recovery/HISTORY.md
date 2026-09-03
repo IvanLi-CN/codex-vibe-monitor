@@ -38,3 +38,10 @@
 - ADR 0010 separates the historical Coverage Fence from the live-tail cursor,
   keeps raw boundary hydration exclusive to AllTime recovery, and quarantines
   V1 Snapshot pages from cleanup until a semantically verified V2 page exists.
+- Legacy Summary coverage recovery now persists a seek cursor and payload-free
+  per-manifest outcome. Verified V2 authority is adopted without raw I/O;
+  readable legacy archives are rebuilt in bounded pages, while missing or
+  mismatched sources remain finite unavailable ranges and retry independently.
+- All-time checkpoint freshness is keyed to scope-local manifest, rollup, replay
+  and Snapshot proof versions. Committed terminal tail changes remain a bounded
+  overlay and no longer cancel or restart historical raw recovery.

@@ -7739,6 +7739,23 @@ impl SummaryProjection {
         true
     }
 
+    // All-time reconciliation owns historical coverage only. A newly committed terminal
+    // advances the live tail cursor and must be served by the bounded overlay without cancelling
+    // an otherwise valid archive/rollup recovery page.
+    pub(crate) fn renew_freshness_if_coverage_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        if !self
+            .generation_fence
+            .coverage_sources_match(generation_fence)
+        {
+            return false;
+        }
+        self.freshness_lease.renew();
+        true
+    }
+
     pub(crate) fn renew_freshness_from_delta_journal(&self) {
         self.freshness_lease.renew();
     }
@@ -10742,6 +10759,18 @@ async fn renew_summary_projection_freshness_if_generation_matches(
     Ok(renewed)
 }
 
+async fn renew_summary_projection_freshness_if_coverage_matches(state: &AppState) -> Result<bool> {
+    let generation_fence = load_summary_projection_generation_fence(state).await?;
+    let renewed = state
+        .subscription_hub
+        .renew_summary_projection_freshness_if_coverage_matches(generation_fence)
+        .await;
+    if renewed {
+        debug!("summary all-time coverage freshness renewed for unchanged coverage fence");
+    }
+    Ok(renewed)
+}
+
 /// Reconstruct the bounded durable source tail after a restart or when the in-process delta
 /// queue has been dropped.  Only descriptor identities are read from the journal; the canonical
 /// source row is hydrated in 400-id chunks and exposed through the existing in-memory replay
@@ -11073,7 +11102,7 @@ async fn await_summary_projection_all_time_build(
         tokio::select! {
             result = &mut build => return result,
             _ = &mut timeout => return Err(anyhow!("summary projection build exceeded {deadline:?}")),
-            _ = keepalive.tick() => match renew_summary_projection_freshness_if_generation_matches(state).await {
+            _ = keepalive.tick() => match renew_summary_projection_freshness_if_coverage_matches(state).await {
                 Ok(true) => debug!("summary rolling projection kept fresh during all-time reconciliation"),
                 Ok(false) => return Err(SummaryProjectionAllTimeGenerationChanged.into()),
                 Err(error) => warn!(error = ?error, "summary all-time reconciliation could not renew rolling freshness"),
@@ -33483,7 +33512,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_all_time_generation_change_cancels_and_rebuilds_rolling() {
+    async fn summary_projection_all_time_generation_change_preserves_coverage_and_replays_tail() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -33528,18 +33557,30 @@ mod request_compression_query_tests {
         .await
         .expect("mutate the durable generation while all-time reconciliation is paused");
 
+        let new_row = sqlx::query_as::<_, ApiInvocation>(
+            "SELECT * FROM codex_invocations WHERE invoke_id = 'summary-all-time-generation-after'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load the committed terminal for the bounded tail overlay");
+        let mut delta = persisted_dashboard_activity_terminal_delta(&new_row);
+        delta.terminal_sequence = 2;
+        delta.persisted_row_id = Some(new_row.id);
+        state
+            .subscription_hub
+            .acknowledge_replayed_summary_delta(delta)
+            .await;
+
         let result = tokio::time::timeout(
-            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL + SUMMARY_PROJECTION_BUILD_DEADLINE,
+            SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE + Duration::from_secs(2),
             refresh,
         )
         .await
-        .expect(
-            "generation change must cancel all-time reconciliation and hand off rolling recovery",
-        );
+        .expect("coverage-stable all-time reconciliation must finish without cancellation");
         clear_summary_projection_test_interleave();
         result
             .expect("join refresh task")
-            .expect("publish rebuilt rolling projection");
+            .expect("publish all-time projection while retaining the tail overlay");
 
         state.pool.close().await;
         let Json(current) = fetch_summary(
