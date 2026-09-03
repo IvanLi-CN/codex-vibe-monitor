@@ -744,6 +744,9 @@ struct SubscriptionHubState {
     // entries after the writer's SQLite commit ACK, so it is a bounded exact delta between an
     // immutable base projection and the latest rolling view.
     summary_delta_journal: SummaryDeltaJournal,
+    // SQLite source descriptors are consumed once per process lifetime. A restart starts at
+    // zero and reconstructs the bounded durable tail before any RollingDelta refresh.
+    summary_source_change_cursor: u64,
     // All-time coverage can lag independently of rolling coverage. Keep its replay budget
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
     summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
@@ -3548,6 +3551,57 @@ impl SubscriptionHub {
         )
     }
 
+    pub(crate) async fn summary_source_change_cursor(&self) -> u64 {
+        self.state.lock().await.summary_source_change_cursor
+    }
+
+    pub(crate) async fn advance_summary_source_change_cursor(&self, cursor: u64) {
+        let mut state = self.state.lock().await;
+        state.summary_source_change_cursor = state.summary_source_change_cursor.max(cursor);
+    }
+
+    pub(crate) async fn record_summary_source_change_gap(&self, cursor: u64) {
+        let mut state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .note_unknown_sequence_gap(cursor);
+        if let Some(projection) = state.summary_projection.as_ref() {
+            projection.renew_freshness_from_delta_journal();
+        }
+    }
+
+    pub(crate) async fn record_summary_source_change_scoped_gap(
+        &self,
+        cursor: u64,
+        upstream_account_id: Option<i64>,
+        occurred_at: String,
+        row_id: Option<i64>,
+    ) {
+        let mut state = self.state.lock().await;
+        state.summary_delta_journal.cursor = state
+            .summary_delta_journal
+            .cursor
+            .max(SummaryDeltaCursor(cursor));
+        state.summary_delta_journal.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(cursor),
+            upstream_account_id,
+            occurred_at,
+            row_id,
+        });
+        if let Some(projection) = state.summary_projection.as_ref() {
+            projection.renew_freshness_from_delta_journal();
+        }
+    }
+
+    pub(crate) async fn mark_summary_projection_historical_recovery_required(&self) {
+        let mut state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return;
+        };
+        let mut projection = (**projection).clone();
+        projection.mark_historical_live_recovery_required();
+        state.summary_projection = Some(Arc::new(projection));
+    }
     pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
         let state = self.state.lock().await;
         state
@@ -3707,6 +3761,14 @@ impl SubscriptionHub {
                 "all-time summary terminal overlay recovered after a durable projection refresh"
             );
         }
+        // A scoped legacy-source proof is consumed once the rebuilt immutable projection contains
+        // the exact row identity.  Broad proofs (without a row id) remain fail-closed until their
+        // generation watermark is explicitly absorbed.
+        state.summary_delta_journal.gap_proofs.retain(|proof| {
+            proof
+                .row_id
+                .is_none_or(|row_id| !projection.contains_persisted_live_terminal_by_row_id(row_id))
+        });
         state.summary_projection = Some(Arc::new(projection));
     }
 

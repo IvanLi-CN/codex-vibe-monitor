@@ -719,6 +719,15 @@ pub(crate) async fn cleanup_expired_archive_batches(
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
+            if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+                && !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256)
+                    .await?
+            {
+                // A pending deletion from an older process is still subject to the durable
+                // Summary Snapshot gate.  Without a matching proof, retaining the manifest is
+                // safer than deleting the only authoritative source.
+                continue;
+            }
             eligible_candidates.push(candidate);
             continue;
         }
@@ -757,6 +766,14 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 || !long_term_stats_archive_files
                     .contains(&(candidate.file_path.clone(), candidate.sha256.clone())))
         {
+            continue;
+        }
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256).await?
+        {
+            // Source cleanup is allowed only after a normalized Snapshot page and its manifest
+            // identity have committed. Legacy archives are picked up by the background
+            // Snapshot backfill instead of being retired here.
             continue;
         }
         if candidate.dataset == "pool_upstream_request_attempts"

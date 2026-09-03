@@ -1,6 +1,33 @@
 use super::*;
 use serde_json::json;
 
+async fn insert_summary_archive_snapshot_proof(
+    pool: &SqlitePool,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+    coverage_start: &str,
+    coverage_end: &str,
+    row_count: u32,
+) {
+    let page = SummaryArchiveSnapshotPage {
+        archive_batch_id,
+        manifest_sha256: manifest_sha256.to_string(),
+        page_index: 0,
+        coverage_start: coverage_start.to_string(),
+        coverage_end: coverage_end.to_string(),
+        row_count,
+        payload: b"normalized-summary-test-fixture".to_vec(),
+    };
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin Summary Snapshot proof transaction");
+    store_summary_archive_snapshot_page_tx(tx.as_mut(), &page)
+        .await
+        .expect("store Summary Snapshot proof");
+    tx.commit().await.expect("commit Summary Snapshot proof");
+}
+
 #[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
@@ -746,6 +773,15 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
     .execute(&pool)
     .await
     .expect("mark long-term archive replay complete");
+    insert_summary_archive_snapshot_proof(
+        &pool,
+        1,
+        &archive_sha256,
+        "2025-01-01 00:00:00",
+        "2025-01-01 00:00:00",
+        1,
+    )
+    .await;
 
     let deleted = cleanup_expired_archive_batches(&pool, &config, false)
         .await
@@ -1024,10 +1060,25 @@ async fn cleanup_expired_invocation_archive_preserves_source_when_metadata_trans
     )
     .bind(LONG_TERM_STATS_ARCHIVE_REPLAY_TARGET)
     .bind(archive_path.to_string_lossy().to_string())
-    .bind(archive_sha256)
+    .bind(&archive_sha256)
     .execute(&pool)
     .await
     .expect("mark long-term archive replay complete");
+    let archive_batch_id: i64 =
+        sqlx::query_scalar("SELECT id FROM archive_batches WHERE file_path = ?1")
+            .bind(archive_path.to_string_lossy().to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("load archive batch id for Snapshot proof");
+    insert_summary_archive_snapshot_proof(
+        &pool,
+        archive_batch_id,
+        &archive_sha256,
+        occurred_at,
+        occurred_at,
+        1,
+    )
+    .await;
     sqlx::query(
         r#"
         CREATE TRIGGER reject_archive_cleanup
@@ -8765,8 +8816,14 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
     .await
     .expect("adapt legacy archive manifest to fixture path");
     for (archive_path, archive_sha256) in [
-        (segment_path.to_string_lossy().to_string(), segment_sha256),
-        (legacy_path.to_string_lossy().to_string(), legacy_sha256),
+        (
+            segment_path.to_string_lossy().to_string(),
+            segment_sha256.clone(),
+        ),
+        (
+            legacy_path.to_string_lossy().to_string(),
+            legacy_sha256.clone(),
+        ),
     ] {
         sqlx::query(
             "INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, archive_sha256) VALUES (?1, 'codex_invocations', ?2, ?3)",
@@ -8777,6 +8834,36 @@ async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
         .execute(&pool)
         .await
         .expect("mark legacy prune archive replay complete");
+    }
+    for (archive_path, archive_sha256, coverage) in [
+        (
+            segment_path.to_string_lossy().to_string(),
+            segment_sha256,
+            ("2025-01-02 09:00:00", "2025-01-02 09:00:00"),
+        ),
+        (
+            legacy_path.to_string_lossy().to_string(),
+            legacy_sha256,
+            ("2024-12-01 09:00:00", "2024-12-01 09:00:00"),
+        ),
+    ] {
+        let archive_batch_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM archive_batches WHERE file_path = ?1 AND sha256 = ?2",
+        )
+        .bind(&archive_path)
+        .bind(&archive_sha256)
+        .fetch_one(&pool)
+        .await
+        .expect("load prune archive batch id for Summary Snapshot proof");
+        insert_summary_archive_snapshot_proof(
+            &pool,
+            archive_batch_id,
+            &archive_sha256,
+            coverage.0,
+            coverage.1,
+            1,
+        )
+        .await;
     }
 
     let summary = prune_archive_batches(&pool, &config, false)
