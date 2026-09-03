@@ -7197,10 +7197,7 @@ impl SummaryProjectionBuildMode {
     }
 
     const fn requires_full_historical_live_coverage(self) -> bool {
-        matches!(
-            self,
-            Self::Bootstrap | Self::HistoricalLiveCoverage | Self::AllTime
-        )
+        matches!(self, Self::Bootstrap | Self::HistoricalLiveCoverage)
     }
 }
 
@@ -34665,6 +34662,56 @@ mod request_compression_query_tests {
         .expect("rolling projection remains memory-only after SQLite closes");
         assert_eq!(current.total_count, 2);
         assert_eq!(current.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_all_time_never_runs_historical_live_coverage() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-all-time-historical-coverage', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live source");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical coverage interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("AllTime recovery must use coverage proof, not a historical live scan");
+        clear_summary_projection_test_interleave();
+        assert_eq!(
+            interleave.build_attempts(),
+            0,
+            "only Bootstrap or the dedicated historical recovery may scan historical live data",
+        );
+        state.pool.close().await;
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("AllTime live-only aggregate remains exact");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
     }
 
     #[tokio::test]
