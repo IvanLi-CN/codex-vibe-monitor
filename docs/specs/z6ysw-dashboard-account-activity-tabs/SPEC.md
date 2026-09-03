@@ -612,6 +612,40 @@
   image:
   ![Dashboard 上游账号统计卡自适应量级移动证据](./assets/dashboard-upstream-account-adaptive-metrics-mobile393.png)
 
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab-dynamic-seven`
+  scenario: `conversation window 4, upstream account window 7`
+  evidence_note: 已获主人确认的 mock-only Storybook 组件证据。工作会话仍使用 `recentPreviewLimit=4`，账号活动由快照内最大进行中调用数解析为 `N=7`；标题显示“最近 7 条调用”，并可见 7 条 recent 行。
+  requested_viewport: `desktop1660`
+  viewport_strategy: `browser-resize-fallback`
+  margin_policy: `require_margin`
+  evidence_surface: `component`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  ![Dashboard 上游账号动态 7 条窗口证据](./assets/dashboard-upstream-account-window-dynamic-seven.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab-max-sixteen`
+  scenario: `conversation window 4, upstream account window 16`
+  evidence_note: 已获主人确认的 mock-only Storybook 组件证据。工作会话仍使用 `recentPreviewLimit=4`，账号活动由快照内最大进行中调用数解析并 clamp 为 `N=16`；标题显示“最近 16 条调用”，并可见 16 条 recent 行。
+  requested_viewport: `desktop1660`
+  viewport_strategy: `browser-resize-fallback`
+  margin_policy: `require_margin`
+  evidence_surface: `component`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  target_program: `mock-only`
+  capture_scope: `element`
+  sensitive_exclusion: `fixture-only Dashboard data`
+  submission_gate: `approved`
+  image:
+  ![Dashboard 上游账号动态 16 条窗口证据](./assets/dashboard-upstream-account-window-dynamic-sixteen.png)
+
 ## Related PRs
 
 - [#844](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/844)
