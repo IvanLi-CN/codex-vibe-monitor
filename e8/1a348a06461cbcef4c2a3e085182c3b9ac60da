@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.14",
+  "base_stable_version": "2.69.13",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-03T04:39:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.14",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "dffe38c25cb1792018b3725a0c56937fdaa3594a",
+  "pr_number": 896,
+  "pr_title": "fix(routing): restore request-driven priority recovery",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.14",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.14",
+  "target_sha": "e81a348a06461cbcef4c2a3e085182c3b9ac60da",
+  "type_label": "type:patch"
+}
