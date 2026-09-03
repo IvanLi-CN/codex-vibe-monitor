@@ -1,5 +1,7 @@
 # Dashboard 工作区卡片双视图与上游账号活动聚合 演进历史（#z6ysw）
 
+- 2026-09-04：修正账号卡 recent 窗口与工作会话窗口的耦合。账号活动请求容量固定为 16 条；同一快照按 `N = clamp(max(accounts[].inProgressInvocationCount), 4, 16)` 统一驱动标题、列表和 skeleton，工作会话继续独立使用自身的 recent 窗口。
+
 - 2026-08-24：修正上游账号四组统计卡的常驻数值展示。新增账号卡专用量级策略：两个或以上千分位分隔符强制使用 `K/M/B/T` 或 `$K/$M/$B/$T`，默认三位有效数字并按实际内容宽度回退；耗时补齐 `ms/s/min/h` 与舍入进位升级，同时保持共享 Today Stats、TPM 和消费速率的既有自适应合同不变。
 
 - active coverage priority 的 archive selection 改为 normalized epoch range + partial index，并在 SQLite selection 本身安装 progress deadline；这保留 legacy month fallback，同时避免 168 个 bucket 对 archive manifest 做带日期函数的 correlated scan。

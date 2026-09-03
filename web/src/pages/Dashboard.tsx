@@ -80,7 +80,6 @@ export default function DashboardPage() {
     activeRange,
     dashboardActivityEnabled,
     true,
-    recentPreviewLimit,
     includeUpstreamAccountActivity,
   );
 

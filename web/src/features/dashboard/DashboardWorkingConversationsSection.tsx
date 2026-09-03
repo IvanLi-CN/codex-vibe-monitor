@@ -29,7 +29,10 @@ import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segm
 import { SelectField } from "../../components/ui/select-field";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
-import { useDashboardUpstreamAccountActivity } from "../../hooks/useDashboardUpstreamAccountActivity";
+import {
+  resolveUpstreamAccountRecentPreviewLimit,
+  useDashboardUpstreamAccountActivity,
+} from "../../hooks/useDashboardUpstreamAccountActivity";
 import {
   DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
   type DashboardWorkingConversationsBlockedBindingFilter,
@@ -4021,7 +4024,6 @@ export function DashboardWorkingConversationsSection({
   cards,
   totalMatched,
   hasMore = false,
-  recentPreviewLimit = 4,
   isLoading,
   isLoadingMore = false,
   error,
@@ -4192,7 +4194,6 @@ export function DashboardWorkingConversationsSection({
   const hookUpstreamAccountActivity = useDashboardUpstreamAccountActivity(
     activeRange,
     !hasExternalUpstreamAccountActivity && upstreamAccountActivityEnabled,
-    recentPreviewLimit,
   );
   const upstreamAccountActivity = hasExternalUpstreamAccountActivity
     ? (externalUpstreamAccountActivity ?? null)
@@ -4222,7 +4223,8 @@ export function DashboardWorkingConversationsSection({
   const showUpstreamAccountActivityLoading =
     upstreamAccountActivityLoading || upstreamAccountActivityPending;
   const upstreamAccountRecentPreviewLimit = hasExternalUpstreamAccountActivity
-    ? (externalUpstreamAccountRecentPreviewLimit ?? recentPreviewLimit)
+    ? (externalUpstreamAccountRecentPreviewLimit ??
+      resolveUpstreamAccountRecentPreviewLimit(externalUpstreamAccountActivity?.accounts ?? []))
     : hookUpstreamAccountActivity.recentInvocationLimit;
   const refreshUpstreamAccountActivity = useCallback(() => {
     if (hasExternalUpstreamAccountActivity) {

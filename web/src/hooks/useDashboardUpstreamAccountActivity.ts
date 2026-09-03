@@ -8,14 +8,12 @@ import {
 import { normalizeEffectiveRoutingRule } from "../lib/api/core-upstream";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
-import {
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-  DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-} from "./useDashboardWorkingConversations";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_REFRESH_THROTTLE_MS = 5_000;
 export const DASHBOARD_UPSTREAM_ACCOUNT_ACTIVITY_OPEN_RESYNC_COOLDOWN_MS = 5_000;
+export const DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MIN = 4;
+export const DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MAX = 16;
 
 interface LoadOptions {
   silent?: boolean;
@@ -118,11 +116,11 @@ export function mergeDashboardActivityLiveSnapshot(
 
 function clampRecentInvocationLimit(value: number) {
   if (!Number.isFinite(value)) {
-    return DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN;
+    return DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MIN;
   }
   return Math.min(
-    DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
-    Math.max(DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN, Math.trunc(value)),
+    DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MAX,
+    Math.max(DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MIN, Math.trunc(value)),
   );
 }
 
@@ -147,7 +145,7 @@ function buildDashboardActivityTopic(
   return buildTopicDescriptor("dashboard.activity.current", {
     range,
     timeZone: getBrowserTimeZone(),
-    recentLimit: DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX,
+    recentLimit: DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MAX,
     includeAccounts,
     includeRecent,
   });
@@ -157,7 +155,6 @@ function useHttpDashboardActivitySnapshot(
   range: string,
   enabled: boolean,
   includeAccounts: boolean,
-  recentInvocationLimit: number,
   includeRecent: boolean,
 ) {
   const [data, setData] = useState<DashboardActivityResponse | null>(null);
@@ -188,7 +185,7 @@ function useHttpDashboardActivitySnapshot(
       }
       try {
         const response = await fetchDashboardActivity(range, {
-          recentLimit: clampRecentInvocationLimit(recentInvocationLimit),
+          recentLimit: DASHBOARD_UPSTREAM_ACCOUNT_RECENT_PREVIEW_MAX,
           timeZone: getBrowserTimeZone(),
           includeAccounts,
           includeRecent,
@@ -213,7 +210,7 @@ function useHttpDashboardActivitySnapshot(
         }
       }
     },
-    [enabled, includeAccounts, includeRecent, range, recentInvocationLimit],
+    [enabled, includeAccounts, includeRecent, range],
   );
 
   useEffect(() => {
@@ -244,12 +241,8 @@ function useHttpDashboardActivitySnapshot(
   };
 }
 
-export function useDashboardUpstreamAccountActivity(
-  range: string,
-  enabled: boolean,
-  recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
-) {
-  const snapshot = useDashboardActivitySnapshot(range, enabled, true, recentInvocationLimit, true);
+export function useDashboardUpstreamAccountActivity(range: string, enabled: boolean) {
+  const snapshot = useDashboardActivitySnapshot(range, enabled, true, true);
   const data = snapshot.data
     ? {
         range: snapshot.data.range,
@@ -270,7 +263,6 @@ export function useDashboardActivitySnapshot(
   range: string,
   enabled: boolean,
   includeAccounts: boolean,
-  recentInvocationLimit = DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN,
   includeRecent = includeAccounts,
 ) {
   const useHttp = enabled && range === "yesterday";
@@ -286,12 +278,14 @@ export function useDashboardActivitySnapshot(
     range,
     useHttp,
     includeAccounts,
-    recentInvocationLimit,
     includeRecent,
   );
 
   const sourceData = useHttp ? httpState.data : sseState.data;
-  const visibleRecentLimit = clampRecentInvocationLimit(recentInvocationLimit);
+  const visibleRecentLimit = useMemo(
+    () => resolveUpstreamAccountRecentPreviewLimit(sourceData?.accounts ?? []),
+    [sourceData?.accounts],
+  );
   const data = useMemo(() => {
     if (!sourceData?.accounts || !includeRecent) return sourceData;
     return {
