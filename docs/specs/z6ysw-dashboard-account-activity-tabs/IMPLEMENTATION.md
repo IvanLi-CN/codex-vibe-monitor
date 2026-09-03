@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: 已实现，待提交收口
+- Implementation: 已实现，代码已提交，待 PR 收口
 - Lifecycle: active
 - Catalog note: dashboard workspace dual tabs, account activity aggregation, invocation-based in-progress semantics
 
