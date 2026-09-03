@@ -14564,29 +14564,6 @@ async fn build_summary_projection_once(
         if exact_ranges.is_empty() {
             continue;
         }
-        if !mode.includes_all_time() && !archive.has_materialized_historical_rollups() {
-            // Bootstrap and rolling refreshes may consume compact replay proof and bounded
-            // materialized boundary rows. An unmaterialized archive can contain a large raw
-            // source, so defer its boundary repair to the independent AllTime checkpoint (or a
-            // verified Snapshot) and retain an exact, range-local gap in the meantime.
-            summary_projection_mark_unavailable_archive_ranges_by_requirement(
-                &mut unavailable_unmaterialized_archive_buckets,
-                &mut unavailable_boundary_archive_ranges,
-                archive.has_materialized_historical_rollups(),
-                &exact_ranges,
-                &exact_bucket_requirements,
-            )?;
-            if !archive.has_materialized_historical_rollups() {
-                unavailable_unmaterialized_archive_current_ranges.push(archive_range);
-            }
-            debug!(
-                ?mode,
-                archive = archive.file_path(),
-                stage = "boundary_archive_hydration_deferred",
-                "deferred raw archive boundary hydration to AllTime recovery"
-            );
-            continue;
-        }
         if !archive.has_materialized_historical_rollups()
             && archive_row_counts
                 .get(archive.file_path())
