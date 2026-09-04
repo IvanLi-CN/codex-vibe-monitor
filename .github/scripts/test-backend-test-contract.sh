@@ -43,6 +43,21 @@ if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{
   exit 1
 fi
 
+if ! grep -Fq 'name: backend-test-archive-${{ github.run_id }}' "$ci_main_workflow"; then
+  echo 'backend test archive must be scoped to the workflow run, not its attempt' >&2
+  exit 1
+fi
+
+if grep -Fq 'name: backend-test-archive-${{ github.run_id }}-${{ github.run_attempt }}' "$ci_main_workflow"; then
+  echo 'backend test archive must not include github.run_attempt' >&2
+  exit 1
+fi
+
+if ! grep -Fq 'overwrite: true' "$ci_main_workflow"; then
+  echo 'backend test archive producer must overwrite its run-scoped artifact on rerun' >&2
+  exit 1
+fi
+
 python3 "$repo_root/.github/scripts/test-shared-testbox-api-read-smoke.py"
 
 if ! grep -Fq -- '--entrypoint /bin/chmod' "$repo_root/scripts/shared-testbox-api-read-smoke"; then
