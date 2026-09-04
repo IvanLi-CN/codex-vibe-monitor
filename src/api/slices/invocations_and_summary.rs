@@ -10657,7 +10657,13 @@ impl SummaryCoverageRecoverySupervisor {
             Ok(())
         };
         tokio::pin!(recovery);
-        let mut renew = tokio::time::interval(SUMMARY_SNAPSHOT_MAX_STALE / 3);
+        // Do not renew the lease on the interval's immediate first tick.  A just-published
+        // projection must still honor its recorded `refreshed_at`; the first keepalive is only
+        // needed after one cadence interval while a long historical page is in flight.
+        let mut renew = tokio::time::interval_at(
+            tokio::time::Instant::now() + SUMMARY_SNAPSHOT_MAX_STALE / 3,
+            SUMMARY_SNAPSHOT_MAX_STALE / 3,
+        );
         loop {
             tokio::select! {
                 result = &mut recovery => return result,
@@ -13012,12 +13018,24 @@ async fn publish_summary_all_time_projection_checkpoint(
                 *entry = entry.add(totals);
             }
         }
+        let account_live_tail_loaded =
+            generation_fence.live_high_watermark_id > account_rollup_live_cursor;
         let mut exact_record_ids = HashSet::new();
         for record in next.records.iter().chain(next.current_records.iter()) {
             let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
             if record.is_persisted_live_record
                 && record.row.id <= account_rollup_live_cursor
                 && hourly_rollup_totals.contains_key(&(bucket, record.row.upstream_account_id))
+            {
+                continue;
+            }
+            // When the account cursor is absent, the bounded live-tail aggregate above owns
+            // every persisted row through the fenced live high-watermark. Do not add the same
+            // retained row again as an exact fallback; the fallback remains necessary only when
+            // no live-tail aggregate was admitted for this generation.
+            if record.is_persisted_live_record
+                && account_live_tail_loaded
+                && record.row.id > account_rollup_live_cursor
             {
                 continue;
             }
@@ -13087,6 +13105,30 @@ async fn publish_summary_all_time_projection_checkpoint(
                 generation_fence.durable_terminal_sequence_watermark,
             );
             account_ids.insert(account_id);
+        }
+        // A complete account manifest also proves that a known account omitted from every
+        // archive has an exact zero all-time response. Publish that bounded zero entry so a
+        // previously unavailable account does not remain stuck after its manifest is repaired.
+        for account_id in next.known_account_ids.clone() {
+            if next.all_time_by_account.contains_key(&Some(account_id)) {
+                continue;
+            }
+            let in_progress = next
+                .in_progress_by_account
+                .get(&Some(account_id))
+                .copied()
+                .unwrap_or_default();
+            let mut response = StatsTotals::default().into_response();
+            response.non_success_cost = Some(0.0);
+            response.maintenance = next.maintenance.clone();
+            response.in_progress_conversation_count = Some(in_progress.in_progress_count);
+            response.in_progress_retry_conversation_count = Some(in_progress.retry_count);
+            response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
+            response.in_progress_phase_counts = Some(in_progress.phase_counts);
+            next.all_time_by_account.insert(Some(account_id), response);
+            next.all_time_account_refreshed_at
+                .insert(account_id, published_at);
+            next.freshness.account_all_time_eligible.insert(account_id);
         }
         next.all_time_account_ids_with_projection_data
             .extend(account_ids.iter().copied());
@@ -36929,7 +36971,7 @@ mod request_compression_query_tests {
         .await;
         assert!(matches!(expired_global, Err(ApiError::Unavailable(_))));
 
-        let account = fetch_summary(
+        let Json(account) = fetch_summary(
             State(state),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
@@ -36938,8 +36980,10 @@ mod request_compression_query_tests {
                 upstream_account_id: Some(42),
             }),
         )
-        .await;
-        assert!(matches!(account, Err(ApiError::Unavailable(_))));
+        .await
+        .expect("independently proven account coverage remains exact");
+        assert_eq!(account.total_count, 3);
+        assert_eq!(account.total_tokens, 91);
     }
 
     #[tokio::test]
