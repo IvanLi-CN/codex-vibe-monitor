@@ -164,6 +164,15 @@ the committed terminal tail that `RollingDelta` can reconstruct without
 re-reading historical archive pages.
 _Avoid_: archive coverage fence, request-time cursor, raw-source replay
 
+**Historical Summary Coverage Recovery Supervisor**:
+The single off-request owner for AllTime checkpoint pages and Legacy Summary
+Snapshot V2 backfill. It prioritizes pages intersecting the current 30-day
+horizon, commits each verified cursor/proof before yielding, and resumes after
+pressure, restart, or a generation fence change. It never calls the generic
+Projection builder for unfinished history; recent exact selections remain
+published while an unproven historical scope is selection-local unavailable.
+_Avoid_: startup full rebuild, request-time archive recovery, partial history
+
 **Legacy Summary Coverage Recovery**:
 The low-priority supervisor that seek-pages completed legacy invocation archives
 into verified Summary Archive Snapshot V2 pages. Its cursor and per-manifest

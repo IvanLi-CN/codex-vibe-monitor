@@ -4,7 +4,7 @@
 
 ## Related ADRs
 
-- [ADR 0010: Prompt Cache In-Flight Phase Index](../../adr/0010-prompt-cache-in-flight-phase-index.md)
+- [ADR 0011: Prompt Cache In-Flight Phase Index](../../adr/0011-prompt-cache-in-flight-phase-index.md)
 
 ## Context and Scope
 

@@ -1036,7 +1036,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
           )
         ORDER BY CASE
             WHEN batches.coverage_end_at IS NOT NULL
-             AND batches.coverage_end_at >= datetime('now', '-30 days') THEN 0
+             AND batches.coverage_end_at >= datetime('now', '-30 days')
+             AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now')) THEN 0
             ELSE 1
         END, batches.id ASC
         LIMIT ?3
@@ -1366,13 +1367,26 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             break;
         }
         result.scanned_archive_batches += 1;
-        let outcome = backfill_summary_archive_snapshot_v2_candidate(
+        let outcome = match backfill_summary_archive_snapshot_v2_candidate(
             pool,
             &candidate,
             started_at,
             max_elapsed,
         )
-        .await?;
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let message = error.to_string().to_ascii_lowercase();
+                if message.contains("busy") || message.contains("locked") {
+                    "deferred:sqlite_busy_or_locked"
+                } else {
+                    // A corrupt or semantically invalid page is scoped to this manifest. Keep
+                    // the cursor moving so an independent candidate can still be recovered.
+                    "unavailable:verification_failed"
+                }
+            }
+        };
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
             if disposition == "deferred" {
                 result.hit_budget = true;
@@ -2991,6 +3005,59 @@ mod tests {
             candidates[0].file_path,
             "/legacy/missing-global-summary-proof.sqlite.gz"
         );
+    }
+
+    #[tokio::test]
+    async fn summary_archive_snapshot_backfill_prioritizes_current_30d_horizon() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        let old_start = format_utc_iso(Utc::now() - ChronoDuration::days(90));
+        let old_end = format_utc_iso(Utc::now() - ChronoDuration::days(89));
+        let recent_start = format_utc_iso(Utc::now() - ChronoDuration::days(2));
+        let recent_end = format_utc_iso(Utc::now() - ChronoDuration::days(1));
+        for (id, path, sha, start, end) in [
+            (
+                1_i64,
+                "/legacy/old-summary.sqlite.gz",
+                "old-summary",
+                old_start,
+                old_end,
+            ),
+            (
+                2_i64,
+                "/legacy/recent-summary.sqlite.gz",
+                "recent-summary",
+                recent_start,
+                recent_end,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_batches \
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+                  coverage_start_at, coverage_end_at) \
+                 VALUES (?1, 'codex_invocations', '2026-08', ?2, ?3, 1, 'completed', 'unknown', ?4, ?5)",
+            )
+            .bind(id)
+            .bind(path)
+            .bind(sha)
+            .bind(start)
+            .bind(end)
+            .execute(&pool)
+            .await
+            .expect("seed Snapshot V2 candidate");
+        }
+
+        let candidates = load_summary_archive_snapshot_backfill_candidates(&pool, 0, 1)
+            .await
+            .expect("load 30d-prioritized candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, 2);
     }
 
     #[tokio::test]

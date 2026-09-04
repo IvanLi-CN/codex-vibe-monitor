@@ -1,4 +1,4 @@
-# ADR 0010: Prompt Cache In-Flight Phase Index
+# ADR 0011: Prompt Cache In-Flight Phase Index
 
 Status: Accepted
 

@@ -45,3 +45,8 @@
 - All-time checkpoint freshness is keyed to scope-local manifest, rollup, replay
   and Snapshot proof versions. Committed terminal tail changes remain a bounded
   overlay and no longer cancel or restart historical raw recovery.
+- Historical Summary recovery now has one bounded Supervisor owner. AllTime
+  checkpoint pages and Legacy Snapshot V2 backfill yield independently, prefer
+  the current 30-day horizon, and commit proof before advancing their cursors;
+  unfinished history no longer re-enters generic Projection hydration or
+  blocks exact recent selections.

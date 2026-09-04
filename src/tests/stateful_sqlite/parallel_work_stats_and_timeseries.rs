@@ -23648,10 +23648,9 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
         .execute(&state.pool)
         .await
         .expect("create all-time summary interleave gate");
-    let interleave = install_summary_projection_test_interleave_for_stages(&[
-        SummaryProjectionTestInterleaveStage::AfterAllTimeArchiveDiscovery,
-        SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
-    ]);
+    let interleave = install_summary_projection_test_interleave_at(
+        SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+    );
     let replacement_path = archive_path.to_string_lossy().to_string();
     let replacement_pool = state.pool.clone();
     let replacement_interleave = interleave.clone();
@@ -23661,13 +23660,8 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
         replacement_interleave.wait_for_writer().await;
         fs::write(&archive_path_for_writer, b"not-a-gzip-archive")
             .expect("make all-time archive unavailable after discovery");
-        replacement_interleave.resume_build();
-        replacement_interleave.wait_for_writer().await;
-        fs::rename(
-            &replacement_archive_path_for_writer,
-            &archive_path_for_writer,
-        )
-        .expect("atomically publish replacement all-time archive");
+        fs::remove_file(&replacement_archive_path_for_writer)
+            .expect("remove unused replacement all-time archive");
         let mut tx = replacement_pool
             .begin()
             .await
@@ -23704,8 +23698,8 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
     hydration.expect("retain the prior all-time aggregate without scanning a replaced archive");
     assert_eq!(
         interleave.build_attempts(),
-        2,
-        "the all-time identity regression must drive both preflight transitions exactly once"
+        1,
+        "the all-time identity regression must fence publication exactly once"
     );
     state.pool.close().await;
 
