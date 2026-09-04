@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.20",
+  "base_stable_version": "2.69.19",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-04T08:56:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.20",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e4c384dfa0c0ab15979cd284a17223d87efa55e9",
+  "pr_number": 903,
+  "pr_title": "fix(ci): keep backend test archive across reruns",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.20",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.20",
+  "target_sha": "472f2d6e07f93ce598b12f935b956748f2f089b6",
+  "type_label": "type:patch"
+}
