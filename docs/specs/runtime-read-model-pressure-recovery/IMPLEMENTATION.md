@@ -28,6 +28,12 @@
   archive SHA and materializes bounded V2 pages. Missing, unreadable or
   mismatched authority is recorded as a finite unavailable outcome and remains
   retryable; a budget boundary leaves the cursor at the last committed page.
+- Snapshot V2 backfill pages use the proof order `(UTC occurred_at, id)` rather
+  than the generic historical-rollup ID pager. The durable outcome stores the
+  cursor version, next timestamp, row ID and retry attempt. Legacy ID-only
+  progress is reset when no complete V2 proof exists; transient source/SQLite
+  failures retain the last verified cursor, while semantic or manifest identity
+  failures are quarantined until the manifest SHA changes.
 - `SummaryCoverageRecoverySupervisor` is now the sole runtime owner for
   unfinished AllTime checkpoint pages and Legacy Snapshot V2 backfill. It
   advances one generation-fenced proof page, gives 30-day-intersecting Snapshot

@@ -140,6 +140,137 @@ async fn legacy_summary_snapshot_backfill_materializes_v2_before_raw_source_loss
 }
 
 #[tokio::test]
+async fn summary_snapshot_v2_backfill_uses_occurred_at_id_order() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("summary-snapshot-v2-time-order").await;
+    let archive_db_path = temp_dir.join("legacy-summary-v2-time-order.sqlite");
+    let archive_path = temp_dir.join("legacy-summary-v2-time-order.sqlite.gz");
+    fs::File::create(&archive_db_path).expect("create legacy Summary archive sqlite");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open legacy Summary archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create legacy Summary archive schema");
+
+    // The first ID is deliberately the newest event. An ID-ordered pager puts it in the first
+    // page ahead of older rows and cannot satisfy the V2 chronological proof across pages.
+    let row_count = 401_i64;
+    let base = parse_shanghai_local_naive("2026-08-01 00:00:00").expect("valid base timestamp");
+    for id in 1..=row_count {
+        let offset = if id == 1 { row_count } else { id - 2 };
+        let occurred_at = format_naive(base + ChronoDuration::seconds(offset));
+        sqlx::query(
+            "INSERT INTO codex_invocations
+             (id, invoke_id, occurred_at, raw_response, created_at, payload)
+             VALUES (?1, ?2, ?3, '{}', ?3, NULL)",
+        )
+        .bind(id)
+        .bind(format!("summary-time-order-{id}"))
+        .bind(&occurred_at)
+        .execute(&archive_pool)
+        .await
+        .expect("insert legacy Summary archive row");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress legacy Summary archive");
+    let archive_sha256 = sha256_hex_file(&archive_path).expect("hash legacy Summary archive");
+    let coverage_start = format_naive(base);
+    let coverage_end = format_naive(base + ChronoDuration::seconds(row_count));
+    sqlx::query(
+        "INSERT INTO archive_batches
+         (id, dataset, month_key, file_path, sha256, row_count, status,
+          summary_source_kind, coverage_start_at, coverage_end_at)
+         VALUES (1, 'codex_invocations', '2026-08', ?1, ?2, ?3, 'completed',
+                 'unknown', ?4, ?5)",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(&archive_sha256)
+    .bind(row_count)
+    .bind(&coverage_start)
+    .bind(&coverage_end)
+    .execute(&pool)
+    .await
+    .expect("seed legacy Summary archive manifest");
+
+    let result = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(5))
+        .await
+        .expect("backfill legacy Summary archive Snapshot V2");
+    assert_eq!(result.materialized_archive_batches, 1);
+    assert!(
+        summary_archive_snapshot_has_proof(&pool, 1, &archive_sha256)
+            .await
+            .expect("validate chronological V2 proof")
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn summary_snapshot_backfill_reactivates_after_manifest_sha_change() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("summary-snapshot-v2-sha-reactivation").await;
+    let archive_path = temp_dir.join("summary-snapshot-v2-sha-reactivation.sqlite.gz");
+    fs::write(&archive_path, b"not-a-sqlite-archive").expect("write invalid archive fixture");
+    let initial_sha = sha256_hex_file(&archive_path).expect("hash archive fixture");
+    let stale_sha = format!("{initial_sha}-stale");
+    sqlx::query(
+        "INSERT INTO archive_batches
+         (id, dataset, month_key, file_path, sha256, row_count, status,
+          summary_source_kind, coverage_start_at, coverage_end_at)
+         VALUES (1, 'codex_invocations', '2026-08', ?1, ?2, 1, 'completed',
+                 'unknown', '2026-08-01 00:00:00', '2026-08-01 01:00:00')",
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(&stale_sha)
+    .execute(&pool)
+    .await
+    .expect("seed stale Summary archive manifest");
+
+    let first = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run stale SHA backfill");
+    assert_eq!(first.unavailable_archive_batches, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome
+             WHERE archive_batch_id = 1 AND manifest_sha256 = ?1",
+        )
+        .bind(&stale_sha)
+        .fetch_one(&pool)
+        .await
+        .expect("load stale SHA outcome"),
+        "manifest_sha_mismatch"
+    );
+
+    sqlx::query("UPDATE archive_batches SET sha256 = ?1 WHERE id = 1")
+        .bind(&initial_sha)
+        .execute(&pool)
+        .await
+        .expect("update manifest SHA");
+    let second = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run reactivated SHA backfill");
+    assert_eq!(second.unavailable_archive_batches, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome
+             WHERE archive_batch_id = 1 AND manifest_sha256 = ?1",
+        )
+        .bind(&initial_sha)
+        .fetch_one(&pool)
+        .await
+        .expect("load reactivated SHA outcome"),
+        "source_open_failed"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("archive-manifest-refresh-dedupe").await;

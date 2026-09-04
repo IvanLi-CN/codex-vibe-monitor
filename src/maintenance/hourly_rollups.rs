@@ -1571,6 +1571,37 @@ pub(crate) fn build_invocation_archive_rows_chunk_query(
     )
 }
 
+/// Summary Snapshot V2 has a chronological proof contract, so its archive pager must use the
+/// same deterministic key as the proof validator. Keep the generic historical-rollup pager
+/// above ID-ordered because its checkpoint schema and replay semantics are independent.
+pub(crate) fn build_invocation_archive_rows_time_chunk_query(
+    archive_columns: &HashSet<String>,
+) -> String {
+    build_invocation_archive_rows_chunk_query(archive_columns).replace(
+        "WHERE id > ?1\n        ORDER BY id ASC\n        LIMIT ?2",
+        "WHERE julianday(occurred_at) IS NOT NULL\n          AND (?1 IS NULL\n               OR julianday(occurred_at) > julianday(?1)\n               OR (julianday(occurred_at) = julianday(?1) AND id > ?2))\n        ORDER BY julianday(occurred_at) ASC, id ASC\n        LIMIT ?3",
+    )
+}
+
+pub(crate) async fn load_invocation_archive_rows_time_chunk(
+    archive_pool: &Pool<Sqlite>,
+    query_sql: &str,
+    cursor_occurred_at: Option<&str>,
+    cursor_id: i64,
+) -> Result<(Vec<InvocationHourlySourceRecord>, bool)> {
+    let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(query_sql)
+        .bind(cursor_occurred_at)
+        .bind(cursor_id.max(0))
+        .bind(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE + 1)
+        .fetch_all(archive_pool)
+        .await?;
+    let has_more = rows.len() > HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE as usize;
+    if has_more {
+        rows.truncate(HISTORICAL_ROLLUP_ARCHIVE_REPLAY_BATCH_SIZE as usize);
+    }
+    Ok((rows, has_more))
+}
+
 pub(crate) async fn load_invocation_archive_rows_chunk(
     archive_pool: &Pool<Sqlite>,
     query_sql: &str,

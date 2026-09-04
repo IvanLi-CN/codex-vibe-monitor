@@ -164,6 +164,14 @@ not advance an uncommitted cursor. A committed page also records its next page
 and source row key, so a later attempt resumes after the last verified page
 instead of reopening the archive from the beginning.
 _Avoid_: full historical rebuild, V1 cleanup proof, skipped archive
+
+Snapshot V2 backfill uses a versioned `(UTC occurred_at, id)` seek cursor. The
+cursor is advanced only with the page whose semantic proof was committed. A
+legacy ID-only cursor without a complete V2 proof is discarded for that
+manifest and replayed chronologically; a verification failure is quarantined
+by manifest SHA while pressure, lock, deadline and source-read failures remain
+bounded retryable outcomes.
+_Avoid_: ID-only page proof, repeated corrupt reads, split page/cursor commit
 **Projection Freshness Renewal**:
 The in-memory extension of an already Exact-Ready Projection only after its
 current Projection Generation Fence still matches durable state. It does not
