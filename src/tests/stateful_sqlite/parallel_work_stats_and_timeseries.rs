@@ -22933,6 +22933,13 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     .execute(&state.pool)
     .await
     .expect("extend the account compact rollup for the next generation");
+    // The first staged recovery pass can exceed the 15-second all-time interest freshness
+    // window under the full stateful profile. Re-register the owner before asking the
+    // maintenance path to observe the later manifest generation.
+    state
+        .subscription_hub
+        .note_summary_http_interest(true)
+        .await;
     refresh_summary_snapshots(state.as_ref())
         .await
         .expect("restart staged checkpoint at the later manifest generation");
