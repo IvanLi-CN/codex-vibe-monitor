@@ -473,6 +473,18 @@ _Avoid_: PR 正文转抄, 流程元数据拼接
 与主线提交绑定的不可变自动发布决策记录，保存版本意图与发布计算所需字段；手工覆盖字段只存在于本次 workflow 的临时快照，不写入该记录。
 _Avoid_: Release 正文, 手工覆盖审计, 公开变更说明
 
+**候选镜像**:
+由一个主线提交按目标架构构建、完成本地 smoke 后写入 GHCR 的不可变 SHA 镜像；它不是版本 tag、`latest`、manifest、Git tag、GitHub Release 或部署来源。
+_Avoid_: 临时发布, 预发布版本, 正式镜像
+
+**正式提升**:
+在同一提交的 CI Main 全部成功后，将其已 smoke 验证的候选镜像创建为正式多架构 manifest，并依次完成 tag 与 GitHub Release 的发布操作。
+_Avoid_: 候选构建, 镜像重建, 提前发布
+
+**Stateful SQLite 测试分片**:
+完整 Stateful SQLite profile 的一个确定性、互不重叠的 nextest 子集；所有分片的并集才构成完整 profile，任一分片失败都会使同一个 required check 失败。
+_Avoid_: 可选测试, 新的 required check, 不完整 profile
+
 **PR 发布评论**:
 附在源 PR 上的版本交付追溯记录；它独立于 GitHub Release 页面。
 _Avoid_: Release 正文, 发布说明

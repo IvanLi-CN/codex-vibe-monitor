@@ -5,6 +5,7 @@
 ## Related ADRs
 
 - [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
+- [ADR 0013: Overlap main CI with candidate image builds](../../adr/0013-overlap-main-ci-with-candidate-image-builds.md)
 
 ## 背景 / 问题陈述
 
