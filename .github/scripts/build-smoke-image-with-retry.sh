@@ -5,6 +5,7 @@ build_platform="${BUILD_PLATFORM:-}"
 smoke_tag="${SMOKE_TAG:-}"
 candidate_tag="${CANDIDATE_TAG:-}"
 app_effective_version="${APP_EFFECTIVE_VERSION:-}"
+app_git_revision="${APP_GIT_REVISION:-}"
 cache_ref="${CACHE_REF:-}"
 build_context="${BUILD_CONTEXT:-.}"
 dockerfile_path="${DOCKERFILE_PATH:-./Dockerfile}"
@@ -44,6 +45,10 @@ is_transient_failure() {
 
 for attempt in $(seq 1 "${retry_attempts}"); do
   err_file="$(mktemp)"
+  build_args=("--build-arg" "APP_EFFECTIVE_VERSION=${app_effective_version}")
+  if [[ -n "${app_git_revision}" ]]; then
+    build_args+=("--build-arg" "APP_GIT_REVISION=${app_git_revision}")
+  fi
 
   if docker buildx build \
     --progress plain \
@@ -53,7 +58,7 @@ for attempt in $(seq 1 "${retry_attempts}"); do
     --load \
     --tag "${smoke_tag}" \
     --tag "${candidate_tag}" \
-    --build-arg "APP_EFFECTIVE_VERSION=${app_effective_version}" \
+    "${build_args[@]}" \
     --cache-from "type=registry,ref=${cache_ref}" \
     --cache-to "type=registry,ref=${cache_ref},mode=max" \
     "${build_context}" 2>"${err_file}"; then
