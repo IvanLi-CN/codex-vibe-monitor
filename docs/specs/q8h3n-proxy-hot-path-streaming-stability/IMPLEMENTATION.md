@@ -22,11 +22,11 @@
 - Note: capture 入口的 request body 读取改为 replay snapshot 控制面；大 body 先落 file-backed replay snapshot，再进入现有完整 parse/rewrite/owner-binding 路径。超限错误只保留有界 partial body，避免 raw failure 证据回退且不重新制造整包内存副本。
 - Note: file-backed capture snapshot 在进入现有 parse/rewrite 语义时只做一次 consume materialization；本轮没有把 capture pipeline 改成零拷贝 shared snapshot，因为这会牵涉 raw、failover、rewrite 与 terminal record 的共同数据模型。
 - Note: file-backed pool routing 的 sticky key、prompt-cache key、model、encrypted、image 与 compaction 投影统一由一次 snapshot read / JSON parse 得出；解析后的完整 JSON 会立即释放，route/retry 分支只保留紧凑投影。sticky 投影字段的类型错误或重复字段继续降级为无 sticky 路由。慢日志带有 `file_read_count`、`json_parse_count`、`parse_outcome` 与 `analysis_elapsed_ms`，用于识别回归。
-- Note: 本轮没有强开 capture live-first；对仍需完整 request 语义的 capture 请求输出 `live_first_reason=capture_requires_full_request_semantics`，并新增 `body_size_bucket`、`request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 证据，供 101 判断剩余慢点。
+- Note: capture 请求统一等待完整 request 语义，并输出 `request_body_route_reason=complete_semantics_required`；同时保留 `body_size_bucket`、`request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 证据，供 101 判断剩余慢点。
 - Note: pool failover replay snapshot 构造已收口到统一 helper：`Bytes` / `Vec<u8>` 小于等于 `POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES` 时保留 memory，大于阈值时写入 `cvm-pool-replay-*` 临时文件并返回 file snapshot；临时文件失败只 fail-soft 回退 memory 并输出 warning。
 - Note: direct-image 路径使用独立首字节预算；超时后立即以 `504 upstream_handshake_timeout` 收口并释放 reservation，不进入 replay retry 或切号。
 - Note: capture pool outbound 与 route-selection prebuffer fallback 不再直接为大 body 构造 `PoolReplayBodySnapshot::Memory(...)`；rewrite required 但 no-op 的分支保留原 file snapshot，真实 rewrite 后按同一阈值重新选择 memory/file。
-- Note: `body_read_done/live_first_reason/request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 改为阈值化生产可见：大 body 或慢 body read、慢下游首字节、慢/大 raw response 在 `info` 输出，普通小请求继续保留 `debug`。
+- Note: `body_read_done/request_body_route_reason/request_body_snapshot_kind`、`downstream_first_byte_elapsed`、`raw_response_write_elapsed` 改为阈值化生产可见：大 body 或慢 body read、慢下游首字节、慢/大 raw response 在 `info` 输出，普通小请求继续保留 `debug`。
 - Note: `/v1/responses` 流式解析器将完整、严格合法的 `response.completed` 视为协议成功终态；仍继续读取上游至 EOF 并收集 raw。终态后的上游读取异常、超时和已送达终态后的普通 body release 只写 payload 中性诊断，不覆盖成功、failure class、号池 attempt 或路由健康；终态前断连仍按 client abort 落盘。
 - Note: 下游 body 的 watch 状态以独立的成功完成值保留已送达的协议终态，不能被随后 body EOF 覆盖；严格解析同时要求 SSE `event` 与 payload `type` 都是 `response.completed`。终态 chunk 被该 response body stream 成功取出即建立送达，普通 body release 不可反转这一状态。transport observer 继续记录实际 socket write error，但不会把共享 TCP 连接的写入归属到 HTTP/2 的特定 response；在成功终态之后观察到的错误只写 payload 中性诊断。终态前 body drop 仍按 `downstream_closed` 记录。
 

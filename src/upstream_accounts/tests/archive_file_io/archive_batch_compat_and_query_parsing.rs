@@ -1268,51 +1268,6 @@ async fn list_forward_proxy_binding_nodes_without_group_name_ignores_forward_pro
     assert_eq!(hourly_after, 1);
 }
 
-#[tokio::test]
-async fn live_first_proxy_binding_key_snapshot_canonicalizes_endpoint_storage_key() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    crate::ensure_schema(&state.pool)
-        .await
-        .expect("ensure full schema for forward proxy settings");
-
-    let settings = ForwardProxySettings {
-        proxy_urls: vec!["http://127.0.0.1:17890#JP Edge 01".to_string()],
-        subscription_urls: Vec::new(),
-        subscription_update_interval_secs: 3600,
-        insert_direct: false,
-    };
-    save_forward_proxy_settings(&state.pool, settings.clone())
-        .await
-        .expect("persist forward proxy settings");
-
-    let (selected_proxy, binding_key) = {
-        let mut manager = state.forward_proxy.lock().await;
-        manager.apply_settings(settings);
-        let endpoint = manager
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.key != FORWARD_PROXY_DIRECT_KEY)
-            .cloned()
-            .expect("manual forward proxy endpoint");
-        let binding_key = manager
-            .binding_nodes()
-            .into_iter()
-            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
-            .map(|node| node.key)
-            .expect("manual binding key");
-        let selected_proxy = SelectedForwardProxy::from_endpoint(&endpoint);
-        assert_ne!(
-            selected_proxy.key, binding_key,
-            "regression test requires the runtime endpoint storage key to differ from the canonical binding key"
-        );
-        (selected_proxy, binding_key)
-    };
-
-    let snapshot =
-        live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
-    assert_eq!(snapshot.as_deref(), Some(binding_key.as_str()));
-}
-
 #[test]
 fn explicit_split_filters_override_legacy_status_mapping() {
     let enable_filters = collect_normalized_upstream_account_filters(
@@ -4230,7 +4185,6 @@ pub(crate) async fn test_app_state_with_config_and_parallelism(
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
-        #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),

@@ -856,7 +856,7 @@ pub(crate) async fn prepare_single_upstream_websocket_attempt(
     }
 
     let proxy_binding_key_snapshot =
-        live_first_proxy_binding_key_snapshot(state.as_ref(), Some(&selected_proxy)).await;
+        canonical_pool_attempt_proxy_binding_key(state.as_ref(), selected_proxy.key.as_str()).await;
     let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
     let mut attempt_trace = trace.clone();
     attempt_trace.upstream_base_url_host = account

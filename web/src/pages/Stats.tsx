@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../components/ui/alert";
 import { SelectField } from "../components/ui/select-field";
 import { ErrorReasonPieChart } from "../features/stats/ErrorReasonPieChart";
-import { LiveRequestStreamingPerfPanel } from "../features/stats/LiveRequestStreamingPerfPanel";
 import { LongTermStatsSection } from "../features/stats/LongTermStatsSection";
 import { ParallelWorkStatsSection } from "../features/stats/ParallelWorkStatsSection";
 import { StatsCards } from "../features/stats/StatsCards";
@@ -10,7 +9,6 @@ import { SuccessFailureChart } from "../features/stats/SuccessFailureChart";
 import { TimeseriesChart } from "../features/stats/TimeseriesChart";
 import { useErrorDistribution } from "../hooks/useErrorDistribution";
 import { useFailureSummary } from "../hooks/useFailureSummary";
-import { useLiveRequestStreamingPerf } from "../hooks/useLiveRequestStreamingPerf";
 import { useParallelWorkStats } from "../hooks/useParallelWorkStats";
 import { useSummary } from "../hooks/useStats";
 import { useTimeseries } from "../hooks/useTimeseries";
@@ -86,12 +84,6 @@ export default function StatsPage() {
     isLoading: parallelWorkLoading,
     error: parallelWorkError,
   } = useParallelWorkStats({ range, bucket: effectiveBucket });
-  const {
-    data: liveRequestStreamingPerf,
-    evaluation: liveRequestStreamingEvaluation,
-    isLoading: liveRequestStreamingPerfLoading,
-    error: liveRequestStreamingPerfError,
-  } = useLiveRequestStreamingPerf(range);
 
   const scopeOptions = useMemo(
     () =>
@@ -176,13 +168,6 @@ export default function StatsPage() {
         stats={parallelWorkStats}
         isLoading={parallelWorkLoading}
         error={parallelWorkError}
-      />
-
-      <LiveRequestStreamingPerfPanel
-        data={liveRequestStreamingPerf}
-        evaluation={liveRequestStreamingEvaluation}
-        isLoading={liveRequestStreamingPerfLoading}
-        error={liveRequestStreamingPerfError}
       />
 
       <section className="surface-panel">

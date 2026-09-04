@@ -469,7 +469,6 @@ export interface UpdatePoolRoutingSettingsPayload {
   availableModelsMode?: AvailableModelsMode;
   timeouts?: Partial<PoolRoutingTimeoutSettings>;
   cacheHitProtection?: Partial<CacheHitProtectionSettings>;
-  liveRequestStreaming?: Partial<LiveRequestStreamingSettings>;
   priorityHandoffAdmissionEnabled?: boolean;
 }
 
@@ -485,7 +484,6 @@ export interface PoolRoutingSettings {
   availableModelsMode?: AvailableModelsMode;
   timeouts?: PoolRoutingTimeoutSettings;
   cacheHitProtection?: CacheHitProtectionSettings;
-  liveRequestStreaming?: LiveRequestStreamingSettings;
   priorityHandoffAdmissionEnabled?: boolean;
 }
 
@@ -496,11 +494,6 @@ export interface CacheHitProtectionSettings {
   lowHitRateThresholdPercent: number;
   overflowMode: CacheHitOverflowMode;
   minimumInputTokens: number;
-}
-
-export interface LiveRequestStreamingSettings {
-  enabled: boolean;
-  treatmentPercent: number;
 }
 
 export interface PoolRoutingMaintenanceSettings {

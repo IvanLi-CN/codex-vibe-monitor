@@ -333,7 +333,7 @@ pub(crate) async fn proxy_openai_v1_inner(
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
         let tracked_invoke_id = invoke_id.clone();
-        return Box::pin(proxy_openai_v1_capture_target(
+        return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
             invoke_id,
@@ -349,7 +349,7 @@ pub(crate) async fn proxy_openai_v1_inner(
             admitted_runtime_snapshot,
             downstream_request_observer,
             proxy_request_started_at,
-        ))
+        )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
             retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
@@ -445,8 +445,6 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     terminal_error: Option<&PoolUpstreamError>,
     terminal_request_compression_algorithm: Option<&str>,
     response_envelope_override: Option<ProxyErrorResponseEnvelope>,
-    live_request_streaming_decision: Option<&LiveRequestStreamingDecision>,
-    live_request_streaming_measurement: Option<&LiveRequestStreamingMeasurement>,
 ) -> bool {
     let response_envelope = response_envelope_override
         .unwrap_or_else(|| build_local_capture_error_envelope(invoke_id, status, error_message));
@@ -493,201 +491,92 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
         },
         error_message: Some(format!("[{failure_kind}] {error_message}")),
         failure_kind: Some(failure_kind.to_string()),
-        payload: Some(
-            if let (Some(decision), Some(measurement)) = (
-                live_request_streaming_decision,
-                live_request_streaming_measurement,
-            ) {
-                with_live_request_streaming_payload_summary(
-                    build_proxy_payload_summary(ProxyPayloadSummary {
-                        target: capture_target,
-                        status,
-                        is_stream: request_info.is_stream,
-                        request_contains_encrypted_content: request_info.contains_encrypted_content,
-                        response_contains_encrypted_content: false,
-                        compaction_request_kind: request_info.compaction_request_kind,
-                        compaction_response_kind: None,
-                        image_intent: request_info.image_intent.as_deref(),
-                        request_model: request_info.model.as_deref(),
-                        requested_service_tier: request_info.requested_service_tier.as_deref(),
-                        billing_service_tier: None,
-                        reasoning_effort: request_info.reasoning_effort.as_deref(),
-                        response_model: None,
-                        usage_missing_reason: None,
-                        request_parse_error: request_info.parse_error.as_deref(),
-                        request_compression_algorithm: terminal_request_compression_algorithm,
-                        request_compression_mode: None,
-                        request_compression_logical_body_bytes: None,
-                        request_compression_transmitted_body_bytes: None,
-                        request_compression_transmission_complete: None,
-                        failure_kind: Some(failure_kind),
-                        requester_ip,
-                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                        upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-                        route_mode: INVOCATION_ROUTE_MODE_POOL,
-                        sticky_key,
-                        prompt_cache_key,
-                        prompt_cache_key_attribution_source: request_info
-                            .prompt_cache_key_attribution_source
-                            .as_deref(),
-                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                        client_header_fingerprints: Some(
-                            &client_attribution_context.header_fingerprints,
-                        )
-                        .filter(|fingerprints| !fingerprints.is_empty()),
-                        upstream_account_id: terminal_account.map(|account| account.account_id),
-                        upstream_account_name: terminal_account
-                            .map(|account| account.display_name.as_str()),
-                        upstream_account_kind: terminal_account
-                            .map(|account| account.kind.as_str()),
-                        upstream_base_url_host: terminal_account
-                            .and_then(|account| account.upstream_base_url.host_str()),
-                        oauth_account_header_attached: None,
-                        oauth_account_id_shape: None,
-                        oauth_forwarded_header_count: None,
-                        oauth_forwarded_header_names: None,
-                        oauth_fingerprint_version: None,
-                        oauth_forwarded_header_fingerprints: None,
-                        oauth_prompt_cache_header_forwarded: None,
-                        oauth_request_body_prefix_fingerprint: None,
-                        oauth_request_body_prefix_bytes: None,
-                        oauth_request_body_snapshot_kind: None,
-                        oauth_responses_body_mode: None,
-                        oauth_responses_rewrite: None,
-                        service_tier: None,
-                        stream_terminal_event: None,
-                        upstream_error_code: terminal_error
-                            .and_then(|error| error.upstream_error_code.as_deref()),
-                        upstream_error_message: terminal_error
-                            .and_then(|error| error.upstream_error_message.as_deref()),
-                        downstream_status_code: Some(status),
-                        downstream_error_message: Some(error_message),
-                        upstream_request_id: terminal_error
-                            .and_then(|error| error.upstream_request_id.as_deref()),
-                        response_content_encoding: None,
-                        stream_failure_origin: None,
-                        upstream_read_error_kind: None,
-                        content_encoding_chain: None,
-                        forwarded_chunk_count: None,
-                        forwarded_bytes: None,
-                        usage_observed: None,
-                        downstream_close_phase: None,
-                        downstream_write_error_kind: None,
-                        last_upstream_chunk_gap_ms: None,
-                        upstream_approx_upload_bytes: None,
-                        upstream_approx_download_bytes: None,
-                        proxy_display_name: None,
-                        proxy_weight_delta: None,
-                        pool_attempt_count: terminal_attempt_summary
-                            .map(|summary| summary.pool_attempt_count),
-                        pool_distinct_account_count: terminal_attempt_summary
-                            .map(|summary| summary.pool_distinct_account_count),
-                        pool_attempt_terminal_reason: terminal_attempt_summary
-                            .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
-                            .or(Some(failure_kind)),
-                        blocked_binding: terminal_error
-                            .and_then(|error| error.blocked_binding.as_ref()),
-                    }),
-                    decision,
-                    measurement,
-                )
-            } else {
-                build_proxy_payload_summary(ProxyPayloadSummary {
-                    target: capture_target,
-                    status,
-                    is_stream: request_info.is_stream,
-                    request_contains_encrypted_content: request_info.contains_encrypted_content,
-                    response_contains_encrypted_content: false,
-                    compaction_request_kind: request_info.compaction_request_kind,
-                    compaction_response_kind: None,
-                    image_intent: request_info.image_intent.as_deref(),
-                    request_model: request_info.model.as_deref(),
-                    requested_service_tier: request_info.requested_service_tier.as_deref(),
-                    billing_service_tier: None,
-                    reasoning_effort: request_info.reasoning_effort.as_deref(),
-                    response_model: None,
-                    usage_missing_reason: None,
-                    request_parse_error: request_info.parse_error.as_deref(),
-                    request_compression_algorithm: terminal_request_compression_algorithm,
-                    request_compression_mode: None,
-                    request_compression_logical_body_bytes: None,
-                    request_compression_transmitted_body_bytes: None,
-                    request_compression_transmission_complete: None,
-                    failure_kind: Some(failure_kind),
-                    requester_ip,
-                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                    upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
-                    route_mode: INVOCATION_ROUTE_MODE_POOL,
-                    sticky_key,
-                    prompt_cache_key,
-                    prompt_cache_key_attribution_source: request_info
-                        .prompt_cache_key_attribution_source
-                        .as_deref(),
-                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                    client_header_fingerprints: Some(
-                        &client_attribution_context.header_fingerprints,
-                    )
-                    .filter(|fingerprints| !fingerprints.is_empty()),
-                    upstream_account_id: terminal_account.map(|account| account.account_id),
-                    upstream_account_name: terminal_account
-                        .map(|account| account.display_name.as_str()),
-                    upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
-                    upstream_base_url_host: terminal_account
-                        .and_then(|account| account.upstream_base_url.host_str()),
-                    oauth_account_header_attached: None,
-                    oauth_account_id_shape: None,
-                    oauth_forwarded_header_count: None,
-                    oauth_forwarded_header_names: None,
-                    oauth_fingerprint_version: None,
-                    oauth_forwarded_header_fingerprints: None,
-                    oauth_prompt_cache_header_forwarded: None,
-                    oauth_request_body_prefix_fingerprint: None,
-                    oauth_request_body_prefix_bytes: None,
-                    oauth_request_body_snapshot_kind: None,
-                    oauth_responses_body_mode: None,
-                    oauth_responses_rewrite: None,
-                    service_tier: None,
-                    stream_terminal_event: None,
-                    upstream_error_code: terminal_error
-                        .and_then(|error| error.upstream_error_code.as_deref()),
-                    upstream_error_message: terminal_error
-                        .and_then(|error| error.upstream_error_message.as_deref()),
-                    downstream_status_code: Some(status),
-                    downstream_error_message: Some(error_message),
-                    upstream_request_id: terminal_error
-                        .and_then(|error| error.upstream_request_id.as_deref()),
-                    response_content_encoding: None,
-                    stream_failure_origin: None,
-                    upstream_read_error_kind: None,
-                    content_encoding_chain: None,
-                    forwarded_chunk_count: None,
-                    forwarded_bytes: None,
-                    usage_observed: None,
-                    downstream_close_phase: None,
-                    downstream_write_error_kind: None,
-                    last_upstream_chunk_gap_ms: None,
-                    upstream_approx_upload_bytes: None,
-                    upstream_approx_download_bytes: None,
-                    proxy_display_name: None,
-                    proxy_weight_delta: None,
-                    pool_attempt_count: terminal_attempt_summary
-                        .map(|summary| summary.pool_attempt_count),
-                    pool_distinct_account_count: terminal_attempt_summary
-                        .map(|summary| summary.pool_distinct_account_count),
-                    pool_attempt_terminal_reason: terminal_attempt_summary
-                        .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
-                        .or(Some(failure_kind)),
-                    blocked_binding: terminal_error
-                        .and_then(|error| error.blocked_binding.as_ref()),
-                })
-            },
-        ),
+        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+            target: capture_target,
+            status,
+            is_stream: request_info.is_stream,
+            request_contains_encrypted_content: request_info.contains_encrypted_content,
+            response_contains_encrypted_content: false,
+            compaction_request_kind: request_info.compaction_request_kind,
+            compaction_response_kind: None,
+            image_intent: request_info.image_intent.as_deref(),
+            request_model: request_info.model.as_deref(),
+            requested_service_tier: request_info.requested_service_tier.as_deref(),
+            billing_service_tier: None,
+            reasoning_effort: request_info.reasoning_effort.as_deref(),
+            response_model: None,
+            usage_missing_reason: None,
+            request_parse_error: request_info.parse_error.as_deref(),
+            request_compression_algorithm: terminal_request_compression_algorithm,
+            request_compression_mode: None,
+            request_compression_logical_body_bytes: None,
+            request_compression_transmitted_body_bytes: None,
+            request_compression_transmission_complete: None,
+            failure_kind: Some(failure_kind),
+            requester_ip,
+            request_user_agent: request_chain_metadata.user_agent.as_deref(),
+            request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+            request_forwarded: request_chain_metadata.forwarded.as_deref(),
+            request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+            upstream_scope: INVOCATION_UPSTREAM_SCOPE_INTERNAL,
+            route_mode: INVOCATION_ROUTE_MODE_POOL,
+            sticky_key,
+            prompt_cache_key,
+            prompt_cache_key_attribution_source: request_info
+                .prompt_cache_key_attribution_source
+                .as_deref(),
+            client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+            client_header_fingerprints: Some(&client_attribution_context.header_fingerprints)
+                .filter(|fingerprints| !fingerprints.is_empty()),
+            upstream_account_id: terminal_account.map(|account| account.account_id),
+            upstream_account_name: terminal_account.map(|account| account.display_name.as_str()),
+            upstream_account_kind: terminal_account.map(|account| account.kind.as_str()),
+            upstream_base_url_host: terminal_account
+                .and_then(|account| account.upstream_base_url.host_str()),
+            oauth_account_header_attached: None,
+            oauth_account_id_shape: None,
+            oauth_forwarded_header_count: None,
+            oauth_forwarded_header_names: None,
+            oauth_fingerprint_version: None,
+            oauth_forwarded_header_fingerprints: None,
+            oauth_prompt_cache_header_forwarded: None,
+            oauth_request_body_prefix_fingerprint: None,
+            oauth_request_body_prefix_bytes: None,
+            oauth_request_body_snapshot_kind: None,
+            oauth_responses_body_mode: None,
+            oauth_responses_rewrite: None,
+            service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: terminal_error
+                .and_then(|error| error.upstream_error_code.as_deref()),
+            upstream_error_message: terminal_error
+                .and_then(|error| error.upstream_error_message.as_deref()),
+            downstream_status_code: Some(status),
+            downstream_error_message: Some(error_message),
+            upstream_request_id: terminal_error
+                .and_then(|error| error.upstream_request_id.as_deref()),
+            response_content_encoding: None,
+            stream_failure_origin: None,
+            upstream_read_error_kind: None,
+            content_encoding_chain: None,
+            forwarded_chunk_count: None,
+            forwarded_bytes: None,
+            usage_observed: None,
+            downstream_close_phase: None,
+            downstream_write_error_kind: None,
+            last_upstream_chunk_gap_ms: None,
+            upstream_approx_upload_bytes: None,
+            upstream_approx_download_bytes: None,
+            proxy_display_name: None,
+            proxy_weight_delta: None,
+            pool_attempt_count: terminal_attempt_summary.map(|summary| summary.pool_attempt_count),
+            pool_distinct_account_count: terminal_attempt_summary
+                .map(|summary| summary.pool_distinct_account_count),
+            pool_attempt_terminal_reason: terminal_attempt_summary
+                .and_then(|summary| summary.pool_attempt_terminal_reason.as_deref())
+                .or(Some(failure_kind)),
+            blocked_binding: terminal_error.and_then(|error| error.blocked_binding.as_ref()),
+        })),
         raw_response: response_envelope.body_text.clone(),
         response_body_preview_enabled: true,
         req_raw,
@@ -722,726 +611,6 @@ pub(crate) async fn persist_pre_attempt_proxy_capture_error(
     } else {
         true
     }
-}
-
-struct PreparedCaptureRequestBody {
-    request_body_snapshot_result: Result<PoolReplayBodySnapshot, RequestBodyReadError>,
-    live_first_pool_response: Option<PoolUpstreamResponse>,
-    prepared_live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
-    live_first_attempt_failed: bool,
-    live_first_request_body_first_byte_at: Option<Instant>,
-    live_oauth_rewrite_rx:
-        Option<watch::Receiver<Option<oauth_bridge::OauthResponsesRewriteSummary>>>,
-    live_first_experiment_group: Option<String>,
-    live_route_finalization_measurement: Option<LiveRequestStreamingMeasurement>,
-}
-
-async fn wait_for_live_request_body_finalization(finalization_rx: &mut watch::Receiver<bool>) {
-    if *finalization_rx.borrow() {
-        return;
-    }
-    let _ = finalization_rx.changed().await;
-}
-
-async fn reject_live_first_provisional_response_after_body_failure(
-    state: &AppState,
-    response: &mut PoolUpstreamResponse,
-    request_body_error: &RequestBodyReadError,
-) {
-    let upstream_status = response.response.status();
-    let upstream_request_id = response
-        .response
-        .headers()
-        .get("x-request-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    finalize_tracked_pool_attempt(
-        state,
-        response.pending_attempt_record.as_ref(),
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        Some(upstream_status),
-        Some(request_body_error.status),
-        Some(request_body_error.failure_kind),
-        None,
-        Some(request_body_error.message.as_str()),
-        Some(response.connect_latency_ms),
-        Some(response.first_byte_latency_ms),
-        None,
-        upstream_request_id,
-        "live-first request body failed after provisional response",
-    )
-    .await;
-    complete_deferred_pool_early_phase_cleanup_guard(
-        &mut response.deferred_early_phase_cleanup_guard,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn prepare_capture_request_body(
-    state: Arc<AppState>,
-    proxy_request_id: u64,
-    invoke_id: &str,
-    occurred_at: &str,
-    original_uri: &Uri,
-    headers: &HeaderMap,
-    body: Body,
-    capture_target: ProxyCaptureTarget,
-    body_limit: usize,
-    runtime_timeouts: &PoolRoutingTimeoutSettingsResolved,
-    requester_ip: Option<&str>,
-    header_sticky_key: Option<&str>,
-    header_prompt_cache_key: Option<&str>,
-    req_read_started: Instant,
-) -> PreparedCaptureRequestBody {
-    let live_eligible = capture_target == ProxyCaptureTarget::Responses;
-
-    if !live_eligible {
-        return PreparedCaptureRequestBody {
-            request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await,
-            live_first_pool_response: None,
-            prepared_live_request_streaming_decision: None,
-            live_first_attempt_failed: false,
-            live_first_request_body_first_byte_at: None,
-            live_oauth_rewrite_rx: None,
-            live_first_experiment_group: None,
-            live_route_finalization_measurement: None,
-        };
-    }
-
-    let live_routing_snapshot = load_pool_routing_runtime_cache_with_status(state.as_ref())
-        .await
-        .ok();
-    let live_routing_hot_cache_hit = live_routing_snapshot.as_ref().map(|(_, hit)| *hit);
-    let live_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
-    let live_settings = live_routing_snapshot
-        .as_ref()
-        .map(|(snapshot, _)| snapshot.live_request_streaming.clone());
-    let Some(live_settings) = live_settings.filter(|settings| settings.enabled) else {
-        return PreparedCaptureRequestBody {
-            request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await,
-            live_first_pool_response: None,
-            prepared_live_request_streaming_decision: None,
-            live_first_attempt_failed: false,
-            live_first_request_body_first_byte_at: None,
-            live_oauth_rewrite_rx: None,
-            live_first_experiment_group: None,
-            live_route_finalization_measurement: None,
-        };
-    };
-
-    // Cohort assignment is independent of request contents. Decide it before
-    // attaching the new parser so the buffered control remains the existing
-    // request path; only treatment pays for route-finalization analysis.
-    let sampled_live_decision =
-        decide_live_request_streaming(&live_settings, invoke_id, capture_target, true, true);
-    if sampled_live_decision.variant != Some(LiveRequestStreamingExperimentVariant::Treatment) {
-        return PreparedCaptureRequestBody {
-            request_body_snapshot_result: read_request_body_snapshot_with_partial_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await,
-            live_first_pool_response: None,
-            prepared_live_request_streaming_decision: Some(sampled_live_decision),
-            live_first_attempt_failed: false,
-            live_first_request_body_first_byte_at: None,
-            live_oauth_rewrite_rx: None,
-            live_first_experiment_group: None,
-            live_route_finalization_measurement: None,
-        };
-    }
-
-    let encrypted_owner_routing_enabled = state
-        .proxy_model_settings
-        .read()
-        .await
-        .encrypted_session_owner_routing_enabled;
-    let codex_imagegen_request = codex_imagegen_protocol_from_headers(headers).is_some();
-    let live_route_commit_policy = live_routing_snapshot
-        .as_ref()
-        .map(|(snapshot, _)| {
-            let dependencies = snapshot.live_request_route_dependencies;
-            if dependencies
-                .requires_full_body_commit(encrypted_owner_routing_enabled, codex_imagegen_request)
-            {
-                LiveRouteCommitPolicy::FullBody
-            } else {
-                LiveRouteCommitPolicy::ModelAndBindings {
-                    sticky_routes_present: dependencies.sticky_routes_present,
-                    prompt_cache_routes_present: dependencies.prompt_cache_routes_present,
-                }
-            }
-        })
-        .unwrap_or(LiveRouteCommitPolicy::FullBody);
-
-    let replayable_body = spawn_pool_replayable_request_body(
-        body,
-        body_limit,
-        runtime_timeouts.request_read_timeout,
-        proxy_request_id,
-    );
-    let downstream_content_encoding = headers
-        .get(header::CONTENT_ENCODING)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string);
-    let mut live_pipeline = Some(
-        spawn_live_responses_request_body_pipeline_with_route_commit_policy(
-            replayable_body.body,
-            downstream_content_encoding.clone(),
-            live_route_commit_policy,
-        ),
-    );
-    let live_request_body_error_rx = live_pipeline
-        .as_ref()
-        .expect("live pipeline is present before the first attempt")
-        .request_body_error_rx
-        .clone();
-    let mut live_request_body_finalization_rx = live_pipeline
-        .as_ref()
-        .expect("live pipeline is present before the first attempt")
-        .finalization_rx
-        .clone();
-    let live_oauth_rewrite_rx = live_pipeline
-        .as_ref()
-        .expect("live pipeline is present before routing")
-        .oauth_rewrite_rx
-        .clone();
-    let replay_status_rx = replayable_body.status_rx.clone();
-    let replay_cancel = replayable_body.cancel.clone();
-    let live_body_key_probe = wait_for_replay_body_sticky_key_probe(
-        &live_pipeline
-            .as_ref()
-            .expect("live pipeline is present before routing")
-            .routing_probe_rx,
-        runtime_timeouts.request_read_timeout,
-    )
-    .await;
-    let live_resolved_content_encoding = live_pipeline
-        .as_ref()
-        .and_then(|pipeline| *pipeline.resolved_request_content_encoding_rx.borrow());
-    let live_route_finalization_ms = elapsed_ms(req_read_started);
-    let response_timeout =
-        pool_upstream_responses_total_timeout(&state.config, original_uri, &Method::POST);
-    let live_body_sticky_key = live_body_key_probe
-        .sticky_key
-        .clone()
-        .or_else(|| header_sticky_key.map(str::to_string));
-    let live_prompt_cache_key = live_body_key_probe
-        .prompt_cache_key
-        .clone()
-        .or_else(|| header_prompt_cache_key.map(str::to_string));
-    let live_candidate = live_body_key_probe.model.is_some();
-    let mut live_first_pool_response = None;
-    let mut prepared_live_request_streaming_decision = None;
-    let mut live_first_attempt_failed = false;
-    let mut live_first_request_body_first_byte_at = None;
-    let mut live_first_experiment_group = None;
-    let mut live_route_lookup_cache_hit = live_routing_hot_cache_hit;
-
-    if live_body_key_probe.root_object_complete
-        || !live_route_probe_can_start_before_eof(&live_body_key_probe)
-    {
-        // An EOF-complete probe has no overlap left to provide. Keep it on the
-        // established replay path so buffered requests retain the existing
-        // failover and retry semantics. A future pre-EOF probe may still take
-        // the live-first branch when its route is proven safe.
-        prepared_live_request_streaming_decision = Some(LiveRequestStreamingDecision {
-            transport_mode: RequestBodyTransportMode::Buffered,
-            eligible: false,
-            reason: "route_finalized_at_eof",
-            ..decide_live_request_streaming(&live_settings, invoke_id, capture_target, true, true)
-        });
-        drop(live_pipeline.take());
-    } else if live_candidate {
-        let mut no_available_wait_deadline = None;
-        let resolution = match load_via_pool_effective_routing_with_cache(
-            state.as_ref(),
-            live_prompt_cache_key.as_deref(),
-            live_body_key_probe.contains_encrypted_content,
-        )
-        .await
-        {
-            Ok((
-                prompt_cache_binding_constraint,
-                _owner_auto_guard_active,
-                conversation_override,
-                cache_hit,
-            )) => {
-                live_route_lookup_cache_hit = Some(cache_hit);
-                if prompt_cache_binding_constraint.is_some() || conversation_override.is_some() {
-                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-                        state.as_ref(),
-                        live_body_sticky_key.as_deref(),
-                        live_body_key_probe.model.as_deref(),
-                        &[],
-                        &HashSet::new(),
-                        None,
-                        prompt_cache_binding_constraint.as_ref(),
-                        conversation_override.as_ref(),
-                        true,
-                        &mut no_available_wait_deadline,
-                        None,
-                        capture_target.endpoint(),
-                        live_body_key_probe.image_intent,
-                        codex_imagegen_request,
-                        Some(live_routing_reservation_key.as_str()),
-                    )
-                    .await
-                } else {
-                    resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
-                        state.as_ref(),
-                        live_body_sticky_key.as_deref(),
-                        live_body_key_probe.model.as_deref(),
-                        &[],
-                        &HashSet::new(),
-                        None,
-                        None,
-                        None,
-                        true,
-                        &mut no_available_wait_deadline,
-                        None,
-                        capture_target.endpoint(),
-                        live_body_key_probe.image_intent,
-                        codex_imagegen_request,
-                        Some(live_routing_reservation_key.as_str()),
-                    )
-                    .await
-                }
-            }
-            Err((status, message)) => {
-                warn!(
-                    proxy_request_id,
-                    ?status,
-                    %message,
-                    "live-first routing metadata could not be resolved; replaying buffered request"
-                );
-                drop(live_pipeline.take());
-                prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
-                    &live_settings,
-                    invoke_id,
-                    capture_target,
-                    false,
-                    false,
-                ));
-                Err(anyhow::anyhow!(message))
-            }
-        };
-        if let Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
-            initial_account,
-        ))) = resolution
-        {
-            live_first_experiment_group = initial_account.group_name.clone();
-            let mut live_route_reservation_guard = Some(PoolRoutingReservationDropGuard::new(
-                state.clone(),
-                live_routing_reservation_key.clone(),
-            ));
-            let decision = decide_live_request_streaming(
-                &live_settings,
-                invoke_id,
-                capture_target,
-                true,
-                pool_account_supports_live_request_body(
-                    &initial_account,
-                    original_uri,
-                    &Method::POST,
-                    headers,
-                ),
-            );
-            prepared_live_request_streaming_decision = Some(decision.clone());
-            if decision.transport_mode == RequestBodyTransportMode::LiveFirst {
-                let trace_context = PoolUpstreamAttemptTraceContext {
-                    invoke_id: invoke_id.to_string(),
-                    occurred_at: occurred_at.to_string(),
-                    endpoint: capture_target.endpoint().to_string(),
-                    sticky_key: live_body_sticky_key.clone(),
-                    requester_ip: requester_ip.map(str::to_string),
-                    upstream_base_url_host: None,
-                    request_model: live_body_key_probe.model.clone(),
-                };
-                let target_encoding = live_resolved_content_encoding
-                    .map(|resolved| {
-                        live_responses_target_request_content_encoding_with_resolved(
-                            resolved,
-                            initial_account.request_compression_algorithm,
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        live_responses_target_request_content_encoding(
-                            downstream_content_encoding.as_deref(),
-                            initial_account.request_compression_algorithm,
-                        )
-                    });
-                let Ok(target_encoding) = target_encoding else {
-                    warn!(
-                        proxy_request_id,
-                        "live-first request body uses an unsupported Content-Encoding; replaying buffered request"
-                    );
-                    drop(live_pipeline);
-                    return PreparedCaptureRequestBody {
-                        request_body_snapshot_result: wait_for_replay_body_snapshot(
-                            state.as_ref(),
-                            original_uri,
-                            &Method::POST,
-                            &replay_status_rx,
-                            &replay_cancel,
-                            runtime_timeouts.request_read_timeout,
-                            response_timeout.map(|_| req_read_started),
-                        )
-                        .await
-                        .map_err(|(status, message)| RequestBodyReadError {
-                            status,
-                            message,
-                            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
-                                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
-                            } else {
-                                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
-                            },
-                            partial_body: Vec::new(),
-                        }),
-                        live_first_pool_response: None,
-                        prepared_live_request_streaming_decision: Some(
-                            LiveRequestStreamingDecision {
-                                transport_mode: RequestBodyTransportMode::Buffered,
-                                eligible: false,
-                                reason: "downstream_content_encoding_not_supported",
-                                ..decision
-                            },
-                        ),
-                        live_first_attempt_failed: false,
-                        live_first_request_body_first_byte_at: None,
-                        live_oauth_rewrite_rx: None,
-                        live_first_experiment_group,
-                        live_route_finalization_measurement: Some(
-                            LiveRequestStreamingMeasurement {
-                                route_finalization_ms: Some(live_route_finalization_ms),
-                                route_finalization_outcome: Some("buffered_encoding"),
-                                route_dependency_factors: live_route_dependency_factors(
-                                    &live_body_key_probe,
-                                    encrypted_owner_routing_enabled,
-                                ),
-                                routing_hot_cache_hit: live_route_lookup_cache_hit,
-                                routing_hot_cache_cold_load: live_route_lookup_cache_hit
-                                    .map(|hit| !hit),
-                                ..LiveRequestStreamingMeasurement::default()
-                            },
-                        ),
-                    };
-                };
-                let oauth = match &initial_account.auth {
-                    PoolResolvedAuth::Oauth { .. } => Some(LiveOauthResponsesTransform {
-                        account_id: Some(initial_account.account_id),
-                        installation_seed: Some(state.oauth_installation_seed),
-                    }),
-                    PoolResolvedAuth::ApiKey { .. } => None,
-                };
-                let compression_level = live_routing_snapshot
-                    .as_ref()
-                    .map(|(snapshot, _)| snapshot.request_compression.level_preset)
-                    .unwrap_or_default();
-                let model_mapping = match load_model_mapping_for_account(
-                    state.as_ref(),
-                    initial_account.account_id,
-                    live_body_key_probe.model.as_deref(),
-                )
-                .await
-                {
-                    Ok(mapping) => mapping,
-                    Err(err) => {
-                        warn!(
-                            proxy_request_id,
-                            account_id = initial_account.account_id,
-                            error = %err,
-                            "failed to resolve live-first model mapping; replaying buffered request"
-                        );
-                        live_first_attempt_failed = true;
-                        drop(live_pipeline.take());
-                        None
-                    }
-                };
-                if live_pipeline.is_some()
-                    && !live_pipeline
-                        .as_mut()
-                        .expect("live pipeline is present before configuration")
-                        .configure(LiveResponsesBodyTransformConfig {
-                            target_encoding,
-                            compression_level,
-                            enforce_include_usage: state.config.proxy_enforce_stream_include_usage,
-                            oauth,
-                            fast_mode_rewrite_mode: initial_account.fast_mode_rewrite_mode,
-                            image_tool_rewrite_mode: initial_account.image_tool_rewrite_mode,
-                            codex_imagegen_rewrite_mode: initial_account
-                                .codex_imagegen_rewrite_mode,
-                            codex_imagegen_protocol: codex_imagegen_protocol_from_headers(headers),
-                            model_mapping_target: model_mapping
-                                .as_ref()
-                                .map(|mapping| mapping.target_model.clone()),
-                        })
-                {
-                    live_first_attempt_failed = true;
-                } else if live_pipeline.is_some() {
-                    let mut live_headers = headers.clone();
-                    live_headers.remove(header::CONTENT_LENGTH);
-                    match target_encoding.header_value() {
-                        Some(value) => {
-                            live_headers
-                                .insert(header::CONTENT_ENCODING, HeaderValue::from_static(value));
-                        }
-                        None => {
-                            live_headers.remove(header::CONTENT_ENCODING);
-                        }
-                    }
-                    let pipeline = live_pipeline
-                        .take()
-                        .expect("live pipeline is consumed by the live-first attempt");
-                    let first_upstream_body_poll_at_rx =
-                        pipeline.first_upstream_body_poll_at_rx.clone();
-                    let original_request_stream_rx = pipeline.original_request_stream_rx.clone();
-                    match send_pool_request_live_first_attempt(
-                        state.clone(),
-                        proxy_request_id,
-                        Method::POST,
-                        original_uri,
-                        &live_headers,
-                        pipeline.body,
-                        live_prompt_cache_key.as_deref(),
-                        live_body_sticky_key.as_deref(),
-                        live_body_key_probe.image_intent,
-                        proxy_upstream_send_timeout_for_capture_target(
-                            runtime_timeouts,
-                            Some(capture_target),
-                        ),
-                        response_timeout,
-                        response_timeout.map(|_| req_read_started),
-                        live_body_sticky_key.as_deref(),
-                        initial_account,
-                        model_mapping,
-                        Some(&trace_context),
-                        live_route_reservation_guard.take(),
-                        &replay_status_rx,
-                        &first_upstream_body_poll_at_rx,
-                        Some(original_request_stream_rx),
-                    )
-                    .await
-                    {
-                        Ok(mut response) => {
-                            // An upstream is allowed to respond before it has
-                            // consumed the complete HTTP request body. Do not
-                            // accept that provisional response until the local
-                            // parser confirms that no later JSON field changed
-                            // the selected route.
-                            wait_for_live_request_body_finalization(
-                                &mut live_request_body_finalization_rx,
-                            )
-                            .await;
-                            let request_body_error =
-                                { live_request_body_error_rx.borrow().clone() };
-                            if let Some(request_body_error) = request_body_error {
-                                live_first_attempt_failed = true;
-                                live_first_request_body_first_byte_at =
-                                    live_first_request_body_first_byte_at
-                                        .or_else(|| *first_upstream_body_poll_at_rx.borrow());
-                                warn!(
-                                    proxy_request_id,
-                                    status = %request_body_error.status,
-                                    failure_kind = request_body_error.failure_kind,
-                                    "live-first request body validation cancelled a provisional upstream response"
-                                );
-                                reject_live_first_provisional_response_after_body_failure(
-                                    state.as_ref(),
-                                    &mut response,
-                                    &request_body_error,
-                                )
-                                .await;
-                            } else {
-                                live_first_request_body_first_byte_at =
-                                    response.live_request_body_first_byte_at;
-                                live_first_pool_response = Some(response);
-                            }
-                        }
-                        Err(error) => {
-                            live_first_attempt_failed = true;
-                            live_first_request_body_first_byte_at =
-                                *first_upstream_body_poll_at_rx.borrow();
-                            warn!(
-                                proxy_request_id,
-                                error = %error.message,
-                                "live-first pool attempt failed; replaying the captured request"
-                            );
-                        }
-                    }
-                }
-            } else {
-                drop(live_pipeline.take());
-            }
-        } else {
-            drop(live_pipeline.take());
-        }
-    } else {
-        prepared_live_request_streaming_decision = Some(decide_live_request_streaming(
-            &live_settings,
-            invoke_id,
-            capture_target,
-            false,
-            false,
-        ));
-        drop(live_pipeline.take());
-    }
-
-    drop(live_pipeline);
-
-    let request_body_snapshot_result = {
-        let snapshot_result = wait_for_replay_body_snapshot(
-            state.as_ref(),
-            original_uri,
-            &Method::POST,
-            &replay_status_rx,
-            &replay_cancel,
-            runtime_timeouts.request_read_timeout,
-            response_timeout.map(|_| req_read_started),
-        )
-        .await
-        .map_err(|(status, message)| RequestBodyReadError {
-            status,
-            message,
-            failure_kind: if status == StatusCode::REQUEST_TIMEOUT {
-                PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
-            } else {
-                PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED
-            },
-            partial_body: Vec::new(),
-        });
-        if snapshot_result.is_ok() || live_first_pool_response.is_some() {
-            wait_for_live_request_body_finalization(&mut live_request_body_finalization_rx).await;
-        }
-        match snapshot_result {
-            Err(error) => Err(error),
-            Ok(snapshot) => live_request_body_error_rx
-                .borrow()
-                .clone()
-                .map_or(Ok(snapshot), Err),
-        }
-    };
-    if let Err(request_body_error) = &request_body_snapshot_result
-        && let Some(mut response) = live_first_pool_response.take()
-    {
-        live_first_attempt_failed = true;
-        live_first_request_body_first_byte_at =
-            live_first_request_body_first_byte_at.or(response.live_request_body_first_byte_at);
-        warn!(
-            proxy_request_id,
-            status = %request_body_error.status,
-            failure_kind = request_body_error.failure_kind,
-            "live-first request body failure cancelled a provisional upstream response"
-        );
-        reject_live_first_provisional_response_after_body_failure(
-            state.as_ref(),
-            &mut response,
-            request_body_error,
-        )
-        .await;
-    }
-
-    let route_finalization_outcome = if live_body_key_probe.root_object_complete && live_candidate {
-        "buffered_eof_final_route"
-    } else {
-        match prepared_live_request_streaming_decision
-            .as_ref()
-            .map(|decision| decision.transport_mode)
-        {
-            Some(RequestBodyTransportMode::LiveFirst) => "live_first_model_ready",
-            _ if live_candidate => "buffered_eof_final_route",
-            _ => "buffered_no_model",
-        }
-    };
-
-    PreparedCaptureRequestBody {
-        request_body_snapshot_result,
-        live_first_pool_response,
-        prepared_live_request_streaming_decision,
-        live_first_attempt_failed,
-        live_first_request_body_first_byte_at,
-        live_oauth_rewrite_rx: Some(live_oauth_rewrite_rx),
-        live_first_experiment_group,
-        live_route_finalization_measurement: Some(LiveRequestStreamingMeasurement {
-            route_finalization_raw_bytes: live_body_key_probe.raw_bytes_observed,
-            route_finalization_logical_bytes: live_body_key_probe.logical_bytes_observed,
-            route_finalization_ms: Some(live_route_finalization_ms),
-            route_finalization_outcome: Some(route_finalization_outcome),
-            route_dependency_factors: live_route_dependency_factors(
-                &live_body_key_probe,
-                encrypted_owner_routing_enabled,
-            ),
-            routing_hot_cache_hit: live_route_lookup_cache_hit,
-            routing_hot_cache_cold_load: live_route_lookup_cache_hit.map(|hit| !hit),
-            ..LiveRequestStreamingMeasurement::default()
-        }),
-    }
-}
-
-fn live_route_dependency_factors(
-    probe: &PoolReplayBodyKeyProbe,
-    encrypted_owner_routing_enabled: bool,
-) -> Vec<&'static str> {
-    let mut factors = vec!["model"];
-    if probe.sticky_key.is_some() {
-        factors.push("sticky");
-    }
-    if probe.prompt_cache_key.is_some() {
-        factors.push("prompt_cache");
-    }
-    if encrypted_owner_routing_enabled && probe.contains_encrypted_content {
-        factors.push("encrypted_owner");
-    }
-    if matches!(
-        probe.image_intent,
-        ImageIntent::Yes | ImageIntent::DirectImage
-    ) {
-        factors.push("image_capability");
-    }
-    factors
-}
-
-fn normalize_live_request_streaming_decision_for_measurement(
-    decision: Option<&LiveRequestStreamingDecision>,
-    route_measurement: Option<&LiveRequestStreamingMeasurement>,
-) -> Option<LiveRequestStreamingDecision> {
-    let decision = decision?;
-    let route_finalized_at_eof = route_measurement.is_some_and(|measurement| {
-        measurement.route_finalization_outcome == Some("buffered_eof_final_route")
-    });
-    if route_finalized_at_eof {
-        Some(LiveRequestStreamingDecision {
-            transport_mode: RequestBodyTransportMode::Buffered,
-            eligible: false,
-            reason: "route_finalized_at_eof",
-            ..decision.clone()
-        })
-    } else {
-        Some(decision.clone())
-    }
-}
-
-/// A live probe is safe to commit once the model is known and image routing is
-/// not positively required. The pipeline separately records whether that
-/// probe was finalized at EOF; EOF-finalized samples remain buffered for
-/// measurement even though the established route/failover path is reused.
-fn live_route_probe_can_start_before_eof(probe: &PoolReplayBodyKeyProbe) -> bool {
-    probe.model.is_some() && probe.image_intent != ImageIntent::Yes
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1529,33 +698,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let proxy_settings = state.proxy_model_settings.read().await.clone();
 
     let req_read_started = Instant::now();
-    let PreparedCaptureRequestBody {
-        request_body_snapshot_result,
-        mut live_first_pool_response,
-        prepared_live_request_streaming_decision,
-        live_first_attempt_failed,
-        live_first_request_body_first_byte_at,
-        live_oauth_rewrite_rx,
-        live_first_experiment_group,
-        mut live_route_finalization_measurement,
-    } = Box::pin(prepare_capture_request_body(
-        state.clone(),
-        proxy_request_id,
-        &invoke_id,
-        &occurred_at,
-        original_uri,
-        &headers,
+    let request_body_snapshot = match read_request_body_snapshot_with_partial_limit(
         body,
-        capture_target,
         body_limit,
-        &runtime_timeouts,
-        requester_ip.as_deref(),
-        header_sticky_key.as_deref(),
-        header_prompt_cache_key.as_deref(),
-        req_read_started,
-    ))
-    .await;
-    let request_body_snapshot = match request_body_snapshot_result {
+        runtime_timeouts.request_read_timeout,
+        proxy_request_id,
+    )
+    .await
+    {
         Ok(bytes) => bytes,
         Err(read_err) => {
             let response_envelope =
@@ -1582,14 +732,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
-            let capture_failure_decision =
-                normalize_live_request_streaming_decision_for_measurement(
-                    prepared_live_request_streaming_decision.as_ref(),
-                    live_route_finalization_measurement.as_ref(),
-                )
-                .unwrap_or_else(|| {
-                    LiveRequestStreamingDecision::buffered("request_body_capture_failed")
-                });
 
             warn!(
                 proxy_request_id,
@@ -1616,107 +758,95 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 },
                 error_message: Some(error_message),
                 failure_kind: Some(read_err.failure_kind.to_string()),
-                payload: Some(with_live_request_streaming_payload_summary(
-                    build_proxy_payload_summary(ProxyPayloadSummary {
-                        target: capture_target,
-                        status: read_err.status,
-                        is_stream: request_info.is_stream,
-                        request_contains_encrypted_content: request_info.contains_encrypted_content,
-                        response_contains_encrypted_content: false,
-                        compaction_request_kind: request_info.compaction_request_kind,
-                        compaction_response_kind: None,
-                        image_intent: request_info.image_intent.as_deref(),
-                        request_model: request_info.model.as_deref(),
-                        requested_service_tier: request_info.requested_service_tier.as_deref(),
-                        billing_service_tier: None,
-                        reasoning_effort: request_info.reasoning_effort.as_deref(),
-                        response_model: None,
-                        usage_missing_reason: None,
-                        request_parse_error: request_info.parse_error.as_deref(),
-                        request_compression_algorithm: None,
-                        request_compression_mode: None,
-                        request_compression_logical_body_bytes: None,
-                        request_compression_transmitted_body_bytes: None,
-                        request_compression_transmission_complete: None,
-                        failure_kind: Some(read_err.failure_kind),
-                        requester_ip: requester_ip.as_deref(),
-                        request_user_agent: request_chain_metadata.user_agent.as_deref(),
-                        request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
-                        request_forwarded: request_chain_metadata.forwarded.as_deref(),
-                        request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
-                        upstream_scope: if pool_route_active {
-                            INVOCATION_UPSTREAM_SCOPE_INTERNAL
-                        } else {
-                            INVOCATION_UPSTREAM_SCOPE_EXTERNAL
-                        },
-                        route_mode: if pool_route_active {
-                            INVOCATION_ROUTE_MODE_POOL
-                        } else {
-                            INVOCATION_ROUTE_MODE_FORWARD_PROXY
-                        },
-                        sticky_key: header_sticky_key.as_deref(),
-                        prompt_cache_key: header_prompt_cache_key.as_deref(),
-                        prompt_cache_key_attribution_source: header_prompt_cache_key
-                            .as_ref()
-                            .map(|_| "request"),
-                        client_fingerprint: client_attribution_context.fingerprint.as_deref(),
-                        client_header_fingerprints: Some(
-                            &client_attribution_context.header_fingerprints,
-                        )
-                        .filter(|fingerprints| !fingerprints.is_empty()),
-                        upstream_account_id: None,
-                        upstream_account_name: None,
-                        upstream_account_kind: None,
-                        upstream_base_url_host: None,
-                        oauth_account_header_attached: None,
-                        oauth_account_id_shape: None,
-                        oauth_forwarded_header_count: None,
-                        oauth_forwarded_header_names: None,
-                        oauth_fingerprint_version: None,
-                        oauth_forwarded_header_fingerprints: None,
-                        oauth_prompt_cache_header_forwarded: None,
-                        oauth_request_body_prefix_fingerprint: None,
-                        oauth_request_body_prefix_bytes: None,
-                        oauth_request_body_snapshot_kind: None,
-                        oauth_responses_body_mode: None,
-                        oauth_responses_rewrite: None,
-                        service_tier: None,
-                        stream_terminal_event: None,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        downstream_status_code: Some(read_err.status),
-                        downstream_error_message: Some(read_err.message.as_str()),
-                        upstream_request_id: None,
-                        response_content_encoding: None,
-                        stream_failure_origin: None,
-                        upstream_read_error_kind: None,
-                        content_encoding_chain: None,
-                        forwarded_chunk_count: None,
-                        forwarded_bytes: None,
-                        usage_observed: None,
-                        downstream_close_phase: None,
-                        downstream_write_error_kind: None,
-                        last_upstream_chunk_gap_ms: None,
-                        upstream_approx_upload_bytes: None,
-                        upstream_approx_download_bytes: None,
-                        proxy_display_name: None,
-                        proxy_weight_delta: None,
-                        pool_attempt_count: None,
-                        pool_distinct_account_count: None,
-                        pool_attempt_terminal_reason: None,
-                        blocked_binding: None,
-                    }),
-                    &capture_failure_decision,
-                    &LiveRequestStreamingMeasurement {
-                        first_attempt_failed: live_first_attempt_failed,
-                        fallback_or_retry: false,
-                        capture_failed: true,
-                        ambiguous_upstream_delivery: live_first_attempt_failed
-                            && live_first_request_body_first_byte_at.is_some(),
-                        experiment_account_group: live_first_experiment_group.clone(),
-                        ..LiveRequestStreamingMeasurement::default()
+                payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+                    target: capture_target,
+                    status: read_err.status,
+                    is_stream: request_info.is_stream,
+                    request_contains_encrypted_content: request_info.contains_encrypted_content,
+                    response_contains_encrypted_content: false,
+                    compaction_request_kind: request_info.compaction_request_kind,
+                    compaction_response_kind: None,
+                    image_intent: request_info.image_intent.as_deref(),
+                    request_model: request_info.model.as_deref(),
+                    requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    billing_service_tier: None,
+                    reasoning_effort: request_info.reasoning_effort.as_deref(),
+                    response_model: None,
+                    usage_missing_reason: None,
+                    request_parse_error: request_info.parse_error.as_deref(),
+                    request_compression_algorithm: None,
+                    request_compression_mode: None,
+                    request_compression_logical_body_bytes: None,
+                    request_compression_transmitted_body_bytes: None,
+                    request_compression_transmission_complete: None,
+                    failure_kind: Some(read_err.failure_kind),
+                    requester_ip: requester_ip.as_deref(),
+                    request_user_agent: request_chain_metadata.user_agent.as_deref(),
+                    request_x_forwarded_for: request_chain_metadata.x_forwarded_for.as_deref(),
+                    request_forwarded: request_chain_metadata.forwarded.as_deref(),
+                    request_x_real_ip: request_chain_metadata.x_real_ip.as_deref(),
+                    upstream_scope: if pool_route_active {
+                        INVOCATION_UPSTREAM_SCOPE_INTERNAL
+                    } else {
+                        INVOCATION_UPSTREAM_SCOPE_EXTERNAL
                     },
-                )),
+                    route_mode: if pool_route_active {
+                        INVOCATION_ROUTE_MODE_POOL
+                    } else {
+                        INVOCATION_ROUTE_MODE_FORWARD_PROXY
+                    },
+                    sticky_key: header_sticky_key.as_deref(),
+                    prompt_cache_key: header_prompt_cache_key.as_deref(),
+                    prompt_cache_key_attribution_source: header_prompt_cache_key
+                        .as_ref()
+                        .map(|_| "request"),
+                    client_fingerprint: client_attribution_context.fingerprint.as_deref(),
+                    client_header_fingerprints: Some(
+                        &client_attribution_context.header_fingerprints,
+                    )
+                    .filter(|fingerprints| !fingerprints.is_empty()),
+                    upstream_account_id: None,
+                    upstream_account_name: None,
+                    upstream_account_kind: None,
+                    upstream_base_url_host: None,
+                    oauth_account_header_attached: None,
+                    oauth_account_id_shape: None,
+                    oauth_forwarded_header_count: None,
+                    oauth_forwarded_header_names: None,
+                    oauth_fingerprint_version: None,
+                    oauth_forwarded_header_fingerprints: None,
+                    oauth_prompt_cache_header_forwarded: None,
+                    oauth_request_body_prefix_fingerprint: None,
+                    oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
+                    oauth_responses_rewrite: None,
+                    service_tier: None,
+                    stream_terminal_event: None,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    downstream_status_code: Some(read_err.status),
+                    downstream_error_message: Some(read_err.message.as_str()),
+                    upstream_request_id: None,
+                    response_content_encoding: None,
+                    stream_failure_origin: None,
+                    upstream_read_error_kind: None,
+                    content_encoding_chain: None,
+                    forwarded_chunk_count: None,
+                    forwarded_bytes: None,
+                    usage_observed: None,
+                    downstream_close_phase: None,
+                    downstream_write_error_kind: None,
+                    last_upstream_chunk_gap_ms: None,
+                    upstream_approx_upload_bytes: None,
+                    upstream_approx_download_bytes: None,
+                    proxy_display_name: None,
+                    proxy_weight_delta: None,
+                    pool_attempt_count: None,
+                    pool_distinct_account_count: None,
+                    pool_attempt_terminal_reason: None,
+                    blocked_binding: None,
+                })),
                 raw_response: response_envelope.body_text.clone(),
                 response_body_preview_enabled: true,
                 req_raw,
@@ -1748,49 +878,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
     };
     let t_req_read_ms = elapsed_ms(req_read_started);
-    let persisted_live_request_streaming_decision =
-        normalize_live_request_streaming_decision_for_measurement(
-            prepared_live_request_streaming_decision.as_ref(),
-            live_route_finalization_measurement.as_ref(),
-        );
     let request_body_snapshot_kind = pool_request_snapshot_kind(&request_body_snapshot);
     let request_body_bytes_len = pool_request_snapshot_body_bytes(&request_body_snapshot);
-    let logical_request_body_bytes = if live_route_finalization_measurement.is_some() {
-        pool_request_snapshot_logical_body_bytes(
-            &request_body_snapshot,
-            headers
-                .get(header::CONTENT_ENCODING)
-                .and_then(|value| value.to_str().ok()),
-        )
-        .await
-        .ok()
-    } else {
-        None
-    };
-    if let Some(route_measurement) = live_route_finalization_measurement.as_mut() {
-        let route_raw_bytes = route_measurement
-            .route_finalization_raw_bytes
-            .unwrap_or(request_body_bytes_len);
-        let route_logical_bytes = route_measurement
-            .route_finalization_logical_bytes
-            .or(logical_request_body_bytes);
-        route_measurement.route_finalization_raw_bytes = Some(route_raw_bytes);
-        route_measurement.route_finalization_logical_bytes = route_logical_bytes;
-        route_measurement.route_finalization_raw_ratio = (request_body_bytes_len != 0)
-            .then(|| route_raw_bytes as f64 / request_body_bytes_len as f64);
-        route_measurement.route_finalization_logical_ratio = route_logical_bytes
-            .zip(logical_request_body_bytes)
-            .and_then(|(route_bytes, body_bytes)| {
-                (body_bytes != 0).then(|| route_bytes as f64 / body_bytes as f64)
-            });
-    }
-    let live_first_eligible = persisted_live_request_streaming_decision
-        .as_ref()
-        .is_some_and(|decision| decision.eligible);
-    let live_first_reason = persisted_live_request_streaming_decision
-        .as_ref()
-        .map(|decision| decision.reason)
-        .unwrap_or("not_live_candidate");
     if capture_request_body_read_log_at_info(request_body_bytes_len, t_req_read_ms) {
         info!(
             proxy_request_id,
@@ -1799,8 +888,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible,
-            live_first_reason,
             "openai proxy capture request body read completed"
         );
     } else {
@@ -1811,8 +898,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             request_body_bytes = request_body_bytes_len,
             body_size_bucket = request_body_size_bucket(request_body_bytes_len),
             request_body_snapshot_kind,
-            live_first_eligible,
-            live_first_reason,
             "openai proxy capture request body read completed"
         );
     }
@@ -1923,8 +1008,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    persisted_live_request_streaming_decision.as_ref(),
-                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -1975,8 +1058,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     None,
                     None,
                     None,
-                    persisted_live_request_streaming_decision.as_ref(),
-                    live_route_finalization_measurement.as_ref(),
                 )
                 .await;
                 if terminal_invocation_persisted {
@@ -2049,10 +1130,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             owner_auto_guard_active: encrypted_owner_auto_guard_active,
             t_req_read_ms,
             t_req_parse_ms,
-            live_request_streaming_decision: persisted_live_request_streaming_decision.clone(),
-            live_request_streaming_experiment_group: live_first_experiment_group.clone(),
-            live_first_attempt_failed,
-            live_first_request_body_first_byte_at,
         });
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, Some(capture_target));
@@ -2084,34 +1161,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         upstream_response,
         transport_bytes_live_counted,
         reservation_guard,
-    ) = if let Some(response) = live_first_pool_response.take() {
-        (
-            None,
-            Some(response.account),
-            response.connect_latency_ms,
-            response.first_chunk,
-            response.first_chunk_received_at,
-            response.first_stream_chunk_received_at,
-            response.stream_timeout,
-            response.first_byte_latency_ms,
-            response.oauth_responses_debug,
-            true,
-            None,
-            response.pending_attempt_record,
-            response.deferred_early_phase_cleanup_guard,
-            response.live_attempt_activity_lease,
-            response.attempt_summary,
-            None,
-            Some(response.attempt_started_at_utc),
-            ForwardProxyHttpApproxObservation::default(),
-            response.request_body_for_capture,
-            response.requested_service_tier,
-            response.codex_imagegen_rewrite,
-            response.response,
-            response.transport_bytes_live_counted,
-            response.reservation_guard,
-        )
-    } else if pool_route_active {
+    ) = if pool_route_active {
         match send_pool_request_with_failover_and_binding_constraint(
             state.clone(),
             proxy_request_id,
@@ -2212,31 +1262,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     )
                 });
                 let codex_imagegen_rewrite = err.codex_imagegen_rewrite.clone();
-                let live_request_streaming_measurement =
-                    pool_attempt_runtime_snapshot.as_ref().and_then(|context| {
-                        context.live_request_streaming_decision.as_ref().map(|_| {
-                            let risk = live_request_streaming_risk_flags(
-                                context.live_first_attempt_failed,
-                                context.live_first_request_body_first_byte_at.is_some(),
-                                err.attempt_summary.pool_attempt_count,
-                            );
-                            let mut measurement = live_route_finalization_measurement
-                                .clone()
-                                .unwrap_or_default();
-                            measurement.first_attempt_failed = risk.first_attempt_failed;
-                            measurement.fallback_or_retry = risk.fallback_or_retry;
-                            measurement.ambiguous_upstream_delivery =
-                                risk.ambiguous_upstream_delivery;
-                            measurement.upstream_account_group = err
-                                .account
-                                .as_ref()
-                                .and_then(|account| account.group_name.clone());
-                            measurement.experiment_account_group =
-                                context.live_request_streaming_experiment_group.clone();
-                            measurement
-                        })
-                    });
-                let mut record = ProxyCaptureRecord {
+                let record = ProxyCaptureRecord {
                     invoke_id,
                     occurred_at,
                     model: request_info.model.clone(),
@@ -2412,23 +1438,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         t_persist_ms: 0.0,
                     },
                 };
-                set_proxy_capture_record_pool_routing_no_candidate_audit(
-                    &mut record,
-                    err.attempt_summary.pool_routing_no_candidate_audit.as_ref(),
-                );
-                if let (Some(decision), Some(measurement)) = (
-                    pool_attempt_runtime_snapshot
-                        .as_ref()
-                        .and_then(|context| context.live_request_streaming_decision.as_ref()),
-                    live_request_streaming_measurement.as_ref(),
-                ) && let Some(payload) = record.payload.take()
-                {
-                    record.payload = Some(with_live_request_streaming_payload_summary(
-                        payload,
-                        decision,
-                        measurement,
-                    ));
-                }
                 let terminal_invocation_persisted = if let Err(err) =
                     persist_and_broadcast_proxy_capture(state.as_ref(), capture_started, record)
                         .await
@@ -2915,83 +1924,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         summarize_response_content_encoding(upstream_content_encoding.as_deref());
     let selected_proxy_display_name =
         resolve_invocation_proxy_display_name(selected_proxy.as_ref());
-    let live_request_streaming_decision = if let Some(decision) =
-        persisted_live_request_streaming_decision
-    {
-        decision
-    } else if capture_target == ProxyCaptureTarget::Responses {
-        match load_pool_routing_runtime_cache(state.as_ref()).await {
-            Ok(snapshot) => decide_live_request_streaming(
-                &snapshot.live_request_streaming,
-                &invoke_id,
-                capture_target,
-                true,
-                false,
-            ),
-            Err(error) => {
-                warn!(?error, invoke_id = %invoke_id, "failed to load live request streaming settings");
-                LiveRequestStreamingDecision::buffered("settings_unavailable")
-            }
-        }
-    } else {
-        LiveRequestStreamingDecision::buffered("endpoint_not_supported")
-    };
-    let upstream_request_first_byte_ms = live_first_request_body_first_byte_at.map(|sent_at| {
-        sent_at
-            .saturating_duration_since(req_read_started)
-            .as_secs_f64()
-            * 1_000.0
-    });
-    let live_request_streaming_risk = live_request_streaming_risk_flags(
-        live_first_attempt_failed,
-        live_first_request_body_first_byte_at.is_some(),
-        pending_pool_attempt_summary.pool_attempt_count,
-    );
-    let mut live_request_streaming_measurement = LiveRequestStreamingMeasurement {
-        raw_body_bytes: Some(request_body_bytes_len),
-        logical_body_bytes: logical_request_body_bytes,
-        upstream_request_first_byte_ms,
-        request_body_capture_complete_ms: Some(t_req_read_ms),
-        request_upstream_overlap_ms: request_upstream_overlap_ms(
-            Some(t_req_read_ms),
-            upstream_request_first_byte_ms,
-        ),
-        first_response_byte_total_ms: prefetched_first_chunk_received_at.map(|received_at| {
-            received_at
-                .saturating_duration_since(req_read_started)
-                .as_secs_f64()
-                * 1_000.0
-        }),
-        first_attempt_failed: live_request_streaming_risk.first_attempt_failed,
-        fallback_or_retry: live_request_streaming_risk.fallback_or_retry,
-        capture_failed: false,
-        ambiguous_upstream_delivery: live_request_streaming_risk.ambiguous_upstream_delivery,
-        upstream_account_group: pool_account
-            .as_ref()
-            .and_then(|account| account.group_name.clone()),
-        experiment_account_group: live_first_experiment_group,
-        ..LiveRequestStreamingMeasurement::default()
-    };
-    if let Some(route_measurement) = live_route_finalization_measurement {
-        live_request_streaming_measurement.route_finalization_ms =
-            route_measurement.route_finalization_ms;
-        live_request_streaming_measurement.route_finalization_outcome =
-            route_measurement.route_finalization_outcome;
-        live_request_streaming_measurement.route_dependency_factors =
-            route_measurement.route_dependency_factors;
-        live_request_streaming_measurement.routing_hot_cache_hit =
-            route_measurement.routing_hot_cache_hit;
-        live_request_streaming_measurement.routing_hot_cache_cold_load =
-            route_measurement.routing_hot_cache_cold_load;
-        live_request_streaming_measurement.route_finalization_raw_bytes =
-            route_measurement.route_finalization_raw_bytes;
-        live_request_streaming_measurement.route_finalization_logical_bytes =
-            route_measurement.route_finalization_logical_bytes;
-        live_request_streaming_measurement.route_finalization_raw_ratio =
-            route_measurement.route_finalization_raw_ratio;
-        live_request_streaming_measurement.route_finalization_logical_ratio =
-            route_measurement.route_finalization_logical_ratio;
-    }
     let mut response_running_record = build_running_proxy_capture_record(
         &invoke_id,
         &occurred_at,
@@ -3074,8 +2006,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
     let pool_account_for_task = pool_account.clone();
     let image_tool_rewrite_for_task = image_tool_rewrite.clone();
-    let mut oauth_responses_debug_for_task = oauth_responses_debug.clone();
-    let live_oauth_rewrite_rx_for_task = live_oauth_rewrite_rx.clone();
+    let oauth_responses_debug_for_task = oauth_responses_debug.clone();
     let downstream_request_observer_for_task = downstream_request_observer.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
@@ -3100,9 +2031,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
     let proxy_request_started_at_for_task = proxy_request_started_at;
-    let request_body_consumption_started_at_for_task = req_read_started;
-    let live_request_streaming_decision_for_task = live_request_streaming_decision.clone();
-    let mut live_request_streaming_measurement_for_task = live_request_streaming_measurement;
     let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<DownstreamResponseChunk, io::Error>>(16);
     let (downstream_body_terminal_tx, mut downstream_body_terminal_rx) =
@@ -3180,6 +2108,19 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 stream_response_parser.successful_terminal_seen();
             let decoded_chunk = stream_response_decoder.ingest(&chunk);
             let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
+            if should_capture_ttft(capture_target, &request_info_for_task) && token_observed {
+                let observed_ms = chunk_received_at
+                    .saturating_duration_since(proxy_request_started_at_for_task)
+                    .as_secs_f64()
+                    * 1_000.0;
+                first_token_ms = Some(observed_ms);
+                broadcast_proxy_capture_first_token_runtime_snapshot(
+                    state_for_task.as_ref(),
+                    &invoke_id_for_task,
+                    &occurred_at_for_task,
+                    observed_ms,
+                );
+            }
             let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                 && stream_response_parser.successful_terminal_seen();
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -3237,14 +2178,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .as_secs_f64()
                             * 1_000.0;
                         first_token_ms = Some(observed_ms);
-                        live_request_streaming_measurement_for_task.first_token_ms = Some(
-                            forwarded_at
-                                .saturating_duration_since(
-                                    request_body_consumption_started_at_for_task,
-                                )
-                                .as_secs_f64()
-                                * 1_000.0,
-                        );
                         broadcast_proxy_capture_first_token_runtime_snapshot(
                             state_for_task.as_ref(),
                             &invoke_id_for_task,
@@ -3528,6 +2461,17 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         stream_response_parser.successful_terminal_seen();
                     let decoded_chunk = stream_response_decoder.ingest(&chunk);
                     let token_observed = stream_response_parser.ingest_bytes(&decoded_chunk);
+                    if should_capture_ttft(capture_target, &request_info_for_task) && token_observed
+                    {
+                        let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
+                        first_token_ms = Some(observed_ms);
+                        broadcast_proxy_capture_first_token_runtime_snapshot(
+                            state_for_task.as_ref(),
+                            &invoke_id_for_task,
+                            &occurred_at_for_task,
+                            observed_ms,
+                        );
+                    }
                     let successful_terminal_in_chunk = !successful_terminal_seen_before_chunk
                         && stream_response_parser.successful_terminal_seen();
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
@@ -3602,8 +2546,6 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             {
                                 let observed_ms = elapsed_ms(proxy_request_started_at_for_task);
                                 first_token_ms = Some(observed_ms);
-                                live_request_streaming_measurement_for_task.first_token_ms =
-                                    Some(elapsed_ms(request_body_consumption_started_at_for_task));
                                 broadcast_proxy_capture_first_token_runtime_snapshot(
                                     state_for_task.as_ref(),
                                     &invoke_id_for_task,
@@ -4258,231 +3200,212 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             || pure_downstream_closed
             || !upstream_status.is_success())
         .then_some(&request_chain_metadata_for_task);
-        if let (Some(debug), Some(rewrite_rx)) = (
-            oauth_responses_debug_for_task.as_mut(),
-            live_oauth_rewrite_rx_for_task.as_ref(),
-        ) && let Some(rewrite) = rewrite_rx.borrow().clone()
-        {
-            debug.rewrite = rewrite;
-            debug.responses_body_mode = Some("live_streaming_rewrite");
-        }
-        let payload = with_live_request_streaming_payload_summary(
-            with_proxy_stream_terminal_diagnostics(
-                with_codex_imagegen_rewrite_payload_summary(
-                    with_image_tool_rewrite_payload_summary(
-                        build_proxy_payload_summary(ProxyPayloadSummary {
-                            target: capture_target,
-                            status: upstream_status,
-                            is_stream: request_info_for_task.is_stream,
-                            request_contains_encrypted_content: request_info_for_task
-                                .contains_encrypted_content,
-                            response_contains_encrypted_content: response_info
-                                .contains_encrypted_content,
-                            compaction_request_kind: request_info_for_task.compaction_request_kind,
-                            compaction_response_kind: resolve_compaction_response_kind_for_payload(
-                                capture_target,
-                                response_info.compaction_response_kind,
-                            ),
-                            image_intent: request_info_for_task.image_intent.as_deref(),
-                            request_model: request_info_for_task.model.as_deref(),
-                            requested_service_tier: request_info_for_task
-                                .requested_service_tier
-                                .as_deref(),
-                            billing_service_tier: billing_service_tier.as_deref(),
-                            reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
-                            response_model: response_info.model.as_deref(),
-                            usage_missing_reason: response_info.usage_missing_reason.as_deref(),
-                            request_parse_error: request_info_for_task.parse_error.as_deref(),
-                            request_compression_algorithm: pending_pool_attempt_record_for_task
+        let payload = with_proxy_stream_terminal_diagnostics(
+            with_codex_imagegen_rewrite_payload_summary(
+                with_image_tool_rewrite_payload_summary(
+                    build_proxy_payload_summary(ProxyPayloadSummary {
+                        target: capture_target,
+                        status: upstream_status,
+                        is_stream: request_info_for_task.is_stream,
+                        request_contains_encrypted_content: request_info_for_task
+                            .contains_encrypted_content,
+                        response_contains_encrypted_content: response_info
+                            .contains_encrypted_content,
+                        compaction_request_kind: request_info_for_task.compaction_request_kind,
+                        compaction_response_kind: resolve_compaction_response_kind_for_payload(
+                            capture_target,
+                            response_info.compaction_response_kind,
+                        ),
+                        image_intent: request_info_for_task.image_intent.as_deref(),
+                        request_model: request_info_for_task.model.as_deref(),
+                        requested_service_tier: request_info_for_task
+                            .requested_service_tier
+                            .as_deref(),
+                        billing_service_tier: billing_service_tier.as_deref(),
+                        reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
+                        response_model: response_info.model.as_deref(),
+                        usage_missing_reason: response_info.usage_missing_reason.as_deref(),
+                        request_parse_error: request_info_for_task.parse_error.as_deref(),
+                        request_compression_algorithm: pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending.upstream_request_compression_algorithm.as_deref()
+                            })
+                            .or_else(|| {
+                                pool_account_for_task
+                                    .is_none()
+                                    .then(|| {
+                                        direct_http_approx_for_task
+                                            .request_compression
+                                            .as_ref()
+                                            .map(|value| value.algorithm.as_str())
+                                    })
+                                    .flatten()
+                            }),
+                        request_compression_mode: if pool_account_for_task.is_none() {
+                            direct_http_approx_for_task
+                                .request_compression
                                 .as_ref()
-                                .and_then(|pending| {
-                                    pending.upstream_request_compression_algorithm.as_deref()
-                                })
-                                .or_else(|| {
-                                    pool_account_for_task
-                                        .is_none()
-                                        .then(|| {
-                                            direct_http_approx_for_task
-                                                .request_compression
-                                                .as_ref()
-                                                .map(|value| value.algorithm.as_str())
-                                        })
-                                        .flatten()
-                                }),
-                            request_compression_mode: if pool_account_for_task.is_none() {
-                                direct_http_approx_for_task
-                                    .request_compression
-                                    .as_ref()
-                                    .map(|value| value.mode.as_str())
-                            } else {
-                                None
-                            },
-                            request_compression_logical_body_bytes: if pool_account_for_task
-                                .is_none()
-                            {
-                                direct_http_approx_for_task
-                                    .request_compression
-                                    .as_ref()
-                                    .map(|value| value.logical_body_bytes)
-                            } else {
-                                None
-                            },
-                            request_compression_transmitted_body_bytes: if pool_account_for_task
-                                .is_none()
-                            {
-                                direct_http_approx_for_task
-                                    .request_compression
-                                    .as_ref()
-                                    .map(|value| value.transmitted_body_bytes)
-                            } else {
-                                None
-                            },
-                            request_compression_transmission_complete: pool_account_for_task
-                                .is_none()
-                                .then_some(
-                                    direct_http_approx_for_task.request_transmission_complete,
-                                ),
-                            failure_kind,
-                            requester_ip: requester_ip_for_task.as_deref(),
-                            request_user_agent: request_chain_metadata_for_payload
-                                .and_then(|metadata| metadata.user_agent.as_deref()),
-                            request_x_forwarded_for: request_chain_metadata_for_payload
-                                .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
-                            request_forwarded: request_chain_metadata_for_payload
-                                .and_then(|metadata| metadata.forwarded.as_deref()),
-                            request_x_real_ip: request_chain_metadata_for_payload
-                                .and_then(|metadata| metadata.x_real_ip.as_deref()),
-                            upstream_scope: if pool_account_for_task.is_some() {
-                                INVOCATION_UPSTREAM_SCOPE_INTERNAL
-                            } else {
-                                INVOCATION_UPSTREAM_SCOPE_EXTERNAL
-                            },
-                            route_mode: if pool_account_for_task.is_some() {
-                                INVOCATION_ROUTE_MODE_POOL
-                            } else {
-                                INVOCATION_ROUTE_MODE_FORWARD_PROXY
-                            },
-                            sticky_key: sticky_key_for_task.as_deref(),
-                            prompt_cache_key: prompt_cache_key_for_task.as_deref(),
-                            prompt_cache_key_attribution_source: request_info_for_task
-                                .prompt_cache_key_attribution_source
-                                .as_deref(),
-                            client_fingerprint: client_attribution_context_for_task
-                                .fingerprint
-                                .as_deref(),
-                            client_header_fingerprints: Some(
-                                &client_attribution_context_for_task.header_fingerprints,
-                            )
-                            .filter(|fingerprints| !fingerprints.is_empty()),
-                            upstream_account_id: pool_account_for_task
+                                .map(|value| value.mode.as_str())
+                        } else {
+                            None
+                        },
+                        request_compression_logical_body_bytes: if pool_account_for_task.is_none() {
+                            direct_http_approx_for_task
+                                .request_compression
                                 .as_ref()
-                                .map(|account| account.account_id),
-                            upstream_account_name: pool_account_for_task
+                                .map(|value| value.logical_body_bytes)
+                        } else {
+                            None
+                        },
+                        request_compression_transmitted_body_bytes: if pool_account_for_task
+                            .is_none()
+                        {
+                            direct_http_approx_for_task
+                                .request_compression
                                 .as_ref()
-                                .map(|account| account.display_name.as_str()),
-                            upstream_account_kind: payload_summary_upstream_account_kind(
-                                pool_account_for_task.as_ref(),
-                            ),
-                            upstream_base_url_host: payload_summary_upstream_base_url_host(
-                                pool_account_for_task.as_ref(),
-                            ),
-                            oauth_account_header_attached:
-                                oauth_account_header_attached_for_account(
-                                    pool_account_for_task.as_ref(),
-                                ),
-                            oauth_account_id_shape: oauth_account_id_shape_for_account(
-                                pool_account_for_task.as_ref(),
-                            ),
-                            oauth_forwarded_header_count: oauth_responses_debug_for_task
-                                .as_ref()
-                                .map(|debug| debug.forwarded_header_names.len()),
-                            oauth_forwarded_header_names: oauth_responses_debug_for_task
-                                .as_ref()
-                                .map(|debug| debug.forwarded_header_names.as_slice()),
-                            oauth_fingerprint_version: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.fingerprint_version),
-                            oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
-                            oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
-                                .as_ref()
-                                .map(|debug| debug.prompt_cache_header_forwarded),
-                            oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
-                            oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.request_body_prefix_bytes),
-                            oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.request_body_snapshot_kind),
-                            oauth_responses_body_mode: oauth_responses_debug_for_task
-                                .as_ref()
-                                .and_then(|debug| debug.responses_body_mode),
-                            oauth_responses_rewrite: oauth_responses_debug_for_task
-                                .as_ref()
-                                .map(|debug| &debug.rewrite),
-                            service_tier: response_info.service_tier.as_deref(),
-                            stream_terminal_event: response_info.stream_terminal_event.as_deref(),
-                            upstream_error_code: response_info.upstream_error_code.as_deref(),
-                            upstream_error_message: response_info.upstream_error_message.as_deref(),
-                            downstream_status_code: if downstream_closed {
-                                Some(upstream_status)
-                            } else {
-                                None
-                            },
-                            downstream_error_message: downstream_error_message.as_deref(),
-                            upstream_request_id: response_info.upstream_request_id.as_deref(),
-                            response_content_encoding: Some(response_content_encoding.as_str()),
-                            stream_failure_origin,
-                            upstream_read_error_kind,
-                            content_encoding_chain: Some(response_content_encoding.as_str()),
-                            forwarded_chunk_count: Some(forwarded_chunks),
-                            forwarded_bytes: Some(forwarded_bytes),
-                            usage_observed: Some(usage_observed),
-                            downstream_close_phase,
-                            downstream_write_error_kind,
-                            last_upstream_chunk_gap_ms,
-                            upstream_approx_upload_bytes: pool_account_for_task
-                                .is_none()
-                                .then_some(direct_http_approx_for_task.approx_upload_bytes),
-                            upstream_approx_download_bytes: pool_account_for_task
-                                .is_none()
-                                .then_some(
-                                    direct_http_approx_for_task
-                                        .approx_download_bytes_before_response_body
-                                        .saturating_add(forwarded_bytes),
-                                ),
-                            proxy_display_name: selected_proxy_display_name.as_deref(),
-                            proxy_weight_delta: if selected_proxy_for_task.is_some() {
-                                proxy_attempt_update.delta()
-                            } else {
-                                None
-                            },
-                            pool_attempt_count: pool_account_for_task
-                                .as_ref()
-                                .map(|_| pending_pool_attempt_summary.pool_attempt_count),
-                            pool_distinct_account_count: pool_account_for_task
-                                .as_ref()
-                                .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
-                            pool_attempt_terminal_reason: pool_account_for_task
-                                .as_ref()
-                                .and(pending_pool_attempt_terminal_reason.as_deref()),
-                            blocked_binding: None,
-                        }),
-                        image_tool_rewrite_for_task.as_ref(),
-                    ),
-                    final_codex_imagegen_rewrite.as_ref(),
+                                .map(|value| value.transmitted_body_bytes)
+                        } else {
+                            None
+                        },
+                        request_compression_transmission_complete: pool_account_for_task
+                            .is_none()
+                            .then_some(direct_http_approx_for_task.request_transmission_complete),
+                        failure_kind,
+                        requester_ip: requester_ip_for_task.as_deref(),
+                        request_user_agent: request_chain_metadata_for_payload
+                            .and_then(|metadata| metadata.user_agent.as_deref()),
+                        request_x_forwarded_for: request_chain_metadata_for_payload
+                            .and_then(|metadata| metadata.x_forwarded_for.as_deref()),
+                        request_forwarded: request_chain_metadata_for_payload
+                            .and_then(|metadata| metadata.forwarded.as_deref()),
+                        request_x_real_ip: request_chain_metadata_for_payload
+                            .and_then(|metadata| metadata.x_real_ip.as_deref()),
+                        upstream_scope: if pool_account_for_task.is_some() {
+                            INVOCATION_UPSTREAM_SCOPE_INTERNAL
+                        } else {
+                            INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+                        },
+                        route_mode: if pool_account_for_task.is_some() {
+                            INVOCATION_ROUTE_MODE_POOL
+                        } else {
+                            INVOCATION_ROUTE_MODE_FORWARD_PROXY
+                        },
+                        sticky_key: sticky_key_for_task.as_deref(),
+                        prompt_cache_key: prompt_cache_key_for_task.as_deref(),
+                        prompt_cache_key_attribution_source: request_info_for_task
+                            .prompt_cache_key_attribution_source
+                            .as_deref(),
+                        client_fingerprint: client_attribution_context_for_task
+                            .fingerprint
+                            .as_deref(),
+                        client_header_fingerprints: Some(
+                            &client_attribution_context_for_task.header_fingerprints,
+                        )
+                        .filter(|fingerprints| !fingerprints.is_empty()),
+                        upstream_account_id: pool_account_for_task
+                            .as_ref()
+                            .map(|account| account.account_id),
+                        upstream_account_name: pool_account_for_task
+                            .as_ref()
+                            .map(|account| account.display_name.as_str()),
+                        upstream_account_kind: payload_summary_upstream_account_kind(
+                            pool_account_for_task.as_ref(),
+                        ),
+                        upstream_base_url_host: payload_summary_upstream_base_url_host(
+                            pool_account_for_task.as_ref(),
+                        ),
+                        oauth_account_header_attached: oauth_account_header_attached_for_account(
+                            pool_account_for_task.as_ref(),
+                        ),
+                        oauth_account_id_shape: oauth_account_id_shape_for_account(
+                            pool_account_for_task.as_ref(),
+                        ),
+                        oauth_forwarded_header_count: oauth_responses_debug_for_task
+                            .as_ref()
+                            .map(|debug| debug.forwarded_header_names.len()),
+                        oauth_forwarded_header_names: oauth_responses_debug_for_task
+                            .as_ref()
+                            .map(|debug| debug.forwarded_header_names.as_slice()),
+                        oauth_fingerprint_version: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.fingerprint_version),
+                        oauth_forwarded_header_fingerprints: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.forwarded_header_fingerprints.as_ref()),
+                        oauth_prompt_cache_header_forwarded: oauth_responses_debug_for_task
+                            .as_ref()
+                            .map(|debug| debug.prompt_cache_header_forwarded),
+                        oauth_request_body_prefix_fingerprint: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_prefix_fingerprint.as_deref()),
+                        oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_prefix_bytes),
+                        oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_snapshot_kind),
+                        oauth_responses_body_mode: oauth_responses_debug_for_task
+                            .as_ref()
+                            .and_then(|debug| debug.responses_body_mode),
+                        oauth_responses_rewrite: oauth_responses_debug_for_task
+                            .as_ref()
+                            .map(|debug| &debug.rewrite),
+                        service_tier: response_info.service_tier.as_deref(),
+                        stream_terminal_event: response_info.stream_terminal_event.as_deref(),
+                        upstream_error_code: response_info.upstream_error_code.as_deref(),
+                        upstream_error_message: response_info.upstream_error_message.as_deref(),
+                        downstream_status_code: if downstream_closed {
+                            Some(upstream_status)
+                        } else {
+                            None
+                        },
+                        downstream_error_message: downstream_error_message.as_deref(),
+                        upstream_request_id: response_info.upstream_request_id.as_deref(),
+                        response_content_encoding: Some(response_content_encoding.as_str()),
+                        stream_failure_origin,
+                        upstream_read_error_kind,
+                        content_encoding_chain: Some(response_content_encoding.as_str()),
+                        forwarded_chunk_count: Some(forwarded_chunks),
+                        forwarded_bytes: Some(forwarded_bytes),
+                        usage_observed: Some(usage_observed),
+                        downstream_close_phase,
+                        downstream_write_error_kind,
+                        last_upstream_chunk_gap_ms,
+                        upstream_approx_upload_bytes: pool_account_for_task
+                            .is_none()
+                            .then_some(direct_http_approx_for_task.approx_upload_bytes),
+                        upstream_approx_download_bytes: pool_account_for_task.is_none().then_some(
+                            direct_http_approx_for_task
+                                .approx_download_bytes_before_response_body
+                                .saturating_add(forwarded_bytes),
+                        ),
+                        proxy_display_name: selected_proxy_display_name.as_deref(),
+                        proxy_weight_delta: if selected_proxy_for_task.is_some() {
+                            proxy_attempt_update.delta()
+                        } else {
+                            None
+                        },
+                        pool_attempt_count: pool_account_for_task
+                            .as_ref()
+                            .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+                        pool_distinct_account_count: pool_account_for_task
+                            .as_ref()
+                            .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+                        pool_attempt_terminal_reason: pool_account_for_task
+                            .as_ref()
+                            .and(pending_pool_attempt_terminal_reason.as_deref()),
+                        blocked_binding: None,
+                    }),
+                    image_tool_rewrite_for_task.as_ref(),
                 ),
-                successful_terminal_seen_upstream.then_some("completed"),
-                post_terminal_upstream_read_error_kind,
-                post_terminal_upstream_read_error_message.as_deref(),
-                post_terminal_downstream_write_error_kind,
-                post_terminal_downstream_write_error_message.as_deref(),
+                final_codex_imagegen_rewrite.as_ref(),
             ),
-            &live_request_streaming_decision_for_task,
-            &live_request_streaming_measurement_for_task,
+            successful_terminal_seen_upstream.then_some("completed"),
+            post_terminal_upstream_read_error_kind,
+            post_terminal_upstream_read_error_message.as_deref(),
+            post_terminal_downstream_write_error_kind,
+            post_terminal_downstream_write_error_message.as_deref(),
         );
 
         let record = ProxyCaptureRecord {
@@ -4937,94 +3860,6 @@ pub(crate) fn resolve_compaction_response_kind_for_payload(
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
-
-    #[test]
-    fn final_route_gate_allows_resolvable_binding_routes() {
-        assert!(!live_route_probe_can_start_before_eof(
-            &PoolReplayBodyKeyProbe::default()
-        ));
-        assert!(live_route_probe_can_start_before_eof(
-            &PoolReplayBodyKeyProbe {
-                model: Some("gpt-5.6".to_string()),
-                ..PoolReplayBodyKeyProbe::default()
-            }
-        ));
-        assert!(live_route_probe_can_start_before_eof(
-            &PoolReplayBodyKeyProbe {
-                model: Some("gpt-5.6".to_string()),
-                sticky_key: Some("sticky".to_string()),
-                ..PoolReplayBodyKeyProbe::default()
-            }
-        ));
-        assert!(live_route_probe_can_start_before_eof(
-            &PoolReplayBodyKeyProbe {
-                model: Some("gpt-5.6".to_string()),
-                prompt_cache_key: Some("prompt".to_string()),
-                contains_encrypted_content: true,
-                ..PoolReplayBodyKeyProbe::default()
-            }
-        ));
-        assert!(!live_route_probe_can_start_before_eof(
-            &PoolReplayBodyKeyProbe {
-                model: Some("gpt-5.6".to_string()),
-                image_intent: ImageIntent::Yes,
-                ..PoolReplayBodyKeyProbe::default()
-            }
-        ));
-    }
-
-    #[test]
-    fn route_dependency_profile_uses_only_active_routing_factors() {
-        let mut probe = PoolReplayBodyKeyProbe {
-            sticky_key: Some("sticky".to_string()),
-            prompt_cache_key: Some("prompt".to_string()),
-            contains_encrypted_content: true,
-            image_intent: ImageIntent::Yes,
-            ..PoolReplayBodyKeyProbe::default()
-        };
-        assert_eq!(
-            live_route_dependency_factors(&probe, false),
-            vec!["model", "sticky", "prompt_cache", "image_capability"]
-        );
-        assert_eq!(
-            live_route_dependency_factors(&probe, true),
-            vec![
-                "model",
-                "sticky",
-                "prompt_cache",
-                "encrypted_owner",
-                "image_capability"
-            ]
-        );
-        probe.image_intent = ImageIntent::No;
-        assert!(!live_route_dependency_factors(&probe, true).contains(&"image_capability"));
-    }
-
-    #[test]
-    fn eof_route_measurement_normalizes_buffered_decision_reasons() {
-        let decision = LiveRequestStreamingDecision {
-            transport_mode: RequestBodyTransportMode::Buffered,
-            revision: Some(LIVE_REQUEST_STREAMING_REVISION),
-            variant: Some(LiveRequestStreamingExperimentVariant::Treatment),
-            eligible: false,
-            reason: "routing_metadata_incomplete",
-        };
-        let measurement = LiveRequestStreamingMeasurement {
-            route_finalization_outcome: Some("buffered_eof_final_route"),
-            ..LiveRequestStreamingMeasurement::default()
-        };
-        let normalized = normalize_live_request_streaming_decision_for_measurement(
-            Some(&decision),
-            Some(&measurement),
-        )
-        .expect("EOF route decision should remain present");
-        assert_eq!(
-            normalized.transport_mode,
-            RequestBodyTransportMode::Buffered
-        );
-        assert_eq!(normalized.reason, "route_finalized_at_eof");
-        assert_eq!(normalized.variant, decision.variant);
-    }
 
     #[tokio::test]
     async fn wait_for_downstream_body_terminal_until_times_out_when_body_stays_open() {

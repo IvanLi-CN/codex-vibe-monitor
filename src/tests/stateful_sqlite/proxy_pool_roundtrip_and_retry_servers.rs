@@ -141,7 +141,6 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
-        #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -2111,7 +2110,7 @@ async fn resolver_skips_degraded_accounts_for_fresh_assignment() {
         insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
     let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
     set_test_account_degraded_route_state(
-        &state,
+        &state.pool,
         degraded_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
         "test degraded plain 429",
@@ -2146,7 +2145,7 @@ async fn resolver_keeps_existing_sticky_owner_reusable_during_temporary_cooldown
     let sticky_seen_at = format_utc_iso(Utc::now());
     upsert_test_sticky_route_at(&state.pool, "sticky-degraded", degraded_id, &sticky_seen_at).await;
     set_test_account_degraded_route_state(
-        &state,
+        &state.pool,
         degraded_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
         "test degraded 5xx",
@@ -2208,14 +2207,14 @@ async fn resolver_returns_degraded_only_when_only_temporary_failure_accounts_rem
     let upstream_5xx_id =
         insert_test_pool_api_key_account(&state, "Upstream5xx", "upstream-5xx").await;
     set_test_account_degraded_route_state(
-        &state,
+        &state.pool,
         plain_429_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
         "test degraded plain 429",
     )
     .await;
     set_test_account_degraded_route_state(
-        &state,
+        &state.pool,
         upstream_5xx_id,
         FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
         "test degraded 5xx",

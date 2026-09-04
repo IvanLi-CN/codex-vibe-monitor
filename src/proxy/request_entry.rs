@@ -835,7 +835,6 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) connect_latency_ms: f64,
     pub(crate) attempt_started_at_utc: DateTime<Utc>,
     pub(crate) first_byte_latency_ms: f64,
-    pub(crate) live_request_body_first_byte_at: Option<Instant>,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) first_chunk_received_at: Option<Instant>,
     pub(crate) first_stream_chunk_received_at: Option<Instant>,
@@ -1266,10 +1265,6 @@ pub(crate) struct PoolAttemptRuntimeSnapshotContext {
     pub(crate) owner_auto_guard_active: bool,
     pub(crate) t_req_read_ms: f64,
     pub(crate) t_req_parse_ms: f64,
-    pub(crate) live_request_streaming_decision: Option<LiveRequestStreamingDecision>,
-    pub(crate) live_request_streaming_experiment_group: Option<String>,
-    pub(crate) live_first_attempt_failed: bool,
-    pub(crate) live_first_request_body_first_byte_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1641,26 +1636,6 @@ pub(crate) enum PoolReplayBodyStatus {
     Incomplete,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum PoolReplayBodyStickyKeyProbeStatus {
-    Pending,
-    Ready(PoolReplayBodyKeyProbe),
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct PoolReplayBodyKeyProbe {
-    pub(crate) sticky_key: Option<String>,
-    pub(crate) prompt_cache_key: Option<String>,
-    pub(crate) model: Option<String>,
-    pub(crate) contains_encrypted_content: bool,
-    pub(crate) image_intent: ImageIntent,
-    pub(crate) root_object_complete: bool,
-    /// Transport and decoded JSON bytes observed when the live routing probe
-    /// became ready. Snapshot-based probes leave these absent.
-    pub(crate) raw_bytes_observed: Option<usize>,
-    pub(crate) logical_bytes_observed: Option<usize>,
-}
-
 /// Immutable request semantics derived from the single replay snapshot.
 ///
 /// The snapshot remains the source of truth for forwarding and raw capture. The
@@ -1688,42 +1663,6 @@ pub(crate) struct PoolReplayBodyBuffer {
     len: usize,
     memory: Vec<u8>,
     file: Option<(Arc<PoolReplayTempFile>, tokio::fs::File)>,
-    sticky_key_prefix_probe: Vec<u8>,
-}
-
-pub(crate) struct PoolReplayableRequestBody {
-    pub(crate) body: Body,
-    pub(crate) status_rx: watch::Receiver<PoolReplayBodyStatus>,
-    pub(crate) sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
-    pub(crate) first_live_chunk_sent_at_rx: watch::Receiver<Option<Instant>>,
-    pub(crate) cancel: CancellationToken,
-}
-
-/// Records the first point at which Hyper polls the replay body. This is later
-/// than the producer enqueueing a chunk, so it is the closest local signal to
-/// the first upstream request byte being consumed by the transport.
-pub(crate) struct TimestampedReplayBodyStream {
-    pub(crate) inner: ReceiverStream<Result<Bytes, io::Error>>,
-    pub(crate) first_polled_at_tx: watch::Sender<Option<Instant>>,
-}
-
-impl futures_util::Stream for TimestampedReplayBodyStream {
-    type Item = Result<Bytes, io::Error>;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.inner).poll_next(cx) {
-            std::task::Poll::Ready(Some(item)) => {
-                if self.first_polled_at_tx.borrow().is_none() {
-                    let _ = self.first_polled_at_tx.send(Some(Instant::now()));
-                }
-                std::task::Poll::Ready(Some(item))
-            }
-            next => next,
-        }
-    }
 }
 
 pub(crate) fn proxy_forward_response_status_is_success(
@@ -2330,12 +2269,14 @@ pub(crate) fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration 
 }
 
 pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS: u64 = 10;
+pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS: u64 = 250;
 pub(crate) const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS: u64 = 10;
 pub(crate) const POOL_NO_AVAILABLE_ACCOUNT_MESSAGE: &str = "no healthy pool account is available";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PoolNoAvailableWaitSettings {
     pub(crate) timeout: Duration,
+    pub(crate) poll_interval: Duration,
     pub(crate) retry_after_secs: u64,
 }
 
@@ -2343,7 +2284,20 @@ impl Default for PoolNoAvailableWaitSettings {
     fn default() -> Self {
         Self {
             timeout: Duration::from_secs(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS),
+            poll_interval: Duration::from_millis(
+                DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS,
+            ),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        }
+    }
+}
+
+impl PoolNoAvailableWaitSettings {
+    pub(crate) fn normalized_poll_interval(self) -> Duration {
+        if self.poll_interval.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            self.poll_interval
         }
     }
 }
@@ -2365,18 +2319,11 @@ impl PoolReplayBodyBuffer {
             len: 0,
             memory: Vec::new(),
             file: None,
-            sticky_key_prefix_probe: Vec::new(),
         }
     }
 
     pub(crate) async fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
         self.len = self.len.saturating_add(chunk.len());
-        if self.sticky_key_prefix_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES {
-            let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
-                .saturating_sub(self.sticky_key_prefix_probe.len());
-            self.sticky_key_prefix_probe
-                .extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
-        }
         if let Some((_, file)) = self.file.as_mut() {
             file.write_all(chunk).await?;
             return Ok(());
@@ -2801,7 +2748,7 @@ pub(crate) fn counted_http_body_from_bytes(bytes: Bytes, counter: ObservedByteCo
     Body::from_stream(stream)
 }
 
-pub(crate) fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
+fn counted_http_body_from_reader<R>(reader: R, counter: ObservedByteCounter) -> Body
 where
     R: AsyncRead + Send + 'static,
 {
@@ -2862,9 +2809,9 @@ pub(crate) fn counted_http_body_from_snapshot(
     }
 }
 
-pub(crate) type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
+type BoxedPoolRequestReader = Pin<Box<dyn AsyncRead + Send>>;
 
-pub(crate) fn request_compression_preset_to_async_level(
+fn request_compression_preset_to_async_level(
     preset: RequestCompressionLevelPreset,
 ) -> AsyncCompressionLevel {
     match preset {
@@ -2874,7 +2821,7 @@ pub(crate) fn request_compression_preset_to_async_level(
     }
 }
 
-pub(crate) fn resolve_request_body_content_encoding_from_prefix(
+fn resolve_request_body_content_encoding_from_prefix(
     prefix: Option<&[u8]>,
     content_encoding: Option<&str>,
 ) -> Result<RequestBodyContentEncoding, PoolRequestBodyPreparationError> {
@@ -2921,14 +2868,6 @@ async fn resolve_request_body_content_encoding(
         prefix.as_ref().map(Bytes::as_ref),
         content_encoding,
     )
-}
-
-pub(crate) async fn pool_request_snapshot_logical_body_bytes(
-    snapshot: &PoolReplayBodySnapshot,
-    content_encoding: Option<&str>,
-) -> Result<usize, PoolRequestBodyPreparationError> {
-    let encoding = resolve_request_body_content_encoding(snapshot, content_encoding).await?;
-    count_decoded_request_snapshot_bytes(snapshot, encoding).await
 }
 
 pub(crate) fn observe_request_compression_from_bytes(
@@ -2991,7 +2930,7 @@ async fn count_decoded_request_snapshot_bytes(
     }
 }
 
-pub(crate) fn decode_request_payload_bytes(
+fn decode_request_payload_bytes(
     bytes: &[u8],
     encoding: RequestBodyContentEncoding,
 ) -> Result<Bytes, PoolRequestBodyPreparationError> {
@@ -3059,7 +2998,7 @@ async fn open_pool_request_snapshot_reader(
     }
 }
 
-pub(crate) async fn decode_pool_request_reader(
+async fn decode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
 ) -> Result<BoxedPoolRequestReader, PoolRequestBodyPreparationError> {
@@ -3087,7 +3026,7 @@ pub(crate) async fn decode_pool_request_reader(
     }
 }
 
-pub(crate) fn encode_pool_request_reader(
+fn encode_pool_request_reader(
     reader: BoxedPoolRequestReader,
     encoding: RequestBodyContentEncoding,
     level: AsyncCompressionLevel,
@@ -3958,7 +3897,7 @@ pub(crate) fn codex_imagegen_audit_has_canonical_namespace(audit: Option<&Value>
             .is_some_and(Vec::is_empty)
 }
 
-pub(crate) fn rewrite_codex_imagegen_tools(
+fn rewrite_codex_imagegen_tools(
     value: &mut Value,
     protocol: CodexImagegenProtocol,
     mode: crate::CodexImagegenRewriteMode,
@@ -5135,410 +5074,9 @@ pub(crate) fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     path
 }
 
-pub(crate) fn spawn_pool_replayable_request_body(
-    body: Body,
-    body_limit: usize,
-    request_read_timeout: Duration,
-    proxy_request_id: u64,
-) -> PoolReplayableRequestBody {
-    let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
-    let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
-    let (sticky_key_probe_tx, sticky_key_probe_rx) =
-        watch::channel(PoolReplayBodyStickyKeyProbeStatus::Pending);
-    let (first_live_chunk_sent_at_tx, first_live_chunk_sent_at_rx) = watch::channel(None);
-    let cancel = CancellationToken::new();
-    let cancel_for_task = cancel.clone();
-
-    tokio::spawn(async move {
-        let mut buffer = PoolReplayBodyBuffer::new(proxy_request_id);
-        let mut data_len = 0usize;
-        let mut stream = body.into_data_stream();
-        let read_deadline = Instant::now() + request_read_timeout;
-        let mut live_consumer_open = true;
-        let mut sticky_key_probe = Vec::new();
-        let mut sticky_key_probe_ready = false;
-
-        loop {
-            if cancel_for_task.is_cancelled() {
-                if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                }
-                let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
-                return;
-            }
-
-            let remaining = read_deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                let read_error = RequestBodyReadError {
-                    status: StatusCode::REQUEST_TIMEOUT,
-                    message: format!(
-                        "request body read timed out after {}ms",
-                        request_read_timeout.as_millis()
-                    ),
-                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
-                    partial_body: Vec::new(),
-                };
-                warn!(
-                    proxy_request_id,
-                    timeout_ms = request_read_timeout.as_millis(),
-                    read_bytes = data_len,
-                    "openai proxy request body read timed out"
-                );
-                if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                }
-                let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
-                let _ = tx
-                    .send(Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        read_error.message,
-                    )))
-                    .await;
-                return;
-            }
-
-            let next_chunk = tokio::select! {
-                _ = cancel_for_task.cancelled() => {
-                    if !sticky_key_probe_ready {
-                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                            PoolReplayBodyKeyProbe::default(),
-                        ));
-                    }
-                    let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
-                    return;
-                }
-                chunk = timeout(remaining, stream.next()) => {
-                    match chunk {
-                        Ok(chunk) => chunk,
-                        Err(_) => {
-                            let read_error = RequestBodyReadError {
-                                status: StatusCode::REQUEST_TIMEOUT,
-                                message: format!(
-                                    "request body read timed out after {}ms",
-                                    request_read_timeout.as_millis()
-                                ),
-                                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
-                                partial_body: Vec::new(),
-                            };
-                            warn!(
-                                proxy_request_id,
-                                timeout_ms = request_read_timeout.as_millis(),
-                                read_bytes = data_len,
-                                "openai proxy request body read timed out"
-                            );
-                            if !sticky_key_probe_ready {
-                                let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                                    PoolReplayBodyKeyProbe::default(),
-                                ));
-                            }
-                            let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
-                            let _ = tx
-                                .send(Err(io::Error::new(
-                                    io::ErrorKind::TimedOut,
-                                    read_error.message,
-                                )))
-                                .await;
-                            return;
-                        }
-                    }
-                }
-            };
-
-            let Some(chunk) = next_chunk else {
-                if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe {
-                            sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
-                                &sticky_key_probe,
-                            ),
-                            prompt_cache_key:
-                                best_effort_extract_prompt_cache_key_from_request_body_prefix(
-                                    &sticky_key_probe,
-                                ),
-                            model: best_effort_extract_model_from_request_body_prefix(
-                                &sticky_key_probe,
-                            ),
-                            contains_encrypted_content:
-                                best_effort_extract_encrypted_content_from_request_body_prefix(
-                                    &sticky_key_probe,
-                                ),
-                            image_intent: ImageIntent::Unknown,
-                            root_object_complete: true,
-                            raw_bytes_observed: None,
-                            logical_bytes_observed: None,
-                        },
-                    ));
-                }
-                match buffer.finish().await {
-                    Ok(snapshot) => {
-                        let _ = status_tx.send(PoolReplayBodyStatus::Complete(snapshot));
-                    }
-                    Err(err) => {
-                        let _ = status_tx.send(PoolReplayBodyStatus::InternalError(format!(
-                            "failed to finalize replay body cache: {err}"
-                        )));
-                    }
-                }
-                return;
-            };
-
-            let chunk = match chunk {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    let msg = format!("failed to read request body stream: {err}");
-                    let read_error = RequestBodyReadError {
-                        status: StatusCode::BAD_REQUEST,
-                        message: msg,
-                        failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
-                        partial_body: Vec::new(),
-                    };
-                    if !sticky_key_probe_ready {
-                        let _ =
-                            sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                                PoolReplayBodyKeyProbe::default(),
-                            ));
-                    }
-                    let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
-                    let _ = tx.send(Err(io::Error::other(read_error.message))).await;
-                    return;
-                }
-            };
-
-            if data_len.saturating_add(chunk.len()) > body_limit {
-                let read_error = RequestBodyReadError {
-                    status: StatusCode::PAYLOAD_TOO_LARGE,
-                    message: format!("request body exceeds {body_limit} bytes"),
-                    failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
-                    partial_body: Vec::new(),
-                };
-                if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                }
-                let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
-                let _ = tx.send(Err(io::Error::other(read_error.message))).await;
-                return;
-            }
-            data_len = data_len.saturating_add(chunk.len());
-
-            if let Err(err) = buffer.append(&chunk).await {
-                let msg = format!("failed to cache replayable request body: {err}");
-                if !sticky_key_probe_ready {
-                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
-                        PoolReplayBodyKeyProbe::default(),
-                    ));
-                }
-                let _ = tx.send(Err(io::Error::other(msg.clone()))).await;
-                let _ = status_tx.send(PoolReplayBodyStatus::InternalError(msg));
-                return;
-            }
-
-            if !sticky_key_probe_ready
-                && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
-            {
-                let probe_remaining =
-                    HEADER_STICKY_EARLY_STICKY_SCAN_BYTES.saturating_sub(sticky_key_probe.len());
-                sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
-                let key_probe = PoolReplayBodyKeyProbe {
-                    sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
-                        &sticky_key_probe,
-                    ),
-                    prompt_cache_key: best_effort_extract_prompt_cache_key_from_request_body_prefix(
-                        &sticky_key_probe,
-                    ),
-                    model: best_effort_extract_model_from_request_body_prefix(&sticky_key_probe),
-                    contains_encrypted_content:
-                        best_effort_extract_encrypted_content_from_request_body_prefix(
-                            &sticky_key_probe,
-                        ),
-                    image_intent: ImageIntent::Unknown,
-                    root_object_complete: false,
-                    raw_bytes_observed: None,
-                    logical_bytes_observed: None,
-                };
-                if key_probe.sticky_key.is_some()
-                    || key_probe.prompt_cache_key.is_some()
-                    || key_probe.contains_encrypted_content
-                    || sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
-                {
-                    sticky_key_probe_ready = true;
-                    let _ = sticky_key_probe_tx
-                        .send(PoolReplayBodyStickyKeyProbeStatus::Ready(key_probe));
-                }
-            }
-
-            if live_consumer_open && tx.send(Ok(chunk)).await.is_err() {
-                live_consumer_open = false;
-            }
-        }
-    });
-
-    PoolReplayableRequestBody {
-        body: Body::from_stream(TimestampedReplayBodyStream {
-            inner: ReceiverStream::new(rx),
-            first_polled_at_tx: first_live_chunk_sent_at_tx,
-        }),
-        status_rx,
-        sticky_key_probe_rx,
-        first_live_chunk_sent_at_rx,
-        cancel,
-    }
-}
-
-pub(crate) async fn wait_for_replay_body_sticky_key_probe(
-    sticky_key_probe_rx: &watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
-    max_wait: Duration,
-) -> PoolReplayBodyKeyProbe {
-    let mut sticky_key_probe_rx = sticky_key_probe_rx.clone();
-    let wait_deadline = Instant::now() + max_wait;
-    loop {
-        match sticky_key_probe_rx.borrow().clone() {
-            PoolReplayBodyStickyKeyProbeStatus::Ready(key_probe) => return key_probe,
-            PoolReplayBodyStickyKeyProbeStatus::Pending => {}
-        }
-        let remaining = wait_deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return PoolReplayBodyKeyProbe::default();
-        }
-        match timeout(remaining, sticky_key_probe_rx.changed()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) | Err(_) => return PoolReplayBodyKeyProbe::default(),
-        }
-    }
-}
-
-pub(crate) fn live_body_sticky_key_probe_wait_timeout(
-    request_read_timeout: Duration,
-    pre_attempt_total_timeout_deadline: Option<Instant>,
-) -> Duration {
-    match pre_attempt_total_timeout_deadline {
-        Some(deadline) => {
-            request_read_timeout.min(deadline.saturating_duration_since(Instant::now()))
-        }
-        None => request_read_timeout,
-    }
-}
-
-pub(crate) async fn wait_for_replay_body_snapshot(
-    state: &AppState,
-    original_uri: &Uri,
-    method: &Method,
-    replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
-    replay_cancel: &CancellationToken,
-    replay_wait_timeout: Duration,
-    responses_total_timeout_started_at: Option<Instant>,
-) -> Result<PoolReplayBodySnapshot, (StatusCode, String)> {
-    let mut replay_status_rx = replay_status_rx.clone();
-    let responses_total_timeout =
-        pool_upstream_responses_total_timeout(&state.config, original_uri, method);
-    let wait_deadline = Instant::now() + replay_wait_timeout;
-
-    let replay_status = loop {
-        let current = replay_status_rx.borrow().clone();
-        if !matches!(current, PoolReplayBodyStatus::Reading) {
-            break current;
-        }
-
-        let replay_wait_remaining = wait_deadline.saturating_duration_since(Instant::now());
-        if replay_wait_remaining.is_zero() {
-            replay_cancel.cancel();
-            return Err((
-                StatusCode::REQUEST_TIMEOUT,
-                format!(
-                    "request body read timed out after {}ms",
-                    replay_wait_timeout.as_millis()
-                ),
-            ));
-        }
-
-        let wait_budget = if let (Some(total_timeout), Some(started_at)) =
-            (responses_total_timeout, responses_total_timeout_started_at)
-        {
-            let Some(total_wait_remaining) =
-                remaining_timeout_budget(total_timeout, started_at.elapsed())
-            else {
-                replay_cancel.cancel();
-                return Err((
-                    StatusCode::GATEWAY_TIMEOUT,
-                    pool_total_timeout_exhausted_message(total_timeout),
-                ));
-            };
-            replay_wait_remaining.min(total_wait_remaining)
-        } else {
-            replay_wait_remaining
-        };
-
-        match timeout(wait_budget, replay_status_rx.changed()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => break PoolReplayBodyStatus::Incomplete,
-            Err(_) => {
-                replay_cancel.cancel();
-                return if let (Some(total_timeout), Some(started_at)) =
-                    (responses_total_timeout, responses_total_timeout_started_at)
-                {
-                    if pool_total_timeout_exhausted(total_timeout, started_at) {
-                        Err((
-                            StatusCode::GATEWAY_TIMEOUT,
-                            pool_total_timeout_exhausted_message(total_timeout),
-                        ))
-                    } else {
-                        Err((
-                            StatusCode::REQUEST_TIMEOUT,
-                            format!(
-                                "request body read timed out after {}ms",
-                                replay_wait_timeout.as_millis()
-                            ),
-                        ))
-                    }
-                } else {
-                    Err((
-                        StatusCode::REQUEST_TIMEOUT,
-                        format!(
-                            "request body read timed out after {}ms",
-                            replay_wait_timeout.as_millis()
-                        ),
-                    ))
-                };
-            }
-        }
-    };
-
-    match replay_status {
-        PoolReplayBodyStatus::Complete(snapshot) => Ok(snapshot),
-        PoolReplayBodyStatus::ReadError(err) => Err((err.status, err.message)),
-        PoolReplayBodyStatus::InternalError(message) => Err((StatusCode::BAD_GATEWAY, message)),
-        PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => Err((
-            StatusCode::BAD_GATEWAY,
-            "failed to cache replayable request body".to_string(),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn logical_body_measurement_decodes_compressed_replay_snapshots() {
-        let logical = br#"{\"model\":\"gpt-5.6\",\"input\":\"compressed\"}"#;
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(logical).expect("write gzip body");
-        let snapshot = PoolReplayBodySnapshot::Memory(Bytes::from(
-            encoder.finish().expect("finish gzip body"),
-        ));
-
-        assert_eq!(
-            pool_request_snapshot_logical_body_bytes(&snapshot, Some("gzip"))
-                .await
-                .expect("measure decoded gzip body"),
-            logical.len()
-        );
-    }
 
     #[test]
     fn extract_unsupported_model_from_route_error_supports_short_and_hyphenated_ids() {
@@ -6768,175 +6306,5 @@ mod tests {
             original
         );
         assert_eq!(projection.whole_body_materialization_count, 0);
-    }
-
-    #[tokio::test]
-    async fn live_first_capture_responses_body_starts_before_downstream_eof() {
-        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(2);
-        tx.send(Ok(Bytes::from_static(
-            b"{\"model\":\"gpt-5.6\",\"input\":\"",
-        )))
-        .await
-        .expect("send request prefix");
-        let replay = spawn_pool_replayable_request_body(
-            Body::from_stream(ReceiverStream::new(rx)),
-            1024 * 1024,
-            Duration::from_secs(1),
-            42,
-        );
-        let mut upstream_body = replay.body.into_data_stream();
-        let first = upstream_body
-            .next()
-            .await
-            .expect("upstream should receive a first body chunk")
-            .expect("first body chunk should be valid");
-
-        assert_eq!(
-            first,
-            Bytes::from_static(b"{\"model\":\"gpt-5.6\",\"input\":\"")
-        );
-        assert!(replay.first_live_chunk_sent_at_rx.borrow().is_some());
-        assert!(matches!(
-            *replay.status_rx.borrow(),
-            PoolReplayBodyStatus::Reading
-        ));
-        tx.send(Ok(Bytes::from_static(b"delayed tail\"}")))
-            .await
-            .expect("send delayed request tail");
-        drop(tx);
-        let snapshot = timeout(Duration::from_secs(1), async {
-            let mut status_rx = replay.status_rx.clone();
-            loop {
-                if let PoolReplayBodyStatus::Complete(snapshot) = status_rx.borrow().clone() {
-                    break snapshot;
-                }
-                status_rx
-                    .changed()
-                    .await
-                    .expect("replay worker should stay alive");
-            }
-        })
-        .await
-        .expect("replay should finish after downstream eof");
-        assert_eq!(
-            snapshot.to_bytes().await.expect("read snapshot"),
-            Bytes::from_static(b"{\"model\":\"gpt-5.6\",\"input\":\"delayed tail\"}")
-        );
-    }
-
-    #[tokio::test]
-    async fn dropped_live_consumer_allows_replay_snapshot_to_finish() {
-        let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(64);
-        tx.send(Ok(Bytes::from_static(br#"{"model":"gpt-5.6"}"#)))
-            .await
-            .expect("send complete routing object");
-        for _ in 0..32 {
-            tx.send(Ok(Bytes::from_static(b" ")))
-                .await
-                .expect("send trailing whitespace");
-        }
-        drop(tx);
-
-        let replay = spawn_pool_replayable_request_body(
-            Body::from_stream(ReceiverStream::new(rx)),
-            1024 * 1024,
-            Duration::from_secs(1),
-            43,
-        );
-        let pipeline = spawn_live_responses_request_body_pipeline(replay.body, None);
-        let probe = wait_for_replay_body_sticky_key_probe(
-            &pipeline.routing_probe_rx,
-            Duration::from_secs(1),
-        )
-        .await;
-        assert_eq!(probe.model.as_deref(), Some("gpt-5.6"));
-
-        let mut status_rx = replay.status_rx.clone();
-        // The final-route gate may consume the complete root object while it
-        // waits for route configuration, so the producer can legitimately
-        // finish before the transformed body has a consumer. In the older
-        // provisional path it remained Reading behind the bounded channel.
-        assert!(matches!(
-            *status_rx.borrow(),
-            PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Complete(_)
-        ));
-
-        drop(pipeline);
-        let snapshot = timeout(Duration::from_secs(1), async {
-            loop {
-                if let PoolReplayBodyStatus::Complete(snapshot) = status_rx.borrow().clone() {
-                    break snapshot;
-                }
-                status_rx
-                    .changed()
-                    .await
-                    .expect("replay worker should stay alive");
-            }
-        })
-        .await
-        .expect("dropping the buffered live consumer must release the replay producer");
-        assert!(
-            snapshot
-                .to_bytes()
-                .await
-                .expect("read snapshot")
-                .starts_with(br#"{"model":"gpt-5.6"}"#)
-        );
-    }
-
-    #[tokio::test]
-    async fn prepare_pool_request_body_rewrites_mapped_model_and_rejects_unsafe_payloads() {
-        let uri: Uri = "/v1/responses".parse().expect("responses uri");
-        let mapping = ResolvedModelMapping {
-            source_model: "client-*".to_string(),
-            target_model: "upstream-model".to_string(),
-        };
-        let prepared = prepare_pool_request_body_for_account(
-            90_101,
-            Some(&PoolReplayBodySnapshot::Memory(Bytes::from_static(
-                br#"{"model":"client-fast","input":"hello"}"#,
-            ))),
-            &uri,
-            &Method::POST,
-            None,
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::KeepOriginal,
-            None,
-            None,
-            None,
-            Some(&mapping),
-        )
-        .await
-        .expect("mapped request should prepare");
-        let payload: Value = serde_json::from_slice(
-            &prepared
-                .snapshot
-                .to_bytes()
-                .await
-                .expect("read mapped payload"),
-        )
-        .expect("decode mapped payload");
-        assert_eq!(payload["model"], "upstream-model");
-
-        let err = prepare_pool_request_body_for_account(
-            90_102,
-            Some(&PoolReplayBodySnapshot::Memory(Bytes::from_static(
-                br#"{"model":7,"input":"hello"}"#,
-            ))),
-            &uri,
-            &Method::POST,
-            None,
-            TagFastModeRewriteMode::KeepOriginal,
-            crate::ImageToolRewriteMode::KeepOriginal,
-            crate::CodexImagegenRewriteMode::KeepOriginal,
-            None,
-            None,
-            None,
-            Some(&mapping),
-        )
-        .await
-        .expect_err("mapped non-string model must not be forwarded");
-        assert_eq!(err.status, StatusCode::BAD_REQUEST);
     }
 }

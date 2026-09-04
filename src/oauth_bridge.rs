@@ -16,10 +16,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tokio::{
-    sync::watch,
-    time::{Instant, timeout},
-};
+use tokio::time::{Instant, timeout};
 use tracing::{info, warn};
 
 #[cfg(test)]
@@ -175,9 +172,7 @@ pub(crate) enum CountedOauthUpstreamRequestBody {
         body: Body,
         debug_body_prefix: Option<Bytes>,
         request_is_stream: Option<bool>,
-        request_is_stream_rx: Option<watch::Receiver<Option<bool>>>,
         snapshot_kind: Option<&'static str>,
-        live_rewrite_pending: bool,
     },
 }
 
@@ -542,7 +537,7 @@ async fn counted_oauth_responses(
     };
     let (mut outbound_headers, forwarded_headers) =
         collect_forwardable_headers(headers, OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES, crypto_key);
-    let (request_body, request_debug, request_is_stream, request_is_stream_rx) = match body {
+    let (request_body, request_debug, wants_stream) = match body {
         CountedOauthUpstreamRequestBody::Empty => {
             let prepared = match prepare_responses_request_body(&[], account_id, installation_seed)
             {
@@ -570,8 +565,7 @@ async fn counted_oauth_responses(
             (
                 Body::from(prepared.body),
                 request_debug,
-                Some(prepared.wants_stream),
-                None,
+                prepared.wants_stream,
             )
         }
         CountedOauthUpstreamRequestBody::Bytes(bytes) => {
@@ -601,36 +595,25 @@ async fn counted_oauth_responses(
             (
                 Body::from(prepared.body),
                 request_debug,
-                Some(prepared.wants_stream),
-                None,
+                prepared.wants_stream,
             )
         }
         CountedOauthUpstreamRequestBody::Stream {
             body,
             debug_body_prefix,
             request_is_stream,
-            request_is_stream_rx,
             snapshot_kind,
-            live_rewrite_pending,
         } => {
-            let rewrite = live_rewrite_pending.then(|| OauthResponsesRewriteSummary {
-                applied: true,
-                ..OauthResponsesRewriteSummary::default()
-            });
             let request_debug = build_oauth_request_debug_with_prefix(
                 "/v1/responses",
                 &forwarded_headers,
                 debug_body_prefix.as_deref(),
-                rewrite.unwrap_or_default(),
+                OauthResponsesRewriteSummary::default(),
                 snapshot_kind.or(Some("stream")),
-                Some(if live_rewrite_pending {
-                    "live_streaming_rewrite_pending"
-                } else {
-                    "large_body_passthrough"
-                }),
+                Some("large_body_passthrough"),
                 crypto_key,
             );
-            (body, request_debug, request_is_stream, request_is_stream_rx)
+            (body, request_debug, request_is_stream.unwrap_or(false))
         }
     };
     outbound_headers.insert(
@@ -708,9 +691,6 @@ async fn counted_oauth_responses(
             request_debug: Some(request_debug),
         };
     }
-    let wants_stream = request_is_stream
-        .or_else(|| request_is_stream_rx.as_ref().and_then(|rx| *rx.borrow()))
-        .unwrap_or(false);
     if wants_stream {
         return OauthUpstreamResponse {
             response: normalize_counted_stream_response(upstream),
@@ -1895,31 +1875,6 @@ fn rewrite_client_metadata_installation_id(
             }
         }
     }
-}
-
-/// Applies the OAuth-only `client_metadata` contract after the live parser has
-/// observed the effective top-level value. This matches buffered JSON semantics
-/// without retaining unrelated request fields.
-pub(crate) fn rewrite_live_oauth_client_metadata(
-    value: Value,
-    account_id: Option<i64>,
-    installation_seed: Option<&[u8; 32]>,
-) -> (Value, OauthResponsesRewriteSummary) {
-    let mut root = serde_json::Map::new();
-    root.insert("client_metadata".to_string(), value);
-    let installation_id_rewrite =
-        rewrite_client_metadata_installation_id(&mut root, account_id, installation_seed);
-    (
-        root.remove("client_metadata")
-            .expect("client_metadata remains present after OAuth rewrite"),
-        OauthResponsesRewriteSummary {
-            applied: installation_id_rewrite.rewrote_installation_id
-                || installation_id_rewrite.removed_installation_id,
-            rewrote_installation_id: installation_id_rewrite.rewrote_installation_id,
-            removed_installation_id: installation_id_rewrite.removed_installation_id,
-            ..OauthResponsesRewriteSummary::default()
-        },
-    )
 }
 
 fn derive_oauth_installation_id(seed: &[u8; 32], account_id: i64) -> String {

@@ -1542,19 +1542,17 @@ pub(crate) fn account_is_node_shunt_slot_eligible(
 pub(crate) async fn build_upstream_account_node_shunt_assignments(
     state: &AppState,
 ) -> Result<UpstreamAccountNodeShuntAssignments> {
-    let runtime_cache = load_pool_routing_runtime_cache(state).await?;
-    let routing_snapshot = &runtime_cache.model_routing;
-    let group_metadata_map = routing_snapshot
-        .group_metadata_by_name
-        .iter()
-        .filter(|(_, metadata)| metadata.node_shunt_enabled)
-        .map(|(group_name, metadata)| (group_name.clone(), metadata.clone()))
-        .collect::<HashMap<_, _>>();
+    let group_metadata_map = load_node_shunt_enabled_group_metadata_map(&state.pool).await?;
     if group_metadata_map.is_empty() {
         return Ok(UpstreamAccountNodeShuntAssignments::default());
     }
 
-    let rows_by_id = &routing_snapshot.routing_account_rows_by_id;
+    let group_names = group_metadata_map.keys().cloned().collect::<Vec<_>>();
+    let rows = load_upstream_account_rows_for_groups(&state.pool, &group_names).await?;
+    let rows_by_id = rows
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect::<HashMap<_, _>>();
 
     let mut assignments = UpstreamAccountNodeShuntAssignments::default();
     {
@@ -1573,11 +1571,18 @@ pub(crate) async fn build_upstream_account_node_shunt_assignments(
     let now = Utc::now();
     let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
     let reservation_snapshot = pool_routing_reservation_snapshot(state);
-    let mut candidates = routing_snapshot.routing_candidates.clone();
+    let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
     for candidate in &mut candidates {
         candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
     }
-    let candidate_effective_rules = &routing_snapshot.effective_rules_by_account;
+    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
+        &state.pool,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     for candidate in candidates {
         let Some(row) = rows_by_id.get(&candidate.id) else {
             continue;

@@ -288,6 +288,7 @@ pub(crate) async fn build_pool_model_routing_runtime_cache_with_mapping_override
                 .collect::<Vec<_>>();
         warmed_model_account_ids.insert(model.to_ascii_lowercase(), account_ids);
     }
+
     let routing_candidates = load_account_routing_candidates(pool, &HashSet::new()).await?;
     let routing_candidate_ids = routing_candidates
         .iter()

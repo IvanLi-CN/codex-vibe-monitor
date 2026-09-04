@@ -10,8 +10,6 @@ mod dispatch;
     reason = "Failover adapters preserve established call-site contracts."
 )]
 mod failover;
-mod live_request_body_pipeline;
-mod live_request_streaming;
 mod payload_utils;
 #[expect(
     clippy::too_many_arguments,
@@ -44,8 +42,6 @@ mod websocket;
 
 pub(crate) use dispatch::*;
 pub(crate) use failover::*;
-pub(crate) use live_request_body_pipeline::*;
-pub(crate) use live_request_streaming::*;
 pub(crate) use payload_utils::*;
 pub(crate) use raw_capture::*;
 pub(crate) use request_entry::*;

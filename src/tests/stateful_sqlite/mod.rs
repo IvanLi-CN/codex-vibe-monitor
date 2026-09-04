@@ -24,11 +24,6 @@ pub(crate) async fn fetch_summary_from_memory_snapshot(
 }
 
 mod invocation_query_filters_and_schema_migrations;
-#[expect(
-    clippy::await_holding_lock,
-    reason = "Mock upstream attempt logs intentionally stay locked until async assertions observe requests."
-)]
-mod live_first_and_owner_guard;
 mod oauth_route_body_rewrite_and_timeout;
 #[expect(
     clippy::type_complexity,

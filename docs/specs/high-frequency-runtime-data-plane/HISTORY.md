@@ -15,10 +15,6 @@
 
 - P2 派生写从 P1 的 20ms ticker 中分离，使用 250ms 固定合并、pressure deadline 与分类 lock retry；Prompt Cache window topic 同步改为 500ms active projection，通用 Records 不再触发整窗 SQLite hydrate。
 
-- `/v1/responses` 的 capture path 从完整 body 后再发送升级为可回放 live-first；以路由元数据完整性、关闭默认值、稳定对照和直接首响应测量约束该优化，避免速度收益以错误选路或失真统计换取。
-- `/v1/responses` live-first 灰度不再按账号组筛选；设置面只保留启用开关和实验组占比，避免空账号组配置造成静默不生效。
-- `/v1/responses` 的 v2 路径将路由最终化置于上游 body 首字节之前。root JSON 的字段顺序、重复键和晚到路由输入不再通过取消已发送请求处理；位置和缓存收益以无正文指标单独观测。
-
 - 统一代理 terminal、attempt、route 与派生写的 SQLite admission，删除 P1 retained batch 固定 250ms 重试语义，并限制 P2 rollup 单事务工作量。
 
 - 高频路径的边界由类型依赖和计数测试约束，不再仅依赖“memory-first”命名或日志字段。

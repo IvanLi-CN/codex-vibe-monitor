@@ -85,7 +85,7 @@ Prompt Cache conversation detail explains retained invocations for a prompt cach
 - The destructive affinity-reset confirmation keeps its title and explanation inside a padded content group and its actions inside a separated safe-area footer on both the mobile sheet and desktop dialog.
 - Runtime routing treats an observed binding as a hard constraint; if the bound target is unavailable, routing must fail through the existing no-selectable-account error path rather than falling back to the global pool.
 - Runtime routing treats an observed conversation proxy override as a hard bound forward-proxy scope. The current node remains sticky for the prompt cache key, and runtime switches within the explicit list only after the existing consecutive network-failure threshold. If every node in that list is unavailable, routing fails through the existing proxy/account readiness path rather than silently choosing another proxy or falling back to the account/group scope.
-- Binding lookup does not change the existing live-first request-body streaming strategy; large or chunked requests whose body key is not visible before account selection keep the normal account-pool routing behavior.
+- Binding lookup does not change buffered replayable request-body routing; large or chunked requests whose body key is not visible before account selection wait for a complete snapshot before normal account-pool routing.
 - Binding changes affect future requests only; in-flight requests are not rerouted.
 - Conversation detail history is loaded incrementally: the drawer requests an initial 50 retained invocation records and fetches later 50-record pages only when the drawer body scrolls near the bottom.
 - Conversation detail history tables must stay virtualized so the retained-record `total` does not linearly increase mounted DOM rows or block the binding controls.
@@ -320,7 +320,6 @@ The key segment is URL-encoded with normal component encoding; the server accept
 
 ### Model-Scoped Routing (Storybook)
 
-PR: include
 ![Desktop routing tab with fallback and model buckets](./assets/conversation-routing-desktop-storybook.png)
 ![Desktop model-filtered routing events](./assets/conversation-routing-events-desktop-storybook.png)
 ![Mobile routing tab with five fitted tabs](./assets/conversation-routing-mobile-393x852-storybook.png)
@@ -339,10 +338,8 @@ PR: include
 
 ### Affinity Reset Confirmation (Storybook)
 
-PR: include
 ![Desktop affinity reset confirmation with padded content and action groups](./assets/conversation-routing-desktop-reset-confirm-storybook.png)
 
-PR: include
 ![Mobile affinity reset confirmation with padded content and action groups](./assets/conversation-routing-mobile-reset-confirm-393x852-storybook.png)
 
 - source_type: storybook_canvas
@@ -359,7 +356,6 @@ PR: include
 
 ### Sticky Causality (UI Demo)
 
-PR: include
 ![Desktop event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-desktop.png)
 
 - source_type: ui_demo
@@ -374,7 +370,6 @@ PR: include
 - state: a failed 429 attempt leads to fresh assignment; a later concurrent success is visibly suppressed and links to its attempt.
 - evidence_note: the third historical event intentionally has no context and displays `历史原因未记录`.
 
-PR: include
 ![Mobile event records with Sticky mutation suppression and causal attempts](./assets/sticky-causality-mobile.png)
 
 - source_type: ui_demo
@@ -390,7 +385,6 @@ PR: include
 
 ### Selection Audit (UI Demo)
 
-PR: include
 ![Desktop event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-desktop.png)
 
 - source_type: ui_demo
@@ -404,7 +398,6 @@ PR: include
 - submission_gate: approved
 - state: the Sticky event names the selected account, decisive rule, bounded rejected candidate, cause attempt, and selected attempt whose Records detail contains the same immutable audit.
 
-PR: include
 ![Mobile event records with an immutable fresh-selection audit](./assets/sticky-selection-audit-mobile.png)
 
 - source_type: ui_demo
@@ -420,7 +413,6 @@ PR: include
 
 ### Routing Decision Score Snapshot (Storybook)
 
-PR: include
 ![Fresh routing decision with selected and compared scores](./assets/routing-decision-fresh.png)
 
 - source_type: storybook_canvas
@@ -436,7 +428,6 @@ PR: include
 - state: a fresh assignment shows dzw with model-route penalty `0 (normal)` and CIII with `1 (demoted)`, alongside the other routing comparator fields.
 - evidence_note: proves the winner label is backed by persisted numeric values rather than an unexplained assertion.
 
-PR: include
 ![Historical routing decision without a score snapshot](./assets/routing-decision-historical.png)
 
 - source_type: storybook_canvas
@@ -452,7 +443,6 @@ PR: include
 - state: a legacy event explicitly says candidate scores were not recorded and the comparison cannot be verified.
 - evidence_note: proves historical data is not retroactively reconstructed from current account health.
 
-PR: include
 ![Routing event with an explicit invocation-record link](./assets/routing-decision-invocation-link.png)
 
 - source_type: storybook_canvas
@@ -615,7 +605,6 @@ The Storybook `DrawerBindingAndTimeouts` scenario also shows a multi-node conver
 
 ### Routing Escape Recovery (Storybook)
 
-PR: include
 ![Upstream account stream-error routing escape on desktop](./assets/routing-block-recent-stream-errors-desktop.png)
 
 - source_type: storybook_canvas
@@ -631,7 +620,6 @@ PR: include
 - state: CIII is healthy but work-degraded, with a localized recent stream-error reason and a live `mm:ss` recovery countdown.
 - evidence_note: element capture after the reason layout was changed to wrap instead of truncating; the countdown remains on its own row.
 
-PR: include
 ![Upstream account stream-error routing escape on narrow screen](./assets/routing-block-recent-stream-errors-narrow.png)
 
 - source_type: storybook_canvas
@@ -649,7 +637,6 @@ PR: include
 
 ### Conversation Detail Realtime (Web Demo)
 
-PR: include
 ![Conversation detail calls realtime on desktop](./assets/conversation-detail-realtime-desktop.png)
 
 - source_type: web_demo
@@ -665,7 +652,6 @@ PR: include
 - state: `demo-conversation-a` drawer open on Calls, showing a live responding row and terminal rows from the current topic window
 - evidence_note: verifies that the detail drawer hydrates its Calls tab from the realtime window without the historical list loading state.
 
-PR: include
 ![Conversation detail calls realtime on mobile](./assets/conversation-detail-realtime-mobile-393x852.png)
 
 - source_type: ui_demo

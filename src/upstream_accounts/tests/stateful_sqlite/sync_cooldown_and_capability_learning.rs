@@ -1040,93 +1040,6 @@ async fn cache_usage_missing_does_not_claim_an_observation_only_route() {
 }
 
 #[tokio::test]
-async fn initial_no_candidate_persists_invocation_audit_without_upstream_attempt() {
-    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let trace = PoolUpstreamAttemptTraceContext {
-        invoke_id: "no-candidate-initial-audit".to_string(),
-        occurred_at: format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local()),
-        endpoint: "/v1/responses".to_string(),
-        sticky_key: None,
-        requester_ip: None,
-        upstream_base_url_host: None,
-        request_model: Some("gpt-audit".to_string()),
-    };
-    let audit = PoolRoutingNoCandidateAudit {
-        terminal_reason_code: "modelConcurrencyLimit".to_string(),
-        candidate_count: 2,
-        eligible_candidate_count: 2,
-        reservation_conflict_count: 2,
-        next_eligible_at: None,
-        excluded_reason_counts: std::collections::BTreeMap::from([(
-            "modelConcurrencyLimit".to_string(),
-            2,
-        )]),
-        candidates: vec![PoolRoutingNoCandidateAuditCandidate {
-            account_id: 41,
-            account_name: "dzw".to_string(),
-            reason_code: "modelConcurrencyLimit".to_string(),
-        }],
-    };
-
-    let request_body = Bytes::from_static(br#"{"model":"gpt-audit","input":[]}"#);
-    let error = unwrap_via_pool_initial_account_with_request_body(
-        state.clone(),
-        Some(&trace),
-        Ok(PoolAccountResolutionWithWait::Resolution(
-            PoolAccountResolution::NoCandidate(audit.clone()),
-        )),
-        None,
-        None,
-        None,
-        false,
-        None,
-        Some(PoolReplayBodySnapshot::Memory(request_body.clone())),
-    )
-    .await
-    .expect_err("no candidate should remain a local terminal failure");
-    assert_eq!(error.status, StatusCode::SERVICE_UNAVAILABLE);
-
-    let payload: String =
-        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
-            .bind(&trace.invoke_id)
-            .fetch_one(&state.pool)
-            .await
-            .expect("load persisted no-candidate invocation payload");
-    let payload: serde_json::Value = serde_json::from_str(&payload).expect("valid payload");
-    assert_eq!(payload["poolAttemptCount"], 0);
-    assert_eq!(
-        payload["poolRoutingNoCandidateAudit"]["terminalReasonCode"],
-        "modelConcurrencyLimit"
-    );
-    let request_raw_size: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(request_raw_size, 0) FROM codex_invocations WHERE invoke_id = ?1",
-    )
-    .bind(&trace.invoke_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load persisted no-candidate request body size");
-    assert_eq!(request_raw_size, request_body.len() as i64);
-    let request_raw_path: Option<String> =
-        sqlx::query_scalar("SELECT request_raw_path FROM codex_invocations WHERE invoke_id = ?1")
-            .bind(&trace.invoke_id)
-            .fetch_one(&state.pool)
-            .await
-            .expect("load persisted no-candidate request body path");
-    assert!(
-        request_raw_path.is_some(),
-        "zero-attempt diagnostics must retain the known request body instead of a tombstone"
-    );
-    let attempt_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
-    )
-    .bind(&trace.invoke_id)
-    .fetch_one(&state.pool)
-    .await
-    .expect("count upstream attempts");
-    assert_eq!(attempt_count, 0);
-}
-
-#[tokio::test]
 async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let account_id = insert_test_pool_api_key_account_with_options(
@@ -1228,7 +1141,6 @@ async fn disabling_cache_hit_protection_clears_only_cache_owned_route_state() {
                 low_hit_rate_threshold_percent: None,
                 overflow_mode: None,
             }),
-            live_request_streaming: None,
             priority_handoff_admission_enabled: None,
         }),
     )

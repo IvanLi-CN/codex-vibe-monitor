@@ -1004,7 +1004,6 @@ pub(crate) fn should_upgrade_to_upstream_response_failed(
             | Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
             | Some(PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT)
             | Some(PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED)
-            | Some(PROXY_FAILURE_REQUEST_BODY_INVALID_JSON)
     ) {
         return false;
     }
@@ -1515,7 +1514,6 @@ impl PoolRoutingReservationDropGuard {
         self.suppress_availability_on_drop();
         match persist_failure.await {
             Ok(value) => {
-                invalidate_pool_routing_runtime_cache(self.state.as_ref()).await;
                 self.restore_availability_on_drop();
                 Ok(value)
             }
@@ -1789,7 +1787,6 @@ pub(crate) async fn persist_pool_route_failure_then_release_with_guard<T, E>(
     };
     match result {
         Ok(value) => {
-            invalidate_pool_routing_runtime_cache(state).await;
             release_pool_routing_reservation(state, reservation_key);
             Ok(value)
         }

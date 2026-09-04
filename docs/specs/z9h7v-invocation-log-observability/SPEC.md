@@ -162,7 +162,7 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 当账号 attempts API 为非最终真实 attempt 回填 workflow entry 且该 attempt 缺少 per-attempt `responseSummary` 时，响应体 capture 只能使用 attempt 行的响应字节指标，必须标记为不可从 invocation 级 body lazy-load；只有最终真实 attempt 可绑定 invocation 级响应体。
 - 统一 `/events` 通道新增 `upstream-account-attempts.window` topic，参数固定为 `accountId`、`page`、`pageSize`、`type`、`model`、`stickyKey`；规范化规则与账号 attempts REST 列表一致，默认 `page=1`、`pageSize=20`，`accountId` 必须为正整数，响应 payload 复用 `items`、`stickyKeyOptions`、`total`、`page`、`pageSize`，schema epoch 固定为 `upstream-account-attempts.window/v1`。
 - `PoolAttempts` 广播只有在包含目标 `upstreamAccountId` 时才会触发对应活跃 topic；同一账号 topic 使用不可续延的 250ms 合并窗口，构建期间到达的新事件只补发一次最新快照。刷新失败保留最近一次成功 payload，不清空或倒退列表；内部广播接收端发生 lag 时，所有活跃账号 topic 视为连续性中断，保留 last-good 并各自排入一次专用重建，gap 前或 owner 重连前代际的构建不得提交覆盖新快照。
-- live-first HTTP（API key 与 OAuth）及 WebSocket 建立路径在持久化 pending attempt 后、等待上游响应或会话帧前必须发布 `PoolAttempts` snapshot；长生命周期请求不得只在终态才出现在活跃账号 topic。
+- HTTP（API key 与 OAuth）及 WebSocket 建立路径在持久化 pending attempt 后、等待上游响应或会话帧前必须发布 `PoolAttempts` snapshot；长生命周期请求不得只在终态才出现在活跃账号 topic。
 - 请求 tab 仅在可见时订阅上述 topic；共享 EventSource 在某个 descriptor 的最后一个 listener 卸载、但仍有其他 topic 时，必须立即以剩余 descriptors 重建连接，释放服务端的账号 attempts topic。第一页接纳新记录，非第一页不自动跳页或滚动，同一 `attemptId` 以稳定 key 原位更新并保留展开卡片与深链 focus。`locate` REST 只负责深链定位目标页，定位完成后由对应 topic 接管当前页；断线不在页面私有轮询或补拉。
 - 若 producer 在读取 attempts 快照时失败、无法确定受影响账号，则发送仅内部消费的控制信号，以同一代际失效和专用重建路径恢复所有活跃账号 topic；不得伪造空 `PoolAttempts` 或放宽正常账号匹配。
 - 若已确认的深链目标随后被权威快照挤出当前页，则请求 tab 限一次重新 `locate`，并等待新页 topic 确认后恢复焦点；该路径不引入列表 REST 回退、轮询或隐藏 tab 订阅。
@@ -349,7 +349,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   margin_policy: require_margin
   evidence_surface: component
   evidence_note: verifies the list header is “响应耗时 / HTTP 请求压缩”, the compressed fixture renders `0.642 s · zstd`, and legacy records remain `—`.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only invocation data
@@ -365,7 +364,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   margin_policy: full_page
   evidence_surface: page
   evidence_note: verifies type/model/conversation filters are visible, image and remote_v2 attempts are present, and `/v1/responses` owner-facing endpoint chip renders as `一般`.
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only upstream attempt data
@@ -381,7 +379,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   margin_policy: full_page
   evidence_surface: page
   evidence_note: verifies the image type filter keeps the filter bar visible and narrows the list to the direct image attempt.
-  PR: include
   target_program: mock-only
   capture_scope: storybook iframe
   sensitive_exclusion: fixture-only upstream attempt data
@@ -551,7 +548,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
   submission_gate: approved
-  PR: include
   image:
   ![Dashboard compact desktop model performance tooltip](./assets/model-performance-compact-desktop-storybook.png)
 
@@ -567,7 +563,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   capture_scope: element
   sensitive_exclusion: fixture-only Dashboard data
   submission_gate: approved
-  PR: include
   image:
   ![Dashboard compact mobile model performance drawer](./assets/model-performance-compact-mobile-storybook.png)
 
@@ -785,7 +780,6 @@ For in-flight records, missing TTFT and response duration values display elapsed
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the workflow attempt request detail exposes the effective Lite audit as `responses_lite`, `force_add`, `skipped`, and `responses_lite_client_owned_tools`.
-  PR: include
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: fixture-only invocation data
@@ -807,19 +801,16 @@ For in-flight records, missing TTFT and response duration values display elapsed
   submission_gate: approved
   demo_route: `/#/live?demoScene=attention&demoTheme=dark`
   evidence_note: verifies Live and conversation detail consumers share the compact card projection, omit repeated conversation IDs, retain diagnostic fields, and keep the existing detail drawer interaction.
-  PR: include
   ![Shared invocation cards on desktop](./assets/invocation-cards-desktop.png)
 
 - state: compact desktop summary strip plus three-line cards with invocation ID, status, timing, routing metadata, token/cost diagnostics, and the in-flight elapsed timer.
 
-PR: include
 ![Shared invocation cards on mobile](./assets/invocation-cards-mobile393.png)
 
 - requested_viewport: 393x852
 - viewport_strategy: ui-demo-source
 - state: semantic wrapping keeps the card readable without horizontal overflow or a repeated conversation ID.
 
-PR: include
 ![Expanded invocation card on mobile](./assets/invocation-cards-mobile393-expanded.png)
 
 - requested_viewport: 393x852
@@ -834,7 +825,6 @@ PR: include
   margin_policy: require_margin
   evidence_surface: component
   evidence_note: verifies the authoritative topic lifecycle replaces the pending record in place, adds exactly one new first-page record, and keeps list controls and diagnostics layout stable without a full-list loading state.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only upstream attempt data
@@ -850,7 +840,6 @@ PR: include
   margin_policy: require_margin
   evidence_surface: component
   evidence_note: verifies the same topic lifecycle at 390px CSS width, with no duplicate rows, no full-list loading flash, and stable controls and expanded diagnostics layout.
-  PR: include
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: fixture-only upstream attempt data
@@ -869,5 +858,5 @@ PR: include
 - Responses-family invocation payloads may carry optional `imageToolRewrite` for ordinary hosted tool rewriting and optional `codexImagegenRewrite` for the Codex client-executed namespace. They are distinct contracts.
 - `codexImagegenRewrite` contains `protocol`, `clientMatch`, effective `mode`, `outcome`, `hostedRemoved`, snapshot commit/fingerprint, and optional `reason`. A same-name conflict additionally records the prior schema fingerprint and differing JSON paths.
 - Workflow attempt request summaries forward the same object so invocation and per-attempt detail agree without a schema migration.
-- A recognized `keep_original` request records `outcome=no_change` and `reason=policy_keep_original` even when it is sent through live-first forwarding; this audit path must not require body decoding or disable a raw compressed/file-backed request snapshot.
+- A recognized `keep_original` request records `outcome=no_change` and `reason=policy_keep_original`; this audit path must not require body decoding or disable a raw compressed/file-backed request snapshot.
 - Structured conflict logging uses the same bounded fields as the audit. It must not log prompts, image bytes, or complete request payloads; older records simply omit the object.
