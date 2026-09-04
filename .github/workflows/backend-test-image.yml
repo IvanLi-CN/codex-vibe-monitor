@@ -1,0 +1,60 @@
+name: Backend Test Image
+
+on:
+  workflow_run:
+    workflows:
+      - CI Main
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  backend-test-image:
+    name: Publish Backend Test Image
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 35
+    steps:
+      - name: Checkout CI Main head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize backend-test image name
+        id: backend-test-image-name
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "image_name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish immutable backend-test image (linux/amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: backend-test
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ steps.backend-test-image-name.outputs.image_name }}:backend-test-${{ github.event.workflow_run.head_sha }}
+          build-args: |
+            APP_GIT_REVISION=${{ github.event.workflow_run.head_sha }}

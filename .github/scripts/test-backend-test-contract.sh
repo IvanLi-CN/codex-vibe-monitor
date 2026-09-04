@@ -6,9 +6,11 @@ dockerfile="$repo_root/Dockerfile"
 runner="$repo_root/.github/scripts/run-backend-tests.sh"
 compose_file="$repo_root/compose.backend-test.yml"
 ci_main_workflow="$repo_root/.github/workflows/ci-main.yml"
+backend_test_image_workflow="$repo_root/.github/workflows/backend-test-image.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "${tmp_dir}"' EXIT
+partition_workspace="/tmp/codex-vibe-monitor-backend-test-contract-${PPID}"
+trap 'rm -rf "${tmp_dir}" "${partition_workspace}"' EXIT
 
 grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
@@ -72,26 +74,36 @@ printf '%q ' "$@"
 printf '\n'
 EOF
 chmod +x "$partition_bin/cargo-nextest" "$partition_bin/cargo"
-partition_output="$(PATH="$partition_bin:/usr/bin:/bin" BACKEND_TEST_WORKSPACE="$tmp_dir/partition-workspace" bash "$runner" --profile stateful-sqlite --partition hash:1/2 2>&1)"
+partition_output="$(PATH="$partition_bin:/usr/bin:/bin" BACKEND_TEST_WORKSPACE="$partition_workspace" bash "$runner" --profile stateful-sqlite --partition hash:1/2 2>&1)"
 grep -q -- '--partition hash:1/2' <<<"$partition_output"
 
-if ! grep -Fq 'id: backend-test-image-name' "$ci_main_workflow"; then
-  echo 'expected CI Main to normalize the backend-test GHCR image name' >&2
+if grep -Fq '^  backend-test-image:' "$ci_main_workflow"; then
+  echo 'backend-test image must be outside the CI Main completion path' >&2
   exit 1
 fi
 
-if ! grep -Fq 'image_name=${GITHUB_REPOSITORY,,}' "$ci_main_workflow"; then
-  echo 'expected CI Main backend-test image name to use Bash lowercase normalization' >&2
+if ! grep -Fq 'workflow_run:' "$backend_test_image_workflow" || ! grep -Fq 'github.event.workflow_run.conclusion == '\''success'\''' "$backend_test_image_workflow"; then
+  echo 'backend-test image workflow must run only after successful CI Main' >&2
   exit 1
 fi
 
-if ! grep -Fq 'tags: ${{ env.REGISTRY }}/${{ steps.backend-test-image-name.outputs.image_name }}:backend-test-${{ github.sha }}' "$ci_main_workflow"; then
-  echo 'expected CI Main backend-test image tag to use the normalized image name' >&2
+if ! grep -Fq 'image_name=${GITHUB_REPOSITORY,,}' "$backend_test_image_workflow"; then
+  echo 'backend-test image name must use Bash lowercase normalization' >&2
   exit 1
 fi
 
-if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{ github.sha }}' "$ci_main_workflow"; then
-  echo 'CI Main must not publish the backend-test image with an unnormalized repository name' >&2
+if ! grep -Fq 'backend-test-${{ github.event.workflow_run.head_sha }}' "$backend_test_image_workflow"; then
+  echo 'backend-test image tag must use the CI Main workflow_run head SHA' >&2
+  exit 1
+fi
+
+if grep -Fq 'backend-test-${{ github.sha }}' "$backend_test_image_workflow"; then
+  echo 'backend-test image must not use the independent workflow SHA' >&2
+  exit 1
+fi
+
+if [[ "$(grep -Fc -- '--partition hash:1/2' "$ci_main_workflow")" != 1 || "$(grep -Fc -- '--partition hash:2/2' "$ci_main_workflow")" != 1 ]]; then
+  echo 'CI Main must run exactly one Stateful SQLite job for each hash partition' >&2
   exit 1
 fi
 

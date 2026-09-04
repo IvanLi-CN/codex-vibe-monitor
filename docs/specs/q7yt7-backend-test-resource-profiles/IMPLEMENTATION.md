@@ -26,8 +26,10 @@
   - `--profile lightweight`
   - `--profile stateful-sqlite`
   - `--profile archive-file-io`
+  - `--partition hash:N/M`（仅用于受校验的 Stateful SQLite 分片）
 - PR2 已将不属于 `src/tests/**` / `src/upstream_accounts/tests/**` 的 136 个内联 backend unit tests 并回 `lightweight` profile，避免 profile split 造成 coverage 回归。
 - PR2 已把 owner-facing backend required checks 更新为三个 job，并同步 `.github/quality-gates.json`、contract fixtures、release snapshot 自测与 live quality-gates fixtures。
+- 当前主线将 Stateful SQLite 完整集合并行分为 `hash:1/2` 与 `hash:2/2`，由单一 `Backend Tests (Stateful SQLite)` 聚合 required check 收口；成功 CI Main 后的 `backend-test` 镜像发布独立为 `workflow_run`，不再阻塞 CI Main 完成。
 - PR2 发现 `CI PR` 仅对 `base=main` 触发，导致 stacked PR 无服务端 checks；现已将 `CI PR` 的 `pull_request` 触发范围放开到所有 PR base，同时保留 `Label Gate` / `Review Policy` 与 live rules 对齐检查只对 `main` 生效。
 - PR #576 已合并为 `main@405dfe7b8d4e44b33c25836528c936a9a6341704` 并发布为 `v2.21.1`；`CI Main` run `29072008929` 的三路 backend job 都通过。
 - 该 CI Main 的 backend job wall time 为：

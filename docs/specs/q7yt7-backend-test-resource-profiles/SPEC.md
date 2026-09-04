@@ -124,6 +124,13 @@
 - Candidate PRs MUST build the target from the current commit. A trusted main
   workflow may publish the immutable test image, but Release does not consume
   its digest as validation evidence.
+- `CI Main` MAY execute the complete `stateful-sqlite` profile as deterministic
+  `hash:1/2` and `hash:2/2` shards. A single `Backend Tests (Stateful SQLite)`
+  aggregate required check MUST fail when either shard fails, while preserving
+  the profile filter set and six test threads.
+- The immutable `backend-test` image MUST be published by a success-only
+  `workflow_run` after `CI Main` and tagged with that run's `head_sha`; it MUST
+  not extend the CI Main completion path or provide Release evidence.
 - Affected PRs MUST run the deterministic Representative-Scale Acceptance
   fixture. It MUST cover the old aggregate source admission boundary, paged
   archive proof, and staged all-time checkpoint without reducing the existing

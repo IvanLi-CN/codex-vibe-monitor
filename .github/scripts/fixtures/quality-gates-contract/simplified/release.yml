@@ -234,6 +234,24 @@ jobs:
             --github-token "${GITHUB_TOKEN}" \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: Recover selected release snapshot
+        if: github.event_name != 'workflow_dispatch' && steps.pending-target.outputs.target_sha != ''
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.pending-target.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${TARGET_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --target-only \
+            --skip-publish \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
       - name: Load immutable release snapshot
         if: steps.pending-target.outputs.target_sha != ''
         id: snapshot
@@ -277,11 +295,90 @@ jobs:
             fi
           done
 
+  candidate-availability:
+    name: Validate Candidate Images
+    runs-on: ubuntu-24.04
+    needs: [release-meta]
+    if: ${{ always() && needs.release-meta.result == 'success' && needs.release-meta.outputs.release_enabled == 'true' }}
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 15
+    outputs:
+      available: ${{ steps.verify.outputs.available }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify candidate SHA, version, and platforms
+        id: verify
+        shell: bash
+        env:
+          IMAGE_NAME_LOWER: ${{ needs.release-meta.outputs.image_name_lower }}
+          CANDIDATE_SUFFIX: ${{ needs.release-meta.outputs.candidate_suffix }}
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY}/${IMAGE_NAME_LOWER}"
+          available=true
+          for platform in amd64 arm64; do
+            ref="${image}:candidate-${CANDIDATE_SUFFIX}-${platform}"
+            echo "[candidate] ${ref}"
+            if ! docker pull --platform "linux/${platform}" "${ref}"; then
+              echo "[candidate] missing image: ${ref}" >&2
+              available=false
+              continue
+            fi
+
+            revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "${ref}" || true)"
+            version="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${ref}" || true)"
+            if [[ "${revision}" != "${TARGET_SHA}" ]]; then
+              echo "[candidate] revision mismatch for ${ref}: expected ${TARGET_SHA}, got ${revision:-<missing>}" >&2
+              available=false
+            fi
+            if [[ "${version}" != "${APP_EFFECTIVE_VERSION}" ]]; then
+              echo "[candidate] version mismatch for ${ref}: expected ${APP_EFFECTIVE_VERSION}, got ${version:-<missing>}" >&2
+              available=false
+            fi
+          done
+
+          echo "available=${available}" >> "$GITHUB_OUTPUT"
+
+  candidate-policy:
+    name: Candidate Promotion Policy
+    runs-on: ubuntu-24.04
+    needs: [release-meta, candidate-availability]
+    if: ${{ always() && needs.release-meta.result == 'success' && needs.release-meta.outputs.release_enabled == 'true' }}
+    timeout-minutes: 5
+    steps:
+      - name: Enforce automatic candidate requirement
+        env:
+          AVAILABLE: ${{ needs.candidate-availability.outputs.available }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ] && [ "${AVAILABLE}" != "true" ]; then
+            echo "Automatic Release requires complete SHA/version-matched amd64 and arm64 candidates." >&2
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${AVAILABLE}" != "true" ]; then
+            echo "Manual Release will use the fallback build because candidates are unavailable or mismatched."
+          else
+            echo "Candidate images are complete and eligible for promotion."
+          fi
+
   docker-amd64:
     name: Build + Smoke + Push Candidate (linux/amd64)
     runs-on: ubuntu-24.04
-    needs: [release-meta]
-    if: needs.release-meta.outputs.release_enabled == 'true'
+    needs: [release-meta, candidate-availability]
+    if: ${{ always() && needs.release-meta.outputs.release_enabled == 'true' && github.event_name == 'workflow_dispatch' && needs.candidate-availability.outputs.available != 'true' }}
     permissions:
       contents: read
       packages: write
@@ -310,11 +407,13 @@ jobs:
           platforms: ${{ env.PLATFORM_AMD64 }}
           push: false
           load: true
+          target: runtime
           tags: |
             ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
             ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
           build-args: |
             APP_EFFECTIVE_VERSION=${{ needs.release-meta.outputs.app_effective_version }}
+            APP_GIT_REVISION=${{ needs.release-meta.outputs.target_sha }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-amd64,mode=max
 
@@ -341,8 +440,8 @@ jobs:
   docker-arm64:
     name: Build + Smoke + Push Candidate (linux/arm64)
     runs-on: ubuntu-24.04-arm
-    needs: [release-meta]
-    if: needs.release-meta.outputs.release_enabled == 'true'
+    needs: [release-meta, candidate-availability]
+    if: ${{ always() && needs.release-meta.outputs.release_enabled == 'true' && github.event_name == 'workflow_dispatch' && needs.candidate-availability.outputs.available != 'true' }}
     permissions:
       contents: read
       packages: write
@@ -386,6 +485,7 @@ jobs:
           SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
           CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:candidate-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
           APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          APP_GIT_REVISION: ${{ needs.release-meta.outputs.target_sha }}
           CACHE_REF: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64
         run: ./.github/scripts/build-smoke-image-with-retry.sh
 
@@ -414,8 +514,8 @@ jobs:
   release-publish:
     name: Release Publish (manifest + tag + GitHub Release)
     runs-on: ubuntu-24.04
-    needs: [release-meta, docker-amd64, docker-arm64]
-    if: needs.release-meta.outputs.release_enabled == 'true'
+    needs: [release-meta, candidate-availability, candidate-policy, docker-amd64, docker-arm64]
+    if: ${{ always() && needs.release-meta.outputs.release_enabled == 'true' && needs.candidate-policy.result == 'success' && (needs.candidate-availability.outputs.available == 'true' || (github.event_name == 'workflow_dispatch' && needs.docker-amd64.result == 'success' && needs.docker-arm64.result == 'success')) }}
     permissions:
       actions: write
       contents: write

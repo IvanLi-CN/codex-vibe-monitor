@@ -21,6 +21,182 @@ env:
   RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
 
 jobs:
+  candidate-meta:
+    name: Candidate Image Metadata
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
+    timeout-minutes: 10
+    outputs:
+      release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
+      target_sha: ${{ steps.snapshot.outputs.target_sha }}
+      image_name: ${{ steps.snapshot.outputs.image_name_lower }}
+      app_effective_version: ${{ steps.snapshot.outputs.app_effective_version }}
+      candidate_suffix: ${{ steps.snapshot.outputs.target_sha_short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure immutable release snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${GITHUB_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --target-only \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
+      - name: Export candidate metadata
+        id: snapshot
+        env:
+          SNAPSHOT_PATH: ${{ runner.temp }}/release-snapshot.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["SNAPSHOT_PATH"]).read_text())
+          target_sha = payload["target_sha"]
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"release_enabled={str(payload['release_enabled']).lower()}\n")
+              output.write(f"target_sha={target_sha}\n")
+              output.write(f"target_sha_short={target_sha[:12]}\n")
+              output.write(f"image_name_lower={payload['image_name_lower']}\n")
+              output.write(f"app_effective_version={payload.get('app_effective_version', '')}\n")
+          PY
+
+  candidate-amd64:
+    name: Build + Smoke + Push Candidate (linux/amd64)
+    needs: candidate-meta
+    if: ${{ needs.candidate-meta.outputs.release_enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 35
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.candidate-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build candidate image (linux/amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ needs.candidate-meta.outputs.app_effective_version }}
+            APP_GIT_REVISION=${{ needs.candidate-meta.outputs.target_sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-amd64,mode=max
+
+      - name: Smoke test image (linux/amd64)
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ needs.candidate-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: linux/amd64
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/amd64)
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+        run: docker push "$IMAGE_REF"
+
+  candidate-arm64:
+    name: Build + Smoke + Push Candidate (linux/arm64)
+    needs: candidate-meta
+    if: ${{ needs.candidate-meta.outputs.release_enabled == 'true' }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 35
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.candidate-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout workflow helpers
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-helpers
+
+      - name: Install workflow helper scripts
+        shell: bash
+        run: install -m 755 workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh ./.github/scripts/build-smoke-image-with-retry.sh
+
+      - name: Build candidate image (linux/arm64)
+        shell: bash
+        env:
+          BUILD_PLATFORM: linux/arm64
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          APP_EFFECTIVE_VERSION: ${{ needs.candidate-meta.outputs.app_effective_version }}
+          APP_GIT_REVISION: ${{ needs.candidate-meta.outputs.target_sha }}
+          CACHE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-arm64
+        run: ./.github/scripts/build-smoke-image-with-retry.sh
+
+      - name: Smoke test image (linux/arm64)
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ needs.candidate-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: linux/arm64
+          SMOKE_TIMEOUT_SECS: "120"
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/arm64)
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+        run: docker push "$IMAGE_REF"
+
   lint:
     name: Lint & Format Check
     runs-on: ubuntu-24.04
@@ -493,10 +669,10 @@ jobs:
       - name: Run lightweight backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
-  backend-tests-stateful-sqlite:
+  backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
     if: always()
-    name: Backend Tests (Stateful SQLite)
+    name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -521,7 +697,57 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-2:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Stateful SQLite shard 2/2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Run stateful SQLite backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite:
+    name: Backend Tests (Stateful SQLite)
+    needs:
+      - backend-tests-stateful-sqlite-shard-1
+      - backend-tests-stateful-sqlite-shard-2
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Stateful SQLite shards
+        env:
+          SHARD_ONE_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-1.result }}
+          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-2.result }}
+        run: |
+          set -euo pipefail
+          echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"
+          echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"
+          test "${SHARD_ONE_RESULT}" = success
+          test "${SHARD_TWO_RESULT}" = success
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
@@ -552,51 +778,6 @@ jobs:
 
       - name: Run archive / file I/O backend profile
         run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
-
-  backend-test-image:
-    name: Publish Backend Test Image
-    runs-on: ubuntu-24.04
-    needs:
-      - backend-tests-lightweight
-      - backend-tests-stateful-sqlite
-      - backend-tests-archive-file-io
-    permissions:
-      contents: read
-      packages: write
-    timeout-minutes: 35
-    outputs:
-      digest: ${{ steps.build-backend-test-image.outputs.digest }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Normalize backend-test image name
-        id: backend-test-image-name
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "image_name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish immutable backend-test image (linux/amd64)
-        id: build-backend-test-image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          target: backend-test
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ steps.backend-test-image-name.outputs.image_name }}:backend-test-${{ github.sha }}
 
   release-snapshot:
     name: Release Snapshot
