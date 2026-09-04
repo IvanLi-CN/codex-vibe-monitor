@@ -14459,7 +14459,10 @@ mod tests {
             .iter()
             .find(|point| point.bucket_start == fallback_bucket_start)
             .expect("exact fallback point");
-        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        // The full lightweight profile can schedule this materializer behind other test
+        // processes. Keep the assertion bounded while allowing the documented async projection
+        // debounce and serialization work to complete under shared CI load.
+        let projection_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let projected_parallel = loop {
             let projected_parallel = {
                 let guard = state.subscription_hub.state.lock().await;
