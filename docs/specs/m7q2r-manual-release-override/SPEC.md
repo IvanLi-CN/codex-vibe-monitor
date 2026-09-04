@@ -1,5 +1,9 @@
 # 受控手动发版覆盖（#m7q2r）
 
+## Related ADRs
+
+- [ADR 0013: Overlap main CI with candidate image builds](../../adr/0013-overlap-main-ci-with-candidate-image-builds.md)
+
 ## 背景 / 问题陈述
 
 现有 `Release` workflow 的 `workflow_dispatch(commit_sha)` 只能重放已冻结的 release snapshot。若目标 commit 的原始 PR release intent 是 `type:skip` 或 `type:docs`，手动 backfill 仍会导出 `release_enabled=false`，无法对已经进入 `main` 且通过质量门禁的 commit 做维护者显式发版。

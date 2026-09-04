@@ -6,7 +6,11 @@ dockerfile="$repo_root/Dockerfile"
 runner="$repo_root/.github/scripts/run-backend-tests.sh"
 compose_file="$repo_root/compose.backend-test.yml"
 ci_main_workflow="$repo_root/.github/workflows/ci-main.yml"
+backend_test_image_workflow="$repo_root/.github/workflows/backend-test-image.yml"
 release_workflow="$repo_root/.github/workflows/release.yml"
+tmp_dir="$(mktemp -d)"
+partition_workspace="/tmp/codex-vibe-monitor-backend-test-contract-${PPID}"
+trap 'rm -rf "${tmp_dir}" "${partition_workspace}"' EXIT
 
 grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
@@ -23,23 +27,83 @@ grep -q '^    command: \["sleep", "infinity"\]$' "$compose_file"
 grep -q '^    user: "65534:65534"$' "$compose_file"
 grep -q '^      CARGO_HOME: /tmp/codex-vibe-monitor-backend-test/cargo-home$' "$compose_file"
 
-if ! grep -Fq 'id: backend-test-image-name' "$ci_main_workflow"; then
-  echo 'expected CI Main to normalize the backend-test GHCR image name' >&2
+web_builder_section="$(sed -n '/^FROM oven\/bun:.* AS web-builder$/,/^# Stage 2:/p' "$dockerfile")"
+web_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$web_builder_section" | cut -d: -f1)"
+web_workdir_line="$(grep -n '^WORKDIR /app/web$' <<<"$web_builder_section" | cut -d: -f1)"
+if (( web_arg_line < web_workdir_line )); then
+  echo 'web builder must not declare APP_EFFECTIVE_VERSION before dependency installation' >&2
+  exit 1
+fi
+web_copy_line="$(grep -n '^COPY web/ \.\/$' <<<"$web_builder_section" | cut -d: -f1)"
+if (( web_arg_line != web_copy_line + 1 )); then
+  echo 'web builder must declare APP_EFFECTIVE_VERSION immediately before version-dependent build steps' >&2
   exit 1
 fi
 
-if ! grep -Fq 'image_name=${GITHUB_REPOSITORY,,}' "$ci_main_workflow"; then
-  echo 'expected CI Main backend-test image name to use Bash lowercase normalization' >&2
+rust_builder_section="$(sed -n '/^FROM rust:.* AS rust-builder$/,/^# Stage 3:/p' "$dockerfile")"
+rust_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$rust_builder_section" | cut -d: -f1)"
+rust_workdir_line="$(grep -n '^WORKDIR /app$' <<<"$rust_builder_section" | cut -d: -f1)"
+if (( rust_arg_line < rust_workdir_line )); then
+  echo 'rust builder must not declare APP_EFFECTIVE_VERSION before dependency installation' >&2
+  exit 1
+fi
+rust_copy_line="$(grep -n '^COPY src \.\/src$' <<<"$rust_builder_section" | cut -d: -f1)"
+if (( rust_arg_line != rust_copy_line + 1 )); then
+  echo 'rust builder must declare APP_EFFECTIVE_VERSION immediately before source build steps' >&2
+  exit 1
+fi
+grep -q 'org.opencontainers.image.revision=${APP_GIT_REVISION}' "$dockerfile"
+
+set +e
+invalid_partition_output="$(PATH=/usr/bin:/bin bash "$runner" --profile stateful-sqlite --partition hash:3/2 2>&1)"
+invalid_partition_rc=$?
+set -e
+[[ "$invalid_partition_rc" == 64 ]]
+grep -q -- '--partition requires 1 <= N <= M' <<<"$invalid_partition_output"
+
+partition_bin="$tmp_dir/partition-bin"
+mkdir -p "$partition_bin"
+cat >"$partition_bin/cargo-nextest" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$partition_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@"
+printf '\n'
+EOF
+chmod +x "$partition_bin/cargo-nextest" "$partition_bin/cargo"
+partition_output="$(PATH="$partition_bin:/usr/bin:/bin" BACKEND_TEST_WORKSPACE="$partition_workspace" bash "$runner" --profile stateful-sqlite --partition hash:1/2 2>&1)"
+grep -q -- '--partition hash:1/2' <<<"$partition_output"
+
+if grep -Fq '^  backend-test-image:' "$ci_main_workflow"; then
+  echo 'backend-test image must be outside the CI Main completion path' >&2
   exit 1
 fi
 
-if ! grep -Fq 'tags: ${{ env.REGISTRY }}/${{ steps.backend-test-image-name.outputs.image_name }}:backend-test-${{ github.sha }}' "$ci_main_workflow"; then
-  echo 'expected CI Main backend-test image tag to use the normalized image name' >&2
+if ! grep -Fq 'workflow_run:' "$backend_test_image_workflow" || ! grep -Fq 'github.event.workflow_run.conclusion == '\''success'\''' "$backend_test_image_workflow"; then
+  echo 'backend-test image workflow must run only after successful CI Main' >&2
   exit 1
 fi
 
-if grep -Fq 'tags: ${{ env.REGISTRY }}/${{ github.repository }}:backend-test-${{ github.sha }}' "$ci_main_workflow"; then
-  echo 'CI Main must not publish the backend-test image with an unnormalized repository name' >&2
+if ! grep -Fq 'image_name=${GITHUB_REPOSITORY,,}' "$backend_test_image_workflow"; then
+  echo 'backend-test image name must use Bash lowercase normalization' >&2
+  exit 1
+fi
+
+if ! grep -Fq 'backend-test-${{ github.event.workflow_run.head_sha }}' "$backend_test_image_workflow"; then
+  echo 'backend-test image tag must use the CI Main workflow_run head SHA' >&2
+  exit 1
+fi
+
+if grep -Fq 'backend-test-${{ github.sha }}' "$backend_test_image_workflow"; then
+  echo 'backend-test image must not use the independent workflow SHA' >&2
+  exit 1
+fi
+
+if [[ "$(grep -Fc -- '--partition hash:1/2' "$ci_main_workflow")" != 1 || "$(grep -Fc -- '--partition hash:2/2' "$ci_main_workflow")" != 1 ]]; then
+  echo 'CI Main must run exactly one Stateful SQLite job for each hash partition' >&2
   exit 1
 fi
 

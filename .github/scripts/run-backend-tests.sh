@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH] [--test-filter EXPR]
+Usage: run-backend-tests.sh [--profile lightweight|stateful-sqlite|archive-file-io] [--archive-file PATH] [--test-filter EXPR] [--partition hash:N/M]
 
 Profiles:
   lightweight
@@ -17,12 +17,16 @@ instead of building test binaries in this invocation.
 
 When --test-filter is set, replace the profile's default nextest filter while
 retaining the profile's schema-template and workspace contract.
+
+When --partition is set, pass one deterministic cargo-nextest hash partition to
+the selected profile. The value must be hash:N/M with 1 <= N <= M.
 EOF
 }
 
 profile="all"
 archive_file=""
 test_filter_override=""
+partition=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
@@ -52,6 +56,15 @@ while [[ $# -gt 0 ]]; do
       test_filter_override="$2"
       shift 2
       ;;
+    --partition)
+      if [[ $# -lt 2 ]]; then
+        echo "::error::--partition requires a value." >&2
+        usage >&2
+        exit 64
+      fi
+      partition="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -63,6 +76,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+partition_args=()
+if [[ -n "$partition" ]]; then
+  if [[ ! "$partition" =~ ^hash:([0-9]+)/([0-9]+)$ ]]; then
+    echo "::error::--partition must use hash:N/M." >&2
+    exit 64
+  fi
+  partition_index="${BASH_REMATCH[1]}"
+  partition_count="${BASH_REMATCH[2]}"
+  if (( partition_index < 1 || partition_count < 1 || partition_index > partition_count )); then
+    echo "::error::--partition requires 1 <= N <= M." >&2
+    exit 64
+  fi
+  partition_args=(--partition "$partition")
+fi
 
 backend_test_workspace="${BACKEND_TEST_WORKSPACE:-/tmp/codex-vibe-monitor-backend-test}"
 if [[ "$backend_test_workspace" != /tmp/* || "$backend_test_workspace" == *..* ]]; then
@@ -180,15 +208,15 @@ run_profile() {
   if [[ -n "$test_threads" ]]; then
     echo "backend_test_profile_test_threads_${selected_profile//-/_}=$test_threads"
     if [[ -n "$archive_file" ]]; then
-      cargo nextest run --archive-file "$archive_file" --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast --test-threads "$test_threads" "${partition_args[@]}" -E "$filter_expr"
     else
-      cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" -E "$filter_expr"
+      cargo nextest run --locked --all-features --no-fail-fast --test-threads "$test_threads" "${partition_args[@]}" -E "$filter_expr"
     fi
   else
     if [[ -n "$archive_file" ]]; then
-      cargo nextest run --archive-file "$archive_file" --no-fail-fast -E "$filter_expr"
+      cargo nextest run --archive-file "$archive_file" --no-fail-fast "${partition_args[@]}" -E "$filter_expr"
     else
-      cargo nextest run --locked --all-features --no-fail-fast -E "$filter_expr"
+      cargo nextest run --locked --all-features --no-fail-fast "${partition_args[@]}" -E "$filter_expr"
     fi
   fi
   if [[ "$selected_profile" == "stateful-sqlite" ]]; then

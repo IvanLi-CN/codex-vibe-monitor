@@ -32,6 +32,7 @@ class ContractModel:
     expected_pr_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_main_workflows: dict[str, tuple[str, ...]]
     expected_main_auxiliary_workflows: dict[str, tuple[str, ...]]
+    expected_auxiliary_workflows: dict[str, tuple[str, ...]]
     expected_release_workflows: dict[str, tuple[str, ...]]
     label_check_name: str
 
@@ -381,6 +382,11 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
 
     expected_pr_workflows, expected_pr_auxiliary_workflows = parse_expected_workflows(payload, "expected_pr_workflows")
     expected_main_workflows, expected_main_auxiliary_workflows = parse_expected_workflows(payload, "expected_main_workflows")
+    expected_auxiliary_workflows, expected_auxiliary_auxiliary_workflows = parse_expected_workflows(payload, "expected_auxiliary_workflows")
+    require(
+        not any(expected_auxiliary_auxiliary_workflows.values()),
+        "quality-gates.json: auxiliary workflows must not declare auxiliary jobs",
+    )
     expected_release_workflows, expected_release_auxiliary_workflows = parse_expected_workflows(payload, "expected_release_workflows")
     require(
         not any(expected_release_auxiliary_workflows.values()),
@@ -419,6 +425,7 @@ def validate_quality_gates(payload: dict[str, Any]) -> ContractModel:
         expected_pr_auxiliary_workflows=expected_pr_auxiliary_workflows,
         expected_main_workflows=expected_main_workflows,
         expected_main_auxiliary_workflows=expected_main_auxiliary_workflows,
+        expected_auxiliary_workflows=expected_auxiliary_workflows,
         expected_release_workflows=expected_release_workflows,
         label_check_name=label_required[0],
     )
@@ -770,7 +777,7 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
             == "${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}",
             "ci-main.yml.jobs.backend-test-archive: target cache must save only after a successful archive build",
         )
-        for backend_job_id in ("backend-tests-lightweight", "backend-tests-stateful-sqlite", "backend-tests-archive-file-io"):
+        for backend_job_id in ("backend-tests-lightweight", "backend-tests-archive-file-io"):
             require(
                 job_config(workflow, backend_job_id, "ci-main.yml").get("needs") == "backend-test-archive",
                 f"ci-main.yml.jobs.{backend_job_id}.needs must use the archive producer",
@@ -780,22 +787,54 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
                 "always()",
                 f"ci-main.yml.jobs.{backend_job_id}",
             )
-        if "Publish Backend Test Image" in auxiliary_jobs:
-            image_job = job_config(workflow, "backend-test-image", "ci-main.yml")
-            require(image_job.get("name") == "Publish Backend Test Image", "ci-main.yml backend-test-image job name drifted")
-            require(
-                image_job.get("needs") == [
-                    "backend-tests-lightweight",
-                    "backend-tests-stateful-sqlite",
-                    "backend-tests-archive-file-io",
-                ],
-                "ci-main.yml backend-test-image needs drifted",
-            )
-            image_permissions = require_mapping(image_job.get("permissions"), "ci-main.yml.jobs.backend-test-image.permissions")
-            require(image_permissions.get("packages") == "write", "ci-main.yml backend-test-image must publish with packages: write")
-            image_build = step_config(image_job, "Build and publish immutable backend-test image (linux/amd64)", "ci-main.yml.jobs.backend-test-image")
-            require(image_build.get("id") == "build-backend-test-image", "ci-main.yml backend-test-image step id drifted")
-            require(image_build.get("with", {}).get("target") == "backend-test" and image_build.get("with", {}).get("push") is True, "ci-main.yml backend-test-image must push the backend-test target")
+        for shard_id, partition in (
+            ("backend-tests-stateful-sqlite-shard-1", "hash:1/2"),
+            ("backend-tests-stateful-sqlite-shard-2", "hash:2/2"),
+        ):
+            shard_job = job_config(workflow, shard_id, "ci-main.yml")
+            require(shard_job.get("needs") == "backend-test-archive", f"ci-main.yml.jobs.{shard_id}.needs must use the archive producer")
+            require_exact_if(shard_job, "always()", f"ci-main.yml.jobs.{shard_id}")
+            shard_run = str(step_config(shard_job, "Run stateful SQLite backend profile", f"ci-main.yml.jobs.{shard_id}").get("run", ""))
+            require(f"--partition {partition}" in shard_run, f"ci-main.yml.jobs.{shard_id} must run partition {partition}")
+        aggregate_job = job_config(workflow, "backend-tests-stateful-sqlite", "ci-main.yml")
+        require(
+            aggregate_job.get("needs") == ["backend-tests-stateful-sqlite-shard-1", "backend-tests-stateful-sqlite-shard-2"],
+            "ci-main.yml.jobs.backend-tests-stateful-sqlite.needs must aggregate both shards",
+        )
+        require_exact_if(aggregate_job, "always()", "ci-main.yml.jobs.backend-tests-stateful-sqlite")
+        aggregate_run = str(step_config(aggregate_job, "Require both Stateful SQLite shards", "ci-main.yml.jobs.backend-tests-stateful-sqlite").get("run", ""))
+        require("SHARD_ONE_RESULT" in aggregate_run and "SHARD_TWO_RESULT" in aggregate_run, "ci-main.yml Stateful SQLite aggregate must inspect both shard results")
+
+        candidate_meta = job_config(workflow, "candidate-meta", "ci-main.yml")
+        require(candidate_meta.get("name") == "Candidate Image Metadata", "ci-main.yml candidate metadata job name drifted")
+        require_no_if(candidate_meta, "ci-main.yml.jobs.candidate-meta")
+        candidate_ensure = step_config(candidate_meta, "Ensure immutable release snapshot", "ci-main.yml.jobs.candidate-meta")
+        candidate_ensure_run = str(candidate_ensure.get("run", ""))
+        require("--target-only" in candidate_ensure_run, "ci-main.yml candidate metadata must freeze only the current SHA")
+        candidate_exports = step_config(candidate_meta, "Export candidate metadata", "ci-main.yml.jobs.candidate-meta")
+        candidate_exports_run = str(candidate_exports.get("run", ""))
+        require("target_sha_short" in candidate_exports_run and "app_effective_version" in candidate_exports_run, "ci-main.yml candidate metadata outputs drifted")
+        for candidate_id, platform in (("candidate-amd64", "amd64"), ("candidate-arm64", "arm64")):
+            candidate_job = job_config(workflow, candidate_id, "ci-main.yml")
+            require(candidate_job.get("if") == "${{ needs.candidate-meta.outputs.release_enabled == 'true' }}", f"ci-main.yml.jobs.{candidate_id}.if drifted")
+            require(candidate_job.get("needs") == "candidate-meta", f"ci-main.yml.jobs.{candidate_id}.needs drifted")
+            checkout = checkout_step(candidate_job, "Checkout target SHA", f"ci-main.yml.jobs.{candidate_id}")
+            require(checkout.get("ref") == "${{ needs.candidate-meta.outputs.target_sha }}", f"ci-main.yml.jobs.{candidate_id} checkout ref drifted")
+            build_name = f"Build candidate image (linux/{platform})"
+            build = step_config(candidate_job, build_name, f"ci-main.yml.jobs.{candidate_id}")
+            if build.get("uses") == "docker/build-push-action@v7":
+                build_with = require_mapping(build.get("with"), f"ci-main.yml.jobs.{candidate_id}.steps[{build_name!r}].with")
+                require(build_with.get("target") == "runtime", f"ci-main.yml.jobs.{candidate_id} must build runtime target")
+                build_args = str(build_with.get("build-args", ""))
+                require("APP_EFFECTIVE_VERSION=" in build_args and "APP_GIT_REVISION=" in build_args, f"ci-main.yml.jobs.{candidate_id} OCI build args drifted")
+            else:
+                build_env = require_mapping(build.get("env"), f"ci-main.yml.jobs.{candidate_id}.steps[{build_name!r}].env")
+                require(build_env.get("APP_EFFECTIVE_VERSION") == "${{ needs.candidate-meta.outputs.app_effective_version }}", f"ci-main.yml.jobs.{candidate_id} version plumbing drifted")
+                require(build_env.get("APP_GIT_REVISION") == "${{ needs.candidate-meta.outputs.target_sha }}", f"ci-main.yml.jobs.{candidate_id} revision plumbing drifted")
+                require("build-smoke-image-with-retry.sh" in str(build.get("run", "")), f"ci-main.yml.jobs.{candidate_id} must use the retry helper")
+            smoke = step_config(candidate_job, f"Smoke test image (linux/{platform})", f"ci-main.yml.jobs.{candidate_id}")
+            require("SMOKE_TAG" in require_mapping(smoke.get("env"), f"ci-main.yml.jobs.{candidate_id}.smoke.env"), f"ci-main.yml.jobs.{candidate_id} smoke tag missing")
+
     release_snapshot_permissions = require_mapping(
         release_snapshot.get("permissions"), "ci-main.yml.jobs.release-snapshot.permissions"
     )
@@ -833,6 +872,33 @@ def validate_ci_main(path: Path, contract: ContractModel) -> None:
     )
 
 
+def validate_backend_test_image(path: Path, contract: ContractModel) -> None:
+    workflow = load_yaml(path)
+    workflow_name = workflow.get("name")
+    require(isinstance(workflow_name, str) and workflow_name, "backend-test-image.yml: workflow name must stay non-empty")
+    expected_jobs = set(contract.expected_auxiliary_workflows.get(workflow_name, ()))
+    require(expected_jobs, f"backend-test-image.yml: workflow {workflow_name!r} must be declared in expected_auxiliary_workflows")
+    require_exact_named_jobs(workflow, expected_jobs, "backend-test-image.yml")
+
+    workflow_run = event_config(workflow, "workflow_run", "backend-test-image.yml")
+    assert_event_types(workflow_run, {"completed"}, "backend-test-image.yml.on.workflow_run")
+    assert_event_branches(workflow_run, {"main"}, "backend-test-image.yml.on.workflow_run")
+    require(workflow_run.get("workflows") == ["CI Main"], "backend-test-image.yml.on.workflow_run.workflows drifted")
+    permissions = require_mapping(workflow.get("permissions"), "backend-test-image.yml.permissions")
+    require(permissions.get("contents") == "read", "backend-test-image.yml.permissions.contents must stay read")
+
+    job = named_job_config(workflow, "backend-test-image", expected_jobs, "backend-test-image.yml")
+    require_exact_if(job, "${{ github.event.workflow_run.conclusion == 'success' }}", "backend-test-image.yml.jobs.backend-test-image")
+    job_permissions = require_mapping(job.get("permissions"), "backend-test-image.yml.jobs.backend-test-image.permissions")
+    require(job_permissions.get("packages") == "write", "backend-test-image.yml backend-test-image must publish with packages: write")
+    checkout = checkout_step(job, "Checkout CI Main head", "backend-test-image.yml.jobs.backend-test-image")
+    require(checkout.get("ref") == "${{ github.event.workflow_run.head_sha }}", "backend-test-image.yml checkout must use workflow_run.head_sha")
+    build = step_config(job, "Build and publish immutable backend-test image (linux/amd64)", "backend-test-image.yml.jobs.backend-test-image")
+    build_with = require_mapping(build.get("with"), "backend-test-image.yml backend-test build")
+    require(build_with.get("target") == "backend-test" and build_with.get("push") is True, "backend-test-image.yml must publish the backend-test target")
+    tags = str(build_with.get("tags", ""))
+    require("backend-test-${{ github.event.workflow_run.head_sha }}" in tags, "backend-test-image.yml tag must use workflow_run.head_sha")
+    require("backend-test-${{ github.sha }}" not in tags, "backend-test-image.yml must not tag from its own workflow SHA")
 def validate_label_gate(path: Path, contract: ContractModel) -> None:
     workflow = load_yaml(path)
     workflow_name = workflow.get("name")
@@ -1129,9 +1195,42 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     candidate_run = str(candidate_step.get("run", ""))
     require("candidate_suffix=${TARGET_SHA:0:12}" in candidate_run, "release.yml.jobs.release-meta: candidate suffix drifted")
 
+    candidate_availability = named_job_config(workflow, "candidate-availability", expected_jobs, "release.yml")
+    require(
+        candidate_availability.get("needs") == ["release-meta"],
+        "release.yml.jobs.candidate-availability.needs drifted",
+    )
+    require(
+        candidate_availability.get("if")
+        == "${{ always() && needs.release-meta.result == 'success' && needs.release-meta.outputs.release_enabled == 'true' }}",
+        "release.yml.jobs.candidate-availability.if drifted",
+    )
+    availability_run = str(step_config(candidate_availability, "Verify candidate SHA, version, and platforms", "release.yml.jobs.candidate-availability").get("run", ""))
+    require("docker pull --platform" in availability_run, "release.yml candidate availability must pull both candidate platforms")
+    require("org.opencontainers.image.revision" in availability_run and "org.opencontainers.image.version" in availability_run, "release.yml candidate availability must verify OCI metadata")
+    require("available=${available}" in availability_run, "release.yml candidate availability output drifted")
+
+    candidate_policy = named_job_config(workflow, "candidate-policy", expected_jobs, "release.yml")
+    require(
+        candidate_policy.get("needs") == ["release-meta", "candidate-availability"],
+        "release.yml.jobs.candidate-policy.needs drifted",
+    )
+    require(
+        candidate_policy.get("if")
+        == "${{ always() && needs.release-meta.result == 'success' && needs.release-meta.outputs.release_enabled == 'true' }}",
+        "release.yml.jobs.candidate-policy.if drifted",
+    )
+    policy_run = str(step_config(candidate_policy, "Enforce automatic candidate requirement", "release.yml.jobs.candidate-policy").get("run", ""))
+    require("github.event_name" in policy_run and "Automatic Release requires complete" in policy_run, "release.yml candidate policy must fail closed for automatic runs")
+    require("Manual Release will use the fallback build" in policy_run, "release.yml candidate policy must document manual fallback")
+
     docker_amd = named_job_config(workflow, "docker-amd64", expected_jobs, "release.yml")
-    require(docker_amd.get("needs") == ["release-meta"], "release.yml.jobs.docker-amd64.needs drifted")
-    require(docker_amd.get("if") == "needs.release-meta.outputs.release_enabled == 'true'", "release.yml.jobs.docker-amd64.if drifted")
+    require(docker_amd.get("needs") == ["release-meta", "candidate-availability"], "release.yml.jobs.docker-amd64.needs drifted")
+    require(
+        docker_amd.get("if")
+        == "${{ always() && needs.release-meta.outputs.release_enabled == 'true' && github.event_name == 'workflow_dispatch' && needs.candidate-availability.outputs.available != 'true' }}",
+        "release.yml.jobs.docker-amd64.if drifted",
+    )
     amd_checkout = checkout_step(docker_amd, "Checkout code", "release.yml.jobs.docker-amd64")
     require(amd_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-amd64 checkout ref drifted")
     amd_smoke_step = step_config(docker_amd, "Smoke test image (linux/amd64)", "release.yml.jobs.docker-amd64")
@@ -1142,6 +1241,15 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
 
     docker_arm = named_job_config(workflow, "docker-arm64", expected_jobs, "release.yml")
+    require(
+        docker_arm.get("needs") == ["release-meta", "candidate-availability"],
+        "release.yml.jobs.docker-arm64.needs drifted",
+    )
+    require(
+        docker_arm.get("if")
+        == "${{ always() && needs.release-meta.outputs.release_enabled == 'true' && github.event_name == 'workflow_dispatch' && needs.candidate-availability.outputs.available != 'true' }}",
+        "release.yml.jobs.docker-arm64.if drifted",
+    )
     arm_checkout = checkout_step(docker_arm, "Checkout code", "release.yml.jobs.docker-arm64")
     require(arm_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.docker-arm64 checkout ref drifted")
     require(arm_checkout.get("path") == "target", "release.yml.jobs.docker-arm64 checkout path drifted")
@@ -1173,6 +1281,14 @@ def validate_release(path: Path, contract: ContractModel) -> None:
         arm_build_env.get("CACHE_REF") == "${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:buildcache-arm64",
         "release.yml.jobs.docker-arm64: arm64 smoke build cache ref drifted",
     )
+    require(
+        arm_build_env.get("APP_EFFECTIVE_VERSION") == "${{ needs.release-meta.outputs.app_effective_version }}",
+        "release.yml.jobs.docker-arm64: arm64 smoke build version plumbing drifted",
+    )
+    require(
+        arm_build_env.get("APP_GIT_REVISION") == "${{ needs.release-meta.outputs.target_sha }}",
+        "release.yml.jobs.docker-arm64: arm64 smoke build revision plumbing drifted",
+    )
     arm_build_run = str(arm_build_step.get("run", ""))
     require(
         "./.github/scripts/build-smoke-image-with-retry.sh" in arm_build_run,
@@ -1187,7 +1303,16 @@ def validate_release(path: Path, contract: ContractModel) -> None:
     )
 
     publish = named_job_config(workflow, "release-publish", expected_jobs, "release.yml")
-    require(publish.get("needs") == ["release-meta", "docker-amd64", "docker-arm64"], "release.yml.jobs.release-publish.needs drifted")
+    require(
+        publish.get("needs")
+        == ["release-meta", "candidate-availability", "candidate-policy", "docker-amd64", "docker-arm64"],
+        "release.yml.jobs.release-publish.needs drifted",
+    )
+    require(
+        publish.get("if")
+        == "${{ always() && needs.release-meta.outputs.release_enabled == 'true' && needs.candidate-policy.result == 'success' && (needs.candidate-availability.outputs.available == 'true' || (github.event_name == 'workflow_dispatch' && needs.docker-amd64.result == 'success' && needs.docker-arm64.result == 'success')) }}",
+        "release.yml.jobs.release-publish.if drifted",
+    )
     publish_permissions = require_mapping(publish.get("permissions"), "release.yml.jobs.release-publish.permissions")
     require(publish_permissions.get("actions") == "write", "release.yml.jobs.release-publish.permissions.actions must stay write")
     require(publish_permissions.get("contents") == "write", "release.yml.jobs.release-publish.permissions.contents must stay write")
@@ -1379,6 +1504,7 @@ def main() -> int:
         require(profile == "final", "quality-gates-contract: bootstrap profile is no longer supported by this repository")
         validate_ci_pr(repo_root / ".github" / "workflows" / "ci-pr.yml", contract)
         validate_ci_main(repo_root / ".github" / "workflows" / "ci-main.yml", contract)
+        validate_backend_test_image(repo_root / ".github" / "workflows" / "backend-test-image.yml", contract)
         validate_release(repo_root / ".github" / "workflows" / "release.yml", contract)
         validate_release_snapshot_pr(repo_root / ".github" / "workflows" / "release-snapshot-pr.yml")
         validate_label_gate(repo_root / ".github" / "workflows" / "label-gate.yml", contract)

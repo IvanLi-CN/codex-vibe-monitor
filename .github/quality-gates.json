@@ -122,6 +122,18 @@
       ],
       "auxiliary_jobs": [
         "Backend Test Archive Producer",
+        "Candidate Image Metadata",
+        "Build + Smoke + Push Candidate (linux/amd64)",
+        "Build + Smoke + Push Candidate (linux/arm64)",
+        "Backend Tests (Stateful SQLite shard 1/2)",
+        "Backend Tests (Stateful SQLite shard 2/2)"
+      ]
+    }
+  ],
+  "expected_auxiliary_workflows": [
+    {
+      "workflow": "Backend Test Image",
+      "jobs": [
         "Publish Backend Test Image"
       ]
     }
@@ -132,6 +144,8 @@
       "jobs": [
         "CI Main Gate",
         "Release Meta (snapshot + tags)",
+        "Validate Candidate Images",
+        "Candidate Promotion Policy",
         "Build + Smoke + Push Candidate (linux/amd64)",
         "Build + Smoke + Push Candidate (linux/arm64)",
         "Release Publish (manifest + tag + GitHub Release)"

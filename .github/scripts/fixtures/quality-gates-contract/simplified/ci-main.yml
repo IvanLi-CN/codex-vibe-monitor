@@ -21,6 +21,182 @@ env:
   RELEASE_SNAPSHOT_NOTES_REF: refs/notes/release-snapshots
 
 jobs:
+  candidate-meta:
+    name: Candidate Image Metadata
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+      issues: read
+      pull-requests: read
+    timeout-minutes: 10
+    outputs:
+      release_enabled: ${{ steps.snapshot.outputs.release_enabled }}
+      target_sha: ${{ steps.snapshot.outputs.target_sha }}
+      image_name: ${{ steps.snapshot.outputs.image_name_lower }}
+      app_effective_version: ${{ steps.snapshot.outputs.app_effective_version }}
+      candidate_suffix: ${{ steps.snapshot.outputs.target_sha_short }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for release notes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure immutable release snapshot
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/release_snapshot.py ensure \
+            --target-sha "${GITHUB_SHA}" \
+            --github-repository "${GITHUB_REPOSITORY}" \
+            --github-token "${GITHUB_TOKEN}" \
+            --notes-ref "${RELEASE_SNAPSHOT_NOTES_REF}" \
+            --registry "${REGISTRY}" \
+            --target-only \
+            --output "$RUNNER_TEMP/release-snapshot.json"
+
+      - name: Export candidate metadata
+        id: snapshot
+        env:
+          SNAPSHOT_PATH: ${{ runner.temp }}/release-snapshot.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["SNAPSHOT_PATH"]).read_text())
+          target_sha = payload["target_sha"]
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as output:
+              output.write(f"release_enabled={str(payload['release_enabled']).lower()}\n")
+              output.write(f"target_sha={target_sha}\n")
+              output.write(f"target_sha_short={target_sha[:12]}\n")
+              output.write(f"image_name_lower={payload['image_name_lower']}\n")
+              output.write(f"app_effective_version={payload.get('app_effective_version', '')}\n")
+          PY
+
+  candidate-amd64:
+    name: Build + Smoke + Push Candidate (linux/amd64)
+    needs: candidate-meta
+    if: ${{ needs.candidate-meta.outputs.release_enabled == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 35
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.candidate-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build candidate image (linux/amd64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+            ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+          build-args: |
+            APP_EFFECTIVE_VERSION=${{ needs.candidate-meta.outputs.app_effective_version }}
+            APP_GIT_REVISION=${{ needs.candidate-meta.outputs.target_sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-amd64
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-amd64,mode=max
+
+      - name: Smoke test image (linux/amd64)
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-amd64-${{ needs.candidate-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: linux/amd64
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/amd64)
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+        run: docker push "$IMAGE_REF"
+
+  candidate-arm64:
+    name: Build + Smoke + Push Candidate (linux/arm64)
+    needs: candidate-meta
+    if: ${{ needs.candidate-meta.outputs.release_enabled == 'true' }}
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 35
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.candidate-meta.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout workflow helpers
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-helpers
+
+      - name: Install workflow helper scripts
+        shell: bash
+        run: install -m 755 workflow-helpers/.github/scripts/build-smoke-image-with-retry.sh ./.github/scripts/build-smoke-image-with-retry.sh
+
+      - name: Build candidate image (linux/arm64)
+        shell: bash
+        env:
+          BUILD_PLATFORM: linux/arm64
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          CANDIDATE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          APP_EFFECTIVE_VERSION: ${{ needs.candidate-meta.outputs.app_effective_version }}
+          APP_GIT_REVISION: ${{ needs.candidate-meta.outputs.target_sha }}
+          CACHE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:buildcache-arm64
+        run: ./.github/scripts/build-smoke-image-with-retry.sh
+
+      - name: Smoke test image (linux/arm64)
+        env:
+          SMOKE_TAG: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-arm64-${{ needs.candidate-meta.outputs.candidate_suffix }}
+          SMOKE_PLATFORM: linux/arm64
+          SMOKE_TIMEOUT_SECS: "120"
+        run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Push candidate image (linux/arm64)
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+        run: docker push "$IMAGE_REF"
+
   lint:
     name: Lint & Format Check
     runs-on: ubuntu-24.04
@@ -28,8 +204,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Verify Rust system dependencies
         run: |
@@ -44,20 +218,38 @@ jobs:
           components: rustfmt, clippy
 
       - name: Restore legacy Cargo workspace cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-registry-
 
       - name: Cargo fmt check
         run: cargo fmt --all -- --check
 
       - name: Cargo clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
   repository-tooling-checks:
     name: Repository Tooling Checks
@@ -82,6 +274,15 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
+      - name: Type-check Web Demo sources
+        run: bun run typecheck:web
+
+      - name: Install docs-site dependencies
+        run: bun install --cwd docs-site --frozen-lockfile
+
+      - name: Git hook contract smoke
+        run: bash scripts/test-git-hooks-contract.sh
+
       - name: Bun-first guard
         run: bun run check:bun-first
 
@@ -94,6 +295,8 @@ jobs:
             .github/scripts/release_snapshot.py \
             .github/scripts/verify_manifest_platforms.py
           bash -n .github/scripts/build-smoke-image-with-retry.sh
+          bash -n .github/scripts/run-backend-tests.sh
+          bash -n .github/scripts/test-representative-scale-contract.sh
 
       - name: Resolve trusted quality-gates sources
         id: trusted-quality-gates
@@ -147,6 +350,8 @@ jobs:
           bash .github/scripts/test-build-smoke-image-with-retry.sh
           bash .github/scripts/test-release-snapshot.sh
           bash .github/scripts/test-live-quality-gates.sh
+          bash .github/scripts/test-backend-test-contract.sh
+          bash .github/scripts/test-representative-scale-contract.sh
 
       - name: Front-end lint
         run: bun run lint:web
@@ -227,10 +432,40 @@ jobs:
         working-directory: web
         run: bun run storybook:build -- --quiet
 
-      - name: Build docs and demo sites
+      - name: Compute DOCS_BASE
+        shell: bash
         run: |
-          cd docs-site && bun run build
-          cd ../web && bun run demo:build
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY##*/}"
+          if [[ "${repo}" == "${owner}.github.io" ]]; then
+            echo "DOCS_BASE=/" >> "$GITHUB_ENV"
+          else
+            echo "DOCS_BASE=/${repo}/" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build docs site
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd docs-site
+          DOCS_BASE="${DOCS_BASE}" bun run build
+
+      - name: Build Web Demo static site
+        working-directory: web
+        run: VITE_DEPLOY_BASE="${DOCS_BASE}demo/" bun run demo:build
+
+      - name: Assemble public docs site smoke check
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ./.github/scripts/assemble-pages-site.sh docs-site/doc_build web/storybook-static web/demo-dist .tmp/pages-site
+          test -f .tmp/pages-site/index.html
+          test -f .tmp/pages-site/storybook/index.html
+          test -f .tmp/pages-site/demo/index.html
+          test -f .tmp/pages-site/demo/mockServiceWorker.js
+          test -f .tmp/pages-site/storybook.html
+          grep -q "${DOCS_BASE}storybook.html" .tmp/pages-site/index.html
 
   records-overlay-e2e:
     name: Records Overlay E2E
@@ -271,9 +506,45 @@ jobs:
           cat /tmp/codex-vibe-monitor-vite.log || true
           exit 1
 
-      - name: Run records overlay Playwright regression
+      - name: Start mock-only Web Demo server
         working-directory: web
-        run: bun run test:e2e -- records-filter-overlay.spec.ts
+        run: |
+          bun run demo:dev -- --host 127.0.0.1 --port 60083 > /tmp/codex-vibe-monitor-demo.log 2>&1 &
+          echo $! > /tmp/codex-vibe-monitor-demo.pid
+
+      - name: Wait for Web Demo readiness
+        run: |
+          for _ in {1..60}; do
+            if curl -fsS http://127.0.0.1:60083/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Web Demo server failed to start within 60 seconds."
+          cat /tmp/codex-vibe-monitor-demo.log || true
+          exit 1
+
+      - name: Run records overlay and Web Demo Playwright regression
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          records_status=0
+          demo_status=0
+          dashboard_status=0
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-records \
+            bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts &
+          records_pid=$!
+          E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \
+            bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts &
+          demo_pid=$!
+          PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \
+            bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts &
+          dashboard_pid=$!
+          wait "$records_pid" || records_status=$?
+          wait "$demo_pid" || demo_status=$?
+          wait "$dashboard_pid" || dashboard_status=$?
+          exit $(( records_status || demo_status || dashboard_status ))
 
       - name: Upload Playwright diagnostics
         if: failure()
@@ -281,7 +552,9 @@ jobs:
         with:
           name: records-overlay-playwright-report
           path: |
-            web/playwright-report
+            web/playwright-report-records
+            web/playwright-report-demo
+            web/playwright-report-dashboard
             web/test-results
           if-no-files-found: ignore
 
@@ -291,18 +564,80 @@ jobs:
           if [ -f /tmp/codex-vibe-monitor-vite.pid ]; then
             kill "$(cat /tmp/codex-vibe-monitor-vite.pid)" || true
           fi
+          if [ -f /tmp/codex-vibe-monitor-demo.pid ]; then
+            kill "$(cat /tmp/codex-vibe-monitor-demo.pid)" || true
+          fi
 
   backend-test-archive:
     name: Backend Test Archive Producer
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Verify Rust system dependencies
+        run: |
+          command -v pkg-config
+          test -r /usr/include/sqlite3.h
+          command -v unzip
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
+
+      - name: Restore Cargo registry
+        id: cargo-registry-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore Cargo test artifacts
+        id: cargo-test-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Build backend test archive
         id: build-backend-test-archive
         run: cargo nextest archive --locked --all-features --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
+      - name: Upload backend test archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+      - name: Save Cargo registry
+        if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
       - name: Save Cargo test artifacts
         if: ${{ steps.build-backend-test-archive.outcome == 'success' && steps.cargo-test-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-test-v3-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive
@@ -322,27 +657,22 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Run lightweight backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile lightweight
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
 
-  backend-tests-stateful-sqlite:
+      - name: Run lightweight backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile lightweight --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-1:
     needs: backend-test-archive
     if: always()
-    name: Backend Tests (Stateful SQLite)
+    name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -357,22 +687,67 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
-        uses: actions/cache@v5
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Run stateful SQLite backend profile
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:1/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite-shard-2:
+    needs: backend-test-archive
+    if: always()
+    name: Backend Tests (Stateful SQLite shard 2/2)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: 1.96.0
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
       - name: Run stateful SQLite backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite
+        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --partition hash:2/2 --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
+
+  backend-tests-stateful-sqlite:
+    name: Backend Tests (Stateful SQLite)
+    needs:
+      - backend-tests-stateful-sqlite-shard-1
+      - backend-tests-stateful-sqlite-shard-2
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both Stateful SQLite shards
+        env:
+          SHARD_ONE_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-1.result }}
+          SHARD_TWO_RESULT: ${{ needs.backend-tests-stateful-sqlite-shard-2.result }}
+        run: |
+          set -euo pipefail
+          echo "Stateful SQLite shard 1/2: ${SHARD_ONE_RESULT}"
+          echo "Stateful SQLite shard 2/2: ${SHARD_TWO_RESULT}"
+          test "${SHARD_ONE_RESULT}" = success
+          test "${SHARD_TWO_RESULT}" = success
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
@@ -392,22 +767,17 @@ jobs:
         with:
           toolchain: 1.96.0
 
-      - name: Cache cargo directories
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      - name: Download backend test archive
+        uses: actions/download-artifact@v7
+        with:
+          name: backend-test-archive-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
       - name: Run archive / file I/O backend profile
-        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io
+        run: bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst"
 
   release-snapshot:
     name: Release Snapshot
