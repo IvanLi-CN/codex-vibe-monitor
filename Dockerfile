@@ -1,12 +1,12 @@
 # Stage 1: build the web assets
 FROM oven/bun:1.3.14-alpine AS web-builder
-ARG APP_EFFECTIVE_VERSION
 WORKDIR /app/web
 
 COPY web/package.json web/bun.lock ./
 RUN bun install --frozen-lockfile
 
 COPY web/ ./
+ARG APP_EFFECTIVE_VERSION
 ENV VITE_APP_VERSION=${APP_EFFECTIVE_VERSION}
 RUN bun run build
 
@@ -14,7 +14,6 @@ RUN bun run build
 # IMPORTANT: runtime image is Debian bookworm (glibc 2.36). Pin the Rust build stage to bookworm too,
 # otherwise the rust:<version> default base may drift and produce a binary requiring newer GLIBC.
 FROM rust:1.96.0-bookworm AS rust-builder
-ARG APP_EFFECTIVE_VERSION
 WORKDIR /app
 
 RUN apt-get update \
@@ -29,6 +28,7 @@ RUN mkdir -p src \
 
 # Copy app sources and build the real binary.
 COPY src ./src
+ARG APP_EFFECTIVE_VERSION
 ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 RUN find src -type f -name '*.rs' -exec touch {} + \
     && rm -f target/release/codex-vibe-monitor \
@@ -77,6 +77,7 @@ COPY scripts/search-raw /usr/local/bin/search-raw
 # Stage 5: production runtime image
 FROM runtime-base AS production-runtime
 ARG APP_EFFECTIVE_VERSION
+ARG APP_GIT_REVISION
 ARG FRONTEND_EFFECTIVE_VERSION
 
 COPY --from=rust-builder /app/target/release/codex-vibe-monitor /usr/local/bin/codex-vibe-monitor
@@ -92,7 +93,8 @@ ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
     MALLOC_ARENA_MAX=8 \
     APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
 
-LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION}
+LABEL org.opencontainers.image.version=${APP_EFFECTIVE_VERSION} \
+      org.opencontainers.image.revision=${APP_GIT_REVISION}
 
 VOLUME ["/srv/app/data"]
 EXPOSE 8080
@@ -107,8 +109,6 @@ CMD ["codex-vibe-monitor"]
 # 24.04; matching its glibc here avoids executing a host-built debug binary against
 # the older production runtime.
 FROM ubuntu:24.04 AS ci-smoke-runtime
-ARG APP_EFFECTIVE_VERSION
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gzip libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -123,6 +123,7 @@ COPY .ci-smoke/web ./web
 
 RUN chmod 0755 /usr/local/bin/search-raw /usr/local/bin/codex-vibe-monitor
 
+ARG APP_EFFECTIVE_VERSION
 ENV DATABASE_PATH=/srv/app/data/codex_vibe_monitor.db \
     HTTP_BIND=0.0.0.0:8080 \
     STATIC_DIR=/srv/app/web \
