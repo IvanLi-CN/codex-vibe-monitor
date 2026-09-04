@@ -3839,6 +3839,37 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS summary_archive_snapshot_backfill_outcome (
+            archive_batch_id INTEGER NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            failure_kind TEXT NOT NULL DEFAULT '',
+            next_probe_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_batch_id, manifest_sha256)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary_archive_snapshot_backfill_outcome table existence")?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "next_page_index",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "next_row_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_all_time_projection_checkpoint (
             scope TEXT PRIMARY KEY,
             live_high_watermark_id INTEGER NOT NULL,
@@ -3873,6 +3904,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure summary_all_time_projection_checkpoint table existence")?;
+    ensure_column_with_definition(
+        pool,
+        "summary_all_time_projection_checkpoint",
+        "coverage_revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     sqlx::query(
         r#"
@@ -5131,7 +5169,110 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     ensure_long_term_stats_schema(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
     ensure_long_term_projection_account_trigger(pool).await?;
+    ensure_summary_coverage_revision_schema(pool).await?;
 
+    Ok(())
+}
+
+/// Keep a durable, monotonic revision for the source tables that can change the exact AllTime
+/// coverage proof.  The projection checkpoint stores this revision alongside the manifest
+/// watermark, so a replay, rollup, or verified Snapshot change cannot silently reuse an old
+/// aggregate.  A single revision is intentionally conservative: a changed source invalidates
+/// the affected checkpoint rather than risking a stale exact response.
+async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS summary_coverage_revision (\
+            id INTEGER PRIMARY KEY CHECK (id = 1),\
+            revision INTEGER NOT NULL DEFAULT 0\
+        )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary coverage revision table existence")?;
+    sqlx::query("INSERT OR IGNORE INTO summary_coverage_revision (id, revision) VALUES (1, 0)")
+        .execute(pool)
+        .await
+        .context("failed to seed Summary coverage revision")?;
+    // A pre-existing database has no revision history for this fence. Bump the zero value once
+    // so an old checkpoint is rebuilt under the new coverage contract after upgrade.
+    sqlx::query("UPDATE summary_coverage_revision SET revision = 1 WHERE id = 1 AND revision = 0")
+        .execute(pool)
+        .await
+        .context("failed to initialize Summary coverage revision")?;
+
+    for (name, table, predicate) in [
+        (
+            "archive_insert",
+            "archive_batches",
+            "WHEN NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "archive_update",
+            "archive_batches",
+            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "archive_delete",
+            "archive_batches",
+            "WHEN OLD.dataset = 'codex_invocations'",
+        ),
+        ("invocation_rollup_insert", "invocation_rollup_hourly", ""),
+        ("invocation_rollup_update", "invocation_rollup_hourly", ""),
+        ("invocation_rollup_delete", "invocation_rollup_hourly", ""),
+        ("account_rollup_insert", "upstream_account_stats_hourly", ""),
+        ("account_rollup_update", "upstream_account_stats_hourly", ""),
+        ("account_rollup_delete", "upstream_account_stats_hourly", ""),
+        (
+            "usage_rollup_insert",
+            "upstream_account_usage_breakdown_hourly",
+            "",
+        ),
+        (
+            "usage_rollup_update",
+            "upstream_account_usage_breakdown_hourly",
+            "",
+        ),
+        (
+            "usage_rollup_delete",
+            "upstream_account_usage_breakdown_hourly",
+            "",
+        ),
+        (
+            "replay_insert",
+            "hourly_rollup_archive_replay",
+            "WHEN NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "replay_update",
+            "hourly_rollup_archive_replay",
+            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "replay_delete",
+            "hourly_rollup_archive_replay",
+            "WHEN OLD.dataset = 'codex_invocations'",
+        ),
+        ("snapshot_insert", "summary_archive_snapshot", ""),
+        ("snapshot_update", "summary_archive_snapshot", ""),
+        ("snapshot_delete", "summary_archive_snapshot", ""),
+    ] {
+        let event = if name.ends_with("_insert") {
+            "INSERT"
+        } else if name.ends_with("_update") {
+            "UPDATE"
+        } else {
+            "DELETE"
+        };
+        let trigger = format!(
+            "CREATE TRIGGER IF NOT EXISTS trg_summary_coverage_revision_{name} \
+             AFTER {event} ON {table} {predicate} BEGIN \
+               UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1; \
+             END",
+        );
+        sqlx::query(&trigger).execute(pool).await.with_context(|| {
+            format!("failed to ensure Summary coverage revision trigger {name}")
+        })?;
+    }
     Ok(())
 }
 

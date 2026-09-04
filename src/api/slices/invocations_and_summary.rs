@@ -7197,10 +7197,7 @@ impl SummaryProjectionBuildMode {
     }
 
     const fn requires_full_historical_live_coverage(self) -> bool {
-        matches!(
-            self,
-            Self::Bootstrap | Self::HistoricalLiveCoverage | Self::AllTime
-        )
+        matches!(self, Self::Bootstrap | Self::HistoricalLiveCoverage)
     }
 }
 
@@ -7498,12 +7495,14 @@ pub(crate) struct SummaryProjectionGenerationFence {
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     completed_manifest_high_watermark_id: Option<i64>,
+    coverage_revision: i64,
     durable_terminal_sequence_watermark: u64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct SummaryCoverageFence {
     pub(crate) completed_manifest_high_watermark_id: Option<i64>,
+    pub(crate) coverage_revision: i64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -7525,6 +7524,7 @@ impl SummaryProjectionGenerationFence {
     pub(crate) fn coverage_fence(self) -> SummaryCoverageFence {
         SummaryCoverageFence {
             completed_manifest_high_watermark_id: self.completed_manifest_high_watermark_id,
+            coverage_revision: self.coverage_revision,
         }
     }
 
@@ -7733,6 +7733,23 @@ impl SummaryProjection {
         generation_fence: SummaryProjectionGenerationFence,
     ) -> bool {
         if self.generation_fence != generation_fence {
+            return false;
+        }
+        self.freshness_lease.renew();
+        true
+    }
+
+    // All-time reconciliation owns historical coverage only. A newly committed terminal
+    // advances the live tail cursor and must be served by the bounded overlay without cancelling
+    // an otherwise valid archive/rollup recovery page.
+    pub(crate) fn renew_freshness_if_coverage_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        if !self
+            .generation_fence
+            .coverage_sources_match(generation_fence)
+        {
             return false;
         }
         self.freshness_lease.renew();
@@ -10742,6 +10759,18 @@ async fn renew_summary_projection_freshness_if_generation_matches(
     Ok(renewed)
 }
 
+async fn renew_summary_projection_freshness_if_coverage_matches(state: &AppState) -> Result<bool> {
+    let generation_fence = load_summary_projection_generation_fence(state).await?;
+    let renewed = state
+        .subscription_hub
+        .renew_summary_projection_freshness_if_coverage_matches(generation_fence)
+        .await;
+    if renewed {
+        debug!("summary all-time coverage freshness renewed for unchanged coverage fence");
+    }
+    Ok(renewed)
+}
+
 /// Reconstruct the bounded durable source tail after a restart or when the in-process delta
 /// queue has been dropped.  Only descriptor identities are read from the journal; the canonical
 /// source row is hydrated in 400-id chunks and exposed through the existing in-memory replay
@@ -11073,7 +11102,7 @@ async fn await_summary_projection_all_time_build(
         tokio::select! {
             result = &mut build => return result,
             _ = &mut timeout => return Err(anyhow!("summary projection build exceeded {deadline:?}")),
-            _ = keepalive.tick() => match renew_summary_projection_freshness_if_generation_matches(state).await {
+            _ = keepalive.tick() => match renew_summary_projection_freshness_if_coverage_matches(state).await {
                 Ok(true) => debug!("summary rolling projection kept fresh during all-time reconciliation"),
                 Ok(false) => return Err(SummaryProjectionAllTimeGenerationChanged.into()),
                 Err(error) => warn!(error = ?error, "summary all-time reconciliation could not renew rolling freshness"),
@@ -11582,6 +11611,16 @@ async fn summary_projection_completed_manifest_high_watermark(
     .context("summary projection completed manifest high-watermark hydration failed")
 }
 
+async fn summary_projection_coverage_revision(pool: &Pool<Sqlite>) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection coverage revision hydration failed")
+    .map(|revision| revision.unwrap_or_default())
+}
+
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL: &str = "global";
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT: &str = "account";
 
@@ -11845,6 +11884,7 @@ struct SummaryAllTimeProjectionCheckpointRow {
     rollup_live_cursor: i64,
     account_rollup_live_cursor: Option<i64>,
     manifest_high_watermark_id: Option<i64>,
+    coverage_revision: i64,
     durable_terminal_sequence_watermark: i64,
     global_manifest_next_id: i64,
     account_manifest_next_id: i64,
@@ -11874,6 +11914,7 @@ impl SummaryAllTimeProjectionCheckpointRow {
             rollup_live_cursor: self.rollup_live_cursor,
             account_rollup_live_cursor: self.account_rollup_live_cursor,
             completed_manifest_high_watermark_id: self.manifest_high_watermark_id,
+            coverage_revision: self.coverage_revision,
             durable_terminal_sequence_watermark: self.durable_terminal_sequence_watermark.max(0)
                 as u64,
         }
@@ -11996,7 +12037,7 @@ async fn load_summary_all_time_projection_checkpoint(
 ) -> Result<Option<SummaryAllTimeProjectionCheckpointRow>> {
     sqlx::query_as::<_, SummaryAllTimeProjectionCheckpointRow>(
         "SELECT live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-                manifest_high_watermark_id, durable_terminal_sequence_watermark, \
+                manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark, \
                 global_manifest_next_id, account_manifest_next_id, global_manifest_complete, \
                 account_manifest_complete, global_rollup_next_rowid, account_rollup_next_rowid, \
                 usage_rollup_next_rowid, global_rollup_complete, account_rollup_complete, \
@@ -12027,13 +12068,14 @@ async fn reset_summary_all_time_projection_checkpoint(
     sqlx::query(
         "INSERT INTO summary_all_time_projection_checkpoint \
          (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-          manifest_high_watermark_id, durable_terminal_sequence_watermark) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+          manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
          ON CONFLICT(scope) DO UPDATE SET \
            live_high_watermark_id = excluded.live_high_watermark_id, \
            rollup_live_cursor = excluded.rollup_live_cursor, \
            account_rollup_live_cursor = excluded.account_rollup_live_cursor, \
            manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
+           coverage_revision = excluded.coverage_revision, \
            durable_terminal_sequence_watermark = excluded.durable_terminal_sequence_watermark, \
            global_manifest_next_id = 0, account_manifest_next_id = 0, \
            global_manifest_complete = 0, account_manifest_complete = 0, \
@@ -12048,6 +12090,7 @@ async fn reset_summary_all_time_projection_checkpoint(
     .bind(generation_fence.rollup_live_cursor)
     .bind(generation_fence.account_rollup_live_cursor)
     .bind(generation_fence.completed_manifest_high_watermark_id)
+    .bind(generation_fence.coverage_revision)
     .bind(
         generation_fence
             .durable_terminal_sequence_watermark
@@ -12341,6 +12384,7 @@ async fn load_summary_projection_generation_fence(
             &state.pool,
         )
         .await?,
+        coverage_revision: summary_projection_coverage_revision(&state.pool).await?,
         durable_terminal_sequence_watermark,
     })
 }
@@ -16188,6 +16232,7 @@ async fn build_summary_projection_once(
             rollup_live_cursor,
             account_rollup_live_cursor,
             completed_manifest_high_watermark_id,
+            coverage_revision: summary_projection_coverage_revision(pool).await?,
             durable_terminal_sequence_watermark,
         },
         freshness_lease: SummaryProjectionFreshnessLease::default(),
@@ -33483,7 +33528,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_all_time_generation_change_cancels_and_rebuilds_rolling() {
+    async fn summary_projection_all_time_generation_change_preserves_coverage_and_replays_tail() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -33528,18 +33573,30 @@ mod request_compression_query_tests {
         .await
         .expect("mutate the durable generation while all-time reconciliation is paused");
 
+        let new_row = sqlx::query_as::<_, ApiInvocation>(
+            "SELECT * FROM codex_invocations WHERE invoke_id = 'summary-all-time-generation-after'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load the committed terminal for the bounded tail overlay");
+        let mut delta = persisted_dashboard_activity_terminal_delta(&new_row);
+        delta.terminal_sequence = 2;
+        delta.persisted_row_id = Some(new_row.id);
+        state
+            .subscription_hub
+            .acknowledge_replayed_summary_delta(delta)
+            .await;
+
         let result = tokio::time::timeout(
-            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL + SUMMARY_PROJECTION_BUILD_DEADLINE,
+            SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE + Duration::from_secs(2),
             refresh,
         )
         .await
-        .expect(
-            "generation change must cancel all-time reconciliation and hand off rolling recovery",
-        );
+        .expect("coverage-stable all-time reconciliation must finish without cancellation");
         clear_summary_projection_test_interleave();
         result
             .expect("join refresh task")
-            .expect("publish rebuilt rolling projection");
+            .expect("publish all-time projection while retaining the tail overlay");
 
         state.pool.close().await;
         let Json(current) = fetch_summary(
@@ -34624,6 +34681,82 @@ mod request_compression_query_tests {
         .expect("rolling projection remains memory-only after SQLite closes");
         assert_eq!(current.total_count, 2);
         assert_eq!(current.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_all_time_never_runs_historical_live_coverage() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-all-time-historical-coverage', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .bind(historical_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed historical live source");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create historical coverage interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
+        );
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("AllTime recovery must use coverage proof, not a historical live scan");
+        clear_summary_projection_test_interleave();
+        assert_eq!(
+            interleave.build_attempts(),
+            0,
+            "only Bootstrap or the dedicated historical recovery may scan historical live data",
+        );
+        state.pool.close().await;
+        let Json(response) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("AllTime live-only aggregate remains exact");
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.total_tokens, 17);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_coverage_revision_changes_when_rollup_proof_changes() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let before = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load initial coverage revision");
+        sqlx::query(
+            "INSERT INTO invocation_rollup_hourly \
+             (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) \
+             VALUES (1, 'proxy', 1, 1, 0, 5, 0.25)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert changed rollup proof");
+        let after = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load updated coverage revision");
+        assert!(
+            after > before,
+            "rollup proof changes must advance coverage fence"
+        );
     }
 
     #[tokio::test]
