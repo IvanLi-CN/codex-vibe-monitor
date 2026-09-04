@@ -28,6 +28,13 @@
   archive SHA and materializes bounded V2 pages. Missing, unreadable or
   mismatched authority is recorded as a finite unavailable outcome and remains
   retryable; a budget boundary leaves the cursor at the last committed page.
+- `SummaryCoverageRecoverySupervisor` is now the sole runtime owner for
+  unfinished AllTime checkpoint pages and Legacy Snapshot V2 backfill. It
+  advances one generation-fenced proof page, gives 30-day-intersecting Snapshot
+  candidates priority, and finalizes only after exact proof. The regular Summary
+  refresh path no longer invokes the generic AllTime builder or paged raw
+  hydration; pressure, restart, and SQLite lock defer preserve the last
+  committed cursor while recent Projection selections stay available.
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a time/account
   range intersecting a `DeltaGapProof`, is unavailable rather than approximate.

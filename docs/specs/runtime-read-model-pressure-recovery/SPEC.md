@@ -11,6 +11,7 @@
 - [ADR 0008: Bounded incremental Summary projection recovery](../../adr/0008-bounded-incremental-summary-projection-recovery.md)
 - [ADR 0009: Durable Summary source-change and archive-snapshot recovery](../../adr/0009-durable-summary-source-change-and-archive-snapshot-recovery.md)
 - [ADR 0010: Summary coverage fence and Snapshot authority](../../adr/0010-summary-coverage-fence-and-snapshot-authority.md)
+- [ADR 0012: Historical Summary Coverage Recovery Supervisor](../../adr/0012-historical-summary-coverage-supervisor.md)
 - [ADR 0007: CI-contained representative-scale validation](../../adr/0007-ci-contained-representative-scale-validation.md)
 
 ## 背景 / 问题陈述
