@@ -3846,6 +3846,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             failure_kind TEXT NOT NULL DEFAULT '',
             next_probe_at TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            next_occurred_at TEXT,
+            cursor_version INTEGER NOT NULL DEFAULT 1,
+            retry_attempt INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (archive_batch_id, manifest_sha256)
         )
         "#,
@@ -3864,6 +3867,27 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         pool,
         "summary_archive_snapshot_backfill_outcome",
         "next_row_id",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "next_occurred_at",
+        "TEXT",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "cursor_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "retry_attempt",
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;

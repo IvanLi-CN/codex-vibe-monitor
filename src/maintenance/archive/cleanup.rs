@@ -957,6 +957,64 @@ impl HistoricalRollupStartupCandidateRow {
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE: &str = "summary-global";
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT: i64 = 8;
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS: i64 = 3_600;
+const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION: i64 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SummaryArchiveSnapshotBackfillDisposition {
+    Complete,
+    InProgress,
+    Deferred,
+    TransientFailure,
+    Unrecoverable,
+}
+
+impl SummaryArchiveSnapshotBackfillDisposition {
+    fn from_storage(disposition: &str, failure_kind: &str) -> Self {
+        match disposition {
+            "complete" => Self::Complete,
+            "in_progress" => Self::InProgress,
+            "deferred" => Self::Deferred,
+            "unavailable"
+                if matches!(
+                    failure_kind,
+                    "verification_failed"
+                        | "manifest_sha_mismatch"
+                        | "invalid_timestamp"
+                        | "row_count_mismatch"
+                ) =>
+            {
+                Self::Unrecoverable
+            }
+            "unavailable" => Self::TransientFailure,
+            _ => Self::TransientFailure,
+        }
+    }
+
+    fn next_probe_at(self, retry_attempt: i64) -> String {
+        match self {
+            Self::Complete | Self::Unrecoverable => {
+                format_utc_iso(Utc::now() + ChronoDuration::days(365))
+            }
+            Self::InProgress => format_utc_iso(Utc::now()),
+            Self::Deferred | Self::TransientFailure => {
+                let exponent = u32::try_from(retry_attempt.clamp(0, 5)).unwrap_or(5);
+                let delay_secs = SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS
+                    .saturating_mul(1_i64 << exponent)
+                    .min(24 * 3_600);
+                format_utc_iso(Utc::now() + ChronoDuration::seconds(delay_secs))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SummaryArchiveSnapshotBackfillProgress {
+    page_index: u32,
+    next_occurred_at: Option<String>,
+    next_row_id: i64,
+    cursor_version: i64,
+    retry_attempt: i64,
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct SummaryArchiveSnapshotBackfillWindowResult {
@@ -1054,9 +1112,9 @@ async fn load_summary_archive_snapshot_backfill_candidates(
 async fn load_summary_archive_snapshot_backfill_progress(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
-) -> Result<(u32, i64)> {
-    let progress = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT next_page_index, next_row_id
+) -> Result<SummaryArchiveSnapshotBackfillProgress> {
+    let progress = sqlx::query_as::<_, (i64, Option<String>, i64, i64, i64)>(
+        "SELECT next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt
          FROM summary_archive_snapshot_backfill_outcome
          WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
     )
@@ -1065,13 +1123,22 @@ async fn load_summary_archive_snapshot_backfill_progress(
     .fetch_optional(pool)
     .await
     .context("load Summary Snapshot V2 backfill page progress")?;
-    let Some((page_index, row_id)) = progress else {
-        return Ok((0, 0));
+    let Some((page_index, occurred_at, row_id, cursor_version, retry_attempt)) = progress else {
+        return Ok(SummaryArchiveSnapshotBackfillProgress {
+            page_index: 0,
+            next_occurred_at: None,
+            next_row_id: 0,
+            cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
+            retry_attempt: 0,
+        });
     };
-    Ok((
-        u32::try_from(page_index.max(0)).unwrap_or(u32::MAX),
-        row_id.max(0),
-    ))
+    Ok(SummaryArchiveSnapshotBackfillProgress {
+        page_index: u32::try_from(page_index.max(0)).unwrap_or(u32::MAX),
+        next_occurred_at: occurred_at,
+        next_row_id: row_id.max(0),
+        cursor_version,
+        retry_attempt: retry_attempt.max(0),
+    })
 }
 
 async fn record_summary_archive_snapshot_backfill_outcome(
@@ -1088,12 +1155,61 @@ async fn record_summary_archive_snapshot_backfill_outcome(
         candidate,
         disposition,
         failure_kind,
-        next_page_index,
-        next_row_id,
+        &SummaryArchiveSnapshotBackfillProgress {
+            page_index: next_page_index,
+            next_occurred_at: None,
+            next_row_id,
+            cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
+            retry_attempt: 0,
+        },
     )
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    disposition: &str,
+    failure_kind: &str,
+    progress: SummaryArchiveSnapshotBackfillProgress,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    record_summary_archive_snapshot_backfill_outcome_tx(
+        tx.as_mut(),
+        candidate,
+        disposition,
+        failure_kind,
+        &SummaryArchiveSnapshotBackfillProgress {
+            cursor_version: progress
+                .cursor_version
+                .max(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION),
+            retry_attempt: progress.retry_attempt.saturating_add(1),
+            ..progress
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn classify_summary_archive_snapshot_backfill_error(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("busy") || message.contains("locked") {
+        "deferred:sqlite_busy_or_locked"
+    } else if message.contains("budget") || message.contains("deadline") {
+        "deferred:budget"
+    } else if message.contains("invalid")
+        || message.contains("mismatch")
+        || message.contains("proof")
+        || message.contains("semantic")
+        || message.contains("page")
+    {
+        "unavailable:verification_failed"
+    } else {
+        "unavailable:source_read_failed"
+    }
 }
 
 async fn record_summary_archive_snapshot_backfill_outcome_tx(
@@ -1101,35 +1217,33 @@ async fn record_summary_archive_snapshot_backfill_outcome_tx(
     candidate: &HistoricalRollupStartupCandidateRow,
     disposition: &str,
     failure_kind: &str,
-    next_page_index: u32,
-    next_row_id: i64,
+    progress: &SummaryArchiveSnapshotBackfillProgress,
 ) -> Result<()> {
-    let next_probe_at = if disposition == "complete" {
-        format_utc_iso(Utc::now() + ChronoDuration::days(365))
-    } else if disposition == "in_progress" {
-        format_utc_iso(Utc::now())
-    } else {
-        format_utc_iso(
-            Utc::now() + ChronoDuration::seconds(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS),
-        )
-    };
+    let disposition_kind =
+        SummaryArchiveSnapshotBackfillDisposition::from_storage(disposition, failure_kind);
+    let next_probe_at = disposition_kind.next_probe_at(progress.retry_attempt);
     sqlx::query(
         "INSERT INTO summary_archive_snapshot_backfill_outcome \
          (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
-          next_page_index, next_row_id, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now')) \
+          next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
          ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
            disposition = excluded.disposition, failure_kind = excluded.failure_kind, \
            next_probe_at = excluded.next_probe_at, next_page_index = excluded.next_page_index, \
-           next_row_id = excluded.next_row_id, updated_at = excluded.updated_at",
+           next_occurred_at = excluded.next_occurred_at, next_row_id = excluded.next_row_id, \
+           cursor_version = excluded.cursor_version, retry_attempt = excluded.retry_attempt, \
+           updated_at = excluded.updated_at",
     )
     .bind(candidate.id)
     .bind(&candidate.sha256)
     .bind(disposition)
     .bind(failure_kind)
     .bind(next_probe_at)
-    .bind(i64::from(next_page_index))
-    .bind(next_row_id.max(0))
+    .bind(i64::from(progress.page_index))
+    .bind(progress.next_occurred_at.as_deref())
+    .bind(progress.next_row_id.max(0))
+    .bind(progress.cursor_version.max(1))
+    .bind(progress.retry_attempt.max(0))
     .execute(&mut *connection)
     .await
     .context("failed to persist Summary Snapshot V2 backfill outcome")?;
@@ -1196,26 +1310,63 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         candidate.coverage_start_at.clone(),
         candidate.coverage_end_at.clone(),
     );
-    let Some((archive_pool, temp_cleanup)) =
+    let archive_source =
         crate::stats::open_invocation_archive_batch_pool(&archive_row, "summary-snapshot-backfill")
-            .await?
-    else {
+            .await;
+    let Some((archive_pool, temp_cleanup)) = (match archive_source {
+        Ok(source) => source,
+        Err(_) => return Ok("unavailable:source_open_failed"),
+    }) else {
         return Ok("unavailable:source_open_failed");
     };
 
     let result = async {
         let archive_columns =
             load_archive_table_columns(&archive_pool, "codex_invocations").await?;
-        let query_sql = build_invocation_archive_rows_chunk_query(&archive_columns);
-        let (mut page_index, mut after_id) =
-            load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
+        let query_sql = build_invocation_archive_rows_time_chunk_query(&archive_columns);
+        let mut progress = load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
+        if progress.cursor_version < SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION
+            && (progress.next_row_id > 0 || progress.page_index > 0)
+        {
+            // A pre-V2 checkpoint only proves ID order. It cannot be combined with the
+            // chronological V2 proof, so discard its unproven pages and restart this manifest.
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                "DELETE FROM summary_archive_snapshot
+                 WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+            )
+            .bind(candidate.id)
+            .bind(&candidate.sha256)
+            .execute(tx.as_mut())
+            .await?;
+            record_summary_archive_snapshot_backfill_outcome_tx(
+                tx.as_mut(),
+                candidate,
+                "in_progress",
+                "legacy_cursor_reset",
+                &SummaryArchiveSnapshotBackfillProgress {
+                    page_index: 0,
+                    next_occurred_at: None,
+                    next_row_id: 0,
+                    cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
+                    retry_attempt: 0,
+                },
+            )
+            .await?;
+            tx.commit().await?;
+            progress.page_index = 0;
+            progress.next_occurred_at = None;
+            progress.next_row_id = 0;
+            progress.cursor_version = SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION;
+            progress.retry_attempt = 0;
+        }
         let mut total_rows = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT SUM(row_count) FROM summary_archive_snapshot
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND page_index < ?3",
         )
         .bind(candidate.id)
         .bind(&candidate.sha256)
-        .bind(i64::from(page_index))
+        .bind(i64::from(progress.page_index))
         .fetch_one(pool)
         .await?
         .unwrap_or_default();
@@ -1223,12 +1374,17 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
                 return Ok("deferred:budget");
             }
-            let (rows, has_more) =
-                load_invocation_archive_rows_chunk(&archive_pool, &query_sql, after_id).await?;
+            let (rows, has_more) = load_invocation_archive_rows_time_chunk(
+                &archive_pool,
+                &query_sql,
+                progress.next_occurred_at.as_deref(),
+                progress.next_row_id,
+            )
+            .await?;
             if rows.is_empty() {
                 break;
             }
-            let coverage_start = if page_index == 0 {
+            let coverage_start = if progress.page_index == 0 {
                 candidate
                     .coverage_start_at
                     .clone()
@@ -1272,7 +1428,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             let page = SummaryArchiveSnapshotPage {
                 archive_batch_id: candidate.id,
                 manifest_sha256: candidate.sha256.clone(),
-                page_index,
+                page_index: progress.page_index,
                 coverage_start,
                 coverage_end,
                 row_count: u32::try_from(rows.len())
@@ -1286,17 +1442,26 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 candidate,
                 "in_progress",
                 "",
-                page_index.saturating_add(1),
-                rows.last().map(|row| row.id).unwrap_or(after_id),
+                &SummaryArchiveSnapshotBackfillProgress {
+                    page_index: progress.page_index.saturating_add(1),
+                    next_occurred_at: rows.last().map(|row| row.occurred_at.clone()),
+                    next_row_id: rows
+                        .last()
+                        .map(|row| row.id)
+                        .unwrap_or(progress.next_row_id),
+                    cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
+                    retry_attempt: 0,
+                },
             )
             .await?;
             tx.commit().await?;
             total_rows = total_rows.saturating_add(i64::try_from(rows.len())?);
-            after_id = rows
+            progress.next_row_id = rows
                 .last()
                 .map(|row| row.id)
                 .ok_or_else(|| anyhow!("Summary Snapshot page is missing row id"))?;
-            page_index = page_index.saturating_add(1);
+            progress.next_occurred_at = rows.last().map(|row| row.occurred_at.clone());
+            progress.page_index = progress.page_index.saturating_add(1);
             if !has_more {
                 break;
             }
@@ -1377,13 +1542,14 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         {
             Ok(outcome) => outcome,
             Err(error) => {
-                let message = error.to_string().to_ascii_lowercase();
-                if message.contains("busy") || message.contains("locked") {
-                    "deferred:sqlite_busy_or_locked"
+                let outcome = classify_summary_archive_snapshot_backfill_error(&error);
+                if outcome.starts_with("deferred:") {
+                    outcome
                 } else {
                     // A corrupt or semantically invalid page is scoped to this manifest. Keep
-                    // the cursor moving so an independent candidate can still be recovered.
-                    "unavailable:verification_failed"
+                    // the cursor moving so an independent candidate can still be recovered, but
+                    // preserve the last verified page cursor for retryable source failures.
+                    outcome
                 }
             }
         };
@@ -1392,13 +1558,14 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
                 result.hit_budget = true;
                 break;
             }
-            record_summary_archive_snapshot_backfill_outcome(
+            let progress =
+                load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
+            record_summary_archive_snapshot_backfill_outcome_preserving_progress(
                 pool,
                 &candidate,
                 disposition,
                 failure_kind,
-                0,
-                0,
+                progress,
             )
             .await?;
             result.unavailable_archive_batches += 1;

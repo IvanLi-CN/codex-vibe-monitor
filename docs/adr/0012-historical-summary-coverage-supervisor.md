@@ -45,6 +45,15 @@ or current-rank boundary remains `unavailable`; disjoint exact selections stay
 available. The supervisor emits only stage, scope, count, cursor, proof, and
 duration telemetry and never places source payload in logs or responses.
 
+Legacy Snapshot V2 recovery uses a versioned `(UTC occurred_at, id)` seek key,
+matching the proof validator's total order. Each verified page, its next seek
+key, and its manifest outcome are committed atomically. Retryable source or
+SQLite conditions use bounded backoff; semantic, timestamp, row-count, schema,
+or manifest-identity failures are quarantined for that manifest identity and
+are reconsidered only when its SHA changes. An old ID-only cursor is never
+combined with a V2 proof; unproven pages are discarded and rebuilt in the V2
+order.
+
 ## Alternatives considered
 
 - Keep all-time and Snapshot recovery inside the generic Projection builder:

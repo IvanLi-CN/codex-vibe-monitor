@@ -50,3 +50,7 @@
   the current 30-day horizon, and commit proof before advancing their cursors;
   unfinished history no longer re-enters generic Projection hydration or
   blocks exact recent selections.
+- Legacy Snapshot V2 recovery now pages archives in the same `(UTC occurred_at, id)` order used by semantic proof validation. Versioned composite
+  cursors resume after committed pages, reset unproven legacy ID-only progress,
+  and quarantine manifest-identity or semantic failures while retaining
+  bounded retries for transient source and SQLite conditions.
