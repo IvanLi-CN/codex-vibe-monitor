@@ -8,9 +8,6 @@ import { createAppViteConfig } from "./vite.config";
 
 const dirname =
   typeof __dirname !== "undefined" ? __dirname : path.dirname(fileURLToPath(import.meta.url));
-const browserApiPort = Number.parseInt(process.env.VITEST_BROWSER_API_PORT ?? "", 10);
-const resolvedBrowserApiPort =
-  Number.isSafeInteger(browserApiPort) && browserApiPort > 0 ? browserApiPort : 63315;
 
 export default mergeConfig(
   createAppViteConfig("test"),
@@ -36,7 +33,6 @@ export default mergeConfig(
             name: "storybook",
             browser: {
               enabled: true,
-              api: resolvedBrowserApiPort,
               // Storybook test startup now scans a much larger story graph after mainline merges.
               // Keep browser-mode coverage stable by allowing a longer initial connection window.
               connectTimeout: 180_000,

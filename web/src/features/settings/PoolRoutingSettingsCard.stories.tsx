@@ -32,8 +32,6 @@ const meta = {
       cacheHitProtectionEnabled: false,
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
-      liveRequestStreamingEnabled: false,
-      liveRequestStreamingTreatmentPercent: "50",
       priorityHandoffAdmissionEnabled: true,
     },
     busy: false,
@@ -47,16 +45,18 @@ const meta = {
     onAvailableModelsModeChange: () => undefined,
     onTimeoutChange: () => undefined,
     onCacheHitProtectionChange: () => undefined,
-    onLiveRequestStreamingChange: () => undefined,
     onPriorityHandoffAdmissionChange: () => undefined,
     onSave: () => undefined,
   },
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-[#21383d] px-[30px] pb-[9.5px] pt-[10.5px] sm:px-10">
+        <div
+          className="min-h-screen bg-[#21383d] px-[30px] pb-[30px] pt-[30px] sm:px-10"
+          data-visual-evidence-surface
+        >
           <div className="mx-auto max-w-4xl bg-base-200 p-2 text-base-content">
-            <div className="bg-base-200">
+            <div className="bg-base-200" data-visual-evidence-target>
               <Story />
             </div>
           </div>
@@ -92,8 +92,6 @@ export const ModelPolicy: Story = {
           cacheHitProtectionEnabled: false,
           cacheHitRateThresholdPercent: "10",
           cacheHitOverflowMode: "queue",
-          liveRequestStreamingEnabled: false,
-          liveRequestStreamingTreatmentPercent: "50",
           priorityHandoffAdmissionEnabled: true,
         }}
         busy={false}
@@ -107,7 +105,6 @@ export const ModelPolicy: Story = {
         onAvailableModelsModeChange={setAvailableModelsMode}
         onTimeoutChange={() => undefined}
         onCacheHitProtectionChange={() => undefined}
-        onLiveRequestStreamingChange={() => undefined}
         onPriorityHandoffAdmissionChange={() => undefined}
         onSave={() => undefined}
       />
@@ -131,12 +128,15 @@ export const PriorityHandoffAdmissionDisabled: Story = {
       cacheHitProtectionEnabled: false,
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "queue",
-      liveRequestStreamingEnabled: false,
-      liveRequestStreamingTreatmentPercent: "50",
       priorityHandoffAdmissionEnabled: false,
     },
   },
   tags: ["test"],
+  parameters: {
+    viewport: {
+      defaultViewport: "desktop1280",
+    },
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
@@ -170,8 +170,6 @@ export const CacheHitProtection: Story = {
       cacheHitProtectionEnabled: true,
       cacheHitRateThresholdPercent: "10",
       cacheHitOverflowMode: "reroute",
-      liveRequestStreamingEnabled: true,
-      liveRequestStreamingTreatmentPercent: "50",
       priorityHandoffAdmissionEnabled: true,
     },
   },
@@ -182,54 +180,6 @@ export const CacheHitProtection: Story = {
       canvas.getByRole("switch", { name: /缓存命中保护|Cache-hit protection/ }),
     ).toHaveAttribute("aria-checked", "true");
     await expect(canvas.getByDisplayValue("10")).toBeEnabled();
-  },
-};
-
-export const LiveRequestStreamingEnabled: Story = {
-  globals: {
-    themeMode: "dark",
-  },
-  args: {
-    draft: {
-      requestCompressionAlgorithm: "zstd",
-      requestCompressionLevelPreset: "best",
-      codexImagegenRewriteMode: "keep_original",
-      availableModels: ["gpt-image-2", "gpt-5.4-mini"],
-      availableModelsMode: "allowlist",
-      responsesFirstByteTimeoutSecs: "120",
-      compactFirstByteTimeoutSecs: "300",
-      imageFirstByteTimeoutSecs: "300",
-      responsesStreamTimeoutSecs: "300",
-      compactStreamTimeoutSecs: "300",
-      cacheHitProtectionEnabled: false,
-      cacheHitRateThresholdPercent: "10",
-      cacheHitOverflowMode: "queue",
-      liveRequestStreamingEnabled: true,
-      liveRequestStreamingTreatmentPercent: "50",
-      priorityHandoffAdmissionEnabled: true,
-    },
-  },
-  tags: ["test"],
-  parameters: {
-    viewport: {
-      defaultViewport: "desktop1280",
-    },
-  },
-  decorators: [
-    (Story) => (
-      <div className="my-16 bg-[#2d343e] p-12">
-        <div className="bg-[#171e28]">
-          <Story />
-        </div>
-      </div>
-    ),
-  ],
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(
-      canvas.getByRole("switch", { name: /实时请求体流式转发|Live request streaming/ }),
-    ).toHaveAttribute("aria-checked", "true");
-    await expect(canvas.getByDisplayValue("50")).toBeEnabled();
   },
 };
 

@@ -29,7 +29,7 @@
 
 ## 功能与行为规格
 
-- live-first pool 尝试收到上游 `413` 时，先记录本次 HTTP failure；请求体可 replay 后继续使用同一账号补试。
+- pool 尝试收到上游 `413` 时，先记录本次 HTTP failure；请求体可 replay 后继续使用同一账号补试。
 - replay / capture failover 主循环收到上游 `413` 时，只允许 `same_account_retry_index=2` 的一次补试；第二次仍为 `413` 后把该账号排除并进入下一个 distinct account。
 - distinct-account 预算耗尽时，如果最后一个具体上游错误是 `413`，外部响应状态码保持 `413`，但 terminal attempt 仍可记录预算耗尽原因。
 - `429` 仍保持立即切号或按组配置重试的既有语义；`5xx` 仍保持现有同账号重试预算。

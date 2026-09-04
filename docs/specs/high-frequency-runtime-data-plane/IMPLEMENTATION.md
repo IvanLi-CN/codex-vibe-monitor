@@ -50,13 +50,6 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 - HTTP/SSE payload contracts are unchanged; additive System Status data is optional to clients.
 - Existing persistence, terminal journal and closed-range builders remain authoritative recovery paths.
 
-## `/v1/responses` Live Request Body
-
-- Runtime setting keeps live request-body streaming disabled by default. When enabled, eligible `/v1/responses` requests are split deterministically into buffered control and v2 treatment assignments without an account-group filter; v1 data is excluded from the v2 comparison. Assignment and actual request-body transport are persisted independently, so a treatment assignment that remains buffered is a visible fallback rather than a live-first sample.
-- The request pipeline reuses the raw replay snapshot for retries, validates the complete root JSON object before publishing the final route, then applies JSON/compression transforms. No upstream body exists while a route can still change; bounded parsing, cold cache and EOF finalization preserve the buffered contract.
-- The runtime snapshot carries the live setting, account rows, candidates, rules, capability state, bindings, sticky routes, route penalties and model health needed for selection. Prompt-cache/encrypted-owner and sticky-route lookups use independent 16,384-entry negative LRUs with single-flight cold reads and write-through invalidation. Failures and recoveries publish a refreshed routing snapshot; healthy success acknowledgements do not trigger a reload. The performance response reports route-finalization byte positions, ratios, factors and cache outcomes separately from successful response-benefit samples.
-- Invocation persistence and hourly statistics retain exact request/response overlap timestamps so the performance surface compares direct first-response and first-token measurements instead of additive stage estimates. The comparison uses only buffered control against actual live-first treatment; fallback-only treatment traffic reports no benefit. Route-finalization statistics expose exact outcome counts alongside EOF-finalization and conservative-buffered rates so operators can distinguish the absence of a streaming opportunity from a low sample count.
-
 ## Verification State
 
 Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardLiveProjection`:
@@ -82,10 +75,6 @@ Runtime Projection is implemented through `RuntimeProjectionHub` and `DashboardL
 Runtime projection maintains independent current/phase, network/rate and terminal-total dirty generations, revisions and non-extending `250ms`, `1s` and `5s` deadlines. Network-only changes do not build or advance the current slice; active network topics rearm only the network cadence so rates and recent windows decay without waking current projection. Terminal slice staging is bounded and drained on its fixed deadline even without subscribers, preventing subscriber-free retention.
 
 Aggregate validation remains responsible for full backend/web/Storybook coverage, controlled performance evidence, review convergence and owner-approved browser viewport evidence.
-
-The `/v1/responses` live request-body performance surface now keeps assignment, eligibility, actual transport, route outcome and fallback reason as separate persisted-summary dimensions. `/api/stats/perf` exposes exact `(variant, transport)` cohorts and route diagnostics, while the fixed seven-day evaluation endpoint applies the server-owned sample, bootstrap and risk thresholds without inheriting diagnostic filters. The Stats panel renders buffered control, actual live-first treatment and buffered treatment fallback independently, and shows a non-comparable state when no live-first sample exists.
-
-Risk deltas are derived from matched account-group strata only; unmatched or unknown strata remain visible as diagnostics but cannot influence the canonical comparison. The evaluator keeps this aggregation borrow-only and deterministic so repeated reads produce the same decision for the same seven-day invocation set.
 
 Runtime pressure diagnostics are implemented for issues #738 and #768:
 

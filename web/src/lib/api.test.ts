@@ -1978,10 +1978,6 @@ describe("account pool frontend API helpers", () => {
         overflowMode: "queue",
         minimumInputTokens: 3840,
       },
-      liveRequestStreaming: {
-        enabled: false,
-        treatmentPercent: 50,
-      },
     });
   });
 
@@ -2698,10 +2694,6 @@ describe("account pool frontend API helpers", () => {
           lowHitRateThresholdPercent: 15,
           overflowMode: "reroute",
         },
-        liveRequestStreaming: {
-          enabled: true,
-          treatmentPercent: 60,
-        },
       });
       return new Response(
         JSON.stringify({
@@ -2725,10 +2717,6 @@ describe("account pool frontend API helpers", () => {
             overflowMode: "reroute",
             minimumInputTokens: 3840,
           },
-          liveRequestStreaming: {
-            enabled: true,
-            treatmentPercent: 60,
-          },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
@@ -2748,10 +2736,6 @@ describe("account pool frontend API helpers", () => {
         enabled: true,
         lowHitRateThresholdPercent: 15,
         overflowMode: "reroute",
-      },
-      liveRequestStreaming: {
-        enabled: true,
-        treatmentPercent: 60,
       },
     });
 
@@ -2775,10 +2759,6 @@ describe("account pool frontend API helpers", () => {
       lowHitRateThresholdPercent: 15,
       overflowMode: "reroute",
       minimumInputTokens: 3840,
-    });
-    expect(response.liveRequestStreaming).toEqual({
-      enabled: true,
-      treatmentPercent: 60,
     });
   });
 

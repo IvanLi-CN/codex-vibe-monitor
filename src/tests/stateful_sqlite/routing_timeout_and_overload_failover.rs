@@ -1,26 +1,6 @@
 use super::*;
 use serde_json::json;
 
-fn run_timeout_failover_test_with_large_stack<T, Fut>(future: Fut) -> T
-where
-    T: Send + 'static,
-    Fut: std::future::Future<Output = T> + Send + 'static,
-{
-    std::thread::Builder::new()
-        .name("timeout-failover-large-stack".to_string())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build large-stack timeout failover runtime")
-                .block_on(future)
-        })
-        .expect("spawn large-stack timeout failover worker")
-        .join()
-        .expect("join large-stack timeout failover worker")
-}
-
 #[tokio::test]
 async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
     #[derive(Debug, sqlx::FromRow)]
@@ -170,18 +150,12 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     shared_upstream_handle.abort();
 }
 
-#[test]
-fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason()
+#[tokio::test]
+async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason()
 {
-    run_timeout_failover_test_with_large_stack(
-        capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason_case(),
-    );
-}
-
-async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_alternate_terminal_reason_case()
- {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        upstream_route_key: Option<String>,
         attempt_index: i64,
         distinct_account_index: i64,
         same_account_retry_index: i64,
@@ -231,20 +205,9 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     )
     .await;
     insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
-    let live_settings: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
-        "liveRequestStreaming": {
-            "enabled": true,
-            "treatmentPercent": 100,
-        },
-    }))
-    .expect("deserialize live request streaming settings");
-    let _ =
-        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(live_settings))
-            .await
-            .expect("enable live request streaming treatment");
 
     let chunks = stream::iter(vec![Ok::<Bytes, io::Error>(Bytes::from_static(
-        br#"{"model":"gpt-5","input":"hello"}"#,
+        br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-replay-no-alt-001"}"#,
     ))]);
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -277,11 +240,12 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT
+            upstream_route_key,
             attempt_index,
             distinct_account_index,
             same_account_retry_index,
@@ -293,18 +257,13 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load timeout final-route-gate no-alternate rows");
-    assert_eq!(attempt_rows.len(), 2);
+    .expect("load timeout replay no-alternate rows");
+    assert_eq!(attempt_rows.len(), 1);
     assert_eq!(attempt_rows[0].attempt_index, 1);
-    assert_eq!(attempt_rows[0].distinct_account_index, 1);
-    assert_eq!(attempt_rows[0].same_account_retry_index, 0);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-    );
-    assert_eq!(
-        attempt_rows[0].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
@@ -316,49 +275,24 @@ async fn capture_target_pool_route_timeout_after_final_route_gate_preserves_no_a
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load timeout final-route-gate no-alternate payload");
+    .expect("load timeout replay no-alternate payload");
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("timeout final-route-gate no-alternate payload should be present"),
+            .expect("timeout replay no-alternate payload should be present"),
     )
-    .expect("decode timeout final-route-gate no-alternate payload");
-    assert!(row.error_message.as_deref().is_some_and(|msg| {
-        msg.contains("no alternate upstream route is available after timeout")
-    }));
-    // The model-ready route starts a provisional upstream attempt before EOF.
+    .expect("decode timeout replay no-alternate payload");
+    assert!(
+        row.error_message.as_deref().is_some_and(
+            |msg| msg.contains("no alternate upstream route is available after timeout")
+        )
+    );
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
-    assert_eq!(payload["requestBodyTransportMode"], "live_first");
-    assert_eq!(
-        payload["routeFinalizationOutcome"],
-        "live_first_model_ready"
-    );
-    assert!(
-        payload["routeFinalizationRawBytes"]
-            .as_i64()
-            .is_some_and(|bytes| bytes > 0)
-    );
-    assert_eq!(payload["routeFinalizationRawRatio"], 1.0);
-    assert!(
-        payload["routeFinalizationLogicalBytes"]
-            .as_i64()
-            .is_some_and(|bytes| bytes > 0)
-    );
-    assert!(
-        payload["routeFinalizationLogicalRatio"]
-            .as_f64()
-            .is_some_and(|ratio| ratio > 0.0 && ratio < 1.0),
-        "the model-ready route must finalize before the complete logical JSON body"
-    );
-    assert_eq!(payload["liveFirstExperimentVariant"], "treatment");
-    assert_eq!(payload["liveFirstAttemptFailed"], true);
-    assert_eq!(payload["liveFirstFallbackOrRetry"], true);
-    assert_eq!(payload["ambiguousUpstreamDelivery"], true);
     assert!(payload["upstreamErrorMessage"].is_null());
 
     shared_upstream_handle.abort();

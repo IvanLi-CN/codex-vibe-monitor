@@ -33,7 +33,7 @@ Proxy capture endpoints need to forward requests quickly, but they also own raw 
 
 ## Root cause
 
-The capture path historically used one full in-memory request body as both routing input and raw capture input. That makes large bodies expensive, but replacing it with unconditional live-first would bypass semantic checks that require full request knowledge.
+The capture path uses a replayable request-body snapshot as both routing input and raw capture input. That makes large bodies more expensive than a direct stream, but preserves semantic checks that require full request knowledge.
 
 For response capture, compression must be treated as a storage concern. Preserve already encoded wire bytes, use Zstd only for identity bytes, and queue work behind a bounded writer pool. Dropping an enabled capture because a CPU writer is busy hides overload and makes replay completeness nondeterministic.
 
@@ -46,16 +46,16 @@ For response capture, compression must be treated as a storage concern. Preserve
 - Preserve bounded partial body evidence on read timeout, client stream errors, and body-limit failures; do not retain the whole body in memory after switching to file-backed replay.
 - Consume file-backed snapshots with a single materialization step only when the existing capture semantics require full JSON parse/rewrite; do not add an extra `Bytes -> Vec` full-body copy.
 - If rewrite is required but produces no body changes, return the original snapshot instead of serializing the body back into memory. If rewrite changes the body, pass the rewritten bytes through the same threshold helper.
-- Log `body_read_done`, `body_size_bucket`, `request_body_snapshot_kind`, and `live_first_reason` before materializing the snapshot for full parse/rewrite.
+- Log `body_read_done`, `body_size_bucket`, `request_body_snapshot_kind`, and `request_body_route_reason` before materializing the snapshot for full parse/rewrite.
 - Keep response streaming ordered as “forward chunk downstream first, finish raw writer later”; log `downstream_first_byte_elapsed` and `raw_response_write_elapsed` separately.
 - For `/v1/responses` SSE, treat a fully parseable `response.completed` event with matching payload `type` and `response.status="completed"` as the authoritative business-success terminal. Continue reading upstream to EOF and retain raw data, but record later read failures, timeouts, or downstream write observations only as neutral diagnostics; they must not overwrite success or penalize an account/route.
 - Make production evidence thresholded: large or slow request body reads, slow downstream first byte, and slow or large raw response writes should be visible at `info`; ordinary small requests can remain `debug`.
-- Enable live-first for capture only when tests prove encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields remain identical to fallback behavior.
+- Keep capture forwarding behind complete semantic checks, and validate encrypted owner binding, prompt-cache binding, body rewrite, failover replay, raw completeness, and terminal record fields against the replayable path.
 - Treat direct-image replay as evidence retention, not permission to retry. Image generation/edit may have started before the first response byte, so a first-byte timeout must terminate after one attempt and preserve the real timeout classification.
 
 ## Guardrails / Reuse notes
 
-- Do not claim a request is live-first just because it uses file-backed replay; upstream send still starts after full semantic checks unless eligibility is proven.
+- Do not claim an upstream request has started just because a file-backed snapshot exists; upstream send starts only after full semantic checks and final account selection.
 - File-backed replay is not zero-copy for capture until the downstream capture pipeline can parse, rewrite, raw-capture, and failover from a shared replay snapshot without rebuilding a full request body.
 - Do not infer “no encrypted content” from a prefix scan; absence is only safe after full parse or an equivalent explicit contract.
 - Do not drop or truncate raw payload as a performance optimization. If raw writer fails, log and classify it, but keep business response semantics separate.

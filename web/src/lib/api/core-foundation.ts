@@ -1302,114 +1302,6 @@ export interface PerfStatsResponse {
   rangeEnd: string;
   items?: PerfStageStats[];
   stages?: PerfStageStats[];
-  liveRequestStreaming: LiveRequestStreamingPerf;
-}
-
-export interface LiveRequestStreamingPercentiles {
-  p50Ms: number;
-  p90Ms: number;
-  p99Ms: number;
-}
-
-export interface LiveRequestStreamingValuePercentiles {
-  p50: number;
-  p90: number;
-  p99: number;
-}
-
-export interface LiveRequestStreamingRouteFinalizationStats {
-  sampleCount: number;
-  sufficientSamples: boolean;
-  rawBytes?: LiveRequestStreamingValuePercentiles | null;
-  logicalBytes?: LiveRequestStreamingValuePercentiles | null;
-  rawRatio?: LiveRequestStreamingValuePercentiles | null;
-  logicalRatio?: LiveRequestStreamingValuePercentiles | null;
-  finalizationMs?: LiveRequestStreamingPercentiles | null;
-  eofFinalizedRate: number;
-  conservativeBufferedRate: number;
-  outcomeCounts?: Record<string, number>;
-  dependencyFactorCounts: Record<string, number>;
-  hotCacheHitRate: number;
-  coldLoadRate: number;
-}
-
-export interface LiveRequestStreamingCohortStats {
-  cohort: string;
-  transportMode: "buffered" | "live_first" | "unknown" | string;
-  successSampleCount: number;
-  invocationCount: number;
-  sufficientSamples: boolean;
-  firstResponseByteSampleCount?: number;
-  firstTokenSampleCount?: number;
-  requestUpstreamOverlapSampleCount?: number;
-  firstResponseByteTotalMs?: LiveRequestStreamingPercentiles | null;
-  firstTokenMs?: LiveRequestStreamingPercentiles | null;
-  requestUpstreamOverlapMs?: LiveRequestStreamingPercentiles | null;
-  fallbackReasonCounts?: Record<string, number>;
-  firstAttemptFailureRate: number;
-  fallbackOrRetryRate: number;
-  captureFailureRate: number;
-  ambiguousUpstreamDeliveryRate: number;
-}
-
-export interface LiveRequestStreamingPerf {
-  coverage: number;
-  measuredInvocationCount: number;
-  responseInvocationCount: number;
-  cohorts: LiveRequestStreamingCohortStats[];
-  routeFinalization?: LiveRequestStreamingRouteFinalizationStats;
-}
-
-export type LiveRequestStreamingEvaluationStatus =
-  | "insufficient_data"
-  | "recommend_keep"
-  | "recommend_remove"
-  | "review_required";
-
-export interface LiveRequestStreamingConfidenceInterval {
-  p50DifferenceMs: number;
-  lowerMs: number;
-  upperMs: number;
-}
-
-export interface LiveRequestStreamingRiskDelta {
-  difference: number;
-  upperBound: number;
-}
-
-export interface LiveRequestStreamingEvaluation {
-  revision: string;
-  endpoint: string;
-  rangeStart: string;
-  rangeEnd: string;
-  treatmentAssignmentCount: number;
-  treatmentEligibleCount: number;
-  actualLiveFirstCount: number;
-  treatmentBufferedFallbackCount: number;
-  actualLiveFirstRate: number;
-  cohorts: LiveRequestStreamingCohortStats[];
-  routeFinalization: LiveRequestStreamingRouteFinalizationStats;
-  metrics: {
-    firstResponse?: LiveRequestStreamingConfidenceInterval | null;
-    firstToken?: LiveRequestStreamingConfidenceInterval | null;
-    overlap?: LiveRequestStreamingConfidenceInterval | null;
-  };
-  risk: {
-    firstAttemptFailure?: LiveRequestStreamingRiskDelta | null;
-    fallbackOrRetry?: LiveRequestStreamingRiskDelta | null;
-    captureFailure?: LiveRequestStreamingRiskDelta | null;
-    ambiguousDelivery?: LiveRequestStreamingRiskDelta | null;
-  };
-  decision: {
-    status: LiveRequestStreamingEvaluationStatus;
-    reasonCodes: string[];
-    minTreatmentAssignments: number;
-    minActualLiveFirstRate: number;
-    minMetricSamples: number;
-    minLatencyBenefitMs: number;
-    maxRiskIncrease: number;
-    bootstrapResamples: number;
-  };
 }
 
 export interface PerfStatsQuery {
@@ -1420,9 +1312,6 @@ export interface PerfStatsQuery {
   source?: string;
   model?: string;
   endpoint?: string;
-  groupName?: string;
-  liveFirstRevision?: string;
-  cohort?: string;
 }
 
 export interface QuotaSnapshot {
@@ -3557,10 +3446,6 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
     payload.cacheHitProtection && typeof payload.cacheHitProtection === "object"
       ? (payload.cacheHitProtection as Record<string, unknown>)
       : null;
-  const liveRequestStreamingRaw =
-    payload.liveRequestStreaming && typeof payload.liveRequestStreaming === "object"
-      ? (payload.liveRequestStreaming as Record<string, unknown>)
-      : null;
   const normalized: PoolRoutingSettings = {
     writesEnabled: typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
@@ -3597,14 +3482,6 @@ export function normalizePoolRoutingSettings(raw: unknown): PoolRoutingSettings 
           : 10,
       overflowMode: cacheHitProtectionRaw?.overflowMode === "reroute" ? "reroute" : "queue",
       minimumInputTokens: normalizeFiniteNumber(cacheHitProtectionRaw?.minimumInputTokens) ?? 3840,
-    },
-    liveRequestStreaming: {
-      enabled: liveRequestStreamingRaw?.enabled === true,
-      treatmentPercent:
-        typeof liveRequestStreamingRaw?.treatmentPercent === "number" &&
-        Number.isFinite(liveRequestStreamingRaw.treatmentPercent)
-          ? Math.min(100, Math.max(0, Math.trunc(liveRequestStreamingRaw.treatmentPercent)))
-          : 50,
     },
   };
   if (typeof payload.priorityHandoffAdmissionEnabled === "boolean") {
@@ -5391,18 +5268,9 @@ export async function fetchPerfStats(params?: PerfStatsQuery) {
   if (params?.source) search.set("source", params.source);
   if (params?.model) search.set("model", params.model);
   if (params?.endpoint) search.set("endpoint", params.endpoint);
-  if (params?.groupName) search.set("groupName", params.groupName);
-  if (params?.liveFirstRevision) search.set("liveFirstRevision", params.liveFirstRevision);
-  if (params?.cohort) search.set("cohort", params.cohort);
 
   const query = search.toString();
   return fetchJson<PerfStatsResponse>(query ? `/api/stats/perf?${query}` : "/api/stats/perf");
-}
-
-export async function fetchLiveRequestStreamingEvaluation() {
-  return fetchJson<LiveRequestStreamingEvaluation>(
-    "/api/stats/perf/live-request-streaming-evaluation",
-  );
 }
 
 export async function fetchQuotaSnapshot() {

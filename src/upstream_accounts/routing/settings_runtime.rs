@@ -98,54 +98,6 @@ pub(crate) fn merge_cache_hit_protection_settings(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LiveRequestStreamingSettings {
-    pub(crate) enabled: bool,
-    pub(crate) treatment_percent: u8,
-}
-
-impl LiveRequestStreamingSettings {
-    pub(crate) fn into_response(self) -> LiveRequestStreamingSettingsResponse {
-        LiveRequestStreamingSettingsResponse {
-            enabled: self.enabled,
-            treatment_percent: self.treatment_percent,
-        }
-    }
-}
-
-pub(crate) fn resolve_live_request_streaming_settings(
-    row: &PoolRoutingSettingsRow,
-) -> LiveRequestStreamingSettings {
-    LiveRequestStreamingSettings {
-        enabled: row.live_request_streaming_enabled.unwrap_or_default() != 0,
-        treatment_percent: row
-            .live_request_streaming_treatment_percent
-            .and_then(|value| u8::try_from(value).ok())
-            .filter(|value| *value <= 100)
-            .unwrap_or(50),
-    }
-}
-
-pub(crate) fn merge_live_request_streaming_settings(
-    current: LiveRequestStreamingSettings,
-    patch: Option<&UpdateLiveRequestStreamingSettingsRequest>,
-) -> Result<LiveRequestStreamingSettings, (StatusCode, String)> {
-    let Some(patch) = patch else {
-        return Ok(current);
-    };
-    let treatment_percent = patch.treatment_percent.unwrap_or(current.treatment_percent);
-    if treatment_percent > 100 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "liveRequestStreaming.treatmentPercent must be between 0 and 100".to_string(),
-        ));
-    }
-    Ok(LiveRequestStreamingSettings {
-        enabled: patch.enabled.unwrap_or(current.enabled),
-        treatment_percent,
-    })
-}
-
 pub(crate) fn pool_routing_timeouts_from_config(
     config: &AppConfig,
 ) -> PoolRoutingTimeoutSettingsResolved {
@@ -730,8 +682,6 @@ pub(crate) async fn load_pool_routing_settings(
             ,cache_hit_protection_enabled
             ,cache_hit_low_rate_threshold_percent
             ,cache_hit_overflow_mode
-            ,live_request_streaming_enabled
-            ,live_request_streaming_treatment_percent
             ,priority_handoff_admission_enabled
         FROM pool_routing_settings
         WHERE id = ?1
@@ -809,7 +759,6 @@ pub(crate) fn build_pool_routing_settings_response(
         },
         timeouts: pool_routing_timeouts_response(timeouts),
         cache_hit_protection: resolve_cache_hit_protection_settings(row).into_response(),
-        live_request_streaming: resolve_live_request_streaming_settings(row).into_response(),
         priority_handoff_admission_enabled: priority_handoff_admission_enabled(),
     }
 }
@@ -907,8 +856,6 @@ pub(crate) fn build_pool_routing_runtime_cache(
         request_compression: resolve_pool_request_compression_settings_from_row(row),
         timeouts: resolve_pool_routing_timeouts_from_row(row, &state.config),
         cache_hit_protection: resolve_cache_hit_protection_settings(row),
-        live_request_streaming: resolve_live_request_streaming_settings(row),
-        live_request_route_dependencies: LiveRequestRouteDependencyProfile::default(),
         model_routing: PoolModelRoutingRuntimeCache::default(),
         prompt_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingPromptRouteCache::default())),
         sticky_route_cache: Arc::new(std::sync::Mutex::new(PoolRoutingStickyRouteCache::default())),
@@ -929,10 +876,6 @@ async fn refresh_pool_routing_runtime_cache_locked(
     let row = load_pool_routing_settings_seeded(&state.pool, &state.config).await?;
     let mut cache = build_pool_routing_runtime_cache(state, &row)?;
     let mut model_routing = build_pool_model_routing_runtime_cache(&state.pool).await?;
-    if cache.live_request_streaming.enabled {
-        cache.live_request_route_dependencies =
-            load_live_request_route_dependency_profile(&state.pool, &model_routing).await?;
-    }
     #[cfg(test)]
     {
         cache.sqlite_data_version = pool_routing_sqlite_data_version(state).await?;
@@ -955,80 +898,12 @@ async fn refresh_pool_routing_runtime_cache_locked(
     Ok(cache)
 }
 
-async fn load_live_request_route_dependency_profile(
-    pool: &Pool<Sqlite>,
-    model_routing: &PoolModelRoutingRuntimeCache,
-) -> Result<LiveRequestRouteDependencyProfile> {
-    // This runs only while rebuilding the immutable routing snapshot. Live
-    // requests consult the resulting profile in memory and never perform this
-    // existence check on their hot path.
-    let (sticky_routes_present, prompt_cache_routes_present, encrypted_session_owners_present): (
-        i64,
-        i64,
-        i64,
-    ) = sqlx::query_as(
-        r#"
-        SELECT
-            EXISTS(SELECT 1 FROM pool_sticky_routes LIMIT 1)
-                OR EXISTS(SELECT 1 FROM pool_sticky_model_routes LIMIT 1),
-            EXISTS(SELECT 1 FROM prompt_cache_conversation_bindings LIMIT 1),
-            EXISTS(SELECT 1 FROM prompt_cache_encrypted_session_owners LIMIT 1)
-        "#,
-    )
-    .fetch_one(pool)
-    .await
-    .context("load live request route dependency profile")?;
-
-    let response_image_capability_gap = model_routing
-        .routing_candidates
-        .iter()
-        .filter_map(|candidate| model_routing.routing_account_rows_by_id.get(&candidate.id))
-        .any(|account| {
-            matches!(
-                effective_capability_support(
-                    decode_capability_support(account.response_image_tool_capability.as_deref()),
-                    decode_capability_override(
-                        account
-                            .policy_response_image_tool_capability_override
-                            .as_deref(),
-                    ),
-                ),
-                CapabilitySupport::Unsupported
-            )
-        });
-    let codex_imagegen_capability_gap = model_routing
-        .routing_candidates
-        .iter()
-        .filter_map(|candidate| model_routing.routing_account_rows_by_id.get(&candidate.id))
-        .any(|account| {
-            matches!(
-                effective_capability_support(
-                    decode_capability_support(account.codex_imagegen_capability.as_deref()),
-                    decode_capability_override(
-                        account.policy_codex_imagegen_capability_override.as_deref(),
-                    ),
-                ),
-                CapabilitySupport::Unsupported
-            )
-        });
-
-    Ok(LiveRequestRouteDependencyProfile {
-        sticky_routes_present: sticky_routes_present != 0,
-        prompt_cache_routes_present: prompt_cache_routes_present != 0,
-        encrypted_session_owners_present: encrypted_session_owners_present != 0,
-        response_image_capability_gap,
-        codex_imagegen_capability_gap,
-    })
-}
-
 pub(crate) async fn load_pool_routing_runtime_cache(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {
     Ok(load_pool_routing_runtime_cache_with_status(state).await?.0)
 }
 
-/// Returns the immutable routing snapshot and whether this request observed an
-/// already-warm snapshot. Cold loads are serialized by the shared write lock.
 pub(crate) async fn load_pool_routing_runtime_cache_with_status(
     state: &AppState,
 ) -> Result<(PoolRoutingRuntimeCache, bool)> {
@@ -1050,8 +925,6 @@ pub(crate) async fn load_pool_routing_runtime_cache_with_status(
         return Ok((cache, true));
     }
 
-    // The first request after cold start performs one shared load. Later
-    // requests only clone the immutable runtime snapshot above.
     let _model_cache_write_guard = state.pool_model_routing_cache_write_lock.lock().await;
     let warm_cache = {
         let runtime_cache = state.pool_routing_runtime_cache.lock().await;
@@ -1076,9 +949,6 @@ pub(crate) async fn load_pool_routing_runtime_cache_with_status(
     ))
 }
 
-/// Invalidates the current immutable routing snapshot without doing I/O in the
-/// failure path. The next route selection performs the serialized cold rebuild
-/// and receives a strictly newer generation.
 pub(crate) async fn invalidate_pool_routing_runtime_cache(state: &AppState) {
     let mut runtime_cache = state.pool_routing_runtime_cache.lock().await;
     if let Some(cache) = runtime_cache.as_mut() {
@@ -1088,9 +958,6 @@ pub(crate) async fn invalidate_pool_routing_runtime_cache(state: &AppState) {
 
 #[cfg(test)]
 async fn pool_routing_sqlite_data_version(state: &AppState) -> Result<i64> {
-    // Test fixtures intentionally perform direct SQL writes. Keep one observer
-    // connection out of that writer pool so SQLite's per-connection data_version
-    // reliably detects those writes without changing production behavior.
     let mut observer = state.pool_routing_test_data_version_connection.lock().await;
     if observer.is_none() {
         *observer = Some(
@@ -1122,7 +989,6 @@ pub(crate) struct PoolRoutingSettingsUpdate<'a> {
     pub(crate) timeout_updates: Option<&'a UpdatePoolRoutingTimeoutSettingsRequest>,
     pub(crate) maintenance_settings: Option<PoolRoutingMaintenanceSettings>,
     pub(crate) cache_hit_protection: Option<CacheHitProtectionSettings>,
-    pub(crate) live_request_streaming: Option<LiveRequestStreamingSettings>,
     pub(crate) priority_handoff_admission_enabled: Option<bool>,
 }
 
@@ -1229,10 +1095,6 @@ pub(crate) async fn save_pool_routing_settings(
     let cache_hit_protection = update
         .cache_hit_protection
         .unwrap_or_else(|| resolve_cache_hit_protection_settings(&current));
-    let live_request_streaming_updated = update.live_request_streaming.is_some();
-    let live_request_streaming = update
-        .live_request_streaming
-        .unwrap_or_else(|| resolve_live_request_streaming_settings(&current));
     let priority_handoff_admission_enabled_value = update
         .priority_handoff_admission_enabled
         .unwrap_or_else(|| {
@@ -1344,19 +1206,6 @@ pub(crate) async fn save_pool_routing_settings(
         .bind(if cache_hit_protection.enabled { 1_i64 } else { 0_i64 })
         .bind(i64::from(cache_hit_protection.low_hit_rate_threshold_percent))
         .bind(cache_hit_protection.overflow_mode.as_str())
-        .bind(format_utc_iso(Utc::now()))
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_error_tuple)?;
-    }
-
-    if live_request_streaming_updated {
-        sqlx::query(
-            "UPDATE pool_routing_settings SET live_request_streaming_enabled = ?2, live_request_streaming_treatment_percent = ?3, updated_at = ?4 WHERE id = ?1",
-        )
-        .bind(POOL_SETTINGS_SINGLETON_ID)
-        .bind(if live_request_streaming.enabled { 1_i64 } else { 0_i64 })
-        .bind(i64::from(live_request_streaming.treatment_percent))
         .bind(format_utc_iso(Utc::now()))
         .execute(&mut *tx)
         .await
@@ -1764,48 +1613,4 @@ pub(crate) fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<Stri
         .decrypt(aes_gcm::Nonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|err| anyhow!("failed to decrypt secret: {err}"))?;
     String::from_utf8(plaintext).context("failed to decode decrypted secret")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn live_request_streaming_settings_default_to_disabled() {
-        let current = LiveRequestStreamingSettings {
-            enabled: false,
-            treatment_percent: 50,
-        };
-        let default = merge_live_request_streaming_settings(current.clone(), None)
-            .expect("default settings should be valid");
-        assert_eq!(default, current);
-
-        let updated = merge_live_request_streaming_settings(
-            current,
-            Some(&UpdateLiveRequestStreamingSettingsRequest {
-                enabled: Some(true),
-                treatment_percent: Some(50),
-            }),
-        )
-        .expect("valid settings should merge");
-        assert!(updated.enabled);
-        assert_eq!(updated.treatment_percent, 50);
-    }
-
-    #[test]
-    fn live_request_streaming_settings_reject_invalid_treatment() {
-        let current = LiveRequestStreamingSettings {
-            enabled: false,
-            treatment_percent: 50,
-        };
-        let invalid_percent = merge_live_request_streaming_settings(
-            current,
-            Some(&UpdateLiveRequestStreamingSettingsRequest {
-                enabled: None,
-                treatment_percent: Some(101),
-            }),
-        )
-        .expect_err("treatment percent above 100 should be rejected");
-        assert_eq!(invalid_percent.0, StatusCode::BAD_REQUEST);
-    }
 }

@@ -6331,7 +6331,6 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
             timeout_updates: None,
             maintenance_settings: None,
             cache_hit_protection: None,
-            live_request_streaming: None,
             priority_handoff_admission_enabled: None,
         },
     )

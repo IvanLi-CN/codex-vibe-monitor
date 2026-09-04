@@ -51,8 +51,6 @@ type PoolRoutingSettingsCardProps = {
     cacheHitProtectionEnabled: boolean;
     cacheHitRateThresholdPercent: string;
     cacheHitOverflowMode: "queue" | "reroute";
-    liveRequestStreamingEnabled: boolean;
-    liveRequestStreamingTreatmentPercent: string;
     priorityHandoffAdmissionEnabled: boolean;
   };
   busy: boolean;
@@ -70,10 +68,6 @@ type PoolRoutingSettingsCardProps = {
     cacheHitProtectionEnabled?: boolean;
     cacheHitRateThresholdPercent?: string;
     cacheHitOverflowMode?: "queue" | "reroute";
-  }) => void;
-  onLiveRequestStreamingChange: (patch: {
-    liveRequestStreamingEnabled?: boolean;
-    liveRequestStreamingTreatmentPercent?: string;
   }) => void;
   onPriorityHandoffAdmissionChange: (enabled: boolean) => void;
   onSave: () => void;
@@ -93,7 +87,6 @@ export function PoolRoutingSettingsCard({
   onAvailableModelsModeChange,
   onTimeoutChange,
   onCacheHitProtectionChange,
-  onLiveRequestStreamingChange,
   onPriorityHandoffAdmissionChange,
   onSave,
 }: PoolRoutingSettingsCardProps) {
@@ -250,49 +243,6 @@ export function PoolRoutingSettingsCard({
               }
             />
           </div>
-        </div>
-        <div className="space-y-4 rounded-lg border border-base-300/75 bg-base-200/28 p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <div className="font-medium leading-snug">
-                {t("settings.routing.liveRequestStreaming.title")}
-              </div>
-              <div className="text-sm leading-snug text-base-content/70">
-                {t("settings.routing.liveRequestStreaming.description")}
-              </div>
-            </div>
-            <Switch
-              checked={draft.liveRequestStreamingEnabled}
-              disabled={!writesEnabled || busy}
-              aria-label={t("settings.routing.liveRequestStreaming.title")}
-              onCheckedChange={(checked) =>
-                onLiveRequestStreamingChange({ liveRequestStreamingEnabled: checked })
-              }
-            />
-          </div>
-          <div className="grid gap-3">
-            <label className="field">
-              <span className="field-label">
-                {t("settings.routing.liveRequestStreaming.treatmentPercent")}
-              </span>
-              <Input
-                type="number"
-                min="0"
-                max="100"
-                inputMode="numeric"
-                value={draft.liveRequestStreamingTreatmentPercent}
-                disabled={!writesEnabled || busy || !draft.liveRequestStreamingEnabled}
-                onChange={(event) =>
-                  onLiveRequestStreamingChange({
-                    liveRequestStreamingTreatmentPercent: event.target.value,
-                  })
-                }
-              />
-            </label>
-          </div>
-          <p className="text-xs leading-snug text-base-content/60">
-            {t("settings.routing.liveRequestStreaming.hint")}
-          </p>
         </div>
         <div className="space-y-4 rounded-xl border border-base-300/75 bg-base-200/28 p-4">
           <div className="space-y-1">

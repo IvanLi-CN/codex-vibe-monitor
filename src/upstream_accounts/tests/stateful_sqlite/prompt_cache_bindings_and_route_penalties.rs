@@ -24,7 +24,6 @@ async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {
         .execute(&state.pool)
         .await
         .expect("block fresh route");
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
     insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(80.0), Some(20.0)).await;
@@ -116,7 +115,6 @@ async fn resolver_demotes_recent_timeout_for_same_upstream_route_and_proxy_bindi
         Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
     )
     .await;
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
         .await
@@ -1103,7 +1101,6 @@ async fn resolver_blocks_cut_out_when_sticky_source_is_hard_blocked() {
     .execute(&state.pool)
     .await
     .expect("set sticky source no cut-out hard block");
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(&state.pool, fallback, &now_iso, Some(20.0), Some(20.0)).await;
     upsert_sticky_route(
@@ -1230,7 +1227,6 @@ async fn resolver_forced_prompt_cache_account_binding_keeps_concurrency_limit() 
     )
     .await
     .expect("upsert active target sticky");
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
 
     let resolution = resolve_pool_account_for_request_with_binding_constraint(
         &state,
@@ -1693,7 +1689,6 @@ async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() 
         Some(1.0),
     )
     .await;
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
         &Url::parse("https://same-route.example.com/backend-api/codex")
             .expect("valid excluded route"),

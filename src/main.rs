@@ -370,7 +370,6 @@ const PROXY_REQUEST_BODY_LIMIT_EXCEEDED: &str = "proxy request body length limit
 const PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT: &str = "request_body_read_timeout";
 const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
     "request_body_stream_error_client_closed";
-const PROXY_FAILURE_REQUEST_BODY_INVALID_JSON: &str = "request_body_invalid_json";
 // Legacy failure kind retained only for historical records in failure distribution views.
 // New `/v1/*` requests no longer use a local proxy concurrency admission gate.
 const PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT: &str = "proxy_concurrency_limit";

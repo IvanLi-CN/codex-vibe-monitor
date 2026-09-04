@@ -41,15 +41,6 @@ All-time account coverage requires an independent completion proof for each arch
 - 小请求可驻留内存；超过 `1 MiB` 的请求必须保留 file-backed snapshot。需要 rewrite 时使用有界流式转换，业务缓冲不得超过 `64 KiB`。
 - 语义转换失败保持当前 fail-open 原始 body 行为，并记录明确原因；不得因优化改变转发字节或路由结果。
 
-### `/v1/responses` live request body
-
-- `/v1/responses` 只可在首轮最终路由已经冻结后向上游发送首个请求体字节；原始下游字节同时持续写入同一份 replay snapshot，failover 从该 snapshot 重建请求体。不得先发送再因晚到路由字段取消该次上游请求。
-- 请求级路由快照在请求开始时冻结。model、有效 sticky/prompt-cache 绑定、已启用的加密会话 owner 以及实际存在图片能力差异时的图片意图都必须确定；`tools` 与 `tool_choice` 只在后者为真时构成依赖。根对象字段顺序和重复键不构成客户端限制，无法在有界解析预算内安全最终化时走既有完整缓冲路径。
-- 高基数 prompt-cache/encrypted-owner 路由键使用容量 16,384 的 LRU，缓存空结果；冷 miss 以单飞加载，绑定写入精确失效对应键。低基数设置、模型映射、压缩、超时与实验开关作为版本化 runtime snapshot 发布。热请求不得有固定 SQLite 读取；snapshot 或键缓存不可用时保守缓冲。
-- 逻辑 JSON 的增量变换覆盖 `stream_options.include_usage` 和 OAuth `/v1/responses` 的既有 rewrite 规则。输出以 JSON 语义等价为边界，不承诺字段顺序、空白或压缩字节相同；已经发送前缀后发现非法 JSON 时取消上游并向下游返回现有 `400`。
-- live-first 支持现有 `follow`、`identity`、`gzip`、`deflate` 与 `zstd` 请求压缩策略。变换或重新编码的 body 不携带旧 `Content-Length`；不支持的 inbound encoding 沿用现有拒绝行为。
-- 设置默认关闭。启用后使用 `hash(invoke_id + live_first_revision) % 100` 固定按 treatment 百分比分配 control/treatment；control 保持完整缓冲，跨账号重试不改变 variant。`responses-live-request-body-v2` 与 v1 故障样本隔离；功能关闭时不运行新的路由分析或写入新指标。现有 failover 语义不因该实验改变，但仅实际开始消费上游 body 后的失败才记为不确定交付。
-
 ### Projection
 
 - `RuntimeProjectionHub` 是 current-state 的唯一高频事实层，接收 runtime 与 terminal 事件并维护 Dashboard 所需的全局及账号投影。内部必须按 current/phase、network/rate 与 terminal totals 拆成独立不可变切片和 revision，分别使用 `250ms`、`1s` 与 `5s` 固定 deadline。
@@ -86,9 +77,6 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - Dashboard、统计、raw detail HTTP response 不变。
 - SSE topic 名称、schema epoch、snapshot/replay/live envelope、排序、recent 与 range 语义不变。
 - `GET /api/system/status` 可 additive 增加 `runtimePressureHealth`；旧前端在字段缺失时按 unknown 兼容。
-- 现有 pool routing settings additive 暴露 `liveRequestStreaming: { enabled, treatmentPercent }`；默认值为 `false` 和 `50`，启用后对所有符合其他请求条件的 `/v1/responses` 生效。
-- `GET /api/stats/perf` 可按 endpoint、group 与 live-first revision 过滤，并 additive 返回 `liveRequestStreaming.cohorts` 与 `routeFinalization`。每个 cohort 是 `(live_first_experiment_variant, request_body_transport_mode)` 的精确组合；收益只能比较 `(control, buffered)` 与 `(treatment, live_first)`。`(treatment, buffered)` 是实验组缓冲回退，必须单独显示且不得替代实时首发样本。没有实际 `live_first` 样本时，UI 必须将收益标为不可比较。`routeFinalization` 必须同时给出精确 `outcomeCounts`、EOF 最终化率与保守缓冲率，历史缺字段只能归入 `unknown`。
-- `GET /api/stats/perf/live-request-streaming-evaluation` 是服务器拥有的只读结论接口：固定读取当前 live-first revision、`/v1/responses` 和滚动 `7d` 窗口，不接受前端 range、endpoint、group 或 cohort 筛选。它分别返回 treatment 分配、资格、实际 `live_first`、缓冲回退分母，按账号组匹配的 control/treatment 指标、全分配风险、route outcome 诊断及 `insufficient_data`、`recommend_keep`、`recommend_remove`、`review_required` 状态与稳定 reason code。
 - typed runtime mutation bus 是唯一的生产热路径。`DASHBOARD_RUNTIME_PROJECTION_MODE=legacy` 与 `PROMPT_CACHE_TOPIC_PROJECTION_MODE=legacy` 已被移除；遗留值不得重新启用旧的完整记录广播或 topic 全窗重建。请求语义流水线的独立运维配置不属于 runtime bus 回退面。
 
 ## Runtime Pressure Health
@@ -106,8 +94,6 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 - projection: `projection`, `trigger`, `revision`, `render_elapsed_ms`, `live_path_db_read_count`, `snapshot_origin`, `last_good_age_ms`。
 - request pipeline: `snapshot_kind`, `body_size_bytes`, `semantic_parse_count`, `whole_body_materialization_count`, `rewrite_buffer_peak_bytes`, `fallback_reason`。
-- live request body: `request_body_transport_mode`, `live_first_revision`, `live_first_experiment_variant`, eligibility/reason、raw/logical body bytes、`route_finalization_{raw,logical}_bytes`、比例、耗时、结果、依赖因素及 hot-cache/cold-load 状态、`upstream_request_first_byte_ms`、`request_body_capture_complete_ms`、`request_upstream_overlap_ms`、直接测得的 `first_response_byte_total_ms` 与 `first_token_ms`。所有值共用请求 body 消费起点；不得由互相重叠的阶段耗时相加推导首响应。
-- effectiveness 仅以最终成功 invocation 为分母；首尝试失败、capture failure、retry/fallback、client abort 与 `ambiguous_upstream_delivery` 作为独立风险计数。持久化不得包含正文或凭据。
 - delivery: `topic_key`, `active_subscriber_count`, `builder_count`, `serialization_count`, `frame_bytes`, `frame_reused`, `cursor_advanced`。
 - accounting/memory: `pending_depth`, `pending_bytes`, `accounting_transfer_bytes`, `accounting_invariant`, `rss_anon_bytes`, `swap_bytes`, `managed_bytes`, `unattributed_anon_bytes`。
 - healthy/no-change 高频事件降为 debug；DB live read、whole-body materialization、accounting invariant violation、持续 stale 与序列化重复保留 warning。
@@ -122,10 +108,6 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - P2 pressure defer 不是执行失败，不得增加 retry 计数。健康派生写采用固定 250ms 合并；cooldown 到期或 background eligibility generation 变化负责唤醒，P1 的 20ms admission ticker 不得轮询 P2。
 - 高频 Prompt Cache topic 必须使用 active-topic scoped projection。任意 Records 广播不得触发 full-window hydrate；topic delta 500ms 合并，last-good baseline 最多每 60 秒 pressure-gated reconcile 一次。
 - 生产受控 A/B 中新增 Dashboard tab 的 CPU 增量不超过 10 个百分点，subscription lag/skipped 为零；连续 12 小时 RSS p95 不超过 `2 GiB` 且 Swap 不持续增长。该 A/B 是架构完成门槛，不能由“零 SQL”或单 topic Arc 复用测试替代。
-- 阻塞 `/v1/responses` 的下游尾部 body 后，treatment 不得在最终路由前向上游提供首个请求 chunk；control、metadata/tools/图片/加密字段晚到与重复 root key 都不得触发“已发送再取消”。EOF、冷缓存或解析预算退化保留完整缓冲。
-- API Key 与 OAuth、`follow|identity|gzip|deflate|zstd`、重复 key、嵌套 metadata、malformed body、cancel、early upstream return 与 replay/failover 均有回归覆盖。
-- 性能比较必须给出每个实际 cohort 的调用数、成功样本数及首响应、首 token、overlap 的 p50/p90/p99；首响应与首 token 以更低为收益，overlap 以更高为收益，零基线不得伪造相对百分比。每项指标少于 200 个样本时 UI 不得宣称该项收益结论。没有 `(treatment, live_first)` 时，`(treatment, buffered)` 只能作为回退规模呈现，三项收益均为不可比较。
-- canonical evaluation 的固定判定规则为：treatment 分配少于 1,000 次返回 `insufficient_data`；达到 1,000 次而实际 `live_first` 占比低于 5% 返回 `recommend_remove`。其他情况要求按账号组匹配的 buffered control 与 actual live-first treatment 在首响应、首 token、overlap 各至少 200 个有效样本；使用固定随机种子的 2,000 次 bootstrap 计算 P50 差值双侧 95% 区间，四项风险差值使用单侧 95% 上界。仅当两个延迟收益下界均不少于 100ms、overlap 下界大于 0 且四项风险上界均不超过 0.5 个百分点时返回 `recommend_keep`；两个延迟收益上界均不大于 0 时返回 `recommend_remove`；其余返回 `review_required`。延迟只纳入最终成功请求，风险纳入全部实验分配；缺失或不可匹配分层不合并。
 
 ## Non-goals
 
@@ -136,53 +118,10 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 ## Visual Evidence
 
-以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态。运行压力状态使用 `1660x900` 桌面与 `393x852` 移动 CSS px；请求体实时转发性能组件使用 Storybook 绑定的 `desktop1280` 视口，设置面板证据使用应用一致的 `vibe-dark` 深色主题。
+以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态；桌面使用 `1660x900`，移动使用 `393x852` CSS px。
 
-![System Status runtime pressure degraded state on desktop](./assets/runtime-pressure-desktop.png)
+![System Status runtime pressure degraded state on desktop](assets/runtime-pressure-desktop.png)
 
-![System Status runtime pressure accounting error state on mobile](./assets/runtime-pressure-mobile.png)
+![System Status runtime pressure accounting error state on mobile](assets/runtime-pressure-mobile.png)
 
-- source_type: storybook_canvas
-  story_id_or_title: Stats/LiveRequestStreamingPerfPanel/Measured
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1280
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  sensitive_exclusion: N/A
-  submission_gate: owner-confirmed
-  state: 两个 cohort 均达到 200 个成功样本
-  evidence_note: 验证 buffered-control 与 live-first-treatment 并列呈现 P50 首响应、首 token、上传重叠、重试风险，以及首响应和首 token 的绝对/相对收益。
-
-![Live request streaming measured cohort comparison](./assets/live-request-streaming-perf-measured.png)
-
-- source_type: storybook_canvas
-  story_id_or_title: Stats/LiveRequestStreamingPerfPanel/InsufficientSamples
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1280
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  sensitive_exclusion: N/A
-  submission_gate: owner-confirmed
-  state: 两个 cohort 均少于 200 个成功样本
-  evidence_note: 验证样本不足时在两个 cohort 明确显示 17 / 200，三项收益固定为 -，界面不将对照数值作为可用的收益结论。
-
-![Live request streaming insufficient sample guard](./assets/live-request-streaming-perf-insufficient-samples.png)
-
-![Pool routing live request streaming enabled without account group field](./assets/pool-routing-live-streaming-no-account-group-dark.png)
-
-- source_type: storybook_canvas
-  story_id_or_title: Settings/Components/Pool Routing Settings Card/LiveRequestStreamingEnabled
-  target_program: mock-only
-  capture_scope: element
-  requested_viewport: desktop1280
-  viewport_strategy: storybook-viewport
-  margin_policy: require_margin
-  evidence_surface: component
-  sensitive_exclusion: N/A
-  submission_gate: owner-confirmed
-  state: 保存后实时转发保持开启；实验组占比为 50%
-  evidence_note: 深色主题内外一致，实时请求体流式转发区域没有账号组字段；保存响应归一化后保留已开启状态，并按实验组占比对满足路由条件的 `/v1/responses` 请求分配 cohort。
+![Pool routing defaults settings card on desktop](assets/settings-routing-defaults-desktop1280.png)

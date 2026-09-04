@@ -2339,7 +2339,6 @@ pub(crate) async fn reset_upstream_account_model_routing(
             "API Key model route not found".to_string(),
         ));
     };
-    invalidate_pool_routing_runtime_cache(state.as_ref()).await;
     state
         .subscription_hub
         .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);

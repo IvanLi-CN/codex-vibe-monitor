@@ -2,17 +2,8 @@ use super::*;
 use crate::api::{
     RuntimeStickyMutation, broadcast_prompt_cache_conversation_changed,
     broadcast_prompt_cache_conversation_sticky_route_changed,
-    invalidate_pool_routing_sticky_route_cache,
     upsert_runtime_prompt_cache_conversation_sticky_route,
 };
-
-async fn refresh_routing_snapshot_after_state_change(state: &AppState, reason: &str) {
-    if let Err(error) = refresh_pool_model_routing_runtime_cache(state).await {
-        // Durable state remains authoritative; keep serving the last snapshot
-        // until the next routing refresh can publish the updated view.
-        warn!(%error, reason, "failed to publish updated pool routing snapshot");
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum UpstreamCapabilityAxis {
@@ -245,9 +236,6 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
     }
     let reservation_release_wakes_waiters =
         pool_route_success_allows_reservation_release_publish(state, account_id).await;
-    if outcome.availability_increased {
-        refresh_routing_snapshot_after_state_change(state, "route_recovered").await;
-    }
     if outcome.availability_increased && reservation_release_wakes_waiters {
         publish_pool_routing_availability(state);
     }
@@ -623,13 +611,10 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         codex_imagegen_rewrite,
     )
     .await?;
-    if outcome.sticky_mutation.writes_conversation_operation() {
-        if let Some(sticky_key) = sticky_key {
-            invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
-        }
-        if let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key)) {
-            broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
-        }
+    if outcome.sticky_mutation.writes_conversation_operation()
+        && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
+    {
+        broadcast_prompt_cache_conversation_changed(state, prompt_cache_key).await;
     }
     if let Some(previous_upstream_account_id) =
         outcome.sticky_mutation.previous_upstream_account_id()
@@ -645,9 +630,6 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     }
     let reservation_release_wakes_waiters =
         pool_route_success_allows_reservation_release_publish(state, account_id).await;
-    if outcome.availability_increased {
-        refresh_routing_snapshot_after_state_change(state, "route_recovered").await;
-    }
     if outcome.availability_increased && reservation_release_wakes_waiters {
         publish_pool_routing_availability(state);
     }
@@ -1650,10 +1632,6 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         prompt_cache_key,
     )
     .await?;
-    invalidate_pool_routing_runtime_cache(state).await;
-    if sticky_route_cleared && let Some(sticky_key) = sticky_key {
-        invalidate_pool_routing_sticky_route_cache(state, sticky_key).await;
-    }
     if sticky_route_cleared
         && let Some(prompt_cache_key) = prompt_cache_key.filter(|key| sticky_key == Some(*key))
     {

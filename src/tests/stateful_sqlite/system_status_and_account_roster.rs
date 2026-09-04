@@ -1501,6 +1501,7 @@ pub(crate) async fn test_state_with_openai_base_and_pool_no_available_wait(
         true,
         PoolNoAvailableWaitSettings {
             timeout,
+            poll_interval: _poll_interval,
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
     )
@@ -1522,6 +1523,7 @@ pub(crate) async fn test_state_from_config(
 fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettings {
     PoolNoAvailableWaitSettings {
         timeout: Duration::ZERO,
+        poll_interval: Duration::ZERO,
         retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
     }
 }
@@ -1669,7 +1671,6 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
-        #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -2169,7 +2170,6 @@ pub(crate) async fn test_state_from_existing_pool(
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
         pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
-        #[cfg(test)]
         pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
         pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
         pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
@@ -2547,7 +2547,7 @@ pub(crate) async fn set_test_account_generic_route_cooldown(
 }
 
 pub(crate) async fn set_test_account_degraded_route_state(
-    state: &Arc<AppState>,
+    pool: &SqlitePool,
     account_id: i64,
     failure_kind: &str,
     error_message: &str,
@@ -2573,10 +2573,9 @@ pub(crate) async fn set_test_account_degraded_route_state(
     .bind(&now_iso)
     .bind(failure_kind)
     .bind(account_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await
     .expect("set test pool account degraded route state");
-    state.pool_routing_runtime_cache.lock().await.take();
 }
 
 async fn set_test_account_route_cooldown(

@@ -41,10 +41,6 @@ pub(crate) async fn update_pool_routing_settings(
         current_cache_hit_protection,
         payload.cache_hit_protection.as_ref(),
     )?;
-    let merged_live_request_streaming = merge_live_request_streaming_settings(
-        resolve_live_request_streaming_settings(&current),
-        payload.live_request_streaming.as_ref(),
-    )?;
     let cache_hit_protection_reset_reason = payload
         .cache_hit_protection
         .is_some()
@@ -143,7 +139,6 @@ pub(crate) async fn update_pool_routing_settings(
         || available_models_mode.is_some()
         || payload.maintenance.is_some()
         || payload.cache_hit_protection.is_some()
-        || payload.live_request_streaming.is_some()
         || payload.priority_handoff_admission_enabled.is_some()
     {
         save_pool_routing_settings(
@@ -163,10 +158,6 @@ pub(crate) async fn update_pool_routing_settings(
                     .cache_hit_protection
                     .as_ref()
                     .map(|_| merged_cache_hit_protection),
-                live_request_streaming: payload
-                    .live_request_streaming
-                    .as_ref()
-                    .map(|_| merged_live_request_streaming),
                 priority_handoff_admission_enabled: payload.priority_handoff_admission_enabled,
             },
         )

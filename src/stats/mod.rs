@@ -1202,14 +1202,6 @@ pub(crate) struct ArchivedInvocationFailureRow {
     pub(crate) is_actionable: Option<i64>,
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct ArchivedLiveRequestStreamingRow {
-    pub(crate) id: i64,
-    pub(crate) status: Option<String>,
-    pub(crate) failure_kind: Option<String>,
-    pub(crate) payload: Option<String>,
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct ClearedSummaryRollupBuckets {
     overall: HashSet<(i64, String)>,
@@ -4619,39 +4611,6 @@ pub(crate) async fn load_failure_rows_from_archive_pool(
         .fetch_all(archive_pool)
         .await
         .map_err(Into::into)
-}
-
-pub(crate) async fn load_live_request_streaming_rows_from_archives(
-    pool: &Pool<Sqlite>,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-    exclude_invocation_ids: Option<&HashSet<i64>>,
-) -> Result<Vec<ArchivedLiveRequestStreamingRow>> {
-    let archive_rows =
-        load_completed_invocation_archive_paths_in_range(pool, Some((start, end))).await?;
-    let mut rows = Vec::new();
-    for archive_row in archive_rows {
-        let Some((archive_pool, cleanup)) =
-            open_invocation_archive_batch_pool(&archive_row, "live-request-streaming").await?
-        else {
-            continue;
-        };
-        let batch_rows = sqlx::query_as::<_, ArchivedLiveRequestStreamingRow>(
-            "SELECT id, status, failure_kind, payload FROM codex_invocations \
-             WHERE source = ?1 AND occurred_at >= ?2 AND occurred_at <= ?3",
-        )
-        .bind(SOURCE_PROXY)
-        .bind(db_occurred_at_lower_bound(start))
-        .bind(db_occurred_at_lower_bound(end))
-        .fetch_all(&archive_pool)
-        .await?;
-        rows.extend(batch_rows.into_iter().filter(|row| {
-            !exclude_invocation_ids.is_some_and(|excluded| excluded.contains(&row.id))
-        }));
-        archive_pool.close().await;
-        drop(cleanup);
-    }
-    Ok(rows)
 }
 
 pub(crate) async fn load_unmaterialized_invocation_archive_failure_rows(
