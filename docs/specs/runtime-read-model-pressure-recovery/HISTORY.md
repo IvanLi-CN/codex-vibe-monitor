@@ -54,3 +54,9 @@
   cursors resume after committed pages, reset unproven legacy ID-only progress,
   and quarantine manifest-identity or semantic failures while retaining
   bounded retries for transient source and SQLite conditions.
+- Historical coverage recovery is independent of request ownership: a permit-scoped
+  supervisor runs one AllTime and V2 turn per cadence, prioritizes due current-30-day
+  manifests before archive-ID fairness, and preserves an explicit deferred outcome
+  instead of losing a deadline attempt. V2 SHA verification resumes from serialized
+  standard-hash state bound to the archive fingerprint; a changed source discards
+  only unverified progress, while V1 remains permanently excluded from cleanup proof.

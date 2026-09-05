@@ -3849,6 +3849,12 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             next_occurred_at TEXT,
             cursor_version INTEGER NOT NULL DEFAULT 1,
             retry_attempt INTEGER NOT NULL DEFAULT 0,
+            hash_algorithm TEXT NOT NULL DEFAULT '',
+            hash_state_version INTEGER NOT NULL DEFAULT 0,
+            hash_byte_offset INTEGER NOT NULL DEFAULT 0,
+            hash_state BLOB,
+            hash_complete_sha256 TEXT,
+            source_fingerprint TEXT,
             PRIMARY KEY (archive_batch_id, manifest_sha256)
         )
         "#,
@@ -3889,6 +3895,48 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "summary_archive_snapshot_backfill_outcome",
         "retry_attempt",
         "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "hash_algorithm",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "hash_state_version",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "hash_byte_offset",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "hash_state",
+        "BLOB",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "hash_complete_sha256",
+        "TEXT",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_archive_snapshot_backfill_outcome",
+        "source_fingerprint",
+        "TEXT",
     )
     .await?;
 
@@ -3932,6 +3980,13 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         pool,
         "summary_all_time_projection_checkpoint",
         "coverage_revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column_with_definition(
+        pool,
+        "summary_all_time_projection_checkpoint",
+        "account_coverage_revision",
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
@@ -5224,6 +5279,28 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         .await
         .context("failed to initialize Summary coverage revision")?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS summary_account_coverage_revision (\
+            id INTEGER PRIMARY KEY CHECK (id = 1),\
+            revision INTEGER NOT NULL DEFAULT 0\
+        )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary account coverage revision table existence")?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO summary_account_coverage_revision (id, revision) VALUES (1, 0)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to seed Summary account coverage revision")?;
+    sqlx::query(
+        "UPDATE summary_account_coverage_revision SET revision = 1 WHERE id = 1 AND revision = 0",
+    )
+    .execute(pool)
+    .await
+    .context("failed to initialize Summary account coverage revision")?;
+
     for (name, table, predicate) in [
         (
             "archive_insert",
@@ -5243,6 +5320,81 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         ("invocation_rollup_insert", "invocation_rollup_hourly", ""),
         ("invocation_rollup_update", "invocation_rollup_hourly", ""),
         ("invocation_rollup_delete", "invocation_rollup_hourly", ""),
+        (
+            "replay_insert",
+            "hourly_rollup_archive_replay",
+            "WHEN NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "replay_update",
+            "hourly_rollup_archive_replay",
+            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "replay_delete",
+            "hourly_rollup_archive_replay",
+            "WHEN OLD.dataset = 'codex_invocations'",
+        ),
+        ("snapshot_insert", "summary_archive_snapshot", ""),
+        ("snapshot_update", "summary_archive_snapshot", ""),
+        ("snapshot_delete", "summary_archive_snapshot", ""),
+    ] {
+        let event = if name.ends_with("_insert") {
+            "INSERT"
+        } else if name.ends_with("_update") {
+            "UPDATE"
+        } else {
+            "DELETE"
+        };
+        let trigger = format!(
+            "CREATE TRIGGER IF NOT EXISTS trg_summary_coverage_revision_{name} \
+             AFTER {event} ON {table} {predicate} BEGIN \
+               UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1; \
+             END",
+        );
+        sqlx::query(&trigger).execute(pool).await.with_context(|| {
+            format!("failed to ensure Summary coverage revision trigger {name}")
+        })?;
+    }
+
+    // Older builds used the global revision for account-only rollups. Remove the old trigger
+    // names before installing the account-specific counterparts below; CREATE IF NOT EXISTS
+    // alone would preserve the overly broad invalidation on upgraded databases.
+    for name in [
+        "account_rollup_insert",
+        "account_rollup_update",
+        "account_rollup_delete",
+        "usage_rollup_insert",
+        "usage_rollup_update",
+        "usage_rollup_delete",
+    ] {
+        sqlx::query(&format!(
+            "DROP TRIGGER IF EXISTS trg_summary_coverage_revision_{name}"
+        ))
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to retire broad Summary coverage trigger {name}"))?;
+    }
+
+    // Account coverage has a narrower invalidation set than global coverage. Archive manifests,
+    // replay markers, account rollups, usage rollups and verified V2 pages can change account
+    // aggregates; global invocation rollups alone must not restart the account checkpoint.
+    for (name, table, predicate) in [
+        (
+            "archive_insert",
+            "archive_batches",
+            "WHEN NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "archive_update",
+            "archive_batches",
+            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "archive_delete",
+            "archive_batches",
+            "WHEN OLD.dataset = 'codex_invocations'",
+        ),
         ("account_rollup_insert", "upstream_account_stats_hourly", ""),
         ("account_rollup_update", "upstream_account_stats_hourly", ""),
         ("account_rollup_delete", "upstream_account_stats_hourly", ""),
@@ -5288,13 +5440,13 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "DELETE"
         };
         let trigger = format!(
-            "CREATE TRIGGER IF NOT EXISTS trg_summary_coverage_revision_{name} \
+            "CREATE TRIGGER IF NOT EXISTS trg_summary_account_coverage_revision_{name} \
              AFTER {event} ON {table} {predicate} BEGIN \
-               UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1; \
+               UPDATE summary_account_coverage_revision SET revision = revision + 1 WHERE id = 1; \
              END",
         );
         sqlx::query(&trigger).execute(pool).await.with_context(|| {
-            format!("failed to ensure Summary coverage revision trigger {name}")
+            format!("failed to ensure Summary account coverage revision trigger {name}")
         })?;
     }
     Ok(())
