@@ -56,7 +56,10 @@ import {
   updateUpstreamAccount,
 } from "../../lib/api";
 import type { RoutingStateVersion } from "../../lib/api/core-foundation";
-import { acceptsRoutingStateVersion } from "../../lib/api/core-foundation";
+import {
+  acceptsRoutingStateVersion,
+  compareRoutingStateVersion,
+} from "../../lib/api/core-foundation";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -1172,6 +1175,18 @@ function accountPolicyDraftFromRoutingRule(
     allowCutIn: effectiveRule.allowCutIn !== false,
     fastModeRewriteMode: effectiveRule.fastModeRewriteMode ?? "keep_original",
   };
+}
+
+function accountPolicyDraftsEqual(
+  left: AccountQuickPolicyDraft,
+  right: AccountQuickPolicyDraft,
+): boolean {
+  return (
+    left.priorityTier === right.priorityTier &&
+    left.allowCutOut === right.allowCutOut &&
+    left.allowCutIn === right.allowCutIn &&
+    left.fastModeRewriteMode === right.fastModeRewriteMode
+  );
 }
 
 function cycleAccountPriorityPolicy(draft: AccountQuickPolicyDraft): AccountQuickPolicyDraft {
@@ -2994,16 +3009,19 @@ function DashboardUpstreamAccountActivityCard({
     };
   }, []);
   useEffect(() => {
-    if (
-      !acceptsRoutingStateVersion(
-        lastCommittedRoutingStateVersionRef.current,
-        routingStateVersion,
-        "live",
-      )
-    ) {
+    const currentRoutingStateVersion = lastCommittedRoutingStateVersionRef.current;
+    if (!acceptsRoutingStateVersion(currentRoutingStateVersion, routingStateVersion, "live")) {
       return;
     }
     if (!routingStateVersion && lastCommittedRoutingStateVersionRef.current) {
+      return;
+    }
+    if (
+      currentRoutingStateVersion &&
+      routingStateVersion &&
+      compareRoutingStateVersion(routingStateVersion, currentRoutingStateVersion) === 0 &&
+      !accountPolicyDraftsEqual(serverPolicyDraft, lastCommittedPolicyRef.current)
+    ) {
       return;
     }
     lastCommittedPolicyRef.current = serverPolicyDraft;

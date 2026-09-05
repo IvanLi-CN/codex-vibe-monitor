@@ -4650,6 +4650,54 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
+  it("keeps a confirmed quick policy when a same-version stale activity frame arrives", () => {
+    const version = {
+      epoch: "2026-09-05T12:00:00.000000000Z",
+      generation: "4",
+    };
+    const confirmed = createUpstreamAccountActivityResponse();
+    confirmed.routingStateVersion = version;
+    confirmed.accounts[0]!.effectiveRoutingRule = {
+      ...confirmed.accounts[0]!.effectiveRoutingRule!,
+      priorityTier: "fallback",
+    };
+    upstreamAccountActivityMock.data = confirmed;
+
+    renderSection(createResponse([]));
+    const upstreamAccountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+      (candidate) => /上游账号|upstream account/i.test(candidate.textContent ?? ""),
+    );
+    if (!(upstreamAccountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+    act(() => {
+      upstreamAccountTab.click();
+    });
+    const policyBadge = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-policy-badge"][data-policy-key="priority-new-conversations"]',
+    );
+    if (!(policyBadge instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account policy badge");
+    }
+    expect(policyBadge.textContent?.trim()).toBe("兜底");
+
+    upstreamAccountActivityMock.data = {
+      ...confirmed,
+      accounts: [
+        {
+          ...confirmed.accounts[0]!,
+          effectiveRoutingRule: {
+            ...confirmed.accounts[0]!.effectiveRoutingRule!,
+            priorityTier: "normal",
+          },
+        },
+      ],
+    };
+    rerenderSection(createResponse([]));
+
+    expect(policyBadge.textContent?.trim()).toBe("兜底");
+  });
+
   it("cycles upstream account Fast mode as an account-level quick policy", async () => {
     vi.useFakeTimers();
     const originalFetch = globalThis.fetch;
