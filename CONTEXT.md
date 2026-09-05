@@ -140,6 +140,14 @@ not invalidate this fence; only a changed coverage input starts a new coverage
 reconciliation for the affected global or account scope.
 _Avoid_: live-tail watermark, full-history reset, mixed-generation proof
 
+**Summary Coverage Scope Version**:
+The coverage relation for one independently recoverable global or account
+selection. The durable fence records completed-manifest and coverage-revision
+inputs, while each Projection's temporal, account, and current-rank proofs
+localize what a changed input can make unavailable. A live-tail change is not a
+coverage-version change and cannot restart historical recovery.
+_Avoid_: tail-driven reset, implicit exactness, global serving outage
+
 **Summary Live Tail Cursor**:
 The bounded live and rollup cursor set after a Summary Coverage Fence. It tracks
 the committed terminal tail that `RollingDelta` can reconstruct without
@@ -149,11 +157,55 @@ _Avoid_: archive coverage fence, request-time cursor, raw-source replay
 **Historical Summary Coverage Recovery Supervisor**:
 The single off-request owner for AllTime checkpoint pages and Legacy Summary
 Snapshot V2 backfill. It prioritizes pages intersecting the current 30-day
-horizon, commits each verified cursor/proof before yielding, and resumes after
-pressure, restart, or a generation fence change. It never calls the generic
-Projection builder for unfinished history; recent exact selections remain
-published while an unproven historical scope is selection-local unavailable.
+horizon from a durable due queue independent of HTTP/SSE client interest, then
+uses a separate backlog sweep cursor. It acquires one low-priority recovery
+permit per bounded page, commits each verified cursor/proof before yielding,
+and resumes after pressure, restart, or a generation fence change. AllTime
+finalization and Snapshot V2 backfill are independent workers; neither can
+short-circuit the other. It never calls the generic Projection builder for
+unfinished history; recent exact selections remain published while an
+unproven historical scope is selection-local unavailable.
 _Avoid_: startup full rebuild, request-time archive recovery, partial history
+
+**Summary Coverage Due Queue**:
+The durable eligibility view for historical recovery work whose
+`next_probe_at` is due. It ranks coverage pages intersecting the supported
+30-day horizon ahead of the general backlog and is evaluated independently of
+the monotonic archive-ID sweep cursor. A deferred item stays eligible only
+after its recorded backoff; a quarantined manifest is excluded until its
+identity changes.
+_Avoid_: ID cursor as priority, fixed ticker retry, request-triggered repair
+
+**Summary Archive Proof Progress**:
+The committed standard-hash and `(UTC occurred_at, id)` page state for one
+archive manifest. Every bounded attempt starts from this state and atomically
+advances it with the verified V2 page; a deadline, pressure, or lock leaves the
+last verified state unchanged. The state is proof progress, not authority, until
+the final digest and semantic coverage are complete.
+_Avoid_: restart-from-zero hash, wall-clock-only progress, full proof rescans
+
+**Resumable Summary Hash Proof**:
+The exact-progress certificate for an archive's standard SHA-256 computation:
+algorithm/state format, consumed byte offset, and the source identity to which
+that state belongs. It may continue only for the same source identity; the final
+digest must equal the manifest identity before any V2 authority or cleanup gate
+can rely on it.
+_Avoid_: chunk digest as manifest SHA, unbound hash state, partial hash authority
+
+**Summary Archive Source Identity**:
+The stable identity that binds a raw archive source to its manifest while
+recovery spans attempts. It uses the available filesystem identity and size/time
+metadata; a changed identity starts a new manifest evaluation, while an
+unverifiable identity remains fail-closed.
+_Avoid_: path-only identity, stale SHA marker, mixed source generations
+
+**Summary Exact-Readiness Relation**:
+The selection-specific proof relation for a published Projection: current,
+1d, 7d, and today can be exact independently; 30d requires proof for every
+intersecting coverage boundary; all requires complete historical proof and a
+continuous live tail. A missing proof affects only selections whose required
+source intersects it.
+_Avoid_: global readiness flag, stale last-good renewal, partial aggregate
 
 **Legacy Summary Coverage Recovery**:
 The low-priority supervisor that seek-pages completed legacy invocation archives
@@ -263,6 +315,23 @@ from its committed cursor and never fabricates a snapshot for a missing or
 unreadable authority; that finite range remains unavailable until an exact
 source exists.
 _Avoid_: release-blocking full scan, invented historical total, manual read path
+
+**Typed Summary Backfill Outcome**:
+The durable state for one `(archive_batch_id, manifest_sha256)` recovery item:
+`Verified`, `InProgress`, `Deferred`, `TransientFailure`, or `Unrecoverable`.
+`Deferred` and `TransientFailure` retain the last committed proof cursor and a
+bounded `next_probe_at`; `Unrecoverable` is quarantined until the manifest
+identity changes. No outcome is allowed to advance a cursor without the page
+proof it describes.
+_Avoid_: string-only retry reason, unbounded retry, cursor-on-failure
+
+**Summary Recovery Permit**:
+The single low-priority database-pressure admission held while one recovery
+page performs its due check, bounded source read, and atomic durable commit.
+Pressure refusal happens before SQLite/archive I/O and records only in-memory
+eligibility; actual `BUSY`/`LOCKED` is reported separately after an attempted
+operation.
+_Avoid_: pressure bypass, nested permits, millisecond retry loop
 
 **Summary Archive Snapshot Coverage Gate**:
 The archive lifecycle condition that prevents source cleanup until the matching
