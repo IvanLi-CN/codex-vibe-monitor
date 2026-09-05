@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.23",
+  "base_stable_version": "2.69.22",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-05T08:22:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.23",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "a4db5a80d1e73df237b88b6d045a631ad578780e",
+  "pr_number": 907,
+  "pr_title": "fix(summary): make durable coverage recovery resumable",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.23",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.23",
+  "target_sha": "c875754793de8ee5054ea4467018c6457061636c",
+  "type_label": "type:patch"
+}
