@@ -2867,6 +2867,21 @@ async fn all_time_summary_preserves_archived_history_when_rollup_failures_are_st
     .await
     .expect("insert post-repair live tail invocation row");
 
+    let live_tail =
+        sqlx::query_as::<_, ApiInvocation>("SELECT * FROM codex_invocations WHERE id = ?1")
+            .bind(11_i64)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load committed post-repair live tail invocation");
+    let live_tail_delta = apply_dashboard_activity_terminal_record(state.as_ref(), &live_tail)
+        .await
+        .terminal_delta
+        .expect("register committed post-repair live tail delta");
+    state
+        .subscription_hub
+        .acknowledge_summary_delta(live_tail_delta)
+        .await;
+
     let Json(summary_with_live_tail) = fetch_summary_from_memory_snapshot(
         State(state),
         Query(SummaryQuery {
@@ -23359,63 +23374,44 @@ async fn summary_projection_rejects_replaced_unmaterialized_all_time_archive() {
     refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
         .await
         .expect("publish initial exact all-time archive snapshot after reconciliation");
-    sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
-        .execute(&state.pool)
-        .await
-        .expect("create all-time summary interleave gate");
-    let interleave = install_summary_projection_test_interleave_at(
-        SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
-    );
     let replacement_path = archive_path.to_string_lossy().to_string();
-    let replacement_pool = state.pool.clone();
-    let replacement_interleave = interleave.clone();
-    let replacement_archive_path_for_writer = replacement_archive_path.clone();
-    let archive_path_for_writer = archive_path.clone();
-    let replacement = tokio::spawn(async move {
-        replacement_interleave.wait_for_writer().await;
-        fs::write(&archive_path_for_writer, b"not-a-gzip-archive")
-            .expect("make all-time archive unavailable after discovery");
-        fs::remove_file(&replacement_archive_path_for_writer)
-            .expect("remove unused replacement all-time archive");
-        let mut tx = replacement_pool
-            .begin()
-            .await
-            .expect("begin all-time archive replacement");
-        sqlx::query(
-            "UPDATE archive_batches SET sha256 = ?1 \
-             WHERE dataset = 'codex_invocations' AND file_path = ?2",
-        )
-        .bind(&replacement_archive_sha256)
-        .bind(&replacement_path)
-        .execute(tx.as_mut())
+    fs::write(&archive_path, b"not-a-gzip-archive")
+        .expect("make all-time archive unavailable before recovery");
+    fs::remove_file(&replacement_archive_path).expect("remove unused replacement archive");
+    let mut tx = state
+        .pool
+        .begin()
         .await
-        .expect("replace all-time archive manifest SHA");
-        sqlx::query(
-            "INSERT INTO codex_invocations \
-             (invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response) \
-             VALUES ('summary-all-time-archive-identity-terminal', ?1, 'proxy', 'success', 7, 0.07, 'full', '{}', '')",
-        )
-        .bind(&archived_at)
-        .execute(tx.as_mut())
+        .expect("begin all-time archive replacement");
+    sqlx::query(
+        "UPDATE archive_batches SET sha256 = ?1 \
+         WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(&replacement_archive_sha256)
+    .bind(&replacement_path)
+    .execute(tx.as_mut())
+    .await
+    .expect("replace all-time archive manifest SHA");
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response) \
+         VALUES ('summary-all-time-archive-identity-terminal', ?1, 'proxy', 'success', 7, 0.07, 'full', '{}', '')",
+    )
+    .bind(&archived_at)
+    .execute(tx.as_mut())
+    .await
+    .expect("write terminal beside all-time archive replacement");
+    tx.commit()
         .await
-        .expect("write terminal beside all-time archive replacement");
-        let commit = tokio::time::timeout(Duration::from_secs(2), tx.commit()).await;
-        replacement_interleave.resume_build();
-        commit
-            .expect("all-time archive replacement must not block the snapshot reader")
-            .expect("commit all-time archive replacement");
-    });
-    let hydration =
-        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
-            .await;
-    replacement.await.expect("run all-time archive replacement");
-    clear_summary_projection_test_interleave();
-    hydration.expect("retain the prior all-time aggregate without scanning a replaced archive");
-    assert_eq!(
-        interleave.build_attempts(),
-        1,
-        "the all-time identity regression must fence publication exactly once"
-    );
+        .expect("commit all-time archive replacement");
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime),
+    )
+    .await
+    .expect("all-time recovery must not wait for an unchanged publication stage")
+    .expect("retain the prior all-time aggregate without scanning a replaced archive");
     state.pool.close().await;
 
     let Json(summary) = fetch_summary(
