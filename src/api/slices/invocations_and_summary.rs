@@ -10818,36 +10818,6 @@ impl SummaryCoverageRecoverySupervisor {
             "summary historical coverage recovery page completed"
         );
 
-        // Snapshot V2 proof changes are durable coverage inputs, but the backfill worker does
-        // not own the immutable rolling Projection. Publish the new metadata-only coverage
-        // fence immediately so a recovered recent range becomes queryable even when no HTTP or
-        // SSE owner is present to request a normal rolling refresh.
-        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
-        let coverage_publication_required = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .is_none_or(|projection| {
-                !projection
-                    .generation_fence
-                    .coverage_sources_match(durable_generation_fence)
-            });
-        if coverage_publication_required {
-            let publication_started_at = Instant::now();
-            refresh_summary_snapshots_with_deadline(
-                state,
-                SummaryProjectionBuildMode::RollingDelta,
-                Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
-                true,
-            )
-            .await?;
-            info!(
-                stage = "historical_coverage_recent_publication",
-                elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
-                "summary historical coverage proof published to recent projection"
-            );
-        }
-
         // A successful V2 page may complete the checkpoint. Give finalization one bounded turn,
         // then yield. Repeating a generic recovery loop here previously let one supervisor pass
         // monopolize maintenance and made the V2 worker depend on all-time readiness.
@@ -10874,6 +10844,52 @@ impl SummaryCoverageRecoverySupervisor {
                     publish_summary_all_time_projection_checkpoint(state, checkpoint).await?;
                     break;
                 }
+            }
+        }
+
+        // Snapshot V2 proof changes are durable coverage inputs, but the backfill worker does
+        // not own the immutable rolling Projection. Finalize an already-complete checkpoint
+        // before attempting the bounded rolling metadata refresh: the finalizer can atomically
+        // publish the new coverage fence without re-admitting the current source at all. If a
+        // still-needed 4-second refresh is resource-deferred, keep the prior selection-local
+        // availability state and retry from durable progress on the next supervisor pass.
+        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
+        let coverage_publication_required = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .is_none_or(|projection| {
+                !projection
+                    .generation_fence
+                    .coverage_sources_match(durable_generation_fence)
+            });
+        if coverage_publication_required {
+            let publication_started_at = Instant::now();
+            match refresh_summary_snapshots_with_deadline(
+                state,
+                SummaryProjectionBuildMode::RollingDelta,
+                Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
+                true,
+            )
+            .await
+            {
+                Ok(()) => info!(
+                    stage = "historical_coverage_recent_publication",
+                    elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                    "summary historical coverage proof published to recent projection"
+                ),
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("summary projection build exceeded") =>
+                {
+                    warn!(
+                        error = ?error,
+                        stage = "historical_coverage_recent_publication_deferred",
+                        "summary historical coverage retained prior fail-closed availability after bounded rolling refresh"
+                    );
+                }
+                Err(error) => return Err(error),
             }
         }
         Ok(())
