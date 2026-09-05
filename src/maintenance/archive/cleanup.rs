@@ -1670,17 +1670,20 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         .fetch_one(pool)
         .await?
         .unwrap_or_default();
-        if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
-            return Ok("deferred:budget");
-        }
-        let (rows, has_more) = load_invocation_archive_rows_time_chunk(
-            &archive_pool,
-            &query_sql,
-            progress.next_occurred_at.as_deref(),
-            progress.next_row_id,
-        )
-        .await?;
-        if !rows.is_empty() {
+        loop {
+            if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
+                return Ok("deferred:budget");
+            }
+            let (rows, has_more) = load_invocation_archive_rows_time_chunk(
+                &archive_pool,
+                &query_sql,
+                progress.next_occurred_at.as_deref(),
+                progress.next_row_id,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
             let coverage_start = if progress.page_index == 0 {
                 candidate
                     .coverage_start_at
@@ -1764,11 +1767,8 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 .ok_or_else(|| anyhow!("Summary Snapshot page is missing row id"))?;
             progress.next_occurred_at = rows.last().map(|row| row.occurred_at.clone());
             progress.page_index = progress.page_index.saturating_add(1);
-            if has_more {
-                // A page has committed its V2 proof and composite cursor. Yield it to the
-                // supervisor so the next recovery event receives a fresh low-priority permit
-                // and the all-time worker cannot be starved by one large archive.
-                return Ok("yield:page");
+            if !has_more {
+                break;
             }
         }
         if total_rows != candidate.row_count {
@@ -1875,21 +1875,6 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             }
         };
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
-            if disposition == "yield" {
-                let progress =
-                    load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
-                let mut tx = pool.begin().await?;
-                record_summary_archive_snapshot_backfill_outcome_tx(
-                    tx.as_mut(),
-                    &candidate,
-                    "in_progress",
-                    failure_kind,
-                    &progress,
-                )
-                .await?;
-                tx.commit().await?;
-                break;
-            }
             if disposition == "deferred" {
                 let progress =
                     load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;

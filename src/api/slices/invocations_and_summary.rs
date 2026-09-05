@@ -10760,16 +10760,26 @@ impl SummaryCoverageRecoverySupervisor {
         // then yield. Repeating a generic recovery loop here previously let one supervisor pass
         // monopolize maintenance and made the V2 worker depend on all-time readiness.
         if started_at.elapsed() < SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE {
-            let checkpoint = advance_summary_all_time_projection_checkpoint(state).await?;
-            if checkpoint.global_ready() || checkpoint.account_ready() {
-                #[cfg(test)]
-                pause_summary_projection_test_interleave(
-                    &state.pool,
-                    SummaryProjectionBuildMode::AllTime,
-                    SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
-                )
-                .await?;
-                publish_summary_all_time_projection_checkpoint(state, checkpoint).await?;
+            // A manifest page advances its seek cursor before the following empty page marks
+            // that scope complete. Give the checkpoint a second bounded turn after the V2 page
+            // commit so a small candidate becomes publishable in this recovery pass; larger
+            // histories still yield after these bounded turns and resume from their cursor.
+            for _ in 0..2 {
+                if started_at.elapsed() >= SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE {
+                    break;
+                }
+                let checkpoint = advance_summary_all_time_projection_checkpoint(state).await?;
+                if checkpoint.global_ready() || checkpoint.account_ready() {
+                    #[cfg(test)]
+                    pause_summary_projection_test_interleave(
+                        &state.pool,
+                        SummaryProjectionBuildMode::AllTime,
+                        SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+                    )
+                    .await?;
+                    publish_summary_all_time_projection_checkpoint(state, checkpoint).await?;
+                    break;
+                }
             }
         }
         Ok(())
