@@ -1333,6 +1333,7 @@ pub(crate) struct DashboardActivitySnapshotInFlight {
     pub(crate) signal: watch::Sender<bool>,
     pub(crate) waiter_count: usize,
     pub(crate) baseline_cursor: Option<i64>,
+    pub(crate) routing_rules_generation: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1342,6 +1343,7 @@ pub(crate) struct DashboardActivitySnapshotCacheState {
     pub(crate) in_flight:
         HashMap<DashboardActivitySnapshotSelection, DashboardActivitySnapshotInFlight>,
     pub(crate) invalidation_reasons: HashMap<DashboardActivitySnapshotSelection, &'static str>,
+    pub(crate) routing_rules_generation: u64,
     pub(crate) read_model: DashboardActivityReadModel,
     /// Serializes DB-backed baseline builds across distinct selections. Per-selection
     /// singleflight only coalesces identical requests and cannot prevent competing SQLite
@@ -1390,6 +1392,7 @@ pub(crate) async fn dashboard_activity_snapshot_cache_memory_estimate(
 pub(crate) struct DashboardActivitySnapshotFlightGuard {
     pub(crate) cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
     pub(crate) selection: DashboardActivitySnapshotSelection,
+    pub(crate) routing_rules_generation: u64,
     pub(crate) active: bool,
 }
 
@@ -1397,10 +1400,12 @@ impl DashboardActivitySnapshotFlightGuard {
     pub(crate) fn new(
         cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
         selection: DashboardActivitySnapshotSelection,
+        routing_rules_generation: u64,
     ) -> Self {
         Self {
             cache,
             selection,
+            routing_rules_generation,
             active: true,
         }
     }
@@ -1418,10 +1423,15 @@ impl Drop for DashboardActivitySnapshotFlightGuard {
 
         let cache = self.cache.clone();
         let selection = self.selection.clone();
+        let routing_rules_generation = self.routing_rules_generation;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut state = cache.lock().await;
                 if let Some(in_flight) = state.in_flight.remove(&selection) {
+                    if in_flight.routing_rules_generation != routing_rules_generation {
+                        state.in_flight.insert(selection, in_flight);
+                        return;
+                    }
                     let _ = in_flight.signal.send(true);
                 }
             });
@@ -1431,6 +1441,10 @@ impl Drop for DashboardActivitySnapshotFlightGuard {
         if let Ok(mut state) = cache.try_lock()
             && let Some(in_flight) = state.in_flight.remove(&selection)
         {
+            if in_flight.routing_rules_generation != routing_rules_generation {
+                state.in_flight.insert(selection, in_flight);
+                return;
+            }
             let _ = in_flight.signal.send(true);
         }
     }
@@ -1449,6 +1463,36 @@ pub(crate) async fn invalidate_dashboard_activity_snapshot_cache(
     };
 
     if let Some(flight) = in_flight {
+        let _ = flight.signal.send(true);
+    }
+}
+
+pub(crate) async fn invalidate_dashboard_activity_snapshots_with_accounts(
+    cache: &Mutex<DashboardActivitySnapshotCacheState>,
+    reason: &'static str,
+) {
+    let in_flight = {
+        let mut state = cache.lock().await;
+        state.routing_rules_generation = state.routing_rules_generation.saturating_add(1);
+        state
+            .entries
+            .retain(|selection, _| !selection.include_accounts);
+        let selections = state
+            .in_flight
+            .keys()
+            .filter(|selection| selection.include_accounts)
+            .cloned()
+            .collect::<Vec<_>>();
+        for selection in &selections {
+            state.invalidation_reasons.insert(selection.clone(), reason);
+        }
+        selections
+            .into_iter()
+            .filter_map(|selection| state.in_flight.remove(&selection))
+            .collect::<Vec<_>>()
+    };
+
+    for flight in in_flight {
         let _ = flight.signal.send(true);
     }
 }
@@ -2181,6 +2225,8 @@ pub(crate) struct UpstreamAccountActivityResponse {
     pub(crate) range: String,
     pub(crate) range_start: String,
     pub(crate) range_end: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_state_version: Option<crate::upstream_accounts::RoutingStateVersion>,
     pub(crate) accounts: Vec<UpstreamAccountActivityAccountResponse>,
 }
 
@@ -2255,6 +2301,8 @@ pub(crate) struct DashboardActivityResponse {
     pub(crate) range_start: String,
     pub(crate) range_end: String,
     pub(crate) snapshot_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_state_version: Option<crate::upstream_accounts::RoutingStateVersion>,
     #[serde(skip)]
     pub(crate) terminal_sequence: u64,
     pub(crate) live_revision: u64,

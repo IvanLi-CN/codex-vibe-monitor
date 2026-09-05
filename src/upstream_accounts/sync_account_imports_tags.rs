@@ -1157,19 +1157,32 @@ pub(crate) async fn persist_imported_oauth_existing_inner(
     }
     tx.commit().await.map_err(internal_error_tuple)?;
 
-    match apply_imported_oauth_probe_result(state, account_id, &probe).await {
-        Ok(warning) => Ok(warning),
-        Err(err) => {
-            warn!(
-                account_id,
-                error = %err,
-                "imported OAuth credential persisted but post-import state update failed"
-            );
-            Ok(Some(format!(
-                "Imported, but post-import state update failed: {err}"
-            )))
-        }
+    let post_import_warning =
+        match apply_imported_oauth_probe_result(state, account_id, &probe).await {
+            Ok(warning) => warning,
+            Err(err) => {
+                warn!(
+                    account_id,
+                    error = %err,
+                    "imported OAuth credential persisted but post-import state update failed"
+                );
+                Some(format!(
+                    "Imported, but post-import state update failed: {err}"
+                ))
+            }
+        };
+    if let Err(err) = publish_account_effective_routing_rules_changed(state, None, &[]).await {
+        warn!(
+            ?err,
+            account_id, "imported OAuth write committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
     }
+    Ok(post_import_warning)
 }
 
 pub(crate) struct OauthAccountUpsert<'a> {
@@ -3356,6 +3369,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             .collect(),
         model_mappings: decode_model_mappings_json(row.model_mappings_json.as_deref()),
         model_routing_states: load_model_routing_states(pool, row.id).await?,
+        routing_state_version: None,
     }))
 }
 
@@ -3417,6 +3431,7 @@ pub(crate) async fn load_upstream_account_detail_with_actual_usage_options(
         )
         .await?;
     }
+    detail.routing_state_version = current_routing_state_version(state);
     Ok(Some(detail))
 }
 

@@ -23362,6 +23362,36 @@ impl DashboardActivityTopicMaterializedBase {
         &mut self.response
     }
 
+    pub(crate) fn apply_routing_rule_change(
+        &mut self,
+        version: &crate::upstream_accounts::RoutingStateVersion,
+        upserts: &[(i64, crate::upstream_accounts::EffectiveRoutingRule)],
+        removed_account_ids: &[i64],
+    ) -> bool {
+        if let Some(current) = self.response.routing_state_version.as_ref() {
+            if current.ordering() == version.ordering() || !version.is_same_or_newer_than(current) {
+                return false;
+            }
+        }
+        if let Some(accounts) = self.response.accounts.as_mut() {
+            accounts.retain(|account| {
+                account
+                    .upstream_account_id
+                    .is_none_or(|account_id| !removed_account_ids.contains(&account_id))
+            });
+            for (account_id, rule) in upserts {
+                if let Some(account) = accounts
+                    .iter_mut()
+                    .find(|account| account.upstream_account_id == Some(*account_id))
+                {
+                    account.effective_routing_rule = Some(rule.clone());
+                }
+            }
+        }
+        self.response.routing_state_version = Some(version.clone());
+        true
+    }
+
     pub(crate) fn apply_terminal_slice(
         &mut self,
         reporting_tz: Tz,
@@ -23542,6 +23572,170 @@ impl DashboardActivitySnapshot {
             materialized_archive_details_limited: false,
             build_telemetry: DashboardActivityBuildTelemetry::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_activity_routing_tests {
+    use super::*;
+
+    fn test_materialized_base() -> DashboardActivityTopicMaterializedBase {
+        let snapshot = DashboardActivitySnapshot::test_stub("today");
+        let range = ExactUtcRange {
+            start: snapshot.range_start,
+            end: snapshot.range_end,
+        };
+        let delta = dashboard_activity_terminal_delta(&summary_projection_test_invocation());
+        let mut account = dashboard_activity_terminal_account_for_range(range, &delta);
+        account.effective_routing_rule = Some(default_effective_routing_rule());
+        account.recent_invocations = vec![PromptCacheConversationInvocationPreviewResponse {
+            id: 7,
+            invoke_id: "routing-rule-preview".to_string(),
+            prompt_cache_key: Some("routing-rule-cache".to_string()),
+            occurred_at: "2026-07-20 10:25:09".to_string(),
+            status: "success".to_string(),
+            live_phase: None,
+            failure_class: None,
+            route_mode: Some("pool".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            request_model: Some("gpt-5.4".to_string()),
+            response_model: Some("gpt-5.4".to_string()),
+            total_tokens: 1_200,
+            cost: Some(0.0099),
+            proxy_display_name: Some("ciii".to_string()),
+            upstream_account_id: Some(17),
+            upstream_account_name: Some("Pool 17".to_string()),
+            upstream_account_plan_type: None,
+            endpoint: Some("/v1/responses".to_string()),
+            compaction_request_kind: None,
+            compaction_response_kind: None,
+            image_intent: None,
+            source: Some(SOURCE_PROXY.to_string()),
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cache_input_tokens: Some(400),
+            reasoning_tokens: None,
+            reasoning_effort: Some("medium".to_string()),
+            error_message: None,
+            downstream_status_code: Some(200),
+            downstream_error_message: None,
+            failure_kind: None,
+            blocked_binding: None,
+            is_actionable: Some(false),
+            response_content_encoding: Some("identity".to_string()),
+            request_compression_algorithm: Some("zstd".to_string()),
+            transport: Some("http".to_string()),
+            requested_service_tier: Some("default".to_string()),
+            service_tier: Some("default".to_string()),
+            billing_service_tier: Some("default".to_string()),
+            t_req_read_ms: None,
+            t_req_parse_ms: None,
+            t_upstream_connect_ms: None,
+            t_upstream_ttfb_ms: None,
+            first_token_ms: Some(720.0),
+            t_upstream_stream_ms: Some(500.0),
+            t_resp_parse_ms: None,
+            t_persist_ms: None,
+            t_total_ms: Some(1_200.0),
+        }];
+        let version = RoutingStateVersion {
+            epoch: "2026-09-05T12:00:00.000000000Z".to_string(),
+            generation: "4".to_string(),
+        };
+        DashboardActivityTopicMaterializedBase {
+            response: DashboardActivityResponse {
+                range: snapshot.range,
+                range_start: format_utc_iso_precise(snapshot.range_start),
+                range_end: format_utc_iso_precise(snapshot.range_end),
+                snapshot_id: snapshot.range_end.timestamp_millis(),
+                routing_state_version: Some(version),
+                terminal_sequence: snapshot.terminal_sequence,
+                live_revision: 3,
+                rate_window: DashboardActivityRateWindowResponse {
+                    start: format_utc_iso_precise(snapshot.range_start),
+                    end: format_utc_iso_precise(snapshot.range_end),
+                    window_minutes: 1,
+                    mode: "rolling_60s_live_mean".to_string(),
+                },
+                summary: snapshot.summary,
+                network_live_bucket: None,
+                network_realtime_rate: None,
+                accounts: Some(vec![account]),
+            },
+            summary_model_performance_accumulator: snapshot.summary_model_performance_accumulator,
+            account_model_performance_accumulators: snapshot.account_model_performance_accumulators,
+            account_latency_accumulators: snapshot.account_latency_accumulators,
+            model_performance_accumulator_ready: snapshot.model_performance_accumulator_ready,
+            recent_limit: 16,
+            include_recent: true,
+        }
+    }
+
+    #[test]
+    fn routing_rule_live_projection_updates_only_rule_and_version() {
+        let mut base = test_materialized_base();
+        let before_summary = base.response.summary.stats.total_count;
+        let before_recent = base
+            .response
+            .accounts
+            .as_ref()
+            .expect("account activity")
+            .first()
+            .expect("account")
+            .recent_invocations
+            .len();
+        let mut primary = default_effective_routing_rule();
+        primary.priority_tier = TagPriorityTier::Primary;
+        let version = RoutingStateVersion {
+            epoch: "2026-09-05T12:00:00.000000000Z".to_string(),
+            generation: "5".to_string(),
+        };
+
+        assert!(base.apply_routing_rule_change(&version, &[(17, primary)], &[]));
+        {
+            let account = base
+                .response
+                .accounts
+                .as_ref()
+                .expect("account activity")
+                .first()
+                .expect("account");
+            assert_eq!(
+                account
+                    .effective_routing_rule
+                    .as_ref()
+                    .unwrap()
+                    .priority_tier,
+                TagPriorityTier::Primary
+            );
+            assert_eq!(account.recent_invocations.len(), before_recent);
+        }
+        assert_eq!(
+            base.response
+                .routing_state_version
+                .as_ref()
+                .unwrap()
+                .generation,
+            "5"
+        );
+        assert_eq!(base.response.summary.stats.total_count, before_summary);
+
+        let mut stale = default_effective_routing_rule();
+        stale.priority_tier = TagPriorityTier::Fallback;
+        assert!(!base.apply_routing_rule_change(&version, &[(17, stale)], &[]));
+        assert_eq!(
+            base.response
+                .accounts
+                .as_ref()
+                .expect("account activity")
+                .first()
+                .expect("account")
+                .effective_routing_rule
+                .as_ref()
+                .unwrap()
+                .priority_tier,
+            TagPriorityTier::Primary
+        );
     }
 }
 
@@ -27777,8 +27971,10 @@ async fn load_dashboard_activity_snapshot_cached(
     loop {
         let mut wait_on: Option<tokio::sync::watch::Receiver<bool>> = None;
         let mut flight_guard: Option<DashboardActivitySnapshotFlightGuard> = None;
+        let routing_rules_generation;
         {
             let mut cache = state.dashboard_activity_snapshot_cache.lock().await;
+            routing_rules_generation = cache.routing_rules_generation;
             saw_expired_entry |= cache
                 .entries
                 .get(&selection)
@@ -27945,11 +28141,13 @@ async fn load_dashboard_activity_snapshot_cached(
                         signal,
                         waiter_count: 0,
                         baseline_cursor: None,
+                        routing_rules_generation,
                     },
                 );
                 flight_guard = Some(DashboardActivitySnapshotFlightGuard::new(
                     state.dashboard_activity_snapshot_cache.clone(),
                     selection.clone(),
+                    routing_rules_generation,
                 ));
             }
         }
@@ -28157,6 +28355,15 @@ async fn load_dashboard_activity_snapshot_cached(
             guard.disarm();
         }
         let coalesced_waiter_count = in_flight.as_ref().map_or(0, |flight| flight.waiter_count);
+        let routing_rules_changed = cache.routing_rules_generation != routing_rules_generation
+            || in_flight
+                .as_ref()
+                .is_some_and(|flight| flight.routing_rules_generation != routing_rules_generation);
+        if routing_rules_changed && result.is_ok() {
+            result = Err(ApiError::from(anyhow!(
+                "dashboard activity routing rules changed during build"
+            )));
+        }
         if result.is_ok() && !dashboard_activity_hard_limit_is_settled(&cache.read_model) {
             result = Err(ApiError::from(anyhow!(
                 "dashboard activity hard-limit terminal writes are not persisted yet"
@@ -28204,6 +28411,7 @@ async fn load_dashboard_activity_snapshot_cached(
         }
         if let Some(in_flight) = in_flight {
             if let Ok(snapshot) = &result
+                && !routing_rules_changed
                 && expiry_tracking_failure_reason.is_none()
             {
                 cache.entries.insert(
@@ -28235,6 +28443,9 @@ async fn load_dashboard_activity_snapshot_cached(
                 cache.entries.remove(&selection);
             }
             let _ = in_flight.signal.send(true);
+        }
+        if routing_rules_changed {
+            continue;
         }
         let cache_entry_count = cache.entries.len();
         let in_flight_count = cache.in_flight.len();
@@ -28469,6 +28680,7 @@ pub(crate) async fn build_dashboard_activity_topic_materialized_base(
             range_start: format_utc_iso_precise(range_start),
             range_end: format_utc_iso_precise(range_end),
             snapshot_id: range_end.timestamp_millis(),
+            routing_state_version: current_routing_state_version(state),
             terminal_sequence,
             live_revision,
             rate_window: DashboardActivityRateWindowResponse {
@@ -28570,6 +28782,7 @@ pub(crate) async fn fetch_dashboard_activity(
         range_start: range_start.clone(),
         range_end: range_end.clone(),
         snapshot_id: snapshot.range_end.timestamp_millis(),
+        routing_state_version: current_routing_state_version(&state),
         terminal_sequence: snapshot.terminal_sequence,
         live_revision,
         rate_window: DashboardActivityRateWindowResponse {
@@ -29448,6 +29661,7 @@ pub(crate) async fn fetch_upstream_account_activity(
         range: params.range,
         range_start: format_utc_iso(range.start),
         range_end: format_utc_iso(range.end),
+        routing_state_version: current_routing_state_version(state.as_ref()),
         accounts,
     }))
 }

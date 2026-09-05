@@ -1648,6 +1648,33 @@ pub(crate) struct RoutingTimeoutSettings {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct RoutingStateVersion {
+    pub(crate) epoch: String,
+    pub(crate) generation: String,
+}
+
+impl RoutingStateVersion {
+    pub(crate) fn new(process_started_at_utc: DateTime<Utc>, generation: u64) -> Self {
+        Self {
+            epoch: process_started_at_utc.to_rfc3339_opts(SecondsFormat::Nanos, true),
+            generation: generation.to_string(),
+        }
+    }
+
+    pub(crate) fn ordering(&self) -> (String, u64) {
+        (
+            self.epoch.clone(),
+            self.generation.parse::<u64>().unwrap_or_default(),
+        )
+    }
+
+    pub(crate) fn is_same_or_newer_than(&self, other: &Self) -> bool {
+        self.ordering() >= other.ordering()
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct EffectiveRoutingRule {
     pub(crate) allow_cut_out: bool,
     pub(crate) allow_cut_in: bool,
@@ -1945,6 +1972,8 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
     pub(crate) model_mappings: Vec<ModelMapping>,
     pub(crate) model_routing_states: Vec<ModelRoutingState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) routing_state_version: Option<RoutingStateVersion>,
 }
 
 #[derive(Debug, Clone, Serialize)]
