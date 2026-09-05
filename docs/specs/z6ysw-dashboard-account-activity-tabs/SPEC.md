@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
+
 ## 背景 / 问题陈述
 
 - Dashboard 当前“工作中对话”区域只支持按对话查看，无法在同一块工作区里观察“当前活跃的上游账号”及其范围内聚合指标。

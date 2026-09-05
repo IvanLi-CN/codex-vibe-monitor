@@ -10,7 +10,7 @@
 
 ## Related ADRs
 
-- None
+- [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
 
 ## Goals
 

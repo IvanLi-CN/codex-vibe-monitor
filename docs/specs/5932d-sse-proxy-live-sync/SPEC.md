@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
+
 ## 背景 / 问题陈述
 
 - 主应用常驻订阅此前长期混用 `records` SSE、HTTP bootstrap、SSE `open` 后回源、定时 reconcile 与页面私有 fallback。
@@ -236,8 +240,6 @@
 - 2026-07-16：主应用 `/#/live` 纯 SSE drill 的 owner-facing 页面证据已确认。
   - Immutable snapshot: `/Users/ivan/.codex/user-inline-assets/codex-vibe-monitor__d7e3b892/2026/07/16/20260716T110814Z-live-sse-drill-evidence-cac8522a.png`
   - 验证重点：页面已由 topic `snapshot` 正常完成 hydration，且在 `app.version` topic 迁移后不再依赖 `/api/version` 首屏 bootstrap。
-
-PR: none
 
 - 2026-07-24：主应用离线黄条的 Storybook Canvas 断线态证据。
   - source_type: `storybook_canvas`; target_program: `mock-only`; capture_scope: `browser-viewport`; viewport_strategy: `storybook-viewport`; margin_policy: `trim_only`; evidence_surface: `page`; sensitive_exclusion: `N/A`; submission_gate: `approved`
