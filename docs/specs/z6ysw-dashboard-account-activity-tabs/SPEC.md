@@ -445,6 +445,51 @@
   ![Dashboard 上游账号快捷策略语义色深色证据](./assets/dashboard-upstream-account-policy-tones-dark.png)
 
 - source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette`
+  requested_viewport: `desktop1660`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones light, current routing-rule consistency candidate`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；DOM preflight 证明 target 位于不透明 source-managed surface 内，四侧 margin 为 40px，四个快捷策略 chip 文本完整显示。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性浅色桌面证据](./assets/dashboard-upstream-account-policy-routing-v3-desktop.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-dark`
+  requested_viewport: `desktop1660`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones dark, current routing-rule consistency candidate`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；深色主题下 success / primary / warning / neutral 四个 chip 色槽均保持可读，DOM preflight margin 为 40px。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性深色桌面证据](./assets/dashboard-upstream-account-policy-routing-v3-desktop-dark.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-mobile`
+  requested_viewport: `393x852`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones mobile responsive checkpoint`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；393×852 CSS viewport 下账号卡收敛为单列，chip 文本完整显示，source-managed surface 四侧 margin 为 40px。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性移动证据](./assets/dashboard-upstream-account-policy-routing-v3-mobile393.png)
+
+- source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`
   scenario: `account header without legacy activity status badge`
   evidence_note: 验证 Dashboard 上游账号卡片标题区只保留异常/注意状态 badge 集合（`上游拒绝 / 限流`）与固定快捷策略 chip；旧的活动状态 badge（`关注 / 繁忙 / 稳定`）不再渲染，避免与账号健康状态入口重复。
