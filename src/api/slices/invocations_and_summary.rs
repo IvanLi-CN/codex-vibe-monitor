@@ -33611,7 +33611,10 @@ mod request_compression_query_tests {
             }),
         )
         .await;
-        assert!(matches!(all_time, Err(ApiError::Unavailable(_))));
+        let Json(all_time) =
+            all_time.expect("completed all-time proof must serve the exact projection");
+        assert_eq!(all_time.total_count, 2);
+        assert_eq!(all_time.total_tokens, 40);
     }
 
     #[tokio::test]
