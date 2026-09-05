@@ -2938,24 +2938,23 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         account_id
     };
 
-    if is_new_account {
-        if let Err(err) = publish_account_effective_routing_rules_changed(
+    if is_new_account
+        && let Err(err) = publish_account_effective_routing_rules_changed(
             state.as_ref(),
             Some(&[account_id]),
             &[],
         )
         .await
-        {
-            warn!(
-                ?err,
-                account_id, "OAuth callback committed but routing publication failed"
-            );
-            invalidate_dashboard_activity_snapshots_with_accounts(
-                state.dashboard_activity_snapshot_cache.as_ref(),
-                "account_effective_routing_rules_publication_failed",
-            )
-            .await;
-        }
+    {
+        warn!(
+            ?err,
+            account_id, "OAuth callback committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
     }
 
     Ok(account_id)

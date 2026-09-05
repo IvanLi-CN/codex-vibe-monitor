@@ -23462,10 +23462,10 @@ impl DashboardActivityTopicMaterializedBase {
         upserts: &[(i64, crate::upstream_accounts::EffectiveRoutingRule)],
         removed_account_ids: &[i64],
     ) -> bool {
-        if let Some(current) = self.response.routing_state_version.as_ref() {
-            if current.ordering() == version.ordering() || !version.is_same_or_newer_than(current) {
-                return false;
-            }
+        if let Some(current) = self.response.routing_state_version.as_ref()
+            && (current.ordering() == version.ordering() || !version.is_same_or_newer_than(current))
+        {
+            return false;
         }
         if let Some(accounts) = self.response.accounts.as_mut() {
             accounts.retain(|account| {

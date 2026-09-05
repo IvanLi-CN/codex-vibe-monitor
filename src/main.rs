@@ -156,6 +156,7 @@ pub(crate) use maintenance::*;
 pub(crate) use memory_diagnostics::*;
 pub(crate) use pricing::*;
 use proxy::*;
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use runtime::*;
 pub(crate) use runtime_mutation_bus::*;
 pub(crate) use schema::*;
