@@ -134,10 +134,15 @@ _Avoid_: mixed-source snapshot, implicit catch-up
 
 **Summary Coverage Fence**:
 The immutable, scope-local coverage version for an all-time checkpoint. It
-binds the archive-manifest, rollup, replay and verified Snapshot V2 proof
-inputs that establish historical exactness. A committed terminal tail does
-not invalidate this fence; only a changed coverage input starts a new coverage
-reconciliation for the affected global or account scope.
+binds archive-manifest, archive-replay, and verified Snapshot V2 proof inputs
+that establish historical exactness. Archive rollup materialization advances
+the fence through its replay proof; ordinary hot/live rollup writes advance the
+independent Summary Live Tail Cursor instead. A committed terminal tail does
+not invalidate this fence; only a changed historical coverage input starts a
+new reconciliation for the affected global or account scope.
+The Projection records the coverage fence that actually produced each global
+and account all-time aggregate; a newer rolling generation fence cannot make a
+retained all-time aggregate appear published.
 _Avoid_: live-tail watermark, full-history reset, mixed-generation proof
 
 **Summary Coverage Scope Version**:
@@ -164,7 +169,9 @@ and resumes after pressure, restart, or a generation fence change. AllTime
 finalization and Snapshot V2 backfill are independent workers; neither can
 short-circuit the other. It never calls the generic Projection builder for
 unfinished history; recent exact selections remain published while an
-unproven historical scope is selection-local unavailable.
+unproven historical scope is selection-local unavailable. A newly verified V2
+proof is published through a bounded metadata-only RollingDelta even without a
+request owner, while an unchanged ready checkpoint is not finalized again.
 _Avoid_: startup full rebuild, request-time archive recovery, partial history
 
 **Summary Coverage Due Queue**:

@@ -42,8 +42,8 @@
   per-manifest outcome. Verified V2 authority is adopted without raw I/O;
   readable legacy archives are rebuilt in bounded pages, while missing or
   mismatched sources remain finite unavailable ranges and retry independently.
-- All-time checkpoint freshness is keyed to scope-local manifest, rollup, replay
-  and Snapshot proof versions. Committed terminal tail changes remain a bounded
+- All-time checkpoint freshness is keyed to scope-local manifest, archive replay
+  and Snapshot proof versions. Hot/live rollup and committed terminal changes remain a bounded
   overlay and no longer cancel or restart historical raw recovery.
 - Historical Summary recovery now has one bounded Supervisor owner. AllTime
   checkpoint pages and Legacy Snapshot V2 backfill yield independently, prefer
@@ -60,3 +60,7 @@
   instead of losing a deadline attempt. V2 SHA verification resumes from serialized
   standard-hash state bound to the archive fingerprint; a changed source discards
   only unverified progress, while V1 remains permanently excluded from cleanup proof.
+- Verified V2 coverage now publishes a bounded metadata-only recent Projection
+  without waiting for request interest. Completed checkpoints skip repeated
+  all-time finalization and usage scans, while retryable recent candidates honor
+  their durable probe time instead of spinning on every maintenance cadence.

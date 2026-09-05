@@ -5254,10 +5254,10 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 }
 
 /// Keep a durable, monotonic revision for the source tables that can change the exact AllTime
-/// coverage proof.  The projection checkpoint stores this revision alongside the manifest
-/// watermark, so a replay, rollup, or verified Snapshot change cannot silently reuse an old
-/// aggregate.  A single revision is intentionally conservative: a changed source invalidates
-/// the affected checkpoint rather than risking a stale exact response.
+/// coverage proof. The projection checkpoint stores this revision alongside the manifest
+/// watermark, so an archive replay or Snapshot change cannot silently reuse an old aggregate.
+/// Live rollup progress is deliberately excluded because the independent live-tail cursor
+/// accounts for it without restarting historical recovery.
 async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS summary_coverage_revision (\
@@ -5301,6 +5301,28 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
     .await
     .context("failed to initialize Summary account coverage revision")?;
 
+    // Older releases treated every live rollup write as a historical coverage change. On a
+    // busy service that continuously reset the staged all-time checkpoint before it could
+    // finish. Archive materialization already commits a replay marker, while ordinary live
+    // progress is fenced by the independent rollup cursor, so retire those broad triggers on
+    // both new and upgraded databases.
+    for name in [
+        "trg_summary_coverage_revision_invocation_rollup_insert",
+        "trg_summary_coverage_revision_invocation_rollup_update",
+        "trg_summary_coverage_revision_invocation_rollup_delete",
+        "trg_summary_account_coverage_revision_account_rollup_insert",
+        "trg_summary_account_coverage_revision_account_rollup_update",
+        "trg_summary_account_coverage_revision_account_rollup_delete",
+        "trg_summary_account_coverage_revision_usage_rollup_insert",
+        "trg_summary_account_coverage_revision_usage_rollup_update",
+        "trg_summary_account_coverage_revision_usage_rollup_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {name}"))
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to retire live-tail coverage trigger {name}"))?;
+    }
+
     for (name, table, predicate) in [
         (
             "archive_insert",
@@ -5317,9 +5339,6 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "archive_batches",
             "WHEN OLD.dataset = 'codex_invocations'",
         ),
-        ("invocation_rollup_insert", "invocation_rollup_hourly", ""),
-        ("invocation_rollup_update", "invocation_rollup_hourly", ""),
-        ("invocation_rollup_delete", "invocation_rollup_hourly", ""),
         (
             "replay_insert",
             "hourly_rollup_archive_replay",
@@ -5377,8 +5396,8 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
     }
 
     // Account coverage has a narrower invalidation set than global coverage. Archive manifests,
-    // replay markers, account rollups, usage rollups and verified V2 pages can change account
-    // aggregates; global invocation rollups alone must not restart the account checkpoint.
+    // replay markers and verified V2 pages can change historical account aggregates. Live
+    // account and usage rollups remain represented by the independent account live-tail cursor.
     for (name, table, predicate) in [
         (
             "archive_insert",
@@ -5394,24 +5413,6 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "archive_delete",
             "archive_batches",
             "WHEN OLD.dataset = 'codex_invocations'",
-        ),
-        ("account_rollup_insert", "upstream_account_stats_hourly", ""),
-        ("account_rollup_update", "upstream_account_stats_hourly", ""),
-        ("account_rollup_delete", "upstream_account_stats_hourly", ""),
-        (
-            "usage_rollup_insert",
-            "upstream_account_usage_breakdown_hourly",
-            "",
-        ),
-        (
-            "usage_rollup_update",
-            "upstream_account_usage_breakdown_hourly",
-            "",
-        ),
-        (
-            "usage_rollup_delete",
-            "upstream_account_usage_breakdown_hourly",
-            "",
         ),
         (
             "replay_insert",
