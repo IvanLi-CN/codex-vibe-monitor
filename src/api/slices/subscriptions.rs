@@ -2789,17 +2789,18 @@ impl DashboardTopicMaterializer {
         terminal: Option<&DashboardTerminalProjectionSlice>,
     ) -> Option<DashboardTopicRevision> {
         match self {
-            Self::Activity { .. }
-                if current.is_some() || network.is_some() || terminal.is_some() =>
-            {
-                let routing_revision = match self {
-                    Self::Activity { base, .. } => {
-                        base.lock()
-                            .expect("activity materializer state lock")
-                            .routing_revision
-                    }
-                    _ => 0,
-                };
+            Self::Activity { base, .. } => {
+                let routing_revision = base
+                    .lock()
+                    .expect("activity materializer state lock")
+                    .routing_revision;
+                if current.is_none()
+                    && network.is_none()
+                    && terminal.is_none()
+                    && routing_revision == 0
+                {
+                    return None;
+                }
                 Some(DashboardTopicRevision {
                     base_revision,
                     current_revision: current.map(|slice| slice.revision),
@@ -16672,6 +16673,45 @@ mod tests {
         let payload: Value = serde_json::from_slice(&payload).expect("activity payload JSON");
         assert_eq!(payload["summary"]["stats"]["totalCount"], json!(1));
         assert_eq!(payload["summary"]["stats"]["totalTokens"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn activity_materializer_emits_routing_only_revision_without_live_slice() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let base = build_dashboard_activity_topic_materialized_base(
+            state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(true),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        let materializer = DashboardTopicMaterializer::Activity {
+            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(base))),
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::All,
+        };
+        let DashboardTopicMaterializer::Activity { base, .. } = &materializer else {
+            unreachable!("constructed activity materializer");
+        };
+        base.lock()
+            .expect("activity materializer state lock")
+            .routing_revision = 1;
+
+        assert_eq!(
+            materializer
+                .revision(0, None, None, None)
+                .expect("routing-only revision")
+                .routing_revision,
+            1
+        );
     }
 
     #[tokio::test]
