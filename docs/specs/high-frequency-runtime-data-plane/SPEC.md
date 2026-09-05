@@ -10,7 +10,7 @@
 
 ## Related ADRs
 
-- None
+- [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
 
 ## Goals
 
@@ -59,6 +59,8 @@ All-time account coverage requires an independent completion proof for each arch
 - cache、replay ring、broadcaster 和 subscriber 只共享 frame 引用；不得接收 `serde_json::Value` 后再次序列化或深拷贝 payload。
 - 首个 owner subscriber 激活 producer；后续 subscriber 只增加引用计数。无 owner subscriber 时停止周期 producer，mutation 只标记 dirty。
 - projection revision 未变化时不推进 cursor，不发送重复 frame。
+
+账号有效路由规则是独立的低频控制面事件，不进入 invocation/terminal 高频切片。durable commit 后发布带 `RoutingStateVersion` 的完整规则载荷；活动 Dashboard typed base 可在内存中补丁并推进专用 routing revision。无 owner 时只保留 dirty 标记，恢复订阅必须重新建立包含账号规则的 snapshot；规则缓存代际 fence 禁止旧的 in-flight baseline 回填。
 
 Activity、summary 与 network topic 已建立上述 typed delivery 基础；working-conversations、parallel-work open range 与 open-window timeseries 的剩余强制迁移由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/SPEC.md) 规范。跨域数据面不能仅凭前一组 topic 的完成状态宣称整个 Dashboard 高频路径已经收口。
 

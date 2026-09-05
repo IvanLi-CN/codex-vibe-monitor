@@ -7,6 +7,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::ApiInvocation;
+use crate::upstream_accounts::{EffectiveRoutingRule, RoutingStateVersion};
 
 pub(crate) const RUNTIME_MUTATION_BUS_CAPACITY: usize = 4_096;
 pub(crate) const RUNTIME_MUTATION_ROUTER_MAX_BATCH: usize = 256;
@@ -114,6 +115,11 @@ pub(crate) enum RuntimeMutation {
     },
     /// A persisted API Key model-routing attempt or state event changed.
     ModelRoutingChanged,
+    AccountEffectiveRoutingRulesChanged {
+        version: RoutingStateVersion,
+        upserts: Vec<(i64, EffectiveRoutingRule)>,
+        removed_account_ids: Vec<i64>,
+    },
     PromptCacheBindingChanged {
         prompt_cache_key: String,
     },
@@ -154,6 +160,9 @@ impl RuntimeMutation {
             Self::Invocation(mutation) => RuntimeMutationKey::Invocation(mutation.identity.clone()),
             Self::AttemptChanged { invoke_id } => RuntimeMutationKey::Attempt(invoke_id.clone()),
             Self::ModelRoutingChanged => RuntimeMutationKey::ModelRouting,
+            Self::AccountEffectiveRoutingRulesChanged { .. } => {
+                RuntimeMutationKey::AccountEffectiveRoutingRules
+            }
             Self::PromptCacheBindingChanged { prompt_cache_key } => {
                 RuntimeMutationKey::Binding(prompt_cache_key.clone())
             }
@@ -172,6 +181,37 @@ impl RuntimeMutation {
     fn merge_from(&mut self, next: Self) {
         match (self, next) {
             (Self::Invocation(current), Self::Invocation(next)) => current.merge_from(next),
+            (
+                Self::AccountEffectiveRoutingRulesChanged {
+                    version,
+                    upserts,
+                    removed_account_ids,
+                },
+                Self::AccountEffectiveRoutingRulesChanged {
+                    version: next_version,
+                    upserts: next_upserts,
+                    removed_account_ids: next_removed,
+                },
+            ) => {
+                if !next_version.is_same_or_newer_than(version) {
+                    return;
+                }
+                *version = next_version;
+                for account_id in next_removed {
+                    upserts.retain(|(id, _)| id != &account_id);
+                    if !removed_account_ids.contains(&account_id) {
+                        removed_account_ids.push(account_id);
+                    }
+                }
+                for (account_id, rule) in next_upserts {
+                    removed_account_ids.retain(|id| id != &account_id);
+                    if let Some(existing) = upserts.iter_mut().find(|(id, _)| *id == account_id) {
+                        existing.1 = rule;
+                    } else {
+                        upserts.push((account_id, rule));
+                    }
+                }
+            }
             (current, next) => *current = next,
         }
     }
@@ -184,6 +224,7 @@ enum RuntimeMutationKey {
     ModelRouting,
     Binding(String),
     StickyRoute(String, i64, i64),
+    AccountEffectiveRoutingRules,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +440,89 @@ mod tests {
         let coalesced = coalesce_runtime_mutations(mutations);
         assert_eq!(coalesced.len(), 1);
         assert_eq!(coalesced[0].sequence, 10_000);
+    }
+
+    #[test]
+    fn routing_rule_mutations_coalesce_to_latest_complete_account_values() {
+        let version_one = RoutingStateVersion {
+            epoch: "2026-08-09T12:00:00.000000000Z".to_string(),
+            generation: "1".to_string(),
+        };
+        let version_two = RoutingStateVersion {
+            epoch: version_one.epoch.clone(),
+            generation: "2".to_string(),
+        };
+        let first_rule = crate::upstream_accounts::default_effective_routing_rule();
+        let mut second_rule = first_rule.clone();
+        second_rule.priority_tier = crate::upstream_accounts::TagPriorityTier::Primary;
+        let coalesced = coalesce_runtime_mutations([
+            SequencedRuntimeMutation {
+                sequence: 1,
+                mutation: RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+                    version: version_one,
+                    upserts: vec![(7, first_rule)],
+                    removed_account_ids: Vec::new(),
+                },
+            },
+            SequencedRuntimeMutation {
+                sequence: 2,
+                mutation: RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+                    version: version_two.clone(),
+                    upserts: vec![(7, second_rule)],
+                    removed_account_ids: vec![8],
+                },
+            },
+        ]);
+        assert_eq!(coalesced.len(), 1);
+        let RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+            version,
+            upserts,
+            removed_account_ids,
+        } = &coalesced[0].mutation
+        else {
+            panic!("expected routing rule mutation");
+        };
+        assert_eq!(version.generation, version_two.generation);
+        assert_eq!(upserts.len(), 1);
+        assert_eq!(upserts[0].0, 7);
+        assert_eq!(
+            upserts[0].1.priority_tier,
+            crate::upstream_accounts::TagPriorityTier::Primary
+        );
+        assert_eq!(removed_account_ids, &[8]);
+
+        let mut stale_rule = upserts[0].1.clone();
+        stale_rule.priority_tier = crate::upstream_accounts::TagPriorityTier::Fallback;
+        let coalesced = coalesce_runtime_mutations([
+            SequencedRuntimeMutation {
+                sequence: 3,
+                mutation: RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+                    version: version.clone(),
+                    upserts: upserts.clone(),
+                    removed_account_ids: removed_account_ids.clone(),
+                },
+            },
+            SequencedRuntimeMutation {
+                sequence: 4,
+                mutation: RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+                    version: RoutingStateVersion {
+                        epoch: "2026-08-09T12:00:00.000000000Z".to_string(),
+                        generation: "1".to_string(),
+                    },
+                    upserts: vec![(7, stale_rule)],
+                    removed_account_ids: Vec::new(),
+                },
+            },
+        ]);
+        let RuntimeMutation::AccountEffectiveRoutingRulesChanged { upserts, .. } =
+            &coalesced[0].mutation
+        else {
+            panic!("expected routing rule mutation");
+        };
+        assert_eq!(
+            upserts[0].1.priority_tier,
+            crate::upstream_accounts::TagPriorityTier::Primary
+        );
     }
 
     #[tokio::test]

@@ -1733,6 +1733,16 @@ pub(crate) async fn create_tag(
     let detail = insert_tag(&state.pool, &name, &rule)
         .await
         .map_err(map_tag_write_error)?;
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state.as_ref(), None, &[]).await
+    {
+        warn!(?err, "tag create committed but routing publication failed");
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
     Ok(Json(detail))
 }
 
@@ -1807,9 +1817,20 @@ pub(crate) async fn update_tag(
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
         .map_err(map_tag_write_error)?;
-    refresh_pool_routing_runtime_cache(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state.as_ref(), None, &[]).await
+    {
+        warn!(
+            ?err,
+            tag_id = id,
+            "tag update committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
     Ok(Json(detail))
 }
 
@@ -1826,6 +1847,20 @@ pub(crate) async fn delete_tag(
     }
     state.upstream_accounts.require_crypto_key()?;
     delete_tag_by_id(&state.pool, id).await?;
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state.as_ref(), None, &[]).await
+    {
+        warn!(
+            ?err,
+            tag_id = id,
+            "tag delete committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2187,9 +2222,16 @@ pub(crate) async fn update_upstream_account_group(
         }
     }
     tx.commit().await.map_err(internal_error_tuple)?;
-    refresh_pool_routing_runtime_cache(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state.as_ref(), None, &[]).await
+    {
+        warn!(?err, group_name = %group_name, "group update committed but routing publication failed");
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
 
     let saved = load_group_metadata(&state.pool, Some(&group_name))
         .await

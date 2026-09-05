@@ -1379,6 +1379,7 @@ struct DashboardTopicRevision {
     current_revision: Option<u64>,
     network_revision: Option<u64>,
     terminal_revision: Option<u64>,
+    routing_revision: u64,
 }
 
 #[derive(Debug)]
@@ -1388,6 +1389,7 @@ struct DashboardActivityMaterializerState {
     current_revision: Option<u64>,
     network_revision: Option<u64>,
     terminal_revision: Option<u64>,
+    routing_revision: u64,
 }
 
 impl DashboardActivityMaterializerState {
@@ -1399,6 +1401,7 @@ impl DashboardActivityMaterializerState {
             current_revision: None,
             network_revision: None,
             terminal_revision: None,
+            routing_revision: 0,
         }
     }
 }
@@ -2786,14 +2789,24 @@ impl DashboardTopicMaterializer {
         terminal: Option<&DashboardTerminalProjectionSlice>,
     ) -> Option<DashboardTopicRevision> {
         match self {
-            Self::Activity { .. }
-                if current.is_some() || network.is_some() || terminal.is_some() =>
-            {
+            Self::Activity { base, .. } => {
+                let routing_revision = base
+                    .lock()
+                    .expect("activity materializer state lock")
+                    .routing_revision;
+                if current.is_none()
+                    && network.is_none()
+                    && terminal.is_none()
+                    && routing_revision == 0
+                {
+                    return None;
+                }
                 Some(DashboardTopicRevision {
                     base_revision,
                     current_revision: current.map(|slice| slice.revision),
                     network_revision: network.map(|slice| slice.revision),
                     terminal_revision: terminal.map(|slice| slice.revision),
+                    routing_revision,
                 })
             }
             Self::Summary { .. } if current.is_some() || terminal.is_some() => {
@@ -2802,6 +2815,7 @@ impl DashboardTopicMaterializer {
                     current_revision: current.map(|slice| slice.revision),
                     network_revision: None,
                     terminal_revision: terminal.map(|slice| slice.revision),
+                    routing_revision: 0,
                 })
             }
             Self::NetworkTimeseries {
@@ -2821,12 +2835,14 @@ impl DashboardTopicMaterializer {
                     current_revision: None,
                     network_revision: Some(slice.revision),
                     terminal_revision: None,
+                    routing_revision: 0,
                 }),
             Self::NetworkRecent { .. } => network.map(|slice| DashboardTopicRevision {
                 base_revision,
                 current_revision: None,
                 network_revision: Some(slice.revision),
                 terminal_revision: None,
+                routing_revision: 0,
             }),
             Self::Timeseries { .. } if current.is_some() || terminal.is_some() => {
                 Some(DashboardTopicRevision {
@@ -2834,6 +2850,7 @@ impl DashboardTopicMaterializer {
                     current_revision: current.map(|slice| slice.revision),
                     network_revision: None,
                     terminal_revision: terminal.map(|slice| slice.revision),
+                    routing_revision: 0,
                 })
             }
             Self::ParallelWork { base } => Some(DashboardTopicRevision {
@@ -2845,6 +2862,7 @@ impl DashboardTopicMaterializer {
                 ),
                 network_revision: None,
                 terminal_revision: None,
+                routing_revision: 0,
             }),
             Self::WorkingConversations { .. } => None,
             _ => None,
@@ -5953,6 +5971,56 @@ impl SubscriptionHub {
         }
     }
 
+    async fn apply_account_effective_routing_rules_change(
+        &self,
+        version: &crate::upstream_accounts::RoutingStateVersion,
+        upserts: &[(i64, crate::upstream_accounts::EffectiveRoutingRule)],
+        removed_account_ids: &[i64],
+    ) {
+        let (pending, current, network, terminal) = {
+            let mut guard = self.state.lock().await;
+            let active_subscribers = guard.active_subscribers.clone();
+            let server_push_subscribers = guard.server_push_subscribers.clone();
+            for (topic_key, cached) in &mut guard.topics {
+                let Some(DashboardTopicMaterializer::Activity { base, .. }) =
+                    cached.dashboard_materializer.as_ref()
+                else {
+                    continue;
+                };
+                if active_subscribers
+                    .get(topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                    && server_push_subscribers
+                        .get(topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == 0
+                {
+                    cached.dirty = true;
+                    cached.latest_live_snapshot = None;
+                    continue;
+                }
+                let mut materializer = base.lock().expect("activity materializer state lock");
+                if materializer.base.apply_routing_rule_change(
+                    version,
+                    upserts,
+                    removed_account_ids,
+                ) {
+                    materializer.routing_revision = materializer.routing_revision.saturating_add(1);
+                }
+            }
+            let current = guard.dashboard_current_slice.clone();
+            let network = guard.dashboard_network_slice.clone();
+            let terminal = guard.dashboard_terminal_slice.clone();
+            let pending = collect_pending_dashboard_topic_materializations(&mut guard);
+            (pending, current, network, terminal)
+        };
+        self.materialize_pending_dashboard_topics(pending, current, network, terminal)
+            .await;
+    }
+
     async fn commit_dashboard_materialized_frame(
         &self,
         pending: PendingDashboardTopicMaterialization,
@@ -6067,6 +6135,18 @@ impl SubscriptionHub {
                             sticky_key, "failed to apply prompt cache sticky route projection"
                         );
                     }
+                }
+                RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+                    version,
+                    upserts,
+                    removed_account_ids,
+                } => {
+                    self.apply_account_effective_routing_rules_change(
+                        version,
+                        upserts,
+                        removed_account_ids,
+                    )
+                    .await;
                 }
                 RuntimeMutation::Invocation(_)
                 | RuntimeMutation::AttemptChanged { .. }
@@ -11424,7 +11504,7 @@ impl SubscriptionTopic {
         match self {
             Self::AppVersion => "app.version/v1".to_string(),
             Self::QuotaCurrent => "quota.current/v1".to_string(),
-            Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v2".to_string(),
+            Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
             Self::DashboardNetworkTimeseriesWindow { .. } => {
                 "dashboard.network-timeseries.window/v1".to_string()
             }
@@ -11505,6 +11585,7 @@ impl SubscriptionTopic {
                 Self::InvocationPoolAttempts { invoke_id: current } if current == invoke_id
             ),
             RuntimeMutation::ModelRoutingChanged => matches!(self, Self::ModelRoutingLive { .. }),
+            RuntimeMutation::AccountEffectiveRoutingRulesChanged { .. } => false,
             RuntimeMutation::PromptCacheBindingChanged { prompt_cache_key } => matches!(
                 self,
                 Self::PromptCacheConversationBindingCurrent { scope }
@@ -12176,6 +12257,7 @@ impl RuntimeMutation {
                 vec![RuntimeTopicDependency::Attempt(invoke_id.clone())]
             }
             Self::ModelRoutingChanged => vec![RuntimeTopicDependency::ModelRouting],
+            Self::AccountEffectiveRoutingRulesChanged { .. } => Vec::new(),
             Self::PromptCacheBindingChanged { prompt_cache_key } => {
                 vec![RuntimeTopicDependency::Binding(prompt_cache_key.clone())]
             }
@@ -16594,6 +16676,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activity_materializer_emits_routing_only_revision_without_live_slice() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let base = build_dashboard_activity_topic_materialized_base(
+            state.as_ref(),
+            &DashboardActivityQuery {
+                range: "today".to_string(),
+                recent_limit: Some(16),
+                time_zone: Some(SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string()),
+                include_accounts: true,
+                include_recent: Some(true),
+            },
+        )
+        .await
+        .expect("build typed activity base");
+        let materializer = DashboardTopicMaterializer::Activity {
+            base: Arc::new(StdMutex::new(DashboardActivityMaterializerState::new(base))),
+            reporting_tz: Shanghai,
+            source_scope: InvocationSourceScope::All,
+        };
+        let DashboardTopicMaterializer::Activity { base, .. } = &materializer else {
+            unreachable!("constructed activity materializer");
+        };
+        base.lock()
+            .expect("activity materializer state lock")
+            .routing_revision = 1;
+
+        assert_eq!(
+            materializer
+                .revision(0, None, None, None)
+                .expect("routing-only revision")
+                .routing_revision,
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn activity_materializer_handles_maximum_distinct_account_terminal_slice() {
         let delta_state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -18237,6 +18358,7 @@ mod tests {
                 current_revision: None,
                 network_revision: Some(newer.revision),
                 terminal_revision: None,
+                routing_revision: 0,
             }),
             "a delayed frame must not replace the latest materialized revision",
         );
@@ -22464,6 +22586,7 @@ mod tests {
                     signal: signal_a,
                     waiter_count: 2,
                     baseline_cursor: None,
+                    routing_rules_generation: 0,
                 },
             );
             guard.in_flight.insert(
@@ -22472,6 +22595,7 @@ mod tests {
                     signal: signal_b,
                     waiter_count: 3,
                     baseline_cursor: None,
+                    routing_rules_generation: 0,
                 },
             );
         }
@@ -22494,6 +22618,80 @@ mod tests {
         assert!(guard.entries.contains_key(&selection_b));
         assert!(!guard.in_flight.contains_key(&selection_a));
         assert!(guard.in_flight.contains_key(&selection_b));
+    }
+
+    #[tokio::test]
+    async fn routing_rule_invalidation_keeps_summary_only_entries_and_advances_fence() {
+        let cache = Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
+        let account_selection = DashboardActivitySnapshotSelection {
+            range: "today".to_string(),
+            range_anchor: "2026-07-20".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            source_scope: "all".to_string(),
+            recent_limit: 4,
+            include_accounts: true,
+            include_recent: true,
+        };
+        let summary_selection = DashboardActivitySnapshotSelection {
+            include_accounts: false,
+            include_recent: false,
+            ..account_selection.clone()
+        };
+        let (signal, mut receiver) = watch::channel(false);
+        {
+            let mut guard = cache.lock().await;
+            guard.entries.insert(
+                account_selection.clone(),
+                DashboardActivitySnapshotCacheEntry {
+                    cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    last_reconcile_failed: false,
+                    baseline_snapshot_cursor: 0,
+                    expiry_covered_until: None,
+                    expiry_terminal_deltas: VecDeque::new(),
+                    expiry_delta_estimated_bytes: 0,
+                    response: DashboardActivitySnapshot::test_stub("today"),
+                },
+            );
+            guard.entries.insert(
+                summary_selection.clone(),
+                DashboardActivitySnapshotCacheEntry {
+                    cached_at: Instant::now(),
+                    last_reconcile_attempted_at: Instant::now(),
+                    last_reconcile_failed: false,
+                    baseline_snapshot_cursor: 0,
+                    expiry_covered_until: None,
+                    expiry_terminal_deltas: VecDeque::new(),
+                    expiry_delta_estimated_bytes: 0,
+                    response: DashboardActivitySnapshot::test_stub("today"),
+                },
+            );
+            guard.in_flight.insert(
+                account_selection,
+                DashboardActivitySnapshotInFlight {
+                    signal,
+                    waiter_count: 0,
+                    baseline_cursor: None,
+                    routing_rules_generation: 0,
+                },
+            );
+        }
+
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            cache.as_ref(),
+            "account_effective_routing_rules_changed",
+        )
+        .await;
+
+        receiver
+            .changed()
+            .await
+            .expect("routing flight should be signaled");
+        let guard = cache.lock().await;
+        assert_eq!(guard.routing_rules_generation, 1);
+        assert_eq!(guard.entries.len(), 1);
+        assert!(guard.entries.contains_key(&summary_selection));
+        assert!(guard.in_flight.is_empty());
     }
 
     #[tokio::test]

@@ -530,6 +530,20 @@ _Avoid_: Tooltip 明细, 原始数据
 统计卡片扣除内边距、图标及间距后，数值文本实际可占用的单行宽度；它不是固定视口或卡片断点。
 _Avoid_: 窄卡片阈值, 固定像素宽度
 
+## 账号路由控制面
+
+**账号有效路由规则（Account Effective Routing Rule）**:
+一个上游账号在账号覆盖、标签、分组和池级默认策略解析后的完整路由策略。它是 Dashboard 快捷策略 chip 与账号选择共同展示的权威值，而不是某次写入提交的局部 `routingRule` 覆盖。
+_Avoid_: Dashboard chip 状态, 原始 routingRule, 优先级迁移
+
+**账号有效路由规则变更（Account Effective Routing Rule Change）**:
+已提交且改变一个或多个上游账号有效路由规则的控制面变化。它不等同于调用统计的高频更新，也不等同于对话级的优先级迁移。
+_Avoid_: 单个 chip 点击, 统计刷新, 优先级迁移
+
+**路由状态版本（Routing State Version）**:
+一份已发布账号有效路由规则快照的有序服务端标识。客户端用它拒绝较早的当前态，同时仍接受较晚提交的规则变化。
+_Avoid_: 客户端时间戳, 数据库行版本, 永久全局序号
+
 ## Dashboard 对话状态
 
 **会话进行中相位摘要（Conversation In-Flight Phase Summary）**:

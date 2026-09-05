@@ -5,6 +5,7 @@ import {
   fetchDashboardActivity,
   type UpstreamAccountActivityAccount,
 } from "../lib/api";
+import { acceptsRoutingStateVersion } from "../lib/api/core-foundation";
 import { normalizeEffectiveRoutingRule } from "../lib/api/core-upstream";
 import { buildTopicDescriptor } from "../lib/sse";
 import { getBrowserTimeZone } from "../lib/timeZone";
@@ -248,6 +249,7 @@ export function useDashboardUpstreamAccountActivity(range: string, enabled: bool
         range: snapshot.data.range,
         rangeStart: snapshot.data.rangeStart,
         rangeEnd: snapshot.data.rangeEnd,
+        routingStateVersion: snapshot.data.routingStateVersion,
         networkLiveBucket: snapshot.data.networkLiveBucket,
         networkRealtimeRate: snapshot.data.networkRealtimeRate,
         accounts: snapshot.data.accounts ?? [],
@@ -273,7 +275,28 @@ export function useDashboardActivitySnapshot(
         : null,
     [enabled, includeAccounts, includeRecent, range, useHttp],
   );
+  const shouldAcceptSse = enabled && !useHttp;
   const sseState = useSubscriptionTopic<DashboardActivityResponse>(topic, topic != null);
+  const [acceptedSseData, setAcceptedSseData] = useState<DashboardActivityResponse | null>(null);
+  const acceptedSseVersionRef = useRef<DashboardActivityResponse["routingStateVersion"]>(null);
+  useEffect(() => {
+    if (!shouldAcceptSse || !sseState.data) {
+      setAcceptedSseData(null);
+      acceptedSseVersionRef.current = null;
+      return;
+    }
+    if (
+      !acceptsRoutingStateVersion(
+        acceptedSseVersionRef.current,
+        sseState.data.routingStateVersion,
+        sseState.lastKind ?? "live",
+      )
+    ) {
+      return;
+    }
+    acceptedSseVersionRef.current = sseState.data.routingStateVersion;
+    setAcceptedSseData(sseState.data);
+  }, [shouldAcceptSse, sseState.data, sseState.lastKind]);
   const httpState = useHttpDashboardActivitySnapshot(
     range,
     useHttp,
@@ -281,7 +304,7 @@ export function useDashboardActivitySnapshot(
     includeRecent,
   );
 
-  const sourceData = useHttp ? httpState.data : sseState.data;
+  const sourceData = useHttp ? httpState.data : acceptedSseData;
   const visibleRecentLimit = useMemo(
     () => resolveUpstreamAccountRecentPreviewLimit(sourceData?.accounts ?? []),
     [sourceData?.accounts],

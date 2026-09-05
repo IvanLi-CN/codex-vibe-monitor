@@ -171,22 +171,23 @@ pub(crate) async fn update_pool_routing_settings(
                 .publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
             publish_pool_routing_availability(state.as_ref());
         }
-        if api_key.is_some() {
-            refresh_pool_routing_runtime_cache(state.as_ref())
-                .await
-                .map_err(internal_error_tuple)?;
-        } else {
-            refresh_pool_routing_runtime_cache_best_effort(
-                state.as_ref(),
-                "pool routing settings update",
+        if let Err(err) =
+            publish_account_effective_routing_rules_changed(state.as_ref(), None, &[]).await
+        {
+            warn!(
+                ?err,
+                "pool routing settings committed but effective routing rule publication failed"
+            );
+            invalidate_dashboard_activity_snapshots_with_accounts(
+                state.dashboard_activity_snapshot_cache.as_ref(),
+                "account_effective_routing_rules_publication_failed",
             )
             .await;
-            if let Some(enabled) = payload.priority_handoff_admission_enabled {
-                // The priority gate is a process-local routing authority. Apply a
-                // successful settings write directly even when an unrelated cache
-                // refresh (for example, an optional credential reload) is unavailable.
-                set_priority_handoff_admission_enabled(enabled);
-            }
+        }
+        if let Some(enabled) = payload.priority_handoff_admission_enabled {
+            // The priority gate is a process-local routing authority. Apply a successful settings
+            // write directly even when an unrelated cache refresh is unavailable.
+            set_priority_handoff_admission_enabled(enabled);
         }
     }
     let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
@@ -1511,11 +1512,33 @@ pub(crate) async fn create_api_key_account_inner(
         .account_ops
         .run_post_create_sync(state.clone(), inserted_id)
         .await;
-    refresh_pool_routing_runtime_cache(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
+    let routing_scope = if requested_group_metadata_changes.was_requested() {
+        None
+    } else {
+        Some(std::slice::from_ref(&inserted_id))
+    };
+    let routing_state_version =
+        match publish_account_effective_routing_rules_changed(state.as_ref(), routing_scope, &[])
+            .await
+        {
+            Ok(version) => Some(version),
+            Err(err) => {
+                warn!(
+                    ?err,
+                    account_id = inserted_id,
+                    "account create committed but routing publication failed"
+                );
+                invalidate_dashboard_activity_snapshots_with_accounts(
+                    state.dashboard_activity_snapshot_cache.as_ref(),
+                    "account_effective_routing_rules_publication_failed",
+                )
+                .await;
+                None
+            }
+        };
     publish_new_account_routing_availability_if_selectable(state.as_ref(), inserted_id).await;
-    let detail = detail.map_err(request_runtime_error_tuple)?;
+    let mut detail = detail.map_err(request_runtime_error_tuple)?;
+    detail.routing_state_version = routing_state_version;
     Ok(detail)
 }
 
@@ -2405,9 +2428,30 @@ pub(crate) async fn update_upstream_account_inner(
     record_account_update_action(&state.pool, id, "account settings were updated")
         .await
         .map_err(internal_error_tuple)?;
-    refresh_pool_routing_runtime_cache(state)
-        .await
-        .map_err(internal_error_tuple)?;
+    let routing_scope = if previous_group_name != row.group_name
+        || requested_group_metadata_changes.was_requested()
+    {
+        None
+    } else {
+        Some(std::slice::from_ref(&id))
+    };
+    let routing_state_version =
+        match publish_account_effective_routing_rules_changed(state, routing_scope, &[]).await {
+            Ok(version) => Some(version),
+            Err(err) => {
+                warn!(
+                    ?err,
+                    account_id = id,
+                    "account update committed but routing publication failed"
+                );
+                invalidate_dashboard_activity_snapshots_with_accounts(
+                    state.dashboard_activity_snapshot_cache.as_ref(),
+                    "account_effective_routing_rules_publication_failed",
+                )
+                .await;
+                None
+            }
+        };
     let refreshed_row = load_upstream_account_row(&state.pool, id)
         .await
         .map_err(internal_error_tuple)?
@@ -2418,10 +2462,11 @@ pub(crate) async fn update_upstream_account_inner(
         publish_pool_routing_availability(state);
     }
 
-    let detail = load_upstream_account_detail_with_actual_usage(state, id)
+    let mut detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    detail.routing_state_version = routing_state_version;
     Ok(detail)
 }
 
@@ -2608,7 +2653,20 @@ pub(crate) async fn delete_upstream_account_inner(
         if let Ok(mut selected_at) = state.pool_account_selection_runtime.selected_at.lock() {
             selected_at.remove(&id);
         }
-        refresh_pool_routing_runtime_cache_best_effort(state, "api key account deleted").await;
+        if let Err(err) =
+            publish_account_effective_routing_rules_changed(state, Some(&[]), &[id]).await
+        {
+            warn!(
+                ?err,
+                account_id = id,
+                "API key account delete committed but routing publication failed"
+            );
+            invalidate_dashboard_activity_snapshots_with_accounts(
+                state.dashboard_activity_snapshot_cache.as_ref(),
+                "account_effective_routing_rules_publication_failed",
+            )
+            .await;
+        }
         return Ok(StatusCode::NO_CONTENT);
     }
     let group_name = account_row.group_name;
@@ -2640,7 +2698,19 @@ pub(crate) async fn delete_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
-    refresh_pool_routing_runtime_cache_best_effort(state, "OAuth account deleted").await;
+    if let Err(err) = publish_account_effective_routing_rules_changed(state, Some(&[]), &[id]).await
+    {
+        warn!(
+            ?err,
+            account_id = id,
+            "OAuth account delete committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2837,6 +2907,7 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         .and_then(|value| normalize_optional_text(Some(value)))
         .unwrap_or(default_display_name);
     let chosen_email = session.email.clone();
+    let is_new_account = session.account_id.is_none();
     let input = PersistOauthCallbackInput {
         session,
         display_name,
@@ -2867,6 +2938,25 @@ pub(crate) async fn complete_oauth_login_session_with_query(
         account_id
     };
 
+    if is_new_account
+        && let Err(err) = publish_account_effective_routing_rules_changed(
+            state.as_ref(),
+            Some(&[account_id]),
+            &[],
+        )
+        .await
+    {
+        warn!(
+            ?err,
+            account_id, "OAuth callback committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
+    }
+
     Ok(account_id)
 }
 
@@ -2877,6 +2967,19 @@ pub(crate) async fn persist_existing_oauth_callback_inner(
     let account_id = persist_oauth_callback_inner(state, input).await?;
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth callback updated account but initial sync failed");
+    }
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state, Some(&[account_id]), &[]).await
+    {
+        warn!(
+            ?err,
+            account_id, "OAuth callback update committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
     }
     Ok(account_id)
 }
@@ -3138,6 +3241,19 @@ pub(crate) async fn confirm_oauth_identity_overwrite_inner(
     tx.commit().await.map_err(internal_error_tuple)?;
     if let Err(err) = sync_upstream_account_by_id(state, account_id, SyncCause::PostCreate).await {
         warn!(account_id, error = %err, "OAuth identity overwrite confirmed but initial sync failed");
+    }
+    if let Err(err) =
+        publish_account_effective_routing_rules_changed(state, Some(&[account_id]), &[]).await
+    {
+        warn!(
+            ?err,
+            account_id, "OAuth identity overwrite committed but routing publication failed"
+        );
+        invalidate_dashboard_activity_snapshots_with_accounts(
+            state.dashboard_activity_snapshot_cache.as_ref(),
+            "account_effective_routing_rules_publication_failed",
+        )
+        .await;
     }
     Ok(account_id)
 }

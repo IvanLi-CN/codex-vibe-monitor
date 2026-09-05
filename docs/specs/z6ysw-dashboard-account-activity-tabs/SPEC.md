@@ -2,6 +2,10 @@
 
 > 当前有效规范以本文为准；实现覆盖与当前状态见 `./IMPLEMENTATION.md`，关键演进原因见 `./HISTORY.md`。
 
+## Related ADRs
+
+- [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
+
 ## 背景 / 问题陈述
 
 - Dashboard 当前“工作中对话”区域只支持按对话查看，无法在同一块工作区里观察“当前活跃的上游账号”及其范围内聚合指标。
@@ -198,6 +202,8 @@
 - `GET /api/stats/upstream-account-activity.recentInvocations[]` 复用现有 invocation preview wire shape，并额外包含 `promptCacheKey?: string | null`。
 - `GET /api/stats/upstream-account-activity.accounts[].effectiveRoutingRule` 与 `GET /api/stats/dashboard-activity.accounts[].effectiveRoutingRule` 复用账号池现有 `EffectiveRoutingRule` wire shape，用于 Dashboard 标题区固定快捷策略 chip 的初始状态；普通系统 tag 仍不在账号活动接口中展示。
 - `GET /api/stats/upstream-account-activity.accounts[]` 与 `GET /api/stats/dashboard-activity.accounts[]` 的状态字段复用账号池状态模型：`enabled/displayStatus/enableStatus/workStatus/healthStatus/syncState/lastError/lastActionReasonMessage`，前端只把异常/注意态渲染为状态 badge。
+- Dashboard 账号有效规则属于低频控制面：所有账号、标签、分组/成员归属与池级默认策略写入在 durable commit 后发布完整 `AccountEffectiveRoutingRulesChanged` 载荷，携带 `routingStateVersion={epoch,generation}`；`epoch` 为进程启动 RFC3339 纳秒时间，`generation` 为路由缓存代际。`dashboard.activity.current/v3` 活动 topic 直接从该载荷原地补丁活跃卡片，健康 materialize path 不读 SQLite；无 owner 时标记 dirty，下一次 snapshot 必须新建。
+- `routingStateVersion` 以 nullable additive 字段出现在 Dashboard activity、upstream-account activity 与 account detail 响应。前端同 epoch 只接受不旧于当前 fence 的 live/replay，跨 epoch 仅接受 snapshot 或当前 PATCH；PATCH 发布失败返回 `null` 时保留本地已确认规则并请求 fresh snapshot，不能让旧 SSE/HTTP 覆盖。
 - Dashboard 快捷策略写入复用 `PATCH /api/pool/upstream-accounts/:id`，payload 仅包含 `routingRule` 中被触碰过的账号级覆盖字段；该入口不支持恢复继承。
 - `GET /api/stats/dashboard-activity.summary` 复用 `StatsResponse` wire shape，并额外返回 `tokensPerMinute`、`spendRate`、`currentFirstResponseByteTotalAvgMs` 与 `currentAvgTotalMs`；`accounts[]` 复用账号活动卡片所需字段，并新增账号级 `currentFirstResponseByteTotalAvgMs` / `currentAvgTotalMs` 当前态延迟字段，允许 `upstreamAccountId: null` 的 `isUnassigned` 聚合项。
 - `/events` topic `dashboard.activity.current` 返回该范围的 authoritative account-activity snapshot；恢复期先发 `snapshot` 或 `replay`，健康态再发 `live`，账号无 live 项时其实时字段归零。
@@ -437,6 +443,51 @@
   evidence_note: 验证 Dashboard 上游账号快捷策略 chip 在深色主题下保持同一语义配色与可读性：success / primary / warning / neutral 四个色槽同屏可见。
   image:
   ![Dashboard 上游账号快捷策略语义色深色证据](./assets/dashboard-upstream-account-policy-tones-dark.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette`
+  requested_viewport: `desktop1660`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones light, current routing-rule consistency candidate`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；DOM preflight 证明 target 位于不透明 source-managed surface 内，四侧 margin 为 40px，四个快捷策略 chip 文本完整显示。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性浅色桌面证据](./assets/dashboard-upstream-account-policy-routing-v3-desktop.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-dark`
+  requested_viewport: `desktop1660`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones dark, current routing-rule consistency candidate`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；深色主题下 success / primary / warning / neutral 四个 chip 色槽均保持可读，DOM preflight margin 为 40px。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性深色桌面证据](./assets/dashboard-upstream-account-policy-routing-v3-desktop-dark.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: `dashboard-workingconversationssection--upstream-account-quick-policy-tone-palette-mobile`
+  requested_viewport: `393x852`
+  viewport_strategy: `storybook-viewport`
+  margin_policy: `require_margin`
+  evidence_surface: `dashboard-upstream-account-window`
+  surface_selector: `[data-visual-evidence-surface="dashboard-upstream-account-window"]`
+  target_selector: `[data-visual-evidence-target="dashboard-upstream-account-window-target"]`
+  sensitive_exclusion: `N/A (mock-only Storybook)`
+  submission_gate: `approved`
+  scenario: `quick policy semantic tones mobile responsive checkpoint`
+  evidence_note: 已获主人确认的 mock-only Storybook canvas；393×852 CSS viewport 下账号卡收敛为单列，chip 文本完整显示，source-managed surface 四侧 margin 为 40px。
+  image:
+  ![Dashboard 上游账号快捷策略路由规则一致性移动证据](./assets/dashboard-upstream-account-policy-routing-v3-mobile393.png)
 
 - source_type: storybook_canvas
   story_id_or_title: `dashboard-workingconversationssection--upstream-account-tab`

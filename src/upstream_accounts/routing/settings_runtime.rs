@@ -870,6 +870,60 @@ pub(crate) async fn refresh_pool_routing_runtime_cache(
     refresh_pool_routing_runtime_cache_locked(state).await
 }
 
+pub(crate) fn current_routing_state_version(state: &AppState) -> Option<RoutingStateVersion> {
+    state
+        .pool_routing_runtime_cache
+        .try_lock()
+        .ok()
+        .and_then(|cache| cache.as_ref().map(|cache| cache.generation))
+        .map(|generation| RoutingStateVersion::new(state.process_started_at_utc, generation))
+}
+
+pub(crate) async fn publish_account_effective_routing_rules_changed(
+    state: &AppState,
+    affected_account_ids: Option<&[i64]>,
+    removed_account_ids: &[i64],
+) -> Result<RoutingStateVersion> {
+    let cache = refresh_pool_routing_runtime_cache(state).await?;
+    let mut ids = affected_account_ids
+        .map(|ids| ids.to_vec())
+        .unwrap_or_else(|| {
+            cache
+                .model_routing
+                .effective_rules_by_account
+                .keys()
+                .copied()
+                .collect()
+        });
+    ids.sort_unstable();
+    ids.dedup();
+    let upserts = ids
+        .into_iter()
+        .filter_map(|account_id| {
+            cache
+                .model_routing
+                .effective_rules_by_account
+                .get(&account_id)
+                .cloned()
+                .map(|rule| (account_id, rule))
+        })
+        .collect::<Vec<_>>();
+    let version = RoutingStateVersion::new(state.process_started_at_utc, cache.generation);
+    invalidate_dashboard_activity_snapshots_with_accounts(
+        state.dashboard_activity_snapshot_cache.as_ref(),
+        "account_effective_routing_rules_changed",
+    )
+    .await;
+    state.subscription_hub.publish_runtime_mutation(
+        RuntimeMutation::AccountEffectiveRoutingRulesChanged {
+            version: version.clone(),
+            upserts,
+            removed_account_ids: removed_account_ids.to_vec(),
+        },
+    );
+    Ok(version)
+}
+
 async fn refresh_pool_routing_runtime_cache_locked(
     state: &AppState,
 ) -> Result<PoolRoutingRuntimeCache> {

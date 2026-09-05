@@ -96,12 +96,16 @@ function text(testId: string) {
   return element.textContent ?? "";
 }
 
-function createResponse(inProgressCount: number): DashboardActivityResponse {
+function createResponse(
+  inProgressCount: number,
+  routingStateVersion?: DashboardActivityResponse["routingStateVersion"],
+): DashboardActivityResponse {
   return {
     range: "today",
     rangeStart: "2026-07-16T00:00:00Z",
     rangeEnd: "2026-07-16T10:05:00Z",
     snapshotId: 1,
+    routingStateVersion,
     rateWindow: {
       start: "2026-07-16T10:04:00Z",
       end: "2026-07-16T10:05:00Z",
@@ -238,6 +242,28 @@ describe("useDashboardActivitySnapshot", () => {
     );
     expect(text("total")).toBe("5");
     expect(text("recent-limit")).toBe("4");
+  });
+
+  it("keeps the newest live routing snapshot when an older frame arrives later", () => {
+    const newest = createResponse(6, {
+      epoch: "2026-07-16T10:00:00.000000000Z",
+      generation: "12",
+    });
+    topicMocks.state.data = newest;
+    render(<Probe range="today" />);
+    expect(text("total")).toBe("5");
+
+    const older = createResponse(99, {
+      epoch: "2026-07-16T10:00:00.000000000Z",
+      generation: "11",
+    });
+    topicMocks.state.data = older;
+    act(() => {
+      root?.render(<Probe range="today" />);
+    });
+
+    expect(text("total")).toBe("5");
+    expect(text("recent-limit")).toBe("6");
   });
 });
 

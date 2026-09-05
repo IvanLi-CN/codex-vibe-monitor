@@ -340,6 +340,8 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
         .as_ref()
         .map(|value| value.group_name.clone())
         .or(target_group_name);
+    let routing_scope_is_global =
+        existing_row.group_name != group_name || requested_group_metadata_changes.was_requested();
     let note = if metadata.note.is_some() {
         normalize_optional_text(metadata.note.clone())
     } else {
@@ -455,10 +457,34 @@ pub(crate) async fn persist_external_existing_oauth_upsert(
     let _warning = apply_imported_oauth_probe_result(state, existing_row.id, &probe)
         .await
         .map_err(internal_error_tuple)?;
-    load_upstream_account_detail_with_actual_usage(state, existing_row.id)
+    let routing_scope = if routing_scope_is_global {
+        None
+    } else {
+        Some(std::slice::from_ref(&existing_row.id))
+    };
+    let routing_state_version =
+        match publish_account_effective_routing_rules_changed(state, routing_scope, &[]).await {
+            Ok(version) => Some(version),
+            Err(err) => {
+                warn!(
+                    ?err,
+                    account_id = existing_row.id,
+                    "external OAuth update committed but routing publication failed"
+                );
+                invalidate_dashboard_activity_snapshots_with_accounts(
+                    state.dashboard_activity_snapshot_cache.as_ref(),
+                    "account_effective_routing_rules_publication_failed",
+                )
+                .await;
+                None
+            }
+        };
+    let mut detail = load_upstream_account_detail_with_actual_usage(state, existing_row.id)
         .await
         .map_err(internal_error_tuple)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    detail.routing_state_version = routing_state_version;
+    Ok(detail)
 }
 
 async fn load_external_oauth_account_by_id(
@@ -691,13 +717,19 @@ pub(crate) async fn external_upsert_oauth_upstream_account(
         .account_ops
         .run_persist_imported_oauth(state.clone(), persisted_account_id, probe)
         .await?;
+    // The imported OAuth command publishes the post-commit routing snapshot. Reuse its
+    // generation for the detail response without advancing the cache a second time.
+    let routing_state_version = current_routing_state_version(state.as_ref());
     publish_new_account_routing_availability_if_selectable(state.as_ref(), persisted_account_id)
         .await;
 
-    load_upstream_account_detail_with_actual_usage(state.as_ref(), persisted_account_id)
-        .await
-        .map_err(internal_error_tuple)?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))
+    let mut detail =
+        load_upstream_account_detail_with_actual_usage(state.as_ref(), persisted_account_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    detail.routing_state_version = routing_state_version;
+    Ok(detail)
 }
 
 pub(crate) async fn external_patch_oauth_upstream_account(
