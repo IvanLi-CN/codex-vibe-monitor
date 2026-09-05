@@ -5405,26 +5405,28 @@ async function assertQuickPolicyTonePalette(canvasElement: HTMLElement) {
 export const UpstreamAccountQuickPolicyTonePalette: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
-    <DrawerPreviewStory
-      response={createResponse([
-        createConversation("pck-story-upstream-policy-tones", [
-          createPreview({
-            id: 9871,
-            invokeId: "story-working-policy-tones",
-            occurredAt: "2026-04-04T10:05:00Z",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-        ]),
-      ])}
-      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
-        allowCutOut: false,
-        allowCutIn: true,
-        priorityTier: "fallback",
-        fastModeRewriteMode: "force_add",
-      })}
-    />
+    <DashboardAccountWindowEvidenceSurface>
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-policy-tones", [
+            createPreview({
+              id: 9871,
+              invokeId: "story-working-policy-tones",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
+          allowCutOut: false,
+          allowCutIn: true,
+          priorityTier: "fallback",
+          fastModeRewriteMode: "force_add",
+        })}
+      />
+    </DashboardAccountWindowEvidenceSurface>
   ),
   play: async ({ canvasElement }) => assertQuickPolicyTonePalette(canvasElement),
   parameters: {
@@ -5441,27 +5443,29 @@ export const UpstreamAccountQuickPolicyTonePalette: Story = {
 export const UpstreamAccountQuickPolicyTonePaletteDark: Story = {
   args: UpstreamAccountTab.args,
   render: () => (
-    <DrawerPreviewStory
-      response={createResponse([
-        createConversation("pck-story-upstream-policy-tones-dark", [
-          createPreview({
-            id: 9872,
-            invokeId: "story-working-policy-tones-dark",
-            occurredAt: "2026-04-04T10:05:00Z",
-            status: "running",
-            upstreamAccountId: 42,
-            upstreamAccountName: "Pool Alpha",
-          }),
-        ]),
-      ])}
-      upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
-        allowCutOut: false,
-        allowCutIn: true,
-        priorityTier: "fallback",
-        fastModeRewriteMode: "force_add",
-      })}
-      theme="vibe-dark"
-    />
+    <DashboardAccountWindowEvidenceSurface>
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-policy-tones-dark", [
+            createPreview({
+              id: 9872,
+              invokeId: "story-working-policy-tones-dark",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
+          allowCutOut: false,
+          allowCutIn: true,
+          priorityTier: "fallback",
+          fastModeRewriteMode: "force_add",
+        })}
+        theme="vibe-dark"
+      />
+    </DashboardAccountWindowEvidenceSurface>
   ),
   play: async ({ canvasElement }) => assertQuickPolicyTonePalette(canvasElement),
   parameters: {
@@ -5470,6 +5474,44 @@ export const UpstreamAccountQuickPolicyTonePaletteDark: Story = {
       description: {
         story:
           "Dark theme checkpoint for the dashboard upstream-account quick policy tone palette.",
+      },
+    },
+  },
+};
+
+export const UpstreamAccountQuickPolicyTonePaletteMobile: Story = {
+  args: UpstreamAccountTab.args,
+  render: () => (
+    <DashboardAccountWindowEvidenceSurface>
+      <DrawerPreviewStory
+        response={createResponse([
+          createConversation("pck-story-upstream-policy-tones-mobile", [
+            createPreview({
+              id: 9873,
+              invokeId: "story-working-policy-tones-mobile",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+              upstreamAccountId: 42,
+              upstreamAccountName: "Pool Alpha",
+            }),
+          ]),
+        ])}
+        upstreamAccountActivity={createUpstreamAccountActivityStoryResponse(4, {
+          allowCutOut: false,
+          allowCutIn: true,
+          priorityTier: "fallback",
+          fastModeRewriteMode: "force_add",
+        })}
+      />
+    </DashboardAccountWindowEvidenceSurface>
+  ),
+  play: async ({ canvasElement }) => assertQuickPolicyTonePalette(canvasElement),
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+    docs: {
+      description: {
+        story:
+          "Mobile responsive checkpoint for the dashboard upstream-account quick policy chips.",
       },
     },
   },

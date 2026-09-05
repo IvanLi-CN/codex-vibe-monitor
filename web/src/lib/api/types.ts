@@ -187,6 +187,7 @@ export type {
   RawCompressionBacklogResponse,
   RequestCompressionAlgorithm,
   RequestCompressionLevelPreset,
+  RoutingStateVersion,
   SettingsPayload,
   StartupBackfillResponse,
   StatsMaintenanceResponse,

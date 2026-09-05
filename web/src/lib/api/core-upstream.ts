@@ -2,6 +2,7 @@ import type {
   BlockedBindingDiagnostic,
   ForwardProxyBindingNode,
   PoolRoutingSelectionAudit,
+  RoutingStateVersion,
   StickyKeyConversationSelection,
   UpstreamStickyConversationsResponse,
 } from "./core-foundation";
@@ -13,6 +14,7 @@ import {
   normalizeFiniteNumber,
   normalizeForwardProxyBindingNode,
   normalizePoolRoutingSettings,
+  normalizeRoutingStateVersion,
   normalizeStringArray,
   normalizeUpstreamStickyConversationsResponse,
   withBase,
@@ -416,6 +418,7 @@ export interface FetchModelRoutingHistoryQuery {
 }
 
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
+  routingStateVersion?: RoutingStateVersion | null;
   note?: string | null;
   upstreamBaseUrl?: string | null;
   chatgptUserId?: string | null;
@@ -1694,6 +1697,7 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   const historyRaw = Array.isArray(payload.history) ? payload.history : [];
   return {
     ...summary,
+    routingStateVersion: normalizeRoutingStateVersion(payload.routingStateVersion),
     note: typeof payload.note === "string" ? payload.note : null,
     verifiedEmail: typeof payload.verifiedEmail === "string" ? payload.verifiedEmail : null,
     upstreamBaseUrl: typeof payload.upstreamBaseUrl === "string" ? payload.upstreamBaseUrl : null,

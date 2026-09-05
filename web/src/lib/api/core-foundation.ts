@@ -1046,6 +1046,7 @@ export interface UpstreamAccountActivityResponse {
   range: string;
   rangeStart: string;
   rangeEnd: string;
+  routingStateVersion?: RoutingStateVersion | null;
   networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
   networkRealtimeRate?: DashboardNetworkRealtimeRate | null;
   accounts: UpstreamAccountActivityAccount[];
@@ -1096,12 +1097,49 @@ export interface DashboardActivityResponse {
   rangeStart: string;
   rangeEnd: string;
   snapshotId: number;
+  routingStateVersion?: RoutingStateVersion | null;
   liveRevision?: number;
   rateWindow: DashboardActivityRateWindow;
   summary: DashboardActivitySummary;
   networkLiveBucket?: DashboardNetworkTimeseriesPoint | null;
   networkRealtimeRate?: DashboardNetworkRealtimeRate | null;
   accounts?: UpstreamAccountActivityAccount[];
+}
+
+export interface RoutingStateVersion {
+  epoch: string;
+  generation: string;
+}
+
+export function compareRoutingStateVersion(
+  left: RoutingStateVersion | null | undefined,
+  right: RoutingStateVersion | null | undefined,
+): number {
+  if (!left && !right) return 0;
+  if (!left) return -1;
+  if (!right) return 1;
+  const epochOrder = left.epoch.localeCompare(right.epoch);
+  if (epochOrder !== 0) return epochOrder;
+  try {
+    const leftGeneration = BigInt(left.generation);
+    const rightGeneration = BigInt(right.generation);
+    return leftGeneration === rightGeneration ? 0 : leftGeneration > rightGeneration ? 1 : -1;
+  } catch {
+    return left.generation.localeCompare(right.generation);
+  }
+}
+
+export function acceptsRoutingStateVersion(
+  current: RoutingStateVersion | null | undefined,
+  incoming: RoutingStateVersion | null | undefined,
+  kind: "snapshot" | "replay" | "live" | "patch" = "live",
+): boolean {
+  if (!incoming) return !current || kind === "snapshot" || kind === "patch";
+  if (!current) return true;
+  const comparison = compareRoutingStateVersion(incoming, current);
+  return incoming.epoch !== current.epoch
+    ? kind === "snapshot" || kind === "patch"
+    : comparison >= 0;
 }
 
 export interface DashboardActivityRecentResponse {
@@ -2474,6 +2512,16 @@ export function normalizeStringArray(value: unknown): string[] {
 export function normalizeFiniteNumber(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   return value;
+}
+
+export function normalizeRoutingStateVersion(value: unknown): RoutingStateVersion | null {
+  const payload = (value ?? {}) as Record<string, unknown>;
+  return typeof payload.epoch === "string" &&
+    payload.epoch.trim() &&
+    typeof payload.generation === "string" &&
+    /^\d+$/.test(payload.generation)
+    ? { epoch: payload.epoch, generation: payload.generation }
+    : null;
 }
 
 function normalizePositiveFiniteNumber(value: unknown): number | undefined {
@@ -4183,6 +4231,7 @@ function normalizeUpstreamAccountActivityResponse(raw: unknown): UpstreamAccount
     range: typeof payload.range === "string" ? payload.range : "",
     rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    routingStateVersion: normalizeRoutingStateVersion(payload.routingStateVersion),
     networkLiveBucket: normalizeDashboardNetworkTimeseriesPoint(payload.networkLiveBucket),
     networkRealtimeRate: normalizeDashboardNetworkRealtimeRate(payload.networkRealtimeRate),
     accounts: Array.isArray(payload.accounts)
@@ -4202,6 +4251,7 @@ function normalizeDashboardActivityResponse(raw: unknown): DashboardActivityResp
     rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     snapshotId: normalizeFiniteNumber(payload.snapshotId) ?? 0,
+    routingStateVersion: normalizeRoutingStateVersion(payload.routingStateVersion),
     liveRevision: normalizeFiniteNumber(payload.liveRevision) ?? 0,
     rateWindow: {
       start: typeof rateWindowPayload.start === "string" ? rateWindowPayload.start : "",

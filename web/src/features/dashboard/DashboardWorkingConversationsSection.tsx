@@ -55,6 +55,8 @@ import {
   fetchUpstreamAccounts,
   updateUpstreamAccount,
 } from "../../lib/api";
+import type { RoutingStateVersion } from "../../lib/api/core-foundation";
+import { acceptsRoutingStateVersion } from "../../lib/api/core-foundation";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
@@ -1152,17 +1154,23 @@ type AccountAttentionChip = {
 function accountPolicyDraftFromRule(
   account: UpstreamAccountActivityAccount,
 ): AccountQuickPolicyDraft {
-  const rule = account.effectiveRoutingRule ?? {
+  return accountPolicyDraftFromRoutingRule(account.effectiveRoutingRule);
+}
+
+function accountPolicyDraftFromRoutingRule(
+  rule: UpstreamAccountActivityAccount["effectiveRoutingRule"],
+): AccountQuickPolicyDraft {
+  const effectiveRule = rule ?? {
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: "normal" as TagPriorityTier,
     fastModeRewriteMode: "keep_original" as TagFastModeRewriteMode,
   };
   return {
-    priorityTier: rule.priorityTier ?? "normal",
-    allowCutOut: rule.allowCutOut !== false,
-    allowCutIn: rule.allowCutIn !== false,
-    fastModeRewriteMode: rule.fastModeRewriteMode ?? "keep_original",
+    priorityTier: effectiveRule.priorityTier ?? "normal",
+    allowCutOut: effectiveRule.allowCutOut !== false,
+    allowCutIn: effectiveRule.allowCutIn !== false,
+    fastModeRewriteMode: effectiveRule.fastModeRewriteMode ?? "keep_original",
   };
 }
 
@@ -2894,6 +2902,7 @@ function chunkDashboardUpstreamAccountRows(
 
 function DashboardUpstreamAccountActivityCard({
   account,
+  routingStateVersion,
   locale,
   localeTag,
   nowMs,
@@ -2907,6 +2916,7 @@ function DashboardUpstreamAccountActivityCard({
   onRetryRecent,
 }: {
   account: UpstreamAccountActivityAccount;
+  routingStateVersion?: RoutingStateVersion | null;
   locale: "zh" | "en";
   localeTag: string;
   nowMs: number;
@@ -2934,6 +2944,9 @@ function DashboardUpstreamAccountActivityCard({
   const pendingPatchRef = useRef<UpdateGroupAccountRoutingRulePayload | null>(null);
   const pendingDraftRef = useRef<AccountQuickPolicyDraft | null>(null);
   const lastCommittedPolicyRef = useRef<AccountQuickPolicyDraft>(serverPolicyDraft);
+  const lastCommittedRoutingStateVersionRef = useRef<RoutingStateVersion | null>(
+    routingStateVersion ?? null,
+  );
   const mountedRef = useRef(true);
   const flushPolicySaveRef = useRef<((updateUi?: boolean) => Promise<void>) | null>(null);
   const saveSeqRef = useRef(0);
@@ -2981,11 +2994,24 @@ function DashboardUpstreamAccountActivityCard({
     };
   }, []);
   useEffect(() => {
+    if (
+      !acceptsRoutingStateVersion(
+        lastCommittedRoutingStateVersionRef.current,
+        routingStateVersion,
+        "live",
+      )
+    ) {
+      return;
+    }
+    if (!routingStateVersion && lastCommittedRoutingStateVersionRef.current) {
+      return;
+    }
     lastCommittedPolicyRef.current = serverPolicyDraft;
+    lastCommittedRoutingStateVersionRef.current = routingStateVersion ?? null;
     if (!debounceTimerRef.current && !isSavingPolicy) {
       setPolicyDraft(serverPolicyDraft);
     }
-  }, [isSavingPolicy, serverPolicyDraft]);
+  }, [isSavingPolicy, routingStateVersion, serverPolicyDraft]);
   const flushPolicySave = useCallback(
     async (updateUi = true) => {
       const accountId = account.upstreamAccountId;
@@ -3002,9 +3028,23 @@ function DashboardUpstreamAccountActivityCard({
         setIsSavingPolicy(true);
       }
       try {
-        await updateUpstreamAccount(accountId, { routingRule: patch });
+        const response = await updateUpstreamAccount(accountId, { routingRule: patch });
         if (saveSeqRef.current !== seq) return;
-        lastCommittedPolicyRef.current = nextDraft;
+        const confirmedDraft = accountPolicyDraftFromRoutingRule(response.effectiveRoutingRule);
+        const currentVersion = lastCommittedRoutingStateVersionRef.current;
+        if (!acceptsRoutingStateVersion(currentVersion, response.routingStateVersion, "patch")) {
+          return;
+        }
+        lastCommittedPolicyRef.current = confirmedDraft;
+        // A committed write can outlive a failed runtime publication. Keep the prior
+        // confirmation fence until the fresh snapshot catches up instead of allowing
+        // an older live frame to overwrite the just-confirmed rule.
+        if (response.routingStateVersion) {
+          lastCommittedRoutingStateVersionRef.current = response.routingStateVersion;
+        }
+        if (updateUi && mountedRef.current) {
+          setPolicyDraft(confirmedDraft);
+        }
         if (updateUi && mountedRef.current) {
           setPolicySaveError(null);
         }
@@ -5668,6 +5708,7 @@ export function DashboardWorkingConversationsSection({
                   <DashboardUpstreamAccountActivityCard
                     key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
                     account={account}
+                    routingStateVersion={upstreamAccountActivity?.routingStateVersion}
                     locale={locale}
                     localeTag={localeTag}
                     nowMs={nowMs}
