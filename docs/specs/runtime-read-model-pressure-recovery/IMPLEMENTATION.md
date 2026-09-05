@@ -93,13 +93,19 @@
   coverage and payload SHA; a seek-paged legacy backfill can reuse the writer
   for readable authority, while source loss remains a finite unavailable range.
 - The all-time coverage fence carries independent global and account revisions
-  across manifest, rollup, replay and
-  Snapshot V2 proof versions. A terminal tail changes only the live-tail cursor
+  across manifest, archive replay and Snapshot V2 proof versions. Archive
+  rollup materialization advances the fence through its replay marker; hot/live
+  rollup writes change only the live-tail cursor. A terminal tail changes only the live-tail cursor
   and bounded overlay; it never cancels an in-flight historical page. The
   backfill outcome index stores only disposition, failure class, next probe and
   the next page/row seek key, never archive payload or source text. Archive
   hashing and page iteration check the bounded maintenance budget; a deferred
   archive resumes after its last verified page without monopolizing the worker.
+- Snapshot V2 completion compares the durable coverage fence with the published
+  Projection and runs one bounded metadata-only RollingDelta when they differ.
+  Ready checkpoints skip repeated finalization, completed usage proof skips its
+  full rollup scan, recent retry outcomes obey `next_probe_at`, and an unchanged
+  completed backfill checkpoint performs no progress write.
 - Journal insertion adds no transaction or connection. Descriptor insertion,
   compaction and Snapshot writes emit only stage, count and byte telemetry;
   bounded reconstruction duration remains measured by the projection worker.

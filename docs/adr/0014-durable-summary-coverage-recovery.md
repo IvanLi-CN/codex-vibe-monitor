@@ -41,6 +41,15 @@ the exact Projection contract.
   the matching V2 proof has been fully verified. HTTP and SSE only read the
   immutable Projection and availability overlay; unproven intersections remain
   unavailable rather than partial or stale success.
+- A verified V2 proof advances the historical coverage fence and immediately
+  triggers one bounded metadata-only RollingDelta publication, independent of
+  request ownership. Ordinary hot/live rollup writes advance only the live-tail
+  cursor; archive replay proof advances the historical fence. A ready checkpoint
+  whose coverage is already published is not finalized again. Global and account
+  all-time aggregates retain their own published coverage fences, so a RollingDelta
+  generation update cannot make a retained aggregate appear current.
+- Retryable recent candidates obey their persisted `next_probe_at` eligibility.
+  An idle completed backfill checkpoint performs no repeated progress write.
 
 ## Alternatives considered
 
@@ -60,4 +69,6 @@ or SSE wire shape. It adds small outcome metadata and a second SHA-256 crate
 alias solely for serializable recovery state; existing HMAC uses remain on
 `sha2` 0.10. The system remains fail-closed: if a source is missing, changed,
 or cannot be proved within a bounded attempt, only the affected selection stays
-unavailable until an exact authority exists.
+unavailable until an exact authority exists. Continuous live rollup traffic no
+longer restarts historical checkpoint pages, and completed recovery no longer
+repeats all-time usage and Snapshot finalization work on every idle cadence.

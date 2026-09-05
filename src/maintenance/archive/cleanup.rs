@@ -1046,15 +1046,15 @@ pub(crate) struct SummaryArchiveSnapshotBackfillWindowResult {
 
 async fn load_summary_archive_snapshot_backfill_checkpoint(
     pool: &Pool<Sqlite>,
-) -> Result<(i64, i64)> {
-    Ok(sqlx::query_as::<_, (i64, i64)>(
-        "SELECT next_archive_batch_id, manifest_high_watermark_id \
+) -> Result<(i64, i64, bool)> {
+    Ok(sqlx::query_as::<_, (i64, i64, bool)>(
+        "SELECT next_archive_batch_id, manifest_high_watermark_id, completed \
          FROM summary_archive_snapshot_backfill_checkpoint WHERE scope = ?1",
     )
     .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE)
     .fetch_optional(pool)
     .await?
-    .unwrap_or((0, 0)))
+    .unwrap_or((0, 0, false)))
 }
 
 async fn store_summary_archive_snapshot_backfill_checkpoint(
@@ -1151,16 +1151,6 @@ async fn load_summary_archive_snapshot_backfill_due_candidates(
                         FROM summary_archive_snapshot_backfill_outcome AS outcome
                         WHERE outcome.archive_batch_id = batches.id
                           AND outcome.manifest_sha256 = batches.sha256
-                          AND (
-                              outcome.disposition = 'complete'
-                              OR (
-                                  outcome.disposition = 'unavailable'
-                                  AND outcome.failure_kind IN (
-                                      'verification_failed', 'manifest_sha_mismatch',
-                                      'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
-                                  )
-                              )
-                          )
                     )
                 )
                 OR EXISTS (
@@ -1795,7 +1785,7 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     max_elapsed: Duration,
 ) -> Result<SummaryArchiveSnapshotBackfillWindowResult> {
     let started_at = Instant::now();
-    let (mut cursor_id, mut high_watermark_id) =
+    let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
         load_summary_archive_snapshot_backfill_checkpoint(pool).await?;
     let observed_high_watermark = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(id), 0) FROM archive_batches \
@@ -1918,7 +1908,9 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             .await?;
         }
     }
-    if candidate_count == 0 {
+    if candidate_count == 0
+        && !(checkpoint_completed && cursor_id == 0 && high_watermark_id == observed_high_watermark)
+    {
         store_summary_archive_snapshot_backfill_checkpoint(pool, 0, high_watermark_id, true)
             .await?;
     }
@@ -3937,8 +3929,8 @@ mod tests {
             )
             VALUES (1, 'codex_invocations', '2026-08',
                     '/legacy/retryable-summary-authority.sqlite.gz', 'retryable', 1,
-                    'completed', 'unknown', '2026-08-01 00:00:00',
-                    '2026-08-01 01:00:00')
+                    'completed', 'unknown', datetime('now', '-1 day'),
+                    datetime('now', '-1 day', '+1 hour'))
             "#,
         )
         .execute(&pool)
@@ -3964,6 +3956,13 @@ mod tests {
         assert!(
             candidates.is_empty(),
             "future RFC3339 retry timestamp must be compared numerically by SQLite"
+        );
+        let due_candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
+            .await
+            .expect("load due candidates after retry outcome");
+        assert!(
+            due_candidates.is_empty(),
+            "a recent retryable candidate must remain deferred until next_probe_at"
         );
     }
 
