@@ -169,6 +169,8 @@
 
 `invocation-history.overview` binds its summary and up to 1,000 chart samples to one SQLite snapshot plus one captured runtime overlay. All internal pages use one fixed server-accepted page width, so configured limits that do not divide the sample cap cannot cause duplicate or missing samples; its SSE-disabled HTTP fallback establishes the first page snapshot and reuses it for summary, samples, and the oldest page that preserves full-history chart bounds. A cached binding payload captured during an SSE failure is scoped to that descriptor and cannot preempt a fresh HTTP binding after the operator switches conversations.
 
+`dashboard.activity.current` uses schema epoch `v3` for the account-rule control-plane contract. A post-commit `AccountEffectiveRoutingRulesChanged` event carries a complete affected-account rule snapshot and `routingStateVersion`; activity subscribers patch only their in-memory typed base, while inactive selections are invalidated and rebuilt on the next owner snapshot. This event is intentionally outside invocation/high-frequency topic dependencies and never causes a live-path database read.
+
 ### Open-Window Timeseries Projection
 
 - `today` and `1d` minute windows may use a durable minute projection of exact invocation aggregate records. A missing projection is a warming fallback, not a different response contract.
