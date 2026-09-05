@@ -885,8 +885,8 @@ pub(crate) async fn publish_account_effective_routing_rules_changed(
     removed_account_ids: &[i64],
 ) -> Result<RoutingStateVersion> {
     let cache = refresh_pool_routing_runtime_cache(state).await?;
-    let ids = affected_account_ids
-        .map(|ids| ids.iter().copied().collect::<HashSet<_>>())
+    let mut ids = affected_account_ids
+        .map(|ids| ids.to_vec())
         .unwrap_or_else(|| {
             cache
                 .model_routing
@@ -895,6 +895,8 @@ pub(crate) async fn publish_account_effective_routing_rules_changed(
                 .copied()
                 .collect()
         });
+    ids.sort_unstable();
+    ids.dedup();
     let upserts = ids
         .into_iter()
         .filter_map(|account_id| {
