@@ -7495,6 +7495,7 @@ pub(crate) struct SummaryProjectionGenerationFence {
     account_rollup_live_cursor: Option<i64>,
     completed_manifest_high_watermark_id: Option<i64>,
     coverage_revision: i64,
+    account_coverage_revision: i64,
     durable_terminal_sequence_watermark: u64,
 }
 
@@ -7502,6 +7503,7 @@ pub(crate) struct SummaryProjectionGenerationFence {
 pub(crate) struct SummaryCoverageFence {
     pub(crate) completed_manifest_high_watermark_id: Option<i64>,
     pub(crate) coverage_revision: i64,
+    pub(crate) account_coverage_revision: i64,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -7517,13 +7519,24 @@ impl SummaryProjectionGenerationFence {
     // Historical checkpoint validity therefore depends only on immutable coverage inputs; a
     // newly committed terminal must not restart already-proven archive pages.
     fn coverage_sources_match(self, other: Self) -> bool {
-        self.coverage_fence() == other.coverage_fence()
+        self.global_coverage_sources_match(other) && self.account_coverage_sources_match(other)
+    }
+
+    fn global_coverage_sources_match(self, other: Self) -> bool {
+        self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
+            && self.coverage_revision == other.coverage_revision
+    }
+
+    fn account_coverage_sources_match(self, other: Self) -> bool {
+        self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
+            && self.account_coverage_revision == other.account_coverage_revision
     }
 
     pub(crate) fn coverage_fence(self) -> SummaryCoverageFence {
         SummaryCoverageFence {
             completed_manifest_high_watermark_id: self.completed_manifest_high_watermark_id,
             coverage_revision: self.coverage_revision,
+            account_coverage_revision: self.account_coverage_revision,
         }
     }
 
@@ -7534,10 +7547,6 @@ impl SummaryProjectionGenerationFence {
             account_rollup_live_cursor: self.account_rollup_live_cursor,
             durable_terminal_sequence_watermark: self.durable_terminal_sequence_watermark,
         }
-    }
-
-    fn durable_sources_match(self, other: Self) -> bool {
-        self.coverage_sources_match(other)
     }
 }
 
@@ -10604,9 +10613,8 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
             warn!(error = ?error, "summary historical live coverage recovery deferred; keeping fresh rolling projection");
         }
     }
-    if !state.subscription_hub.has_summary_all_time_owner().await {
-        return Ok(());
-    }
+    // Historical coverage is durable recovery work, not demand-driven query work. A 30-day
+    // proof must keep progressing even while no client happens to hold an `all` subscription.
     if let Err(error) = SummaryCoverageRecoverySupervisor::run(state).await {
         if error
             .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
@@ -10676,6 +10684,21 @@ impl SummaryCoverageRecoverySupervisor {
     }
 
     async fn run_once(state: &AppState) -> Result<()> {
+        // Admission deliberately precedes every checkpoint, manifest, and archive operation.
+        // Pressure is scheduler-only: a denied pass neither reads nor writes recovery progress.
+        let _pressure_permit = match crate::db_pressure::global_db_pressure_gate()
+            .try_begin_background("summary_historical_coverage_recovery")
+        {
+            Ok(permit) => permit,
+            Err(reason) => {
+                debug!(
+                    stage = "historical_coverage_pressure_defer",
+                    reason = %reason,
+                    "summary historical coverage recovery deferred before durable progress access"
+                );
+                return Ok(());
+            }
+        };
         let started_at = Instant::now();
         let checkpoint = tokio::time::timeout(
             SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
@@ -10715,9 +10738,6 @@ impl SummaryCoverageRecoverySupervisor {
                 account_ready,
                 "summary historical coverage projection published"
             );
-            if global_ready {
-                return Ok(());
-            }
         }
 
         let backfill = backfill_summary_archive_snapshots_v2_window(
@@ -10736,17 +10756,12 @@ impl SummaryCoverageRecoverySupervisor {
             "summary historical coverage recovery page completed"
         );
 
-        // A successful V2 page may have completed the proof needed by the checkpoint. Continue
-        // bounded state-machine steps in this maintenance pass so small histories become
-        // publishable immediately; the deadline still prevents a large history from monopolizing
-        // the supervisor and every step commits its cursor independently.
-        for _ in 0..64 {
-            if started_at.elapsed() >= SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE {
-                break;
-            }
+        // A successful V2 page may complete the checkpoint. Give finalization one bounded turn,
+        // then yield. Repeating a generic recovery loop here previously let one supervisor pass
+        // monopolize maintenance and made the V2 worker depend on all-time readiness.
+        if started_at.elapsed() < SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE {
             let checkpoint = advance_summary_all_time_projection_checkpoint(state).await?;
             if checkpoint.global_ready() || checkpoint.account_ready() {
-                let global_ready = checkpoint.global_ready();
                 #[cfg(test)]
                 pause_summary_projection_test_interleave(
                     &state.pool,
@@ -10755,9 +10770,6 @@ impl SummaryCoverageRecoverySupervisor {
                 )
                 .await?;
                 publish_summary_all_time_projection_checkpoint(state, checkpoint).await?;
-                if global_ready {
-                    return Ok(());
-                }
             }
         }
         Ok(())
@@ -11647,6 +11659,16 @@ async fn summary_projection_coverage_revision(pool: &Pool<Sqlite>) -> Result<i64
     .map(|revision| revision.unwrap_or_default())
 }
 
+async fn summary_projection_account_coverage_revision(pool: &Pool<Sqlite>) -> Result<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_account_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection account coverage revision hydration failed")
+    .map(|revision| revision.unwrap_or_default())
+}
+
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_GLOBAL: &str = "global";
 pub(crate) const SUMMARY_ALL_TIME_COVERAGE_SCOPE_ACCOUNT: &str = "account";
 
@@ -11957,6 +11979,7 @@ struct SummaryAllTimeProjectionCheckpointRow {
     account_rollup_live_cursor: Option<i64>,
     manifest_high_watermark_id: Option<i64>,
     coverage_revision: i64,
+    account_coverage_revision: i64,
     durable_terminal_sequence_watermark: i64,
     global_manifest_next_id: i64,
     account_manifest_next_id: i64,
@@ -11987,6 +12010,7 @@ impl SummaryAllTimeProjectionCheckpointRow {
             account_rollup_live_cursor: self.account_rollup_live_cursor,
             completed_manifest_high_watermark_id: self.manifest_high_watermark_id,
             coverage_revision: self.coverage_revision,
+            account_coverage_revision: self.account_coverage_revision,
             durable_terminal_sequence_watermark: self.durable_terminal_sequence_watermark.max(0)
                 as u64,
         }
@@ -12109,7 +12133,7 @@ async fn load_summary_all_time_projection_checkpoint(
 ) -> Result<Option<SummaryAllTimeProjectionCheckpointRow>> {
     sqlx::query_as::<_, SummaryAllTimeProjectionCheckpointRow>(
         "SELECT live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-                manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark, \
+                manifest_high_watermark_id, coverage_revision, account_coverage_revision, durable_terminal_sequence_watermark, \
                 global_manifest_next_id, account_manifest_next_id, global_manifest_complete, \
                 account_manifest_complete, global_rollup_next_rowid, account_rollup_next_rowid, \
                 usage_rollup_next_rowid, global_rollup_complete, account_rollup_complete, \
@@ -12140,14 +12164,15 @@ async fn reset_summary_all_time_projection_checkpoint(
     sqlx::query(
         "INSERT INTO summary_all_time_projection_checkpoint \
          (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
-          manifest_high_watermark_id, coverage_revision, durable_terminal_sequence_watermark) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+          manifest_high_watermark_id, coverage_revision, account_coverage_revision, durable_terminal_sequence_watermark) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
          ON CONFLICT(scope) DO UPDATE SET \
            live_high_watermark_id = excluded.live_high_watermark_id, \
            rollup_live_cursor = excluded.rollup_live_cursor, \
            account_rollup_live_cursor = excluded.account_rollup_live_cursor, \
            manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
            coverage_revision = excluded.coverage_revision, \
+           account_coverage_revision = excluded.account_coverage_revision, \
            durable_terminal_sequence_watermark = excluded.durable_terminal_sequence_watermark, \
            global_manifest_next_id = 0, account_manifest_next_id = 0, \
            global_manifest_complete = 0, account_manifest_complete = 0, \
@@ -12163,6 +12188,7 @@ async fn reset_summary_all_time_projection_checkpoint(
     .bind(generation_fence.account_rollup_live_cursor)
     .bind(generation_fence.completed_manifest_high_watermark_id)
     .bind(generation_fence.coverage_revision)
+    .bind(generation_fence.account_coverage_revision)
     .bind(
         generation_fence
             .durable_terminal_sequence_watermark
@@ -12178,6 +12204,43 @@ async fn reset_summary_all_time_projection_checkpoint(
     load_summary_all_time_projection_checkpoint(pool)
         .await?
         .ok_or_else(|| anyhow!("summary all-time projection checkpoint disappeared after reset"))
+}
+
+async fn reset_summary_all_time_projection_account_scope(
+    pool: &Pool<Sqlite>,
+    generation_fence: SummaryProjectionGenerationFence,
+) -> Result<SummaryAllTimeProjectionCheckpointRow> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .context("summary all-time account checkpoint reset transaction failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_account_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time account checkpoint reset failed")?;
+    // The global checkpoint contains no account-rollup data. Preserve its committed manifest
+    // and aggregate progress when only an account-scoped source changes.
+    sqlx::query(
+        "UPDATE summary_all_time_projection_checkpoint SET \
+           account_coverage_revision = ?1, account_manifest_next_id = 0, \
+           account_manifest_complete = 0, account_rollup_next_rowid = 0, \
+           account_rollup_complete = 0, account_unavailable = 0, \
+           account_usage_unavailable = 0, updated_at = datetime('now') \
+         WHERE scope = ?2",
+    )
+    .bind(generation_fence.account_coverage_revision)
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .execute(&mut *transaction)
+    .await
+    .context("summary all-time account checkpoint scope reset failed")?;
+    transaction
+        .commit()
+        .await
+        .context("summary all-time account checkpoint reset commit failed")?;
+    load_summary_all_time_projection_checkpoint(pool)
+        .await?
+        .ok_or_else(|| anyhow!("summary all-time account checkpoint disappeared after reset"))
 }
 
 async fn advance_summary_all_time_projection_manifest_scope(
@@ -12457,6 +12520,8 @@ async fn load_summary_projection_generation_fence(
         )
         .await?,
         coverage_revision: summary_projection_coverage_revision(&state.pool).await?,
+        account_coverage_revision: summary_projection_account_coverage_revision(&state.pool)
+            .await?,
         durable_terminal_sequence_watermark,
     })
 }
@@ -12469,9 +12534,20 @@ async fn advance_summary_all_time_projection_checkpoint(
         Some(checkpoint)
             if checkpoint
                 .generation_fence()
-                .durable_sources_match(generation_fence) =>
+                .global_coverage_sources_match(generation_fence) =>
         {
-            checkpoint
+            if checkpoint
+                .generation_fence()
+                .account_coverage_sources_match(generation_fence)
+            {
+                checkpoint
+            } else {
+                debug!(
+                    "summary all-time account coverage revision changed; resetting only account recovery"
+                );
+                reset_summary_all_time_projection_account_scope(&state.pool, generation_fence)
+                    .await?
+            }
         }
         Some(_) => {
             debug!(
@@ -16701,6 +16777,7 @@ async fn build_summary_projection_once(
             account_rollup_live_cursor,
             completed_manifest_high_watermark_id,
             coverage_revision: summary_projection_coverage_revision(pool).await?,
+            account_coverage_revision: summary_projection_account_coverage_revision(pool).await?,
             durable_terminal_sequence_watermark,
         },
         freshness_lease: SummaryProjectionFreshnessLease::default(),
@@ -16749,6 +16826,13 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 _ = state.shutdown.cancelled() => return,
                 _ = cadence.tick() => {
                     if !state.subscription_hub.has_summary_owner().await {
+                        // The bounded historical supervisor owns durable proof recovery and
+                        // cannot depend on an HTTP/SSE subscriber happening to request `all`.
+                        // Do not build or renew a projection while idle; just give the single
+                        // low-priority recovery page its cadence turn.
+                        if let Err(error) = SummaryCoverageRecoverySupervisor::run(state.as_ref()).await {
+                            warn!(error = ?error, "idle summary historical coverage recovery deferred");
+                        }
                         None
                     } else {
                     let has_all_time_owner = state.subscription_hub.has_summary_all_time_owner().await;
@@ -34884,6 +34968,53 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_coverage_supervisor_runs_without_http_interest() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+        let archive_bucket_start = Utc
+            .timestamp_opt(
+                align_bucket_epoch((Utc::now() - ChronoDuration::days(2)).timestamp(), 3_600, 0),
+                0,
+            )
+            .single()
+            .expect("valid recent recovery archive bucket");
+        let coverage_start = crate::stats::db_occurred_at_lower_bound(archive_bucket_start);
+        let coverage_end =
+            crate::db_occurred_at_upper_bound(archive_bucket_start + ChronoDuration::hours(1));
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at) \
+             VALUES ('codex_invocations', '2026-08', \
+                     '/definitely/missing/summary-no-interest.sqlite.gz', 'summary-no-interest', 1, \
+                     'completed', ?1, ?2)",
+        )
+        .bind(coverage_start)
+        .bind(coverage_end)
+        .execute(&state.pool)
+        .await
+        .expect("seed recent legacy archive manifest");
+
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("run recovery without an all-time HTTP or SSE owner");
+
+        let outcome: String = sqlx::query_scalar(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome \
+             WHERE manifest_sha256 = 'summary-no-interest'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("supervisor must record its independent recovery outcome");
+        assert_eq!(outcome, "missing_source");
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
     async fn summary_all_time_recovery_never_enters_live_exact_admission() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -35277,6 +35408,9 @@ mod request_compression_query_tests {
         let before = summary_projection_coverage_revision(&state.pool)
             .await
             .expect("load initial coverage revision");
+        let account_before = summary_projection_account_coverage_revision(&state.pool)
+            .await
+            .expect("load initial account coverage revision");
         sqlx::query(
             "INSERT INTO invocation_rollup_hourly \
              (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost) \
@@ -35288,9 +35422,53 @@ mod request_compression_query_tests {
         let after = summary_projection_coverage_revision(&state.pool)
             .await
             .expect("load updated coverage revision");
+        let account_after = summary_projection_account_coverage_revision(&state.pool)
+            .await
+            .expect("load unchanged account coverage revision");
         assert!(
             after > before,
             "rollup proof changes must advance coverage fence"
+        );
+        assert_eq!(
+            account_after, account_before,
+            "a global-only rollup change must not restart account coverage"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_account_coverage_revision_is_scope_local() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let global_before = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load initial global coverage revision");
+        let account_before = summary_projection_account_coverage_revision(&state.pool)
+            .await
+            .expect("load initial account coverage revision");
+        sqlx::query(
+            "INSERT INTO upstream_account_stats_hourly \
+             (bucket_start_epoch, source, upstream_account_id, total_count, success_count, \
+              failure_count, total_tokens, total_cost, non_success_cost) \
+             VALUES (1, 'proxy', 42, 1, 1, 0, 5, 0.25, 0)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("insert account-scoped rollup proof");
+        let global_after = summary_projection_coverage_revision(&state.pool)
+            .await
+            .expect("load unchanged global coverage revision");
+        let account_after = summary_projection_account_coverage_revision(&state.pool)
+            .await
+            .expect("load updated account coverage revision");
+        assert_eq!(
+            global_after, global_before,
+            "an account-only rollup change must not restart global coverage"
+        );
+        assert!(
+            account_after > account_before,
+            "account rollup proof changes must advance the account coverage fence"
         );
     }
 

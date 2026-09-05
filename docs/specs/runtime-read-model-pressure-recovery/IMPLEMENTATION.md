@@ -33,11 +33,16 @@
   cursor version, next timestamp, row ID and retry attempt. Legacy ID-only
   progress is reset when no complete V2 proof exists; transient source/SQLite
   failures retain the last verified cursor, while semantic or manifest identity
-  failures are quarantined until the manifest SHA changes.
+  failures are quarantined until the manifest SHA changes. Its stored hash state
+  resumes standard SHA-256 at the committed byte offset and rejects a changed
+  archive fingerprint before it can adopt unverified pages.
 - `SummaryCoverageRecoverySupervisor` is now the sole runtime owner for
   unfinished AllTime checkpoint pages and Legacy Snapshot V2 backfill. It
   advances one generation-fenced proof page, gives 30-day-intersecting Snapshot
-  candidates priority, and finalizes only after exact proof. The regular Summary
+  candidates priority through a due queue before the archive-ID sweep, and
+  finalizes only after exact proof. It receives a bounded cadence turn without
+  Summary HTTP/SSE ownership and takes a database-pressure permit before any
+  recovery I/O. The regular Summary
   refresh path no longer invokes the generic AllTime builder or paged raw
   hydration; pressure, restart, and SQLite lock defer preserve the last
   committed cursor while recent Projection selections stay available.
@@ -87,7 +92,8 @@
   proof gate in main SQLite. Snapshot proof includes manifest identity,
   coverage and payload SHA; a seek-paged legacy backfill can reuse the writer
   for readable authority, while source loss remains a finite unavailable range.
-- The all-time coverage fence is scope-local across manifest, rollup, replay and
+- The all-time coverage fence carries independent global and account revisions
+  across manifest, rollup, replay and
   Snapshot V2 proof versions. A terminal tail changes only the live-tail cursor
   and bounded overlay; it never cancels an in-flight historical page. The
   backfill outcome index stores only disposition, failure class, next probe and

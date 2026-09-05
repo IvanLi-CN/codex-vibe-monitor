@@ -1,5 +1,12 @@
 use super::*;
 use futures_util::{StreamExt, stream};
+use sha2_resumable::{
+    Sha256 as ResumableSha256,
+    digest::{
+        Digest as ResumableDigest,
+        common::hazmat::{SerializableState, SerializedState},
+    },
+};
 use sqlx::FromRow;
 use tracing::warn;
 
@@ -958,6 +965,9 @@ const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE: &str = "summary-global";
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT: i64 = 8;
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS: i64 = 3_600;
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION: i64 = 2;
+const SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION: i64 = 1;
+const SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM: &str = "sha256-0.11";
+const SUMMARY_ARCHIVE_SNAPSHOT_HASH_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SummaryArchiveSnapshotBackfillDisposition {
@@ -981,6 +991,7 @@ impl SummaryArchiveSnapshotBackfillDisposition {
                         | "manifest_sha_mismatch"
                         | "invalid_timestamp"
                         | "row_count_mismatch"
+                        | "empty_archive"
                 ) =>
             {
                 Self::Unrecoverable
@@ -1007,13 +1018,19 @@ impl SummaryArchiveSnapshotBackfillDisposition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct SummaryArchiveSnapshotBackfillProgress {
     page_index: u32,
     next_occurred_at: Option<String>,
     next_row_id: i64,
     cursor_version: i64,
     retry_attempt: i64,
+    hash_algorithm: Option<String>,
+    hash_state_version: i64,
+    hash_byte_offset: u64,
+    hash_state: Option<Vec<u8>>,
+    hash_complete_sha256: Option<String>,
+    source_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -1069,6 +1086,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
     cursor_id: i64,
     limit: i64,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    // The monotonic ID cursor is a fairness sweep only. Eligibility and 30-day priority are
+    // evaluated by the due queue below so a busy archive tail cannot starve older recent data.
     sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
         r#"
         SELECT
@@ -1090,14 +1109,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
                 FROM summary_archive_snapshot_backfill_outcome AS outcome
                 WHERE outcome.archive_batch_id = batches.id
                   AND outcome.manifest_sha256 = batches.sha256
-                  AND julianday(outcome.next_probe_at) > julianday('now')
           )
-        ORDER BY CASE
-            WHEN batches.coverage_end_at IS NOT NULL
-             AND batches.coverage_end_at >= datetime('now', '-30 days')
-             AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now')) THEN 0
-            ELSE 1
-        END, batches.id ASC
+        ORDER BY batches.id ASC
         LIMIT ?3
         "#,
     )
@@ -1109,12 +1122,102 @@ async fn load_summary_archive_snapshot_backfill_candidates(
     .context("failed to load Summary Snapshot V2 backfill candidates")
 }
 
+async fn load_summary_archive_snapshot_backfill_due_candidates(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    sqlx::query_as::<_, HistoricalRollupStartupCandidateRow>(
+        r#"
+        SELECT
+            batches.id,
+            batches.dataset,
+            batches.file_path,
+            batches.sha256,
+            batches.row_count,
+            COALESCE(batches.summary_source_kind, 'unknown') AS summary_source_kind,
+            batches.coverage_start_at,
+            batches.coverage_end_at
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+          AND (
+                (
+                    batches.coverage_end_at IS NOT NULL
+                    AND batches.coverage_end_at >= datetime('now', '-30 days')
+                    AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now'))
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM summary_archive_snapshot_backfill_outcome AS outcome
+                        WHERE outcome.archive_batch_id = batches.id
+                          AND outcome.manifest_sha256 = batches.sha256
+                          AND (
+                              outcome.disposition = 'complete'
+                              OR (
+                                  outcome.disposition = 'unavailable'
+                                  AND outcome.failure_kind IN (
+                                      'verification_failed', 'manifest_sha_mismatch',
+                                      'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                                  )
+                              )
+                          )
+                    )
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM summary_archive_snapshot_backfill_outcome AS outcome
+                    WHERE outcome.archive_batch_id = batches.id
+                      AND outcome.manifest_sha256 = batches.sha256
+                      AND julianday(outcome.next_probe_at) <= julianday('now')
+                      AND outcome.disposition <> 'complete'
+                      AND NOT (
+                          outcome.disposition = 'unavailable'
+                          AND outcome.failure_kind IN (
+                              'verification_failed', 'manifest_sha_mismatch',
+                              'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                          )
+                      )
+                )
+              )
+        ORDER BY CASE
+            WHEN batches.coverage_end_at IS NOT NULL
+             AND batches.coverage_end_at >= datetime('now', '-30 days')
+             AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now')) THEN 0
+            ELSE 1
+        END, batches.id ASC
+        LIMIT ?2
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(limit.max(1))
+    .fetch_all(pool)
+    .await
+    .context("failed to load Summary Snapshot V2 backfill due candidates")
+}
+
 async fn load_summary_archive_snapshot_backfill_progress(
     pool: &Pool<Sqlite>,
     candidate: &HistoricalRollupStartupCandidateRow,
 ) -> Result<SummaryArchiveSnapshotBackfillProgress> {
-    let progress = sqlx::query_as::<_, (i64, Option<String>, i64, i64, i64)>(
-        "SELECT next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt
+    let progress = sqlx::query_as::<
+        _,
+        (
+            i64,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            Option<String>,
+            i64,
+            i64,
+            Option<Vec<u8>>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt, \
+                NULLIF(hash_algorithm, ''), hash_state_version, hash_byte_offset, hash_state, \
+                hash_complete_sha256, source_fingerprint
          FROM summary_archive_snapshot_backfill_outcome
          WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
     )
@@ -1123,13 +1226,27 @@ async fn load_summary_archive_snapshot_backfill_progress(
     .fetch_optional(pool)
     .await
     .context("load Summary Snapshot V2 backfill page progress")?;
-    let Some((page_index, occurred_at, row_id, cursor_version, retry_attempt)) = progress else {
+    let Some((
+        page_index,
+        occurred_at,
+        row_id,
+        cursor_version,
+        retry_attempt,
+        hash_algorithm,
+        hash_state_version,
+        hash_byte_offset,
+        hash_state,
+        hash_complete_sha256,
+        source_fingerprint,
+    )) = progress
+    else {
         return Ok(SummaryArchiveSnapshotBackfillProgress {
             page_index: 0,
             next_occurred_at: None,
             next_row_id: 0,
             cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
             retry_attempt: 0,
+            ..SummaryArchiveSnapshotBackfillProgress::default()
         });
     };
     Ok(SummaryArchiveSnapshotBackfillProgress {
@@ -1138,6 +1255,12 @@ async fn load_summary_archive_snapshot_backfill_progress(
         next_row_id: row_id.max(0),
         cursor_version,
         retry_attempt: retry_attempt.max(0),
+        hash_algorithm,
+        hash_state_version: hash_state_version.max(0),
+        hash_byte_offset: u64::try_from(hash_byte_offset.max(0)).unwrap_or(u64::MAX),
+        hash_state,
+        hash_complete_sha256,
+        source_fingerprint,
     })
 }
 
@@ -1161,6 +1284,7 @@ async fn record_summary_archive_snapshot_backfill_outcome(
             next_row_id,
             cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
             retry_attempt: 0,
+            ..SummaryArchiveSnapshotBackfillProgress::default()
         },
     )
     .await?;
@@ -1225,13 +1349,18 @@ async fn record_summary_archive_snapshot_backfill_outcome_tx(
     sqlx::query(
         "INSERT INTO summary_archive_snapshot_backfill_outcome \
          (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
-          next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now')) \
+          next_page_index, next_occurred_at, next_row_id, cursor_version, retry_attempt, \
+          hash_algorithm, hash_state_version, hash_byte_offset, hash_state, hash_complete_sha256, source_fingerprint, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now')) \
          ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
            disposition = excluded.disposition, failure_kind = excluded.failure_kind, \
            next_probe_at = excluded.next_probe_at, next_page_index = excluded.next_page_index, \
            next_occurred_at = excluded.next_occurred_at, next_row_id = excluded.next_row_id, \
            cursor_version = excluded.cursor_version, retry_attempt = excluded.retry_attempt, \
+           hash_algorithm = excluded.hash_algorithm, hash_state_version = excluded.hash_state_version, \
+           hash_byte_offset = excluded.hash_byte_offset, hash_state = excluded.hash_state, \
+           hash_complete_sha256 = excluded.hash_complete_sha256, \
+           source_fingerprint = excluded.source_fingerprint, \
            updated_at = excluded.updated_at",
     )
     .bind(candidate.id)
@@ -1244,6 +1373,12 @@ async fn record_summary_archive_snapshot_backfill_outcome_tx(
     .bind(progress.next_row_id.max(0))
     .bind(progress.cursor_version.max(1))
     .bind(progress.retry_attempt.max(0))
+    .bind(progress.hash_algorithm.as_deref().unwrap_or_default())
+    .bind(progress.hash_state_version.max(0))
+    .bind(i64::try_from(progress.hash_byte_offset).unwrap_or(i64::MAX))
+    .bind(progress.hash_state.as_deref())
+    .bind(progress.hash_complete_sha256.as_deref())
+    .bind(progress.source_fingerprint.as_deref())
     .execute(&mut *connection)
     .await
     .context("failed to persist Summary Snapshot V2 backfill outcome")?;
@@ -1257,26 +1392,119 @@ fn summary_archive_snapshot_backfill_budget_exhausted(
     started_at.elapsed() >= max_elapsed
 }
 
-fn sha256_hex_file_with_budget(
+enum SummaryArchiveHashAdvance {
+    Complete {
+        sha256: String,
+        progress: SummaryArchiveSnapshotBackfillProgress,
+    },
+    Deferred(SummaryArchiveSnapshotBackfillProgress),
+}
+
+fn summary_archive_source_fingerprint(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to stat Summary archive source {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(format!(
+            "unix:{}:{}:{}:{}:{}",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let modified_at = metadata
+            .modified()
+            .context("read Summary archive source modified timestamp")?
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("Summary archive source timestamp predates Unix epoch")?;
+        Ok(format!(
+            "portable:{}:{}:{}",
+            metadata.len(),
+            modified_at.as_secs(),
+            modified_at.subsec_nanos()
+        ))
+    }
+}
+
+fn resumable_summary_archive_sha256(
     path: &Path,
+    mut progress: SummaryArchiveSnapshotBackfillProgress,
+    source_fingerprint: String,
     started_at: Instant,
     max_elapsed: Duration,
-) -> Result<Option<String>> {
+) -> Result<SummaryArchiveHashAdvance> {
+    let has_resumable_state = progress.hash_algorithm.as_deref()
+        == Some(SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM)
+        && progress.hash_state_version == SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION
+        && progress.source_fingerprint.as_deref() == Some(source_fingerprint.as_str())
+        && progress.hash_state.is_some();
+    let mut hasher = if has_resumable_state {
+        let state = progress
+            .hash_state
+            .as_deref()
+            .expect("resumable hash state checked above");
+        let serialized = <&SerializedState<ResumableSha256>>::try_from(state)
+            .map_err(|_| anyhow!("invalid persisted Summary archive SHA-256 state"))?;
+        ResumableSha256::deserialize(serialized)
+            .map_err(|_| anyhow!("cannot deserialize persisted Summary archive SHA-256 state"))?
+    } else {
+        progress.hash_byte_offset = 0;
+        ResumableSha256::new()
+    };
     let mut file = fs::File::open(path)
         .with_context(|| format!("failed to open file for sha256 {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0_u8; 8192];
+    let source_length = file
+        .metadata()
+        .with_context(|| format!("failed to stat file for sha256 {}", path.display()))?
+        .len();
+    if progress.hash_byte_offset > source_length {
+        progress.hash_byte_offset = 0;
+        hasher = ResumableSha256::new();
+    }
+    file.seek(SeekFrom::Start(progress.hash_byte_offset))
+        .with_context(|| format!("failed to seek Summary archive source {}", path.display()))?;
+    let mut buffer = [0_u8; SUMMARY_ARCHIVE_SNAPSHOT_HASH_BUFFER_BYTES];
     loop {
         if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
-            return Ok(None);
+            progress.hash_algorithm = Some(SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM.to_string());
+            progress.hash_state_version = SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION;
+            progress.hash_state = Some(hasher.serialize().to_vec());
+            progress.source_fingerprint = Some(source_fingerprint);
+            return Ok(SummaryArchiveHashAdvance::Deferred(progress));
         }
-        let read = file.read(&mut buf)?;
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read Summary archive source {}", path.display()))?;
         if read == 0 {
-            break;
+            let fingerprint_after = summary_archive_source_fingerprint(path)?;
+            if fingerprint_after != source_fingerprint {
+                bail!("Summary archive source identity changed during SHA-256 proof");
+            }
+            let digest = hasher.finalize();
+            let digest = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            progress.hash_algorithm = Some(SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM.to_string());
+            progress.hash_state_version = SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION;
+            progress.hash_state = None;
+            progress.hash_complete_sha256 = Some(digest.clone());
+            progress.source_fingerprint = Some(source_fingerprint);
+            return Ok(SummaryArchiveHashAdvance::Complete {
+                sha256: digest,
+                progress,
+            });
         }
-        hasher.update(&buf[..read]);
+        hasher.update(&buffer[..read]);
+        progress.hash_byte_offset = progress
+            .hash_byte_offset
+            .saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
     }
-    Ok(Some(format!("{:x}", hasher.finalize())))
 }
 
 async fn backfill_summary_archive_snapshot_v2_candidate(
@@ -1298,9 +1526,80 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     if !archive_path.exists() {
         return Ok("unavailable:missing_source");
     }
-    let Some(actual_sha256) = sha256_hex_file_with_budget(archive_path, started_at, max_elapsed)?
-    else {
-        return Ok("deferred:budget");
+    let source_fingerprint = summary_archive_source_fingerprint(archive_path)?;
+    let mut hash_progress =
+        load_summary_archive_snapshot_backfill_progress(pool, candidate).await?;
+    if hash_progress
+        .source_fingerprint
+        .as_deref()
+        .is_some_and(|existing| existing != source_fingerprint)
+    {
+        // No incomplete V2 page may survive a source replacement. The manifest identity scopes
+        // the outcome row, while this filesystem identity fences work that spans attempts.
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM summary_archive_snapshot
+             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+        )
+        .bind(candidate.id)
+        .bind(&candidate.sha256)
+        .execute(tx.as_mut())
+        .await?;
+        hash_progress = SummaryArchiveSnapshotBackfillProgress {
+            cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
+            source_fingerprint: Some(source_fingerprint.clone()),
+            ..SummaryArchiveSnapshotBackfillProgress::default()
+        };
+        record_summary_archive_snapshot_backfill_outcome_tx(
+            tx.as_mut(),
+            candidate,
+            "in_progress",
+            "source_identity_changed",
+            &hash_progress,
+        )
+        .await?;
+        tx.commit().await?;
+    }
+    let actual_sha256 = if hash_progress.source_fingerprint.as_deref()
+        == Some(source_fingerprint.as_str())
+        && hash_progress.hash_complete_sha256.as_deref() == Some(candidate.sha256.as_str())
+    {
+        candidate.sha256.clone()
+    } else {
+        match resumable_summary_archive_sha256(
+            archive_path,
+            hash_progress,
+            source_fingerprint.clone(),
+            started_at,
+            max_elapsed,
+        )? {
+            SummaryArchiveHashAdvance::Complete { sha256, progress } => {
+                let mut tx = pool.begin().await?;
+                record_summary_archive_snapshot_backfill_outcome_tx(
+                    tx.as_mut(),
+                    candidate,
+                    "in_progress",
+                    "hash_verified",
+                    &progress,
+                )
+                .await?;
+                tx.commit().await?;
+                sha256
+            }
+            SummaryArchiveHashAdvance::Deferred(progress) => {
+                // Hash state itself is committed progress. The outer scheduler records the
+                // bounded defer separately, preserving this state and applying its backoff.
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                    pool,
+                    candidate,
+                    "in_progress",
+                    "hash_progress",
+                    progress,
+                )
+                .await?;
+                return Ok("deferred:budget");
+            }
+        }
     };
     if actual_sha256 != candidate.sha256 {
         return Ok("unavailable:manifest_sha_mismatch");
@@ -1350,6 +1649,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     next_row_id: 0,
                     cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
                     retry_attempt: 0,
+                    ..progress.clone()
                 },
             )
             .await?;
@@ -1370,20 +1670,17 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
         .fetch_one(pool)
         .await?
         .unwrap_or_default();
-        loop {
-            if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
-                return Ok("deferred:budget");
-            }
-            let (rows, has_more) = load_invocation_archive_rows_time_chunk(
-                &archive_pool,
-                &query_sql,
-                progress.next_occurred_at.as_deref(),
-                progress.next_row_id,
-            )
-            .await?;
-            if rows.is_empty() {
-                break;
-            }
+        if summary_archive_snapshot_backfill_budget_exhausted(started_at, max_elapsed) {
+            return Ok("deferred:budget");
+        }
+        let (rows, has_more) = load_invocation_archive_rows_time_chunk(
+            &archive_pool,
+            &query_sql,
+            progress.next_occurred_at.as_deref(),
+            progress.next_row_id,
+        )
+        .await?;
+        if !rows.is_empty() {
             let coverage_start = if progress.page_index == 0 {
                 candidate
                     .coverage_start_at
@@ -1435,6 +1732,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                     .context("Summary Snapshot V2 page row count overflow")?,
                 payload,
             };
+            if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
+                bail!("Summary archive source identity changed before V2 page commit");
+            }
             let mut tx = pool.begin().await?;
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &page).await?;
             record_summary_archive_snapshot_backfill_outcome_tx(
@@ -1451,6 +1751,8 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                         .unwrap_or(progress.next_row_id),
                     cursor_version: SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION,
                     retry_attempt: 0,
+                    source_fingerprint: Some(source_fingerprint.clone()),
+                    ..progress.clone()
                 },
             )
             .await?;
@@ -1462,8 +1764,11 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 .ok_or_else(|| anyhow!("Summary Snapshot page is missing row id"))?;
             progress.next_occurred_at = rows.last().map(|row| row.occurred_at.clone());
             progress.page_index = progress.page_index.saturating_add(1);
-            if !has_more {
-                break;
+            if has_more {
+                // A page has committed its V2 proof and composite cursor. Yield it to the
+                // supervisor so the next recovery event receives a fresh low-priority permit
+                // and the all-time worker cannot be starved by one large archive.
+                return Ok("yield:page");
             }
         }
         if total_rows != candidate.row_count {
@@ -1500,12 +1805,22 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     .fetch_one(pool)
     .await?;
     high_watermark_id = high_watermark_id.max(observed_high_watermark);
-    let mut candidates = load_summary_archive_snapshot_backfill_candidates(
+    // Recent coverage and due retries must progress independently of the sweep cursor. The
+    // sweep only services never-seen backlog entries after the due queue has had a bounded turn.
+    let mut candidates = load_summary_archive_snapshot_backfill_due_candidates(
         pool,
-        cursor_id,
         SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
     )
     .await?;
+    let candidates_from_due_queue = !candidates.is_empty();
+    if candidates.is_empty() {
+        candidates = load_summary_archive_snapshot_backfill_candidates(
+            pool,
+            cursor_id,
+            SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
+        )
+        .await?;
+    }
     let mut wrapped = false;
     if candidates.is_empty() && cursor_id > 0 {
         candidates = load_summary_archive_snapshot_backfill_candidates(
@@ -1528,6 +1843,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     };
     for candidate in candidates {
         if started_at.elapsed() >= max_elapsed {
+            let progress =
+                load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
+            record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                pool, &candidate, "deferred", "budget", progress,
+            )
+            .await?;
             result.hit_budget = true;
             break;
         }
@@ -1554,7 +1875,32 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             }
         };
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
+            if disposition == "yield" {
+                let progress =
+                    load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
+                let mut tx = pool.begin().await?;
+                record_summary_archive_snapshot_backfill_outcome_tx(
+                    tx.as_mut(),
+                    &candidate,
+                    "in_progress",
+                    failure_kind,
+                    &progress,
+                )
+                .await?;
+                tx.commit().await?;
+                break;
+            }
             if disposition == "deferred" {
+                let progress =
+                    load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                    pool,
+                    &candidate,
+                    disposition,
+                    failure_kind,
+                    progress,
+                )
+                .await?;
                 result.hit_budget = true;
                 break;
             }
@@ -1576,14 +1922,16 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             .await?;
             result.materialized_archive_batches += 1;
         }
-        result.next_cursor_id = candidate.id;
-        store_summary_archive_snapshot_backfill_checkpoint(
-            pool,
-            result.next_cursor_id,
-            high_watermark_id,
-            result.next_cursor_id >= high_watermark_id && !result.hit_budget,
-        )
-        .await?;
+        if !candidates_from_due_queue {
+            result.next_cursor_id = candidate.id;
+            store_summary_archive_snapshot_backfill_checkpoint(
+                pool,
+                result.next_cursor_id,
+                high_watermark_id,
+                result.next_cursor_id >= high_watermark_id && !result.hit_budget,
+            )
+            .await?;
+        }
     }
     if candidate_count == 0 {
         store_summary_archive_snapshot_backfill_checkpoint(pool, 0, high_watermark_id, true)
@@ -3101,6 +3449,78 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn summary_snapshot_hash_state_resumes_at_persisted_offset() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-summary-hash-{}.bin",
+            nanoid::nanoid!()
+        ));
+        let source = b"first-second";
+        fs::write(&path, source).expect("write synthetic archive source");
+        let source_fingerprint = summary_archive_source_fingerprint(&path)
+            .expect("fingerprint synthetic archive source");
+        let mut prefix_hasher = ResumableSha256::new();
+        prefix_hasher.update(&source[..5]);
+        let progress = SummaryArchiveSnapshotBackfillProgress {
+            hash_algorithm: Some(SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM.to_string()),
+            hash_state_version: SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION,
+            hash_byte_offset: 5,
+            hash_state: Some(prefix_hasher.serialize().to_vec()),
+            source_fingerprint: Some(source_fingerprint.clone()),
+            ..SummaryArchiveSnapshotBackfillProgress::default()
+        };
+
+        let actual = resumable_summary_archive_sha256(
+            &path,
+            progress,
+            source_fingerprint,
+            Instant::now(),
+            Duration::from_secs(1),
+        )
+        .expect("resume synthetic archive hash");
+        let expected = format!("{:x}", Sha256::digest(source));
+        assert!(
+            matches!(actual, SummaryArchiveHashAdvance::Complete { sha256, .. } if sha256 == expected)
+        );
+        fs::remove_file(&path).expect("remove synthetic archive source");
+    }
+
+    #[test]
+    fn summary_snapshot_hash_state_restarts_on_source_fingerprint_change() {
+        let path = std::env::temp_dir().join(format!(
+            "codex-vibe-monitor-summary-hash-fingerprint-{}.bin",
+            nanoid::nanoid!()
+        ));
+        let source = b"replacement-source";
+        fs::write(&path, source).expect("write synthetic archive source");
+        let source_fingerprint = summary_archive_source_fingerprint(&path)
+            .expect("fingerprint synthetic archive source");
+        let mut stale_hasher = ResumableSha256::new();
+        stale_hasher.update(b"stale");
+        let progress = SummaryArchiveSnapshotBackfillProgress {
+            hash_algorithm: Some(SUMMARY_ARCHIVE_SNAPSHOT_HASH_ALGORITHM.to_string()),
+            hash_state_version: SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION,
+            hash_byte_offset: 5,
+            hash_state: Some(stale_hasher.serialize().to_vec()),
+            source_fingerprint: Some("different-source".to_string()),
+            ..SummaryArchiveSnapshotBackfillProgress::default()
+        };
+
+        let actual = resumable_summary_archive_sha256(
+            &path,
+            progress,
+            source_fingerprint,
+            Instant::now(),
+            Duration::from_secs(1),
+        )
+        .expect("restart synthetic archive hash");
+        let expected = format!("{:x}", Sha256::digest(source));
+        assert!(
+            matches!(actual, SummaryArchiveHashAdvance::Complete { sha256, .. } if sha256 == expected)
+        );
+        fs::remove_file(&path).expect("remove synthetic archive source");
+    }
+
     #[tokio::test]
     async fn startup_candidates_include_materialized_invocation_archive_missing_global_summary_proof()
      {
@@ -3220,11 +3640,98 @@ mod tests {
             .expect("seed Snapshot V2 candidate");
         }
 
-        let candidates = load_summary_archive_snapshot_backfill_candidates(&pool, 0, 1)
+        let candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
             .await
             .expect("load 30d-prioritized candidates");
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].id, 2);
+    }
+
+    #[tokio::test]
+    async fn summary_archive_snapshot_backfill_due_queue_bypasses_id_sweep_cursor() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        let recent_start = format_utc_iso(Utc::now() - ChronoDuration::days(2));
+        let recent_end = format_utc_iso(Utc::now() - ChronoDuration::days(1));
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+              coverage_start_at, coverage_end_at) \
+             VALUES (1, 'codex_invocations', '2026-08', \
+                     '/legacy/due-summary-authority.sqlite.gz', 'due-summary', 1, \
+                     'completed', 'unknown', ?1, ?2)",
+        )
+        .bind(recent_start)
+        .bind(recent_end)
+        .execute(&pool)
+        .await
+        .expect("seed due Summary authority");
+        store_summary_archive_snapshot_backfill_checkpoint(&pool, 100, 100, false)
+            .await
+            .expect("seed stale ID sweep cursor");
+
+        let result = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+            .await
+            .expect("run bounded Summary Snapshot backfill");
+
+        assert_eq!(result.scanned_archive_batches, 1);
+        assert_eq!(result.next_cursor_id, 100);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome \
+                 WHERE archive_batch_id = 1 AND manifest_sha256 = 'due-summary'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("due candidate outcome"),
+            "missing_source"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_archive_snapshot_backfill_persists_deadline_defer() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+              coverage_start_at, coverage_end_at) \
+             VALUES (1, 'codex_invocations', '2026-08', \
+                     '/legacy/deferred-summary-authority.sqlite.gz', 'deferred-summary', 1, \
+                     'completed', 'unknown', '2026-08-01 00:00:00', '2026-08-01 01:00:00')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed deferred Summary authority");
+
+        let result = backfill_summary_archive_snapshots_v2_window(&pool, Duration::ZERO)
+            .await
+            .expect("run expired Summary Snapshot backfill");
+
+        assert!(result.hit_budget);
+        assert_eq!(
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT disposition, failure_kind \
+                 FROM summary_archive_snapshot_backfill_outcome \
+                 WHERE archive_batch_id = 1 AND manifest_sha256 = 'deferred-summary'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("deferred outcome"),
+            ("deferred".to_string(), "budget".to_string())
+        );
     }
 
     #[tokio::test]
