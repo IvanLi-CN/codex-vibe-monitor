@@ -553,7 +553,14 @@ pub(crate) async fn summary_archive_snapshot_has_final_proof(
 }
 
 pub(crate) fn parse_snapshot_coverage_at(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    crate::stats::parse_to_utc_datetime(value)
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|value| value.and_utc())
+        })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

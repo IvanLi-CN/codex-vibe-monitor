@@ -12935,10 +12935,8 @@ async fn load_summary_v2_archive_totals_excluding(
     {
         if materialized_at.is_some() {
             if let (Some(start), Some(end)) = (
-                coverage_start
-                    .as_deref()
-                    .and_then(parse_snapshot_coverage_at),
-                coverage_end.as_deref().and_then(parse_snapshot_coverage_at),
+                coverage_start.as_deref().and_then(parse_to_utc_datetime),
+                coverage_end.as_deref().and_then(parse_to_utc_datetime),
             ) {
                 let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
                 let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
@@ -12961,10 +12959,8 @@ async fn load_summary_v2_archive_totals_excluding(
             continue;
         }
         if let (Some(start), Some(end)) = (
-            coverage_start
-                .as_deref()
-                .and_then(parse_snapshot_coverage_at),
-            coverage_end.as_deref().and_then(parse_snapshot_coverage_at),
+            coverage_start.as_deref().and_then(parse_to_utc_datetime),
+            coverage_end.as_deref().and_then(parse_to_utc_datetime),
         ) {
             let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
             let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
@@ -12991,7 +12987,7 @@ async fn load_summary_v2_archive_totals_excluding(
         for payload in pages {
             let records = decode_summary_archive_snapshot_v2_payload(&payload)?;
             for record in &records {
-                let Some(occurred_at) = parse_snapshot_coverage_at(&record.occurred_at) else {
+                let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
                     continue;
                 };
                 let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
@@ -13385,14 +13381,8 @@ async fn publish_summary_all_time_projection_checkpoint(
     } else {
         HashMap::new()
     };
-    let existing_invoke_ids = next
-        .records
-        .iter()
-        .chain(next.current_records.iter())
-        .map(|record| record.row.invoke_id.clone())
-        .collect::<HashSet<_>>();
     let snapshot_totals =
-        load_summary_v2_archive_totals_excluding(&state.pool, &existing_invoke_ids).await?;
+        load_summary_v2_archive_totals_excluding(&state.pool, &HashSet::new()).await?;
     let hourly_rollup_totals = if checkpoint.global_ready() || checkpoint.account_ready() {
         load_summary_projection_rollup_totals(&state.pool).await?.0
     } else {
