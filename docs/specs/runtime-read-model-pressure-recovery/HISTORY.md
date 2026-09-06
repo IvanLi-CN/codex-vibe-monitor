@@ -65,3 +65,4 @@
   all-time finalization and usage scans, while retryable recent candidates honor
   their durable probe time instead of spinning on every maintenance cadence.
 - Snapshot V2 page progress is now separated from coverage authority by a durable obligation and identity-bound final-proof marker. Stale `Complete` outcomes no longer suppress recovery, intermediate pages do not churn the coverage fence, and terminal gaps remain local until the manifest identity changes.
+- Verified V2 coverage now publishes through a generation-fenced immutable Coverage Publication Overlay. The overlay removes only proven local gaps and contributes normalized bucket totals, so historical proof completion no longer invokes the generic RollingDelta/live-admission path or blocks unrelated recent selections.

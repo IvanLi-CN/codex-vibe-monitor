@@ -7448,6 +7448,49 @@ struct SummaryProjectionHistoricalLiveCoverage {
     reconciliation_required: bool,
 }
 
+/// A verified historical contribution which can be atomically attached to an existing
+/// projection without rerunning live admission.  The overlay retains only normalized totals;
+/// raw archive payloads and preview rows remain outside the serving read model.
+#[derive(Debug, Clone)]
+struct SummaryCoverageOverlay {
+    coverage_fence: SummaryCoverageFence,
+    live_tail_cursor: SummaryLiveTailCursor,
+    global_coverage_buckets: HashSet<i64>,
+    account_coverage_buckets: HashSet<i64>,
+    global_by_bucket: HashMap<i64, StatsTotals>,
+    account_by_bucket: HashMap<(i64, i64), StatsTotals>,
+    global_usage_by_bucket: HashMap<i64, UsageBreakdownResponse>,
+    account_usage_by_bucket: HashMap<(i64, i64), UsageBreakdownResponse>,
+    global_non_success_tokens_by_bucket: HashMap<i64, i64>,
+    account_non_success_tokens_by_bucket: HashMap<(i64, i64), i64>,
+}
+
+impl Default for SummaryCoverageOverlay {
+    fn default() -> Self {
+        Self {
+            coverage_fence: SummaryCoverageFence {
+                completed_manifest_high_watermark_id: None,
+                coverage_revision: 0,
+                account_coverage_revision: 0,
+            },
+            live_tail_cursor: SummaryLiveTailCursor {
+                live_high_watermark_id: 0,
+                rollup_live_cursor: 0,
+                account_rollup_live_cursor: None,
+                durable_terminal_sequence_watermark: 0,
+            },
+            global_coverage_buckets: HashSet::new(),
+            account_coverage_buckets: HashSet::new(),
+            global_by_bucket: HashMap::new(),
+            account_by_bucket: HashMap::new(),
+            global_usage_by_bucket: HashMap::new(),
+            account_usage_by_bucket: HashMap::new(),
+            global_non_success_tokens_by_bucket: HashMap::new(),
+            account_non_success_tokens_by_bucket: HashMap::new(),
+        }
+    }
+}
+
 // A projection can be renewed only when each durable source boundary remains unchanged.  This
 // is deliberately smaller than the projection itself: it lets the maintenance loop keep an
 // already-proven immutable response alive without cloning its resident preview rows.
@@ -7645,6 +7688,10 @@ pub(crate) struct SummaryProjection {
     // Historical live coverage is verified during Bootstrap or a dedicated background pass.
     // Rolling rebuilds reuse its unchanged proof and localize only newly unproven buckets.
     historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
+    // Verified V2 archive contributions are attached independently from the live-tail rebuild.
+    // Keeping the overlay in the projection lets subsequent rolling refreshes retain a proof
+    // published by the historical supervisor.
+    coverage_overlay: Option<SummaryCoverageOverlay>,
     // These indexes are constructed once off-request.  They retain only the largest legal
     // current-window result for the global view and each account, so a hot `current` read never
     // sorts or allocates in proportion to retained history.
@@ -8534,6 +8581,65 @@ impl SummaryProjection {
                     && !exact_usage_rollup_buckets.contains(bucket)
                 {
                     usage_breakdown.merge_response(usage);
+                }
+            }
+            // Verified V2 pages are compact historical contributions for buckets which are not
+            // represented by the resident rollup. Merge them only for complete buckets; a
+            // partial boundary still requires the existing exact-row proof and remains local
+            // unavailable when that proof is absent.
+            if let Some(overlay) = &self.coverage_overlay {
+                match upstream_account_id {
+                    None => {
+                        for (bucket, bucket_totals) in &overlay.global_by_bucket {
+                            if *bucket >= start
+                                && *bucket < end
+                                && !exact_total_rollup_buckets.contains(bucket)
+                            {
+                                totals = totals.add(*bucket_totals);
+                                non_success_tokens += overlay
+                                    .global_non_success_tokens_by_bucket
+                                    .get(bucket)
+                                    .copied()
+                                    .unwrap_or_default();
+                            }
+                        }
+                        for (bucket, usage) in &overlay.global_usage_by_bucket {
+                            if *bucket >= start
+                                && *bucket < end
+                                && !exact_usage_rollup_buckets.contains(bucket)
+                            {
+                                usage_breakdown.merge_response(usage);
+                            }
+                        }
+                    }
+                    Some(account_id) => {
+                        for ((bucket, candidate_account), bucket_totals) in
+                            &overlay.account_by_bucket
+                        {
+                            if *candidate_account == account_id
+                                && *bucket >= start
+                                && *bucket < end
+                                && !exact_total_rollup_buckets.contains(bucket)
+                            {
+                                totals = totals.add(*bucket_totals);
+                                non_success_tokens += overlay
+                                    .account_non_success_tokens_by_bucket
+                                    .get(&(*bucket, account_id))
+                                    .copied()
+                                    .unwrap_or_default();
+                            }
+                        }
+                        for ((bucket, candidate_account), usage) in &overlay.account_usage_by_bucket
+                        {
+                            if *candidate_account == account_id
+                                && *bucket >= start
+                                && *bucket < end
+                                && !exact_usage_rollup_buckets.contains(bucket)
+                            {
+                                usage_breakdown.merge_response(usage);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -10850,50 +10956,22 @@ impl SummaryCoverageRecoverySupervisor {
             }
         }
 
-        // Snapshot V2 proof changes are durable coverage inputs, but the backfill worker does
-        // not own the immutable rolling Projection. Finalize an already-complete checkpoint
-        // before attempting the bounded rolling metadata refresh: the finalizer can atomically
-        // publish the new coverage fence without re-admitting the current source at all. If a
-        // still-needed 4-second refresh is resource-deferred, keep the prior selection-local
-        // availability state and retry from durable progress on the next supervisor pass.
-        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
-        let coverage_publication_required = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .is_none_or(|projection| {
-                !projection
-                    .generation_fence
-                    .coverage_sources_match(durable_generation_fence)
-            });
-        if coverage_publication_required {
-            let publication_started_at = Instant::now();
-            match refresh_summary_snapshots_with_deadline(
-                state,
-                SummaryProjectionBuildMode::RollingDelta,
-                Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
-                true,
-            )
-            .await
-            {
-                Ok(()) => info!(
-                    stage = "historical_coverage_recent_publication",
-                    elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
-                    "summary historical coverage proof published to recent projection"
-                ),
-                Err(error)
-                    if error
-                        .to_string()
-                        .contains("summary projection build exceeded") =>
-                {
-                    warn!(
-                        error = ?error,
-                        stage = "historical_coverage_recent_publication_deferred",
-                        "summary historical coverage retained prior fail-closed availability after bounded rolling refresh"
-                    );
-                }
-                Err(error) => return Err(error),
-            }
+        // V2 proof changes are published as a compact immutable overlay. This avoids re-running
+        // live admission after every historical page and keeps the 4-second RollingDelta budget
+        // reserved for actual terminal tail changes.
+        let publication_started_at = Instant::now();
+        match publish_summary_coverage_overlay(state).await {
+            Ok(true) => info!(
+                stage = "historical_coverage_overlay_publication",
+                elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                "summary historical coverage proof published through immutable overlay"
+            ),
+            Ok(false) => debug!(
+                stage = "historical_coverage_overlay_deferred",
+                elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                "summary historical coverage overlay had no publishable contribution"
+            ),
+            Err(error) => return Err(error),
         }
         Ok(())
     }
@@ -11196,6 +11274,7 @@ async fn refresh_summary_snapshots_with_deadline(
                 .all_time_account_persisted_live_terminal_invoke_ids
                 .clone(),
             historical_live_coverage: projection.historical_live_coverage.clone(),
+            coverage_overlay: projection.coverage_overlay.clone(),
             unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
             unavailable_exact_live_account_ranges: projection
                 .unavailable_exact_live_account_ranges
@@ -12822,12 +12901,19 @@ struct SummaryV2ArchiveTotals {
     account_by_bucket: HashMap<(i64, i64), StatsTotals>,
     global_usage_by_bucket: HashMap<i64, UsageBreakdownAccumulator>,
     account_usage_by_bucket: HashMap<(i64, i64), UsageBreakdownAccumulator>,
+    global_non_success_tokens_by_bucket: HashMap<i64, i64>,
+    account_non_success_tokens_by_bucket: HashMap<(i64, i64), i64>,
+    global_coverage_buckets: HashSet<i64>,
+    account_coverage_buckets: HashSet<i64>,
     replacement_buckets: HashSet<i64>,
     materialized_buckets: HashSet<i64>,
     materialized_months_without_coverage: HashSet<String>,
 }
 
-async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2ArchiveTotals> {
+async fn load_summary_v2_archive_totals_excluding(
+    pool: &Pool<Sqlite>,
+    excluded_invoke_ids: &HashSet<String>,
+) -> Result<SummaryV2ArchiveTotals> {
     let archives = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, Option<String>)>(
         "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key
          FROM archive_batches
@@ -12874,6 +12960,22 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
         {
             continue;
         }
+        if let (Some(start), Some(end)) = (
+            coverage_start
+                .as_deref()
+                .and_then(parse_snapshot_coverage_at),
+            coverage_end.as_deref().and_then(parse_snapshot_coverage_at),
+        ) {
+            let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+            let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+            let mut bucket_count = 0usize;
+            while bucket <= end_bucket && bucket_count < 4096 {
+                totals.global_coverage_buckets.insert(bucket);
+                totals.account_coverage_buckets.insert(bucket);
+                bucket = bucket.saturating_add(3_600);
+                bucket_count += 1;
+            }
+        }
         // Materialized archives are already represented by the durable rollup checkpoint. V2
         // pages are only an aggregate source for an unmaterialized archive whose stale or
         // missing replay markers would otherwise leave the checkpoint without exact totals.
@@ -12888,6 +12990,18 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
         .await?;
         for payload in pages {
             let records = decode_summary_archive_snapshot_v2_payload(&payload)?;
+            for record in &records {
+                let Some(occurred_at) = parse_snapshot_coverage_at(&record.occurred_at) else {
+                    continue;
+                };
+                let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+                if totals.global_coverage_buckets.len() < 4096 {
+                    totals.global_coverage_buckets.insert(bucket);
+                }
+                if totals.account_coverage_buckets.len() < 4096 {
+                    totals.account_coverage_buckets.insert(bucket);
+                }
+            }
             let mut identity_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                 "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
             );
@@ -12916,6 +13030,7 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                     || live_identity
                         .iter()
                         .any(|(_, invoke_id)| invoke_id == &record.invoke_id)
+                    || excluded_invoke_ids.contains(&record.invoke_id)
                 {
                     continue;
                 }
@@ -12951,6 +13066,12 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                     .entry(bucket)
                     .or_default()
                     .add_row(&preview);
+                if record_totals.failure_count > 0 {
+                    *totals
+                        .global_non_success_tokens_by_bucket
+                        .entry(bucket)
+                        .or_default() += preview.total_tokens.max(0);
+                }
                 if let Some(account_id) = preview.upstream_account_id.filter(|id| *id > 0) {
                     let entry = totals.accounts.entry(account_id).or_default();
                     *entry = entry.add(record_totals);
@@ -12969,12 +13090,264 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                         .entry((bucket, account_id))
                         .or_default()
                         .add_row(&preview);
+                    if record_totals.failure_count > 0 {
+                        *totals
+                            .account_non_success_tokens_by_bucket
+                            .entry((bucket, account_id))
+                            .or_default() += preview.total_tokens.max(0);
+                    }
                 }
                 totals.global_usage.add_row(&preview);
             }
         }
     }
     Ok(totals)
+}
+
+fn summary_projection_remove_covered_ranges(
+    ranges: &mut Vec<ExactUtcRange>,
+    covered_buckets: &HashSet<i64>,
+) {
+    if covered_buckets.is_empty() || ranges.is_empty() {
+        return;
+    }
+    let mut covered = covered_buckets
+        .iter()
+        .filter_map(|bucket| {
+            let start = Utc.timestamp_opt(*bucket, 0).single()?;
+            Some(ExactUtcRange {
+                start,
+                end: start + ChronoDuration::hours(1),
+            })
+        })
+        .collect::<Vec<_>>();
+    covered.sort_by_key(|range| range.start);
+    let mut remaining = Vec::new();
+    for range in ranges.drain(..) {
+        let mut fragments = vec![range];
+        for bucket_range in &covered {
+            let mut next = Vec::new();
+            for fragment in fragments {
+                if fragment.end <= bucket_range.start || bucket_range.end <= fragment.start {
+                    next.push(fragment);
+                    continue;
+                }
+                if fragment.start < bucket_range.start {
+                    next.push(ExactUtcRange {
+                        start: fragment.start,
+                        end: bucket_range.start.min(fragment.end),
+                    });
+                }
+                if bucket_range.end < fragment.end {
+                    next.push(ExactUtcRange {
+                        start: bucket_range.end.max(fragment.start),
+                        end: fragment.end,
+                    });
+                }
+            }
+            fragments = next;
+            if fragments.is_empty() {
+                break;
+            }
+        }
+        remaining.extend(
+            fragments
+                .into_iter()
+                .filter(|range| range.start < range.end),
+        );
+    }
+    *ranges = summary_projection_merge_exact_ranges(remaining);
+}
+
+/// Publish verified V2 archive contributions without invoking the generic RollingDelta builder.
+/// The live tail cursor is a CAS fence: if a terminal commits while the proof is being reduced,
+/// the overlay is discarded and the next maintenance pass retries against the newer projection.
+async fn publish_summary_coverage_overlay(state: &AppState) -> Result<bool> {
+    let Some(projection) = state.subscription_hub.summary_projection().await else {
+        return Ok(false);
+    };
+    let durable_fence = load_summary_projection_generation_fence(state).await?;
+    if projection.generation_fence.live_tail_cursor() != durable_fence.live_tail_cursor() {
+        debug!(
+            stage = "coverage_overlay_stale_tail_fence",
+            "discarding verified coverage overlay because the live tail advanced"
+        );
+        return Ok(false);
+    }
+    let existing_invoke_ids = projection
+        .records
+        .iter()
+        .chain(projection.current_records.iter())
+        .map(|record| record.row.invoke_id.clone())
+        .collect::<HashSet<_>>();
+    let totals =
+        load_summary_v2_archive_totals_excluding(&state.pool, &existing_invoke_ids).await?;
+    if totals.global_coverage_buckets.is_empty()
+        && totals.account_coverage_buckets.is_empty()
+        && projection.coverage_overlay.is_none()
+    {
+        return Ok(false);
+    }
+    let mut next = Arc::unwrap_or_clone(projection);
+    if next.coverage_overlay.as_ref().is_some_and(|overlay| {
+        overlay.coverage_fence == durable_fence.coverage_fence()
+            && overlay.live_tail_cursor == durable_fence.live_tail_cursor()
+    }) {
+        return Ok(false);
+    }
+    let previous_global_buckets = next
+        .coverage_overlay
+        .as_ref()
+        .map(|overlay| overlay.global_coverage_buckets.clone())
+        .unwrap_or_default();
+    let previous_account_buckets = next
+        .coverage_overlay
+        .as_ref()
+        .map(|overlay| overlay.account_coverage_buckets.clone())
+        .unwrap_or_default();
+    let global_buckets = totals.global_coverage_buckets.clone();
+    let account_buckets = totals.account_coverage_buckets.clone();
+    let global_bucket_count = global_buckets.len();
+    let account_bucket_count = account_buckets.len();
+    let revoked_global_buckets = previous_global_buckets
+        .difference(&global_buckets)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let revoked_account_buckets = previous_account_buckets
+        .difference(&account_buckets)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !revoked_global_buckets.is_empty() {
+        let revoked_global_ranges =
+            summary_projection_unavailable_bucket_ranges(revoked_global_buckets.clone());
+        next.unavailable_unmaterialized_archive_ranges
+            .extend(revoked_global_ranges.iter().copied());
+        next.unavailable_boundary_archive_ranges
+            .extend(revoked_global_ranges.iter().copied());
+        next.unavailable_unmaterialized_archive_current_ranges
+            .extend(revoked_global_ranges);
+    }
+    if !revoked_account_buckets.is_empty() {
+        let revoked_account_ranges =
+            summary_projection_unavailable_bucket_ranges(revoked_account_buckets.clone());
+        next.unavailable_unmaterialized_archive_account_ranges
+            .extend(revoked_account_ranges.iter().copied());
+        next.unavailable_boundary_archive_account_ranges
+            .extend(revoked_account_ranges.iter().copied());
+        next.unavailable_unmaterialized_archive_account_current_ranges
+            .extend(revoked_account_ranges);
+    }
+    if global_buckets.is_empty() && account_buckets.is_empty() && next.coverage_overlay.is_some() {
+        let revoked_global_count = previous_global_buckets.len();
+        let revoked_account_count = previous_account_buckets.len();
+        next.coverage_overlay = None;
+        next.generation_fence = durable_fence;
+        let latest_fence = load_summary_projection_generation_fence(state).await?;
+        let latest_projection = state.subscription_hub.summary_projection().await;
+        if latest_fence.live_tail_cursor() != durable_fence.live_tail_cursor()
+            || latest_projection
+                .as_ref()
+                .is_none_or(|current| current.revision != next.revision)
+        {
+            return Ok(false);
+        }
+        next.revision = state
+            .subscription_hub
+            .next_summary_projection_revision()
+            .await;
+        state.subscription_hub.store_summary_projection(next).await;
+        info!(
+            stage = "coverage_overlay_revocation",
+            revoked_bucket_count = revoked_global_count + revoked_account_count,
+            "summary V2 coverage overlay revoked after proof invalidation"
+        );
+        return Ok(true);
+    }
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_boundary_archive_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_current_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_account_ranges,
+        &account_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_boundary_archive_account_ranges,
+        &account_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_account_current_ranges,
+        &account_buckets,
+    );
+    next.unavailable_unmaterialized_archive_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_unmaterialized_archive_ranges);
+    next.unavailable_boundary_archive_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_boundary_archive_ranges);
+    next.unavailable_unmaterialized_archive_current_ranges = summary_projection_merge_exact_ranges(
+        next.unavailable_unmaterialized_archive_current_ranges,
+    );
+    next.unavailable_unmaterialized_archive_account_ranges = summary_projection_merge_exact_ranges(
+        next.unavailable_unmaterialized_archive_account_ranges,
+    );
+    next.unavailable_boundary_archive_account_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_boundary_archive_account_ranges);
+    next.unavailable_unmaterialized_archive_account_current_ranges =
+        summary_projection_merge_exact_ranges(
+            next.unavailable_unmaterialized_archive_account_current_ranges,
+        );
+    let overlay = SummaryCoverageOverlay {
+        coverage_fence: durable_fence.coverage_fence(),
+        live_tail_cursor: durable_fence.live_tail_cursor(),
+        global_coverage_buckets: global_buckets,
+        account_coverage_buckets: account_buckets,
+        global_by_bucket: totals.global_by_bucket,
+        account_by_bucket: totals.account_by_bucket,
+        global_usage_by_bucket: totals
+            .global_usage_by_bucket
+            .into_iter()
+            .map(|(bucket, usage)| (bucket, usage.into_response()))
+            .collect(),
+        account_usage_by_bucket: totals
+            .account_usage_by_bucket
+            .into_iter()
+            .map(|(key, usage)| (key, usage.into_response()))
+            .collect(),
+        global_non_success_tokens_by_bucket: totals.global_non_success_tokens_by_bucket,
+        account_non_success_tokens_by_bucket: totals.account_non_success_tokens_by_bucket,
+    };
+    let latest_fence = load_summary_projection_generation_fence(state).await?;
+    let latest_projection = state.subscription_hub.summary_projection().await;
+    if latest_fence.live_tail_cursor() != durable_fence.live_tail_cursor()
+        || latest_projection
+            .as_ref()
+            .is_none_or(|current| current.revision != next.revision)
+    {
+        debug!(
+            stage = "coverage_overlay_stale_publication",
+            "discarding coverage overlay because the base projection or live tail advanced"
+        );
+        return Ok(false);
+    }
+    next.coverage_overlay = Some(overlay);
+    next.generation_fence = durable_fence;
+    next.revision = state
+        .subscription_hub
+        .next_summary_projection_revision()
+        .await;
+    state.subscription_hub.store_summary_projection(next).await;
+    info!(
+        stage = "coverage_overlay_publication",
+        global_bucket_count, account_bucket_count, "summary verified coverage overlay published"
+    );
+    Ok(true)
 }
 
 fn subtract_summary_totals(left: StatsTotals, right: StatsTotals) -> StatsTotals {
@@ -13012,7 +13385,14 @@ async fn publish_summary_all_time_projection_checkpoint(
     } else {
         HashMap::new()
     };
-    let snapshot_totals = load_summary_v2_archive_totals(&state.pool).await?;
+    let existing_invoke_ids = next
+        .records
+        .iter()
+        .chain(next.current_records.iter())
+        .map(|record| record.row.invoke_id.clone())
+        .collect::<HashSet<_>>();
+    let snapshot_totals =
+        load_summary_v2_archive_totals_excluding(&state.pool, &existing_invoke_ids).await?;
     let hourly_rollup_totals = if checkpoint.global_ready() || checkpoint.account_ready() {
         load_summary_projection_rollup_totals(&state.pool).await?.0
     } else {
@@ -13831,6 +14211,7 @@ struct PreviousSummaryProjectionAllTime {
     all_time_account_terminal_sequence_watermarks: HashMap<i64, u64>,
     all_time_account_persisted_live_terminal_invoke_ids: HashMap<i64, HashSet<String>>,
     historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
+    coverage_overlay: Option<SummaryCoverageOverlay>,
     unavailable_exact_live_ranges: Vec<ExactUtcRange>,
     unavailable_exact_live_account_ranges: HashMap<i64, Vec<ExactUtcRange>>,
     persisted_live_terminal_invoke_ids: HashSet<String>,
@@ -13939,6 +14320,7 @@ async fn build_summary_projection_once(
         all_time_account_persisted_live_terminal_invoke_ids:
             previous_all_time_account_persisted_live_terminal_invoke_ids,
         historical_live_coverage: previous_historical_live_coverage,
+        coverage_overlay: previous_coverage_overlay,
         unavailable_exact_live_ranges: previous_unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges: previous_unavailable_exact_live_account_ranges,
         persisted_live_terminal_invoke_ids: previous_persisted_live_terminal_invoke_ids,
@@ -16851,6 +17233,12 @@ async fn build_summary_projection_once(
         account_coverage_revision: summary_projection_account_coverage_revision(pool).await?,
         durable_terminal_sequence_watermark,
     };
+    let coverage_overlay = previous_coverage_overlay.filter(|overlay| {
+        // A coverage revision change revokes the old proof set.  Retaining its normalized
+        // contribution across that fence would make a replacement or terminal-gap update look
+        // exact, so only carry the overlay forward when its coverage authority is unchanged.
+        overlay.coverage_fence == generation_fence.coverage_fence()
+    });
     let projection = SummaryProjection {
         records,
         current_records,
@@ -16888,6 +17276,7 @@ async fn build_summary_projection_once(
         exact_account_usage_rollup_buckets,
         rollup_live_cursor,
         historical_live_coverage,
+        coverage_overlay,
         all_time_by_account,
         all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
         {
@@ -35604,9 +35993,40 @@ mod request_compression_query_tests {
         .expect("store final recent V2 proof page");
         tx.commit().await.expect("commit final recent V2 proof");
 
-        SummaryCoverageRecoverySupervisor::run(state.as_ref())
-            .await
-            .expect("run ownerless historical recovery");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create overlay publication interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+        );
+        let recovery_state = state.clone();
+        let recovery = tokio::spawn(async move {
+            SummaryCoverageRecoverySupervisor::run(recovery_state.as_ref()).await
+        });
+        tokio::pin!(recovery);
+        tokio::select! {
+            _ = interleave.wait_for_writer() => {
+                let modes = interleave.build_modes();
+                interleave.resume_build();
+                recovery.await.expect("join ownerless historical recovery").expect("run ownerless historical recovery");
+                clear_summary_projection_test_interleave();
+                assert!(
+                    !modes.contains(&SummaryProjectionBuildMode::RollingDelta),
+                    "verified V2 coverage must publish an overlay without generic RollingDelta",
+                );
+            }
+            result = &mut recovery => {
+                clear_summary_projection_test_interleave();
+                result.expect("join ownerless historical recovery").expect("run ownerless historical recovery");
+                assert!(
+                    interleave.build_modes().is_empty(),
+                    "verified V2 coverage must not start a projection rebuild when publishing an overlay",
+                );
+            }
+        }
         let Json(response) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {

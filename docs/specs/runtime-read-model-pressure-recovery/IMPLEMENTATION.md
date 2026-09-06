@@ -109,10 +109,13 @@
   hashing and page iteration check the bounded maintenance budget; a deferred
   archive resumes after its last verified page without monopolizing the worker.
 - Snapshot V2 completion compares the durable coverage fence with the published
-  Projection and runs one bounded metadata-only RollingDelta when they differ.
-  Ready checkpoints skip repeated finalization, completed usage proof skips its
-  full rollup scan, recent retry outcomes obey `next_probe_at`, and an unchanged
-  completed backfill checkpoint performs no progress write.
+  Projection and publishes a generation-fenced immutable Coverage Publication
+  Overlay when verified contributions differ. The overlay reduces only compact
+  V2 totals and availability state; it never starts generic RollingDelta, live
+  admission, or paged raw hydration. Ready checkpoints skip repeated
+  finalization, completed usage proof skips its full rollup scan, recent retry
+  outcomes obey `next_probe_at`, and an unchanged completed backfill checkpoint
+  performs no progress write.
 - Journal insertion adds no transaction or connection. Descriptor insertion,
   compaction and Snapshot writes emit only stage, count and byte telemetry;
   bounded reconstruction duration remains measured by the projection worker.

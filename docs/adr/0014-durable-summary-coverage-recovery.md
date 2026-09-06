@@ -44,12 +44,15 @@ or returning a partial aggregate would violate the exact Projection contract.
   immutable Projection and availability overlay; unproven intersections remain
   unavailable rather than partial or stale success.
 - A verified V2 proof advances the historical coverage fence and immediately
-  triggers one bounded metadata-only RollingDelta publication, independent of
-  request ownership. Ordinary hot/live rollup writes advance only the live-tail
-  cursor; archive replay proof advances the historical fence. A ready checkpoint
-  whose coverage is already published is not finalized again. Global and account
-  all-time aggregates retain their own published coverage fences, so a RollingDelta
-  generation update cannot make a retained aggregate appear current.
+  publishes one generation-fenced immutable Coverage Publication Overlay,
+  independent of request ownership. Overlay publication reduces only verified
+  normalized contributions and availability state; it never starts a generic
+  RollingDelta, live admission, or paged raw hydration. Ordinary hot/live rollup
+  writes advance only the live-tail cursor; archive replay proof advances the
+  historical fence. A ready checkpoint whose coverage is already published is
+  not finalized again. Global and account all-time aggregates retain their own
+  published coverage fences, so a live-tail update cannot make a retained
+  aggregate appear current.
 - Retryable recent candidates obey their persisted `next_probe_at` eligibility.
   An idle completed backfill checkpoint performs no repeated progress write.
 - Snapshot page progress and coverage authority are separate durable states.
