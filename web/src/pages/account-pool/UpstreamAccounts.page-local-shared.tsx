@@ -84,6 +84,7 @@ import type {
   UpstreamCapabilityState,
 } from "../../lib/api";
 import {
+  refreshUpstreamAccountModels,
   resetUpstreamAccountModelRouting,
   updateUpstreamAccountModelMappings,
 } from "../../lib/api";
@@ -1087,6 +1088,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     fallbackToFirstItem: false,
   });
   const availableModelOptions = useAvailableModelOptions(writesEnabled);
+  const [modelCatalogRefreshing, setModelCatalogRefreshing] = useState(false);
   const notifyMotherSwitches = useMotherSwitchNotifications();
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null));
   const [modelMappingDrafts, setModelMappingDrafts] = useState<ModelMappingDraft[]>([]);
@@ -1763,6 +1765,26 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const selectedDetail = detail?.id === selectedId ? detail : null;
   const selected = selectedDetail ?? selectedSummary;
+  const availableModelCatalog = useMemo(
+    () =>
+      (selectedDetail?.modelCatalog?.models ?? []).map((value) => ({
+        value,
+        sources: ["account" as const],
+      })),
+    [selectedDetail?.modelCatalog?.models],
+  );
+  const refreshModelCatalog = useCallback(async () => {
+    if (!selectedDetail || modelCatalogRefreshing || !writesEnabled) return;
+    setModelCatalogRefreshing(true);
+    try {
+      await refreshUpstreamAccountModels(selectedDetail.id);
+      await loadDetail(selectedDetail.id, { silent: true });
+    } catch {
+      await loadDetail(selectedDetail.id, { silent: true });
+    } finally {
+      setModelCatalogRefreshing(false);
+    }
+  }, [loadDetail, modelCatalogRefreshing, selectedDetail, writesEnabled]);
   useEffect(() => {
     if (!selectedDetail) return;
     if (modelMappingAccountIdRef.current === selectedDetail.id) return;
@@ -3738,6 +3760,16 @@ function SharedUpstreamAccountDetailDrawerInner({
                       busyField: inlinePolicyBusyField,
                       errorByField: inlinePolicyErrors,
                       availableModelOptions,
+                      availableModelCatalog,
+                      availableModelCatalogStatus: modelCatalogRefreshing
+                        ? "refreshing"
+                        : selectedDetail.modelCatalog?.status,
+                      availableModelCatalogLastSuccessfulAt:
+                        selectedDetail.modelCatalog?.lastSuccessfulAt,
+                      availableModelCatalogStale: selectedDetail.modelCatalog?.stale,
+                      availableModelCatalogError:
+                        selectedDetail.modelCatalog?.error?.message ?? null,
+                      onRefreshAvailableModelCatalog: () => void refreshModelCatalog(),
                       onChange: (field, payload) =>
                         handleSaveInlineAccountPolicy(
                           selectedDetail,
@@ -3864,6 +3896,37 @@ function SharedUpstreamAccountDetailDrawerInner({
                       availableModelsRemove: t("accountPool.tags.dialog.availableModelsRemove"),
                       availableModelsPlaceholder: t(
                         "accountPool.tags.dialog.availableModelsSearchPlaceholder",
+                      ),
+                      availableModelsSourceAll: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAll",
+                      ),
+                      availableModelsSourceProject: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceProject",
+                      ),
+                      availableModelsSourceAccount: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAccount",
+                      ),
+                      availableModelsRefresh: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsRefresh",
+                      ),
+                      availableModelsRefreshing: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshing",
+                      ),
+                      availableModelsLastRefreshed: (value) =>
+                        t(
+                          "accountPool.upstreamAccounts.effectiveRule.availableModelsLastRefreshed",
+                          {
+                            value,
+                          },
+                        ),
+                      availableModelsRefreshError: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshError",
+                      ),
+                      availableModelsStale: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsStale",
+                      ),
+                      availableModelsUnmatched: t(
+                        "accountPool.upstreamAccounts.effectiveRule.availableModelsUnmatched",
                       ),
                       currentValue: t("accountPool.tags.dialog.currentValue"),
                       priorityPrimary: t(

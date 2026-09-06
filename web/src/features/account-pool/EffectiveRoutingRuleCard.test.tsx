@@ -17,6 +17,10 @@ beforeAll(() => {
     writable: true,
     value: true,
   });
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 
 let root: Root | null = null;
@@ -577,6 +581,54 @@ describe("EffectiveRoutingRuleCard", () => {
       availableModels: ["gpt-5.4-mini"],
       availableModelsMode: "allowlist",
     });
+  });
+
+  it("merges project and account model sources while retaining an unmatched selection", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["account-only", "missing-model"],
+          fieldSources: { ...buildRule().fieldSources, availableModels: "account" },
+        })}
+        labels={{
+          ...labels,
+          availableModelsSourceAll: "All sources",
+          availableModelsSourceProject: "Project presets",
+          availableModelsSourceAccount: "This account",
+          availableModelsUnmatched: "Selected value",
+        }}
+        editablePolicy={{
+          onChange: vi.fn(),
+          availableModelOptions: ["gpt-5.5", "shared-model"],
+          availableModelCatalog: [
+            { value: "account-only", sources: ["account"] },
+            { value: "shared-model", sources: ["account"] },
+          ],
+        }}
+      />,
+    );
+
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[role="combobox"][aria-label="Available models"]',
+    );
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("Project presets");
+    expect(document.body.textContent).toContain("This account");
+    expect(document.body.textContent).toContain("Selected value");
+
+    const searchInput = document.querySelector<HTMLInputElement>("[cmdk-input]");
+    expect(searchInput).not.toBeNull();
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      valueSetter?.call(searchInput, "shared-model");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.querySelector('[data-testid="available-models-source-filter-all"]')).toBeNull();
+    expect(document.querySelector("[cmdk-group-heading]")?.textContent).toContain(
+      "Project presets + This account",
+    );
   });
 
   it("renders status change reasons with their resolved source and evidence-only state", () => {

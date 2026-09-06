@@ -3364,6 +3364,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
     };
 
     let duplicate_info = load_duplicate_info_for_account(pool, row.id).await?;
+    let model_catalog = load_upstream_account_model_catalog(pool, row.id).await?;
     let now = Utc::now();
     let active_conversation_count =
         load_account_active_conversation_count_map(pool, &[row.id], now)
@@ -3393,6 +3394,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             .map(build_action_event_from_row)
             .collect(),
         model_mappings: decode_model_mappings_json(row.model_mappings_json.as_deref()),
+        model_catalog,
         model_routing_states: load_model_routing_states(pool, row.id).await?,
         routing_state_version: None,
     }))

@@ -117,6 +117,7 @@ export {
   normalizeForwardProxyLatencyTestStreamEvent,
   preflightApiKeyGroupMigration,
   refreshForwardProxySubscriptions,
+  refreshUpstreamAccountModels,
   reloginUpstreamAccount,
   resetPromptCacheConversationAffinity,
   resetUpstreamAccountModelRouting,

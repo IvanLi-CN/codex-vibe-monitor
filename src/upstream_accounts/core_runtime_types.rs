@@ -1973,9 +1973,28 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
     pub(crate) model_mappings: Vec<ModelMapping>,
+    pub(crate) model_catalog: UpstreamAccountModelCatalog,
     pub(crate) model_routing_states: Vec<ModelRoutingState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) routing_state_version: Option<RoutingStateVersion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountModelCatalog {
+    pub(crate) models: Vec<String>,
+    pub(crate) status: String,
+    pub(crate) last_attempted_at: Option<String>,
+    pub(crate) last_successful_at: Option<String>,
+    pub(crate) error: Option<UpstreamAccountModelCatalogError>,
+    pub(crate) stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountModelCatalogError {
+    pub(crate) code: String,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

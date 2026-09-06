@@ -25,7 +25,7 @@ use once_cell::sync::Lazy;
 use std::sync::Mutex as StdMutex;
 
 const OAUTH_CODEX_UPSTREAM_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
-const OAUTH_CODEX_MODELS_CLIENT_VERSION: &str = "0.111.0";
+pub(crate) const OAUTH_CODEX_MODELS_CLIENT_VERSION: &str = "0.111.0";
 const OAUTH_RESPONSES_EXCLUDED_HEADER_NAMES: &[&str] = &[
     "content-type",
     "content-length",

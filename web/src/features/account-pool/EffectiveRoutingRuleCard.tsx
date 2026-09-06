@@ -122,10 +122,21 @@ interface EditablePolicyConfig {
   busyField?: EditablePolicyField | null;
   errorByField?: Partial<Record<EditablePolicyField, string | null>>;
   availableModelOptions?: string[];
+  availableModelCatalog?: AvailableModelOption[];
+  availableModelCatalogStatus?: string;
+  availableModelCatalogLastSuccessfulAt?: string | null;
+  availableModelCatalogStale?: boolean;
+  availableModelCatalogError?: string | null;
+  onRefreshAvailableModelCatalog?: () => void;
   onChange: (
     field: EditablePolicyField,
     payload: UpdateGroupAccountRoutingRulePayload,
   ) => Promise<void> | void;
+}
+
+export interface AvailableModelOption {
+  value: string;
+  sources: Array<"project" | "account">;
 }
 
 interface EffectiveProxyBindingItem {
@@ -263,6 +274,15 @@ interface EffectiveRoutingRuleCardProps {
     cutInLabel?: string;
     upstream429RetryCountValue?: (count: number) => string;
     availableModelsAddCustom?: string;
+    availableModelsSourceAll?: string;
+    availableModelsSourceProject?: string;
+    availableModelsSourceAccount?: string;
+    availableModelsRefresh?: string;
+    availableModelsRefreshing?: string;
+    availableModelsLastRefreshed?: (value: string) => string;
+    availableModelsRefreshError?: string;
+    availableModelsStale?: string;
+    availableModelsUnmatched?: string;
     availableModelsCustomLabel?: (value: string) => string;
     availableModelsRemove?: string;
     availableModelsPlaceholder?: string;
@@ -775,14 +795,33 @@ export function EffectiveRoutingRuleCard({
     proxyBindings?.source,
   ]);
 
-  const availableModelOptions = useMemo(
-    () =>
-      normalizeModelIds([
-        ...(editablePolicy?.availableModelOptions ?? []),
-        ...(resolvedRule.availableModels ?? []),
-      ]),
-    [editablePolicy?.availableModelOptions, resolvedRule.availableModels],
-  );
+  const availableModelOptions = useMemo(() => {
+    const options = new Map<string, AvailableModelOption>();
+    for (const value of editablePolicy?.availableModelOptions ?? []) {
+      const normalized = value.trim();
+      if (!normalized) continue;
+      options.set(normalized, { value: normalized, sources: ["project"] });
+    }
+    for (const option of editablePolicy?.availableModelCatalog ?? []) {
+      const normalized = option.value.trim();
+      if (!normalized) continue;
+      const current = options.get(normalized);
+      options.set(normalized, {
+        value: normalized,
+        sources: Array.from(new Set([...(current?.sources ?? []), ...option.sources])),
+      });
+    }
+    for (const value of resolvedRule.availableModels ?? []) {
+      const normalized = value.trim();
+      if (!normalized || options.has(normalized)) continue;
+      options.set(normalized, { value: normalized, sources: [] });
+    }
+    return Array.from(options.values());
+  }, [
+    editablePolicy?.availableModelOptions,
+    editablePolicy?.availableModelCatalog,
+    resolvedRule.availableModels,
+  ]);
 
   const isBusy = (field: EditablePolicyField) => editablePolicy?.busyField === field;
   const changeField = (
@@ -1118,6 +1157,11 @@ export function EffectiveRoutingRuleCard({
           value={availableModelsValue}
           mode={availableModelsMode}
           options={availableModelOptions}
+          catalogStatus={editablePolicy?.availableModelCatalogStatus}
+          catalogLastSuccessfulAt={editablePolicy?.availableModelCatalogLastSuccessfulAt}
+          catalogStale={editablePolicy?.availableModelCatalogStale}
+          catalogError={editablePolicy?.availableModelCatalogError}
+          onRefreshCatalog={editablePolicy?.onRefreshAvailableModelCatalog}
           inputValue={availableModelInput}
           emptyValueLabel={
             availableModelsSourceDeniesAll(
@@ -1786,7 +1830,12 @@ function RetryInlineEditor({ retries, disabled, labels, onChange }: RetryInlineE
 interface AvailableModelsEditorProps {
   value: string[];
   mode: AvailableModelsMode;
-  options: string[];
+  options: AvailableModelOption[];
+  catalogStatus?: string;
+  catalogLastSuccessfulAt?: string | null;
+  catalogStale?: boolean;
+  catalogError?: string | null;
+  onRefreshCatalog?: () => void;
   inputValue: string;
   emptyValueLabel: string;
   disabled?: boolean;
@@ -1809,20 +1858,67 @@ function AvailableModelsEditor({
   onAdd,
   onChange,
   onModeChange,
+  catalogStatus,
+  catalogLastSuccessfulAt,
+  catalogStale,
+  catalogError,
+  onRefreshCatalog,
 }: AvailableModelsEditorProps) {
   const trimmedInput = inputValue.trim();
   const canAdd = trimmedInput.length > 0 && !value.includes(trimmedInput);
   const [open, setOpen] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState<"all" | "project" | "account">("all");
   const selectedValueSet = useMemo(() => new Set(value), [value]);
   const availableOptions = useMemo(
-    () => options.filter((option, index) => option.trim() && options.indexOf(option) === index),
+    () => options.filter((option) => option.value.trim()),
     [options],
   );
   const filteredOptions = useMemo(() => {
-    if (!trimmedInput) return availableOptions;
+    const sourceOptions = trimmedInput
+      ? availableOptions
+      : availableOptions.filter((option) =>
+          selectedValueSet.has(option.value) && option.sources.length === 0
+            ? true
+            : sourceFilter === "all" || option.sources.includes(sourceFilter),
+        );
+    if (!trimmedInput) return sourceOptions;
     const query = trimmedInput.toLocaleLowerCase();
-    return availableOptions.filter((option) => option.toLocaleLowerCase().includes(query));
-  }, [availableOptions, trimmedInput]);
+    return sourceOptions.filter((option) => option.value.toLocaleLowerCase().includes(query));
+  }, [availableOptions, selectedValueSet, sourceFilter, trimmedInput]);
+  const searchGroups = useMemo(() => {
+    if (!trimmedInput) return [];
+
+    const groups = new Map<string, AvailableModelOption[]>();
+    for (const option of filteredOptions) {
+      const groupKey =
+        option.sources.length > 1
+          ? "shared"
+          : option.sources[0] === "account"
+            ? "account"
+            : option.sources[0] === "project"
+              ? "project"
+              : "selected";
+      const group = groups.get(groupKey);
+      if (group) {
+        group.push(option);
+      } else {
+        groups.set(groupKey, [option]);
+      }
+    }
+
+    const groupLabels: Record<string, string> = {
+      shared: `${labels.availableModelsSourceProject ?? "Project presets"} + ${labels.availableModelsSourceAccount ?? "This account"}`,
+      project: labels.availableModelsSourceProject ?? "Project presets",
+      account: labels.availableModelsSourceAccount ?? "This account",
+      selected: labels.availableModelsUnmatched ?? "Selected value",
+    };
+
+    return Array.from(groups, ([key, groupOptions]) => ({
+      key,
+      label: groupLabels[key] ?? key,
+      options: groupOptions,
+    }));
+  }, [filteredOptions, labels, trimmedInput]);
 
   const commitCustomValue = () => {
     if (!canAdd) return;
@@ -1927,8 +2023,40 @@ function AvailableModelsEditor({
                 />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-0">
+            <PopoverContent
+              align="start"
+              className="w-[var(--radix-popover-trigger-width)] p-0"
+              data-visual-evidence-target="available-models-popover"
+            >
               <Command shouldFilter={false}>
+                {catalogLastSuccessfulAt || onRefreshCatalog ? (
+                  <div className="flex items-center justify-between gap-2 border-b border-base-200 px-2 py-2">
+                    {catalogLastSuccessfulAt ? (
+                      <span className="truncate text-right text-xs text-base-content/55">
+                        {labels.availableModelsLastRefreshed?.(catalogLastSuccessfulAt) ??
+                          `Last refreshed ${catalogLastSuccessfulAt}`}
+                      </span>
+                    ) : null}
+                    {onRefreshCatalog ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "h-7 shrink-0 gap-1 px-2 text-xs",
+                          !catalogLastSuccessfulAt && "ml-auto",
+                        )}
+                        disabled={catalogStatus === "refreshing"}
+                        onClick={onRefreshCatalog}
+                      >
+                        <AppIcon name="refresh" className="h-3.5 w-3.5" aria-hidden />
+                        {catalogStatus === "refreshing"
+                          ? (labels.availableModelsRefreshing ?? "Refreshing")
+                          : (labels.availableModelsRefresh ?? "Refresh")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <CommandInput
                   value={inputValue}
                   placeholder={
@@ -1938,6 +2066,40 @@ function AvailableModelsEditor({
                   }
                   onValueChange={onInputChange}
                 />
+                {!trimmedInput ? (
+                  <div className="flex flex-wrap items-center gap-1 border-b border-base-200 px-2 py-2">
+                    {(
+                      [
+                        ["all", labels.availableModelsSourceAll ?? "All"],
+                        ["project", labels.availableModelsSourceProject ?? "Project presets"],
+                        ["account", labels.availableModelsSourceAccount ?? "This account"],
+                      ] as const
+                    ).map(([filter, label]) => (
+                      <button
+                        key={filter}
+                        type="button"
+                        data-testid={`available-models-source-filter-${filter}`}
+                        className={cn(
+                          "rounded-md px-2 py-1 text-xs transition-colors",
+                          sourceFilter === filter
+                            ? "bg-primary/12 text-primary"
+                            : "text-base-content/60 hover:bg-base-200",
+                        )}
+                        onClick={() => setSourceFilter(filter)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {catalogError ? (
+                  <div className="px-3 py-2 text-xs text-error">{catalogError}</div>
+                ) : null}
+                {catalogStatus === "stale" || catalogStale ? (
+                  <div className="px-3 py-2 text-xs text-warning">
+                    {labels.availableModelsStale ?? "This account catalog is stale."}
+                  </div>
+                ) : null}
                 <CommandList>
                   {canAdd ? (
                     <>
@@ -1958,18 +2120,73 @@ function AvailableModelsEditor({
                     <CommandEmpty>
                       {labels.availableModelsEmpty ?? "No matching models"}
                     </CommandEmpty>
+                  ) : trimmedInput ? (
+                    searchGroups.map((group) => (
+                      <CommandGroup key={group.key} heading={group.label}>
+                        {group.options.map((option) => {
+                          const active = selectedValueSet.has(option.value);
+                          const sourceLabel =
+                            option.sources.length > 1
+                              ? `${labels.availableModelsSourceProject ?? "Project"} + ${labels.availableModelsSourceAccount ?? "Account"}`
+                              : option.sources[0] === "account"
+                                ? (labels.availableModelsSourceAccount ?? "Account")
+                                : option.sources[0] === "project"
+                                  ? (labels.availableModelsSourceProject ?? "Project")
+                                  : (labels.availableModelsUnmatched ?? "Selected");
+                          return (
+                            <CommandItem
+                              key={option.value}
+                              value={option.value}
+                              disabled={disabled}
+                              onSelect={() =>
+                                onChange(
+                                  active
+                                    ? value.filter((item) => item !== option.value)
+                                    : [...value, option.value],
+                                )
+                              }
+                            >
+                              <AppIcon
+                                name="check"
+                                className={cn(
+                                  "mr-2 h-4 w-4 text-primary transition-opacity",
+                                  active ? "opacity-100" : "opacity-0",
+                                )}
+                                aria-hidden
+                              />
+                              <span className="truncate">
+                                {labels.availableModelsCustomLabel?.(option.value) ?? option.value}
+                              </span>
+                              <span className="ml-auto shrink-0 text-xs text-base-content/45">
+                                {sourceLabel}
+                              </span>
+                            </CommandItem>
+                          );
+                        })}
+                      </CommandGroup>
+                    ))
                   ) : (
                     <CommandGroup>
-                      {filteredOptions.map((model) => {
-                        const active = selectedValueSet.has(model);
+                      {filteredOptions.map((option) => {
+                        const active = selectedValueSet.has(option.value);
+                        const sourceLabel =
+                          option.sources.length > 1
+                            ? `${labels.availableModelsSourceProject ?? "Project"} + ${labels.availableModelsSourceAccount ?? "Account"}`
+                            : option.sources[0] === "account"
+                              ? (labels.availableModelsSourceAccount ?? "Account")
+                              : option.sources[0] === "project"
+                                ? (labels.availableModelsSourceProject ?? "Project")
+                                : (labels.availableModelsUnmatched ?? "Selected");
                         return (
                           <CommandItem
-                            key={model}
-                            value={model}
+                            key={option.value}
+                            value={option.value}
                             disabled={disabled}
                             onSelect={() =>
                               onChange(
-                                active ? value.filter((item) => item !== model) : [...value, model],
+                                active
+                                  ? value.filter((item) => item !== option.value)
+                                  : [...value, option.value],
                               )
                             }
                           >
@@ -1982,7 +2199,10 @@ function AvailableModelsEditor({
                               aria-hidden
                             />
                             <span className="truncate">
-                              {labels.availableModelsCustomLabel?.(model) ?? model}
+                              {labels.availableModelsCustomLabel?.(option.value) ?? option.value}
+                            </span>
+                            <span className="ml-auto shrink-0 text-xs text-base-content/45">
+                              {sourceLabel}
                             </span>
                           </CommandItem>
                         );
