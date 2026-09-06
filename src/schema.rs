@@ -3862,6 +3862,110 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure summary_archive_snapshot_backfill_outcome table existence")?;
+
+    // Snapshot pages are only in-progress materialization.  A separate proof row is the
+    // durable authority used by coverage and cleanup; it is written only after every page has
+    // passed manifest, ordering, row-count and semantic validation.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_archive_snapshot_v2_proof (
+            archive_batch_id INTEGER NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            page_count INTEGER NOT NULL,
+            row_count INTEGER NOT NULL,
+            coverage_start TEXT,
+            coverage_end TEXT,
+            semantic_sha256 TEXT NOT NULL,
+            verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (archive_batch_id, manifest_sha256)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary Snapshot V2 proof table existence")?;
+
+    // An obligation is independent from an attempt outcome.  In particular, a stale `complete`
+    // outcome must not hide a manifest which has no final proof.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS summary_coverage_obligation (
+            archive_batch_id INTEGER NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            coverage_start TEXT,
+            coverage_end TEXT,
+            upstream_account_id INTEGER,
+            current_rank_start INTEGER,
+            current_rank_end INTEGER,
+            state TEXT NOT NULL DEFAULT 'pending',
+            terminal_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at TEXT,
+            PRIMARY KEY (archive_batch_id, manifest_sha256)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary coverage obligation table existence")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_summary_coverage_obligation_window \
+         ON summary_coverage_obligation (coverage_end, coverage_start, state)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary coverage obligation window index")?;
+    // Seed obligations for legacy manifests.  This is idempotent and deliberately excludes
+    // identities which already have a verified final proof.
+    sqlx::query(
+        "INSERT OR IGNORE INTO summary_coverage_obligation \
+         (archive_batch_id, manifest_sha256, coverage_start, coverage_end, state) \
+         SELECT batches.id, batches.sha256, batches.coverage_start_at, batches.coverage_end_at, 'pending' \
+         FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+             WHERE proof.archive_batch_id = batches.id \
+               AND proof.manifest_sha256 = batches.sha256 \
+           )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to seed Summary coverage obligations")?;
+    // Upgrade legacy terminal outcomes into an explicit range-local gap.  Without this bridge a
+    // one-year unrecoverable outcome would leave the new obligation looking pending while still
+    // suppressing the candidate, recreating the silent zero-candidate state on every restart.
+    sqlx::query(
+        "UPDATE summary_coverage_obligation AS obligation \
+         SET state = 'terminal_gap', \
+             terminal_reason = (SELECT outcome.failure_kind \
+                                FROM summary_archive_snapshot_backfill_outcome AS outcome \
+                                WHERE outcome.archive_batch_id = obligation.archive_batch_id \
+                                  AND outcome.manifest_sha256 = obligation.manifest_sha256 \
+                                LIMIT 1), \
+             resolved_at = NULL, updated_at = datetime('now') \
+         WHERE EXISTS ( \
+             SELECT 1 FROM summary_archive_snapshot_backfill_outcome AS outcome \
+             WHERE outcome.archive_batch_id = obligation.archive_batch_id \
+               AND outcome.manifest_sha256 = obligation.manifest_sha256 \
+               AND outcome.disposition = 'unavailable' \
+               AND outcome.failure_kind IN ( \
+                   'verification_failed', 'manifest_sha_mismatch', 'invalid_timestamp', \
+                   'row_count_mismatch', 'empty_archive' \
+               ) \
+         ) \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+             WHERE proof.archive_batch_id = obligation.archive_batch_id \
+               AND proof.manifest_sha256 = obligation.manifest_sha256 \
+         )",
+    )
+    .execute(pool)
+    .await
+    .context("failed to migrate terminal Summary coverage outcomes")?;
     ensure_column_with_definition(
         pool,
         "summary_archive_snapshot_backfill_outcome",
@@ -5316,6 +5420,12 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         "trg_summary_account_coverage_revision_usage_rollup_insert",
         "trg_summary_account_coverage_revision_usage_rollup_update",
         "trg_summary_account_coverage_revision_usage_rollup_delete",
+        "trg_summary_coverage_revision_snapshot_insert",
+        "trg_summary_coverage_revision_snapshot_update",
+        "trg_summary_coverage_revision_snapshot_delete",
+        "trg_summary_account_coverage_revision_snapshot_insert",
+        "trg_summary_account_coverage_revision_snapshot_update",
+        "trg_summary_account_coverage_revision_snapshot_delete",
     ] {
         sqlx::query(&format!("DROP TRIGGER IF EXISTS {name}"))
             .execute(pool)
@@ -5354,9 +5464,9 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "hourly_rollup_archive_replay",
             "WHEN OLD.dataset = 'codex_invocations'",
         ),
-        ("snapshot_insert", "summary_archive_snapshot", ""),
-        ("snapshot_update", "summary_archive_snapshot", ""),
-        ("snapshot_delete", "summary_archive_snapshot", ""),
+        ("proof_insert", "summary_archive_snapshot_v2_proof", ""),
+        ("proof_update", "summary_archive_snapshot_v2_proof", ""),
+        ("proof_delete", "summary_archive_snapshot_v2_proof", ""),
     ] {
         let event = if name.ends_with("_insert") {
             "INSERT"
@@ -5373,6 +5483,90 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         );
         sqlx::query(&trigger).execute(pool).await.with_context(|| {
             format!("failed to ensure Summary coverage revision trigger {name}")
+        })?;
+    }
+
+    // A page write invalidates an existing proof for the same manifest.  Page progress itself
+    // is not a coverage revision; only the proof revoke/insert pair is.
+    for (name, event, old_id, old_sha, new_id, new_sha) in [
+        (
+            "insert",
+            "INSERT",
+            "NEW.archive_batch_id",
+            "NEW.manifest_sha256",
+            "NEW.archive_batch_id",
+            "NEW.manifest_sha256",
+        ),
+        (
+            "update",
+            "UPDATE",
+            "OLD.archive_batch_id",
+            "OLD.manifest_sha256",
+            "NEW.archive_batch_id",
+            "NEW.manifest_sha256",
+        ),
+        (
+            "delete",
+            "DELETE",
+            "OLD.archive_batch_id",
+            "OLD.manifest_sha256",
+            "OLD.archive_batch_id",
+            "OLD.manifest_sha256",
+        ),
+    ] {
+        let trigger = format!(
+            "CREATE TRIGGER IF NOT EXISTS trg_summary_archive_snapshot_page_invalidates_proof_{name} \
+             AFTER {event} ON summary_archive_snapshot BEGIN \
+               DELETE FROM summary_archive_snapshot_v2_proof \
+                WHERE (archive_batch_id = {old_id} AND manifest_sha256 = {old_sha}) \
+                   OR (archive_batch_id = {new_id} AND manifest_sha256 = {new_sha}); \
+               UPDATE summary_coverage_obligation \
+                  SET state = 'pending', terminal_reason = NULL, resolved_at = NULL, updated_at = datetime('now') \
+                WHERE (archive_batch_id = {old_id} AND manifest_sha256 = {old_sha}) \
+                   OR (archive_batch_id = {new_id} AND manifest_sha256 = {new_sha}); \
+             END",
+        );
+        sqlx::query(&trigger).execute(pool).await.with_context(|| {
+            format!("failed to ensure Summary Snapshot proof invalidation trigger {name}")
+        })?;
+    }
+
+    // A manifest identity or completion-state change invalidates its proof as well. This closes
+    // the gap where a stale marker could survive a manifest rewrite and suppress recovery.
+    for (name, event, old_id, old_sha, new_id, new_sha, predicate) in [
+        (
+            "update",
+            "UPDATE",
+            "OLD.id",
+            "OLD.sha256",
+            "NEW.id",
+            "NEW.sha256",
+            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+        ),
+        (
+            "delete",
+            "DELETE",
+            "OLD.id",
+            "OLD.sha256",
+            "OLD.id",
+            "OLD.sha256",
+            "WHEN OLD.dataset = 'codex_invocations'",
+        ),
+    ] {
+        let trigger = format!(
+            "CREATE TRIGGER IF NOT EXISTS trg_summary_archive_manifest_invalidates_proof_{name} \
+             AFTER {event} ON archive_batches {predicate} BEGIN \
+               DELETE FROM summary_archive_snapshot_v2_proof \
+                WHERE (archive_batch_id = {old_id} AND manifest_sha256 = {old_sha}) \
+                   OR (archive_batch_id = {new_id} AND manifest_sha256 = {new_sha}); \
+               UPDATE summary_coverage_obligation \
+                  SET state = 'pending', terminal_reason = NULL, resolved_at = NULL, updated_at = datetime('now') \
+                WHERE (archive_batch_id = {old_id} AND manifest_sha256 = {old_sha}) \
+                   OR (archive_batch_id = {new_id} AND manifest_sha256 = {new_sha}); \
+             END",
+        );
+        sqlx::query(&trigger).execute(pool).await.with_context(|| {
+            format!("failed to ensure Summary manifest proof invalidation trigger {name}")
         })?;
     }
 
@@ -5429,9 +5623,9 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "hourly_rollup_archive_replay",
             "WHEN OLD.dataset = 'codex_invocations'",
         ),
-        ("snapshot_insert", "summary_archive_snapshot", ""),
-        ("snapshot_update", "summary_archive_snapshot", ""),
-        ("snapshot_delete", "summary_archive_snapshot", ""),
+        ("proof_insert", "summary_archive_snapshot_v2_proof", ""),
+        ("proof_update", "summary_archive_snapshot_v2_proof", ""),
+        ("proof_delete", "summary_archive_snapshot_v2_proof", ""),
     ] {
         let event = if name.ends_with("_insert") {
             "INSERT"
