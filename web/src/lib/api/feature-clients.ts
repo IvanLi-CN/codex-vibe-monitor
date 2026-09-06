@@ -113,6 +113,7 @@ export {
   locateUpstreamAccountAttempt,
   normalizeForwardProxyLatencyTestStreamEvent,
   refreshForwardProxySubscriptions,
+  refreshUpstreamAccountModels,
   reloginUpstreamAccount,
   resetPromptCacheConversationAffinity,
   resetUpstreamAccountModelRouting,

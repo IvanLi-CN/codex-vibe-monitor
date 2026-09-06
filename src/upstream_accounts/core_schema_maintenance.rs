@@ -113,6 +113,25 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .await
     .context("failed to ensure pool_upstream_accounts table existence")?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_model_catalogs (
+            account_id INTEGER PRIMARY KEY,
+            models_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'never',
+            last_attempted_at TEXT,
+            last_successful_at TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_model_catalogs table existence")?;
+
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "group_name")
         .await
         .context("failed to ensure pool_upstream_accounts.group_name")?;
