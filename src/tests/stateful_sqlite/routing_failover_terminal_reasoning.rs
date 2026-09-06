@@ -1911,8 +1911,6 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
 
     let first_account_payload = serde_json::from_value::<CreateApiKeyAccountRequest>(json!({
         "displayName": "Route Remove",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": failing_base,
         "apiKey": "route-remove",
     }))
@@ -1930,6 +1928,13 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
             .fetch_one(&state.pool)
             .await
             .expect("load first pool account id");
+    restore_test_legacy_api_key_group(
+        &state.pool,
+        first_account_id,
+        test_required_group_name(),
+        false,
+    )
+    .await;
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_tags (
@@ -1945,8 +1950,6 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
     .expect("attach force-remove tag");
     let second_account_payload = serde_json::from_value::<CreateApiKeyAccountRequest>(json!({
         "displayName": "Route Fill",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": capture_base,
         "apiKey": "route-fill",
     }))
@@ -1964,6 +1967,13 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
             .fetch_one(&state.pool)
             .await
             .expect("load second pool account id");
+    restore_test_legacy_api_key_group(
+        &state.pool,
+        second_account_id,
+        test_required_group_name(),
+        false,
+    )
+    .await;
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_account_tags (

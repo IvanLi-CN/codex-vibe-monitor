@@ -1500,11 +1500,13 @@ pub(crate) async fn create_api_key_account_inner(
         inserted_id
     };
 
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_post_create_sync(state.clone(), inserted_id)
-        .await;
+    // API-key relays are account-scoped and do not participate in OAuth maintenance sync.
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), inserted_id)
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+        .and_then(|detail| {
+            detail.ok_or_else(|| anyhow::anyhow!("created API Key account was not found"))
+        });
     let routing_scope = if requested_group_metadata_changes.was_requested() {
         None
     } else {

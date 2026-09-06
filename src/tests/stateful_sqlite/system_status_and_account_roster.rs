@@ -2270,9 +2270,6 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": normalized_group_name,
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
-        "isMother": is_mother,
         "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
@@ -2281,11 +2278,52 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
             .await
             .expect("insert test pool upstream account");
     let _ = detail;
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load inserted test pool upstream account id");
+    restore_test_legacy_api_key_group(
+        &state.pool,
+        account_id,
+        normalized_group_name,
+        is_mother.unwrap_or(false),
+    )
+    .await;
+    account_id
+}
+
+pub(crate) async fn restore_test_legacy_api_key_group(
+    pool: &SqlitePool,
+    account_id: i64,
+    group_name: &str,
+    is_mother: bool,
+) {
+    ensure_test_group_binding(pool, group_name, None).await;
+    if is_mother {
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET is_mother = 0 WHERE group_name = ?1 AND id != ?2",
+        )
+        .bind(group_name)
+        .bind(account_id)
+        .execute(pool)
         .await
-        .expect("load inserted test pool upstream account id")
+        .expect("clear existing legacy api-key mother account");
+    }
+    let bound_proxy_keys_json = serde_json::to_string(&test_required_group_bound_proxy_keys())
+        .expect("encode test legacy api-key group bindings");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET group_name = ?2, bound_proxy_keys_json = ?3, is_mother = ?4 WHERE id = ?1",
+    )
+    .bind(account_id)
+    .bind(group_name)
+    .bind(bound_proxy_keys_json)
+    .bind(if is_mother { 1 } else { 0 })
+    .execute(pool)
+    .await
+    .expect("restore legacy api-key group state");
 }
 
 pub(crate) async fn create_test_fast_mode_tag(
@@ -2324,8 +2362,6 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
 ) -> i64 {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
         "apiKey": api_key,
     }))
@@ -2339,6 +2375,8 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
             .fetch_one(&state.pool)
             .await
             .expect("load tagged pool account id");
+    restore_test_legacy_api_key_group(&state.pool, account_id, test_required_group_name(), false)
+        .await;
     if !tag_ids.is_empty() {
         let now_iso = format_utc_iso(Utc::now());
         for tag_id in tag_ids {
@@ -3950,8 +3988,6 @@ async fn create_api_key_account_persists_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Gateway Key",
         "apiKey": "sk-gateway",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "https://proxy.example.com/gateway",
     }))
     .expect("deserialize api key account request");
@@ -4289,8 +4325,6 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Broken Key",
         "apiKey": "sk-broken",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "not-a-url",
     }))
     .expect("deserialize api key account request");
