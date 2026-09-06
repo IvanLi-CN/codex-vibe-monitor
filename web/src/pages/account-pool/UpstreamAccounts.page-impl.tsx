@@ -1695,7 +1695,12 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div
+              className={cn(
+                "grid gap-3 sm:grid-cols-2",
+                isTransitPage ? "xl:grid-cols-3" : "xl:grid-cols-4",
+              )}
+            >
               {metrics.map((metric) => (
                 <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
                   <CardContent className="flex items-center gap-4 p-5">
