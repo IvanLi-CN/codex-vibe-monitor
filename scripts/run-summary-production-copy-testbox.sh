@@ -60,7 +60,7 @@ trap cleanup_runner EXIT
   --workdir /codex-scratch \
   --required-free-gib "$required_free" \
   --required-mem-gib 4 \
-  -- bash -lc 'set -euo pipefail; while [[ ! -f /codex-scratch/READY ]]; do sleep 1; done; export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy; export CARGO_TARGET_DIR=/codex-scratch/target; bash /workspace/scripts/validate-summary-production-fixture.sh' >"$runner_log" 2>&1 &
+  -- bash -c 'set -euo pipefail; while [[ ! -f /codex-scratch/READY ]]; do sleep 1; done; export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy; export CARGO_TARGET_DIR=/codex-scratch/target; bash /workspace/scripts/validate-summary-production-fixture.sh' >"$runner_log" 2>&1 &
 runner_pid="$!"
 
 for _ in {1..120}; do
