@@ -3169,8 +3169,7 @@ pub(crate) async fn has_ungrouped_upstream_accounts(
         SELECT COUNT(*)
         FROM pool_upstream_accounts
         WHERE COALESCE(deleted_at, '') = ''
-          AND kind = 'oauth_codex'
-          AND (?1 IS NULL OR kind = ?1)
+          AND (?1 IS NULL OR (kind = ?1 AND kind = 'oauth_codex'))
           AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
         "#,
     )

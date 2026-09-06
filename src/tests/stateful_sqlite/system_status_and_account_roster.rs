@@ -2312,18 +2312,13 @@ pub(crate) async fn restore_test_legacy_api_key_group(
         .await
         .expect("clear existing legacy api-key mother account");
     }
-    let bound_proxy_keys_json = serde_json::to_string(&test_required_group_bound_proxy_keys())
-        .expect("encode test legacy api-key group bindings");
-    sqlx::query(
-        "UPDATE pool_upstream_accounts SET group_name = ?2, bound_proxy_keys_json = ?3, is_mother = ?4 WHERE id = ?1",
-    )
-    .bind(account_id)
-    .bind(group_name)
-    .bind(bound_proxy_keys_json)
-    .bind(if is_mother { 1 } else { 0 })
-    .execute(pool)
-    .await
-    .expect("restore legacy api-key group state");
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2, is_mother = ?3 WHERE id = ?1")
+        .bind(account_id)
+        .bind(group_name)
+        .bind(if is_mother { 1 } else { 0 })
+        .execute(pool)
+        .await
+        .expect("restore legacy api-key group state");
 }
 
 pub(crate) async fn create_test_fast_mode_tag(
