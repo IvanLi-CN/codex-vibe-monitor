@@ -1,17 +1,19 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
 export function UpstreamAccountCreateApiKeySection() {
+  const location = useLocation();
+  const listPath = location.pathname.startsWith("/account-pool/transits")
+    ? "/account-pool/transits"
+    : "/account-pool/pool";
   const {
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyGroupName,
     apiKeyGroupProxyState,
     apiKeyLimitUnit,
     apiKeyNote,
@@ -22,15 +24,8 @@ export function UpstreamAccountCreateApiKeySection() {
     apiKeyValue,
     busyAction,
     cn,
-    formatGroupAccountCountLabel,
-    groupOptions,
-    handleApiKeyGroupCreateRequest,
     handleCreateApiKey,
-    hasGroupSettings,
-    normalizeGroupName,
-    openGroupNoteEditor,
     setApiKeyDisplayName,
-    setApiKeyGroupName,
     setApiKeyLimitUnit,
     setApiKeyNote,
     setApiKeyPrimaryLimit,
@@ -58,41 +53,6 @@ export function UpstreamAccountCreateApiKeySection() {
             />
           ) : null}
         </div>
-      </label>
-      <label className="field md:col-span-2">
-        <span className="field-label">{t("accountPool.upstreamAccounts.fields.groupName")}</span>
-        <div className="flex items-center gap-2">
-          <UpstreamAccountGroupCombobox
-            name="apiKeyGroupName"
-            value={apiKeyGroupName}
-            options={groupOptions}
-            placeholder={t("accountPool.upstreamAccounts.fields.groupNamePlaceholder")}
-            searchPlaceholder={t("accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder")}
-            emptyLabel={t("accountPool.upstreamAccounts.fields.groupNameEmpty")}
-            createLabel={(value) =>
-              t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", { value })
-            }
-            onCreateRequested={handleApiKeyGroupCreateRequest}
-            formatAccountCountLabel={formatGroupAccountCountLabel}
-            onValueChange={setApiKeyGroupName}
-            className="min-w-0 flex-1"
-          />
-          <Button
-            type="button"
-            size="icon"
-            variant={hasGroupSettings(apiKeyGroupName) ? "secondary" : "outline"}
-            className="shrink-0 rounded-full"
-            aria-label={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
-            title={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
-            onClick={() => openGroupNoteEditor(apiKeyGroupName)}
-            disabled={!writesEnabled || !normalizeGroupName(apiKeyGroupName)}
-          >
-            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
-          </Button>
-        </div>
-        {apiKeyGroupProxyState.error ? (
-          <p className="mt-2 text-xs text-error">{apiKeyGroupProxyState.error}</p>
-        ) : null}
       </label>
       <label className="field md:col-span-2">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.apiKey")}</span>
@@ -160,9 +120,7 @@ export function UpstreamAccountCreateApiKeySection() {
       </label>
       <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
         <Button asChild type="button" variant="ghost">
-          <Link to="/account-pool/upstream-accounts">
-            {t("accountPool.upstreamAccounts.actions.cancel")}
-          </Link>
+          <Link to={listPath}>{t("accountPool.upstreamAccounts.actions.cancel")}</Link>
         </Button>
         <Button
           type="button"

@@ -1823,99 +1823,104 @@ function forwardProxyLive() {
   };
 }
 
-function accountList() {
-  const items = demoModel.snapshot.scene === "empty" ? [] : demoAccounts();
+function accountList(kind?: string | null) {
+  const allItems = demoModel.snapshot.scene === "empty" ? [] : demoAccounts();
+  const items = kind ? allItems.filter((item) => item.kind === kind) : allItems;
+  const oauthItems = items.filter((item) => item.kind === "oauth_codex");
   return {
     items,
     total: items.length,
     page: 1,
     pageSize: 50,
-    groups: [
-      {
-        groupName: "production",
-        note: "Primary workload with priority capacity.",
-        accountCount: items.filter((item) => item.groupName === "production").length,
-        boundProxyKeys: ["demo-tokyo", "demo-singapore"],
-        concurrencyLimit: 12,
-        nodeShuntEnabled: true,
-        singleAccountRotationEnabled: false,
-        upstream429RetryEnabled: true,
-        upstream429MaxRetries: 2,
-        routingRule: {
-          allowCutIn: true,
-          allowCutOut: true,
-          priorityTier: "primary",
-          fastModeRewriteMode: "keep_original",
-          concurrencyLimit: 12,
-          upstream429RetryEnabled: true,
-          upstream429MaxRetries: 2,
-        },
-      },
-      {
-        groupName: "research",
-        note: "Long-running research and batch jobs.",
-        accountCount: items.filter((item) => item.groupName === "research").length,
-        boundProxyKeys: ["demo-tokyo", "demo-frankfurt"],
-        concurrencyLimit: 8,
-        nodeShuntEnabled: true,
-        singleAccountRotationEnabled: true,
-        upstream429RetryEnabled: true,
-        upstream429MaxRetries: 3,
-        routingRule: {
-          allowCutIn: true,
-          allowCutOut: true,
-          priorityTier: "normal",
-          fastModeRewriteMode: "keep_original",
-          concurrencyLimit: 8,
-          upstream429RetryEnabled: true,
-          upstream429MaxRetries: 3,
-        },
-      },
-      {
-        groupName: "standby",
-        note: "Fallback capacity retained for recovery routing.",
-        accountCount: items.filter((item) => item.groupName === "standby").length,
-        boundProxyKeys: ["demo-frankfurt", "demo-singapore"],
-        concurrencyLimit: 4,
-        nodeShuntEnabled: false,
-        singleAccountRotationEnabled: false,
-        upstream429RetryEnabled: true,
-        upstream429MaxRetries: 1,
-        routingRule: {
-          allowCutIn: false,
-          allowCutOut: true,
-          priorityTier: "fallback",
-          fastModeRewriteMode: "keep_original",
-          concurrencyLimit: 4,
-          upstream429RetryEnabled: true,
-          upstream429MaxRetries: 1,
-        },
-      },
-      {
-        groupName: "edge",
-        note: "Regional monitoring and mobile smoke checks.",
-        accountCount: items.filter((item) => item.groupName === "edge").length,
-        boundProxyKeys: ["demo-sydney", "demo-virginia"],
-        concurrencyLimit: 6,
-        nodeShuntEnabled: true,
-        singleAccountRotationEnabled: false,
-        upstream429RetryEnabled: true,
-        upstream429MaxRetries: 2,
-        routingRule: {
-          allowCutIn: true,
-          allowCutOut: true,
-          priorityTier: "normal",
-          fastModeRewriteMode: "fill_missing",
-          concurrencyLimit: 6,
-          upstream429RetryEnabled: true,
-          upstream429MaxRetries: 2,
-        },
-      },
-    ],
+    groups:
+      kind === "api_key_codex"
+        ? []
+        : [
+            {
+              groupName: "production",
+              note: "Primary workload with priority capacity.",
+              accountCount: oauthItems.filter((item) => item.groupName === "production").length,
+              boundProxyKeys: ["demo-tokyo", "demo-singapore"],
+              concurrencyLimit: 12,
+              nodeShuntEnabled: true,
+              singleAccountRotationEnabled: false,
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 2,
+              routingRule: {
+                allowCutIn: true,
+                allowCutOut: true,
+                priorityTier: "primary",
+                fastModeRewriteMode: "keep_original",
+                concurrencyLimit: 12,
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 2,
+              },
+            },
+            {
+              groupName: "research",
+              note: "Long-running research and batch jobs.",
+              accountCount: oauthItems.filter((item) => item.groupName === "research").length,
+              boundProxyKeys: ["demo-tokyo", "demo-frankfurt"],
+              concurrencyLimit: 8,
+              nodeShuntEnabled: true,
+              singleAccountRotationEnabled: true,
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 3,
+              routingRule: {
+                allowCutIn: true,
+                allowCutOut: true,
+                priorityTier: "normal",
+                fastModeRewriteMode: "keep_original",
+                concurrencyLimit: 8,
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 3,
+              },
+            },
+            {
+              groupName: "standby",
+              note: "Fallback capacity retained for recovery routing.",
+              accountCount: oauthItems.filter((item) => item.groupName === "standby").length,
+              boundProxyKeys: ["demo-frankfurt", "demo-singapore"],
+              concurrencyLimit: 4,
+              nodeShuntEnabled: false,
+              singleAccountRotationEnabled: false,
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 1,
+              routingRule: {
+                allowCutIn: false,
+                allowCutOut: true,
+                priorityTier: "fallback",
+                fastModeRewriteMode: "keep_original",
+                concurrencyLimit: 4,
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 1,
+              },
+            },
+            {
+              groupName: "edge",
+              note: "Regional monitoring and mobile smoke checks.",
+              accountCount: oauthItems.filter((item) => item.groupName === "edge").length,
+              boundProxyKeys: ["demo-sydney", "demo-virginia"],
+              concurrencyLimit: 6,
+              nodeShuntEnabled: true,
+              singleAccountRotationEnabled: false,
+              upstream429RetryEnabled: true,
+              upstream429MaxRetries: 2,
+              routingRule: {
+                allowCutIn: true,
+                allowCutOut: true,
+                priorityTier: "normal",
+                fastModeRewriteMode: "fill_missing",
+                concurrencyLimit: 6,
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 2,
+              },
+            },
+          ],
     forwardProxyNodes: demoForwardProxyNodes(),
     writesEnabled: true,
     availableModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4-mini"],
-    hasUngroupedAccounts: items.some((item) => item.groupName == null),
+    hasUngroupedAccounts: oauthItems.some((item) => item.groupName == null),
     metrics: {
       total: items.length,
       oauth: items.filter((item) => item.kind === "oauth_codex").length,
@@ -3520,9 +3525,31 @@ export async function handleDemoRequest(request: Request) {
   }
 
   if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")
-    return json(accountList());
+    return json(accountList(url.searchParams.get("kind")));
+  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
+    return json({
+      confirmationHash: "demo-migration-confirmation-hash",
+      apiKeyCount: demoAccounts().filter((account) => account.kind === "api_key_codex").length,
+      portableFields: [
+        "account-level routing policy",
+        "bound proxy keys",
+        "local quota limits",
+        "note",
+      ],
+      blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
+      canMigrate: false,
+    });
+  }
+  if (pathname === "/api/pool/upstream-accounts/api-keys/migration/confirm") {
+    return json({
+      migratedCount: demoAccounts().filter((account) => account.kind === "api_key_codex").length,
+      confirmationHash: "demo-migration-confirmation-hash",
+      auditAction: "api_key_group_migrated",
+    });
+  }
   if (pathname === "/api/pool/upstream-account-events") {
     let items = accountEvents();
+    const kind = url.searchParams.get("kind");
     const account = url.searchParams.get("account")?.toLowerCase();
     const group = url.searchParams.get("group")?.toLowerCase();
     const proxyKey = url.searchParams.get("proxyKey");
@@ -3532,6 +3559,14 @@ export async function handleDemoRequest(request: Request) {
     if (group) items = items.filter((item) => item.accountGroupName?.toLowerCase().includes(group));
     if (proxyKey) items = items.filter((item) => item.forwardProxyKey === proxyKey);
     if (result) items = items.filter((item) => item.result === result);
+    if (kind) {
+      const accountIds = new Set(
+        demoAccounts()
+          .filter((account) => account.kind === kind)
+          .map((account) => account.id),
+      );
+      items = items.filter((item) => accountIds.has(item.upstreamAccountId));
+    }
     const pageSize = Number(url.searchParams.get("pageSize") ?? 20);
     const page = Number(url.searchParams.get("page") ?? 1);
     return json({

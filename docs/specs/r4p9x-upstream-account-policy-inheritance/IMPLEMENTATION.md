@@ -188,6 +188,13 @@ Validation covers:
 - account route proxy binding Storybook evidence proves the inline account proxy editor, inherited/effective proxy chips, and removal of the old edit policy button
 - dashboard upstream-account Fast quick policy unit and Storybook coverage verifies `强制Fast` and `不改Fast` labels, Fast rewrite policy tooltip/aria copy, debounce behavior, and persisted visual evidence
 - backend regressions proving API-key live temporary reasons target exact-model health, disabled reasons and missing models stay diagnostic-only, background sync remains non-punitive, and OAuth/hard account failures retain their prior behavior
+
+## Upstream Domain Split
+
+- `kind` is now accepted by account-roster and maintenance-event queries and is applied server-side before totals, metrics, paging, and filtering.
+- OAuth-only group summaries and maintenance controls are enforced in Rust; API-key create, update, and bulk group writes return `400`.
+- `/account-pool/transits` is the API-key-only surface; `/account-pool/pool` is the OAuth/Session surface; `/account-pool/maintenance-records` remains cross-domain with type-aware filtering.
+- API-key group migration has preflight/confirmation endpoints with a stable hash, blocked-strategy acknowledgement, transactional cleanup, and an audit event.
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
 - backend regressions covering proactive fallback sticky comparison, higher-priority handoff without pre-success sticky mutation, same/lower-priority retention, and generation-guarded successful rebinding
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability

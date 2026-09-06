@@ -599,3 +599,52 @@ Visual evidence is captured from stable Storybook scenarios for:
   submission_gate: approved
   image:
   ![Compact standalone search capability mobile](./assets/standalone-search-capability-compact-mobile-390.png)
+
+- source_type: ui_demo
+  story_id_or_title: `/account-pool/transits?demoScene=operational&demoTheme=dark`
+  state: API-key-only third-party transit roster with no group controls
+  requested_viewport: 1440x960
+  viewport_strategy: ui-demo-source
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the 上游 navigation, 中转 tab, API-key-only metrics, account-level filters, and absence of grouping controls.
+  candidate_sha: `2c5b8458821c00536f3ed19329820102726ade5ed688499bd1d9503be10c4bd7`
+  target_program: mock-only
+  capture_scope: browser viewport
+  sensitive_exclusion: deterministic ui_demo fixtures only
+  submission_gate: approved
+  image:
+  ![Transit desktop domain](./assets/upstream-domains-transits-desktop.png)
+
+- source_type: ui_demo
+  story_id_or_title: `/account-pool/pool?demoScene=operational&demoTheme=dark`
+  state: narrow official OAuth/Session pool with migration gate
+  requested_viewport: 393x852
+  viewport_strategy: ui-demo-source
+  margin_policy: trim_only
+  evidence_surface: page
+  evidence_note: verifies the mobile 上游 → 号池 context, OAuth-only pool copy, migration acknowledgement gate, and responsive single-column layout.
+  candidate_sha: `732ae4e5e36b855d5514d0c8b7046d9146d42b5bbaf10bfbfca70f0b55619c0a`
+  target_program: mock-only
+  capture_scope: browser viewport
+  sensitive_exclusion: deterministic ui_demo fixtures only
+  submission_gate: approved
+  image:
+  ![Account pool mobile domain](./assets/upstream-domains-pool-mobile-393.png)
+
+## Upstream Domains
+
+The upstream area has two explicit account domains backed by the same account table and IDs:
+
+- `oauth_codex` is the official account pool. Group policy, group proxy bindings, node shunting, single-account rotation, mother-account assignment, OAuth maintenance, and pool access/sync settings apply only here.
+- `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface.
+
+Account roster and maintenance-event APIs accept `kind=oauth_codex|api_key_codex`. The filter is applied before metrics, totals, pagination, group summaries, and event filtering. Omitting `kind` preserves the legacy mixed response for compatibility. API-key group writes are rejected server-side; UI hiding is not the enforcement boundary.
+
+Legacy API-key records that still carry group state require the upstream-domain migration gate. A preflight returns a stable confirmation hash, portable account-level fields, and blocked group-only strategies. Confirmation must repeat that hash and explicitly disable every blocked strategy; the transaction clears only API-key `group_name` and `is_mother`, writes an audit event, and preserves OAuth members, group metadata, account IDs, encrypted credentials, and tags.
+
+## Domain Acceptance
+
+- Transit list/create routes show API-key accounts and never expose group controls.
+- Pool list/create/routes retain OAuth/Session flows, groups, and pool access/sync settings.
+- Maintenance records default to the mixed view, support a type filter, and expose group filtering only for the OAuth pool type.

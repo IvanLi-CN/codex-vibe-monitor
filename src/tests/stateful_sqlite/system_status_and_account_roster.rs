@@ -2909,6 +2909,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
@@ -2941,6 +2942,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(exact_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: vec!["Prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -2969,6 +2971,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(multi_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: vec!["Prod".to_string(), "prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -2997,6 +3000,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3062,6 +3066,7 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3134,6 +3139,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3171,6 +3177,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(disabled_only) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3222,6 +3229,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3332,6 +3340,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3560,6 +3569,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,

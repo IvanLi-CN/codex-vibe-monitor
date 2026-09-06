@@ -555,6 +555,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^burst-safe$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      kind: "oauth_codex",
       groupExact: undefined,
       workStatus: undefined,
       enableStatus: undefined,
@@ -576,6 +577,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^burst-safe$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      kind: "oauth_codex",
       groupExact: ["prod"],
       workStatus: undefined,
       enableStatus: undefined,
@@ -602,6 +604,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickCommandItem(/^normal$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      kind: "oauth_codex",
       groupExact: undefined,
       workStatus: ["degraded", "unavailable", "rate_limited", "working"],
       enableStatus: ["enabled"],

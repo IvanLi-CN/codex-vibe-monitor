@@ -467,13 +467,17 @@ export function StorybookUpstreamAccountsMock({
           rosterItem.secondaryWindow = stripActualUsageFromRosterWindow(rosterItem.secondaryWindow);
           return rosterItem;
         });
+        const requestedKind = parsedUrl.searchParams.get("kind");
+        const scopedAccounts = requestedKind
+          ? store.accounts.filter((account) => account.kind === requestedKind)
+          : store.accounts;
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
-          groups: listGroupSummaries(store),
+          groups: requestedKind === "api_key_codex" ? [] : listGroupSummaries(store),
           forwardProxyNodes: clone(store.forwardProxyNodes),
-          hasUngroupedAccounts: store.accounts.some(
-            (account) => !normalizeGroupName(account.groupName),
-          ),
+          hasUngroupedAccounts: scopedAccounts
+            .filter((account) => account.kind === "oauth_codex")
+            .some((account) => !normalizeGroupName(account.groupName)),
           routing: clone(store.routing),
           items: pageItems,
           total,
@@ -504,6 +508,33 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(payload);
       }
 
+      if (
+        path === "/api/pool/upstream-accounts/api-keys/migration/preflight" &&
+        method === "POST"
+      ) {
+        return jsonResponse({
+          confirmationHash: "storybook-migration-confirmation-hash",
+          apiKeyCount: store.accounts.filter((account) => account.kind === "api_key_codex").length,
+          portableFields: [
+            "account-level routing policy",
+            "bound proxy keys",
+            "local quota limits",
+            "note",
+          ],
+          blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
+          canMigrate: false,
+        });
+      }
+
+      if (path === "/api/pool/upstream-accounts/api-keys/migration/confirm" && method === "POST") {
+        return jsonResponse({
+          migratedCount: store.accounts.filter((account) => account.kind === "api_key_codex")
+            .length,
+          confirmationHash: "storybook-migration-confirmation-hash",
+          auditAction: "api_key_group_migrated",
+        });
+      }
+
       if (path === "/api/pool/forward-proxy-binding-nodes" && method === "GET") {
         const requestedKeys = new Set(parsedUrl.searchParams.getAll("key"));
         const nodes = store.forwardProxyNodes.filter((node) => {
@@ -521,6 +552,7 @@ export function StorybookUpstreamAccountsMock({
         const groupFilter = parsedUrl.searchParams.get("group")?.trim().toLowerCase() || "";
         const proxyKeyFilter = parsedUrl.searchParams.get("proxyKey")?.trim().toLowerCase() || "";
         const resultFilter = parsedUrl.searchParams.get("result")?.trim().toLowerCase() || "";
+        const kindFilter = parsedUrl.searchParams.get("kind")?.trim() || "";
         const rawPageSize = Number(parsedUrl.searchParams.get("pageSize") || 20);
         const requestedPageSize =
           Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20;
@@ -536,6 +568,12 @@ export function StorybookUpstreamAccountsMock({
             return false;
           if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false;
           if (resultFilter && (event.result ?? "").toLowerCase() !== resultFilter) return false;
+          if (kindFilter) {
+            const account = store.accounts.find(
+              (candidate) => candidate.displayName === event.accountDisplayName,
+            );
+            if (account?.kind !== kindFilter) return false;
+          }
           return true;
         });
         const total = filteredEvents.length;

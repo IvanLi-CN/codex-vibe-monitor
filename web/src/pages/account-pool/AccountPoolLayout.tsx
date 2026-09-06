@@ -9,7 +9,7 @@ export default function AccountPoolLayout() {
   const location = useLocation();
 
   if (location.pathname === "/account-pool") {
-    return <Navigate to="/account-pool/upstream-accounts" replace />;
+    return <Navigate to="/account-pool/pool" replace />;
   }
 
   return (

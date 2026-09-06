@@ -1,7 +1,6 @@
 // biome-ignore-all lint/correctness/useExhaustiveDependencies: action callbacks intentionally use current refs for pending OAuth state
 import { useCallback } from "react";
 import type { LoginSessionStatusResponse, UpstreamAccountDetail } from "../../lib/api";
-import { writeApiKeyLastGroupName } from "../../lib/upstreamAccountGroups";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
   type BatchOauthRow,
@@ -15,7 +14,6 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
   const {
     activeOauthMailboxSession,
     apiKeyDisplayName,
-    apiKeyGroupName,
     apiKeyGroupProxyState,
     apiKeyLimitUnit,
     apiKeyNote,
@@ -1296,14 +1294,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     try {
       const response = await createApiKeyAccount({
         displayName: apiKeyDisplayName.trim(),
-        groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
-        groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
-        groupNodeShuntEnabled: apiKeyGroupProxyState.nodeShuntEnabled,
-        groupSingleAccountRotationEnabled:
-          resolveGroupSingleAccountRotationEnabledForName(apiKeyGroupName),
         note: apiKeyNote.trim() || undefined,
-        groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
-        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
         apiKey: apiKeyValue.trim(),
         upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
@@ -1311,9 +1302,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
       });
-      writeApiKeyLastGroupName(apiKeyGroupProxyState.normalizedGroupName);
       notifyMotherChange(response);
-      navigate("/account-pool/upstream-accounts", {
+      navigate("/account-pool/transits", {
         state: {
           selectedAccountId: response.id,
           openDetail: true,

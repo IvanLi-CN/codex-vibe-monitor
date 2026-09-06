@@ -535,6 +535,7 @@ export interface UpstreamAccountWindowUsageResponse {
 }
 
 export interface FetchUpstreamAccountsQuery {
+  kind?: "oauth_codex" | "api_key_codex" | string;
   groupExact?: string[];
   groupSearch?: string;
   groupUngrouped?: boolean;
@@ -549,6 +550,7 @@ export interface FetchUpstreamAccountsQuery {
 }
 
 export interface FetchUpstreamAccountActionEventsQuery {
+  kind?: "oauth_codex" | "api_key_codex" | string;
   account?: string;
   group?: string;
   proxyKey?: string;
@@ -785,6 +787,25 @@ export interface CreateApiKeyAccountPayload {
   localSecondaryLimit?: number;
   localLimitUnit?: string;
   tagIds?: number[];
+}
+
+export interface ApiKeyGroupMigrationPreflight {
+  confirmationHash: string;
+  apiKeyCount: number;
+  portableFields: string[];
+  blockedStrategies: string[];
+  canMigrate: boolean;
+}
+
+export interface ConfirmApiKeyGroupMigrationPayload {
+  confirmationHash: string;
+  disabledStrategies: string[];
+}
+
+export interface ApiKeyGroupMigrationResult {
+  migratedCount: number;
+  confirmationHash: string;
+  auditAction: string;
 }
 
 export interface UpdateUpstreamAccountPayload {
@@ -2293,6 +2314,7 @@ export async function fetchUpstreamAccounts(
   query?: FetchUpstreamAccountsQuery,
 ): Promise<UpstreamAccountListResponse> {
   const search = new URLSearchParams();
+  if (query?.kind) search.set("kind", query.kind);
   for (const groupExact of query?.groupExact ?? []) {
     if (groupExact) search.append("groupExact", groupExact);
   }
@@ -2326,6 +2348,7 @@ export async function fetchUpstreamAccountActionEvents(
   query?: FetchUpstreamAccountActionEventsQuery,
 ): Promise<UpstreamAccountActionEventListResponse> {
   const search = new URLSearchParams();
+  if (query?.kind) search.set("kind", query.kind);
   if (query?.account) search.set("account", query.account);
   if (query?.group) search.set("group", query.group);
   if (query?.proxyKey) search.set("proxyKey", query.proxyKey);
@@ -2715,6 +2738,22 @@ export async function createApiKeyUpstreamAccount(
     body: JSON.stringify(payload),
   });
   return normalizeUpstreamAccountDetail(response);
+}
+
+export async function preflightApiKeyGroupMigration(): Promise<ApiKeyGroupMigrationPreflight> {
+  return fetchJson<ApiKeyGroupMigrationPreflight>(
+    "/api/pool/upstream-accounts/api-keys/migration/preflight",
+    { method: "POST" },
+  );
+}
+
+export async function confirmApiKeyGroupMigration(
+  payload: ConfirmApiKeyGroupMigrationPayload,
+): Promise<ApiKeyGroupMigrationResult> {
+  return fetchJson<ApiKeyGroupMigrationResult>(
+    "/api/pool/upstream-accounts/api-keys/migration/confirm",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
 }
 
 export async function updateUpstreamAccount(

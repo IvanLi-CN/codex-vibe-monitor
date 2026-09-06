@@ -34,7 +34,7 @@ function buildPresetGroupFilter(groupName: string | null) {
 
 export default function GroupsPage() {
   const { t } = useTranslation();
-  const accountListQuery = useMemo(() => ({ includeAll: true }), []);
+  const accountListQuery = useMemo(() => ({ kind: "oauth_codex", includeAll: true }), []);
   const {
     items,
     groups,
@@ -186,7 +186,7 @@ export default function GroupsPage() {
               ) : null}
               <Button asChild>
                 <Link
-                  to="/account-pool/upstream-accounts"
+                  to="/account-pool/pool"
                   state={{
                     presetGroupFilter: buildPresetGroupFilter(group.groupName),
                   }}
@@ -278,7 +278,7 @@ export default function GroupsPage() {
                 {t("accountPool.groups.emptyDescription")}
               </p>
               <Button asChild className="mt-5">
-                <Link to="/account-pool/upstream-accounts/new">
+                <Link to="/account-pool/pool/new">
                   <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.groups.emptyCta")}
                 </Link>

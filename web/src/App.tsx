@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppLayout } from "./features/app-shell/AppLayout";
 import AccountPoolLayout from "./pages/account-pool/AccountPoolLayout";
 import GroupsPage from "./pages/account-pool/Groups";
@@ -16,6 +16,15 @@ import SystemSettingsPage from "./pages/system/SystemSettingsPage";
 import SystemStatusPage from "./pages/system/SystemStatusPage";
 import SystemTasksPage from "./pages/system/SystemTasksPage";
 
+function LegacyAccountCreateRedirect() {
+  const location = useLocation();
+  const target =
+    new URLSearchParams(location.search).get("mode") === "apiKey"
+      ? "/account-pool/transits/new"
+      : "/account-pool/pool/new";
+  return <Navigate to={`${target}${location.search}`} replace />;
+}
+
 function App() {
   return (
     <Routes>
@@ -27,9 +36,13 @@ function App() {
         <Route path="live" element={<LivePage />} />
         <Route path="records" element={<RecordsPage />} />
         <Route path="account-pool" element={<AccountPoolLayout />}>
-          <Route index element={<Navigate to="/account-pool/upstream-accounts" replace />} />
-          <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
-          <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+          <Route index element={<Navigate to="/account-pool/pool" replace />} />
+          <Route path="transits" element={<UpstreamAccountsPage />} />
+          <Route path="transits/new" element={<UpstreamAccountCreatePage />} />
+          <Route path="pool" element={<UpstreamAccountsPage />} />
+          <Route path="pool/new" element={<UpstreamAccountCreatePage />} />
+          <Route path="upstream-accounts" element={<Navigate to="/account-pool/pool" replace />} />
+          <Route path="upstream-accounts/new" element={<LegacyAccountCreateRedirect />} />
           <Route path="maintenance-records" element={<MaintenanceRecordsPage />} />
           <Route path="groups" element={<GroupsPage />} />
         </Route>

@@ -2150,7 +2150,7 @@ function SharedUpstreamAccountDetailDrawerInner({
 
   const handleOauthLogin = useCallback(
     async (nextAccountId: number) => {
-      navigate(`/account-pool/upstream-accounts/new?accountId=${nextAccountId}`);
+      navigate(`/account-pool/pool/new?accountId=${nextAccountId}`);
     },
     [navigate],
   );

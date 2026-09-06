@@ -1136,6 +1136,7 @@ pub(crate) struct ListForwardProxyBindingNodesQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountActionEventsQuery {
+    pub(crate) kind: Option<String>,
     pub(crate) account: Option<String>,
     pub(crate) group: Option<String>,
     pub(crate) proxy_key: Option<String>,
@@ -1147,6 +1148,7 @@ pub(crate) struct ListUpstreamAccountActionEventsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountsQuery {
+    pub(crate) kind: Option<String>,
     #[serde(default)]
     pub(crate) group_exact: Vec<String>,
     pub(crate) group_search: Option<String>,
@@ -2612,6 +2614,32 @@ pub(crate) struct CreateApiKeyAccountRequest {
     pub(crate) local_limit_unit: Option<String>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfirmApiKeyGroupMigrationRequest {
+    pub(crate) confirmation_hash: String,
+    #[serde(default)]
+    pub(crate) disabled_strategies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiKeyGroupMigrationPreflightResponse {
+    pub(crate) confirmation_hash: String,
+    pub(crate) api_key_count: usize,
+    pub(crate) portable_fields: Vec<String>,
+    pub(crate) blocked_strategies: Vec<String>,
+    pub(crate) can_migrate: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiKeyGroupMigrationResponse {
+    pub(crate) migrated_count: usize,
+    pub(crate) confirmation_hash: String,
+    pub(crate) audit_action: String,
 }
 
 #[derive(Debug, Deserialize)]

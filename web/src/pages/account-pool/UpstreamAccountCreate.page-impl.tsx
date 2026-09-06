@@ -172,7 +172,11 @@ export default function UpstreamAccountCreatePage() {
   }, [draft]);
 
   const [activeTab, setActiveTab] = useState<CreateTab>(() =>
-    isRelinking ? "oauth" : parseCreateMode(location.search),
+    isRelinking
+      ? "oauth"
+      : location.pathname.startsWith("/account-pool/transits")
+        ? "apiKey"
+        : parseCreateMode(location.search),
   );
   const [oauthDisplayName, setOauthDisplayName] = useState(() => draft?.oauth?.displayName ?? "");
   const [oauthEmail, setOauthEmail] = useState(

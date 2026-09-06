@@ -61,10 +61,10 @@ const ROUTES: RouteCase[] = [
     },
   },
   {
-    path: "/#/account-pool/upstream-accounts",
+    path: "/#/account-pool/pool",
     label: "account-pool",
     waitFor: async (page) => {
-      await expect(page.getByRole("heading", { name: /号池|Account Pool/ })).toBeVisible();
+      await expect(page.getByRole("heading", { name: /^(号池|Account Pool)$/ })).toBeVisible();
       await expect(page.getByTestId("upstream-accounts-roster-region")).toBeVisible();
     },
   },

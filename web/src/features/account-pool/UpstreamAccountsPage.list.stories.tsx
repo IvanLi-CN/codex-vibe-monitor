@@ -465,6 +465,24 @@ export const Operational: Story = {
   },
 };
 
+export const TransitOnly: Story = {
+  name: "Transit · API Key only",
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/transits" />,
+  play: async ({ canvasElement, step }) => {
+    const canvasScope = within(canvasElement);
+    await step("keeps the transit roster flat and free of pool group controls", async () => {
+      await expect(
+        await canvasScope.findByRole("link", { name: /transit|中转/i }),
+      ).toBeInTheDocument();
+      await expect(await canvasScope.findByText(/API Key/i)).toBeInTheDocument();
+      await expect(
+        canvasScope.queryByRole("tab", { name: /grouped|分组/i }),
+      ).not.toBeInTheDocument();
+      await expect(canvasScope.queryByText(/account group|账号分组/i)).not.toBeInTheDocument();
+    });
+  },
+};
+
 export const MaintenanceEvents: Story = {
   name: "Maintenance Events",
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/maintenance-records" />,
@@ -714,7 +732,7 @@ export const GroupFilterMultiSelectCatalog: Story = {
       async () => {
         await chooseCommandOptions(canvasElement, /工作状态|work status/i, [/限流|rate limited/i]);
 
-        await expect(await canvas.findByText(/Team key - analytics/i)).toBeInTheDocument();
+        await expect(await canvas.findByText(/Codex Pro - London/i)).toBeInTheDocument();
         await waitFor(() => {
           expect(canvas.queryByText(/Codex Pro - Seoul/i)).not.toBeInTheDocument();
         });
@@ -725,10 +743,10 @@ export const GroupFilterMultiSelectCatalog: Story = {
         await userEvent.click(groupTrigger);
 
         await expect(
-          await documentScope.findByRole("option", { name: /production-apac\s*x4/i }),
+          await documentScope.findByRole("option", { name: /production-emea\s*x4/i }),
         ).toBeInTheDocument();
         await expect(
-          await documentScope.findByRole("option", { name: /analytics\s*x2/i }),
+          await documentScope.findByRole("option", { name: /production-apac\s*x4/i }),
         ).toBeInTheDocument();
         await expect(
           documentScope.queryByRole("option", { name: /^experiments$/i }),
@@ -738,21 +756,23 @@ export const GroupFilterMultiSelectCatalog: Story = {
 
     await step("matches accounts from any selected group", async () => {
       await userEvent.click(
+        await documentScope.findByRole("option", { name: /production-emea\s*x4/i }),
+      );
+      await userEvent.click(
         await documentScope.findByRole("option", { name: /production-apac\s*x4/i }),
       );
-      await userEvent.click(await documentScope.findByRole("option", { name: /analytics\s*x2/i }));
       await expect(
         await canvas.findByRole("combobox", {
           name: /账号分组|account groups/i,
         }),
-      ).toHaveTextContent(/production-apac.*analytics|analytics.*production-apac/i);
+      ).toHaveTextContent(/production-apac.*production-emea|production-emea.*production-apac/i);
 
       await userEvent.keyboard("{Escape}");
       await chooseCommandOptions(canvasElement, /工作状态|work status/i, [/限流|rate limited/i]);
 
       await expect(await canvas.findByText(/Codex Pro - Seoul/i)).toBeInTheDocument();
-      await expect(await canvas.findByText(/Team key - analytics/i)).toBeInTheDocument();
-      await expect(canvas.queryByText(/Codex Pro - Berlin/i)).not.toBeInTheDocument();
+      await expect(await canvas.findByText(/Codex Pro - London/i)).toBeInTheDocument();
+      await expect(canvas.queryByText(/Codex Pro - Toronto/i)).not.toBeInTheDocument();
     });
   },
 };

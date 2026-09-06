@@ -139,3 +139,9 @@
 
 - 出口 IP 元数据刷新是 best-effort；刷新失败保留最近成功 IP，历史旧事件仍可能显示为未记录。
 - OAuth 凭据 refresh 与 usage snapshot 可能原本在同一维护流程内连续外呼；运行期会等待同出口槽位，只有等待预算耗尽时才 deferred，这是预期行为。
+
+## Upstream Domain Split
+
+- `GET /api/pool/upstream-account-events` accepts optional `kind=oauth_codex|api_key_codex` and applies it before totals and pagination; the missing parameter keeps mixed historical behavior.
+- The maintenance-records page defaults to the mixed view and offers a type selector. The group selector is rendered and sent only for `oauth_codex`; selecting API-key transit removes group filtering from the request.
+- OAuth maintenance and pool access/sync settings remain pool-only. API-key transit accounts keep account-level proxy/routing observations but are not scheduled for OAuth refresh or usage synchronization.
