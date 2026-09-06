@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.69.26",
+  "base_stable_version": "2.69.25",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-06T06:00:56Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.69.26",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9b3113166abeb8ab9908094fe674cca010b4d2be",
+  "pr_number": 910,
+  "pr_title": "fix(summary): separate coverage obligations from V2 proof",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.69.26",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.69.26",
+  "target_sha": "f08abc4c4b60cc1c7a68d71fd043dc7f729e01a9",
+  "type_label": "type:patch"
+}
