@@ -1564,7 +1564,7 @@ export default function UpstreamAccountsPage() {
 
   return (
     <div className="grid gap-6">
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      <section className={cn("grid gap-4", !isTransitPage && "xl:grid-cols-[minmax(0,1fr)_20rem]")}>
         <div className="surface-panel overflow-hidden">
           <div className="surface-panel-body gap-5">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
