@@ -310,17 +310,30 @@ _Avoid_: incomplete hourly rollup, raw-text mirror, request-time archive fallbac
 
 **Summary Archive Snapshot V1 / V2**:
 V1 is a legacy payload marker usable only to identify backfill work and never a
-cleanup authority. V2 is the compressed, semantically decoded field set whose
-page order, manifest identity, coverage, row count and SHA proof are all
-verified before cleanup or off-request projection recovery can rely on it.
+cleanup authority. V2 pages are durable progress, not authority by themselves.
+The identity-bound V2 final-proof marker is the only coverage and cleanup
+authority: page order, manifest identity, coverage, row count, payload SHA and
+semantic decoding must be verified before that marker is committed. Any page or
+manifest mutation revokes the marker.
 _Avoid_: V1 cleanup proof, raw-text snapshot, marker-only verification
+
+**Summary Coverage Obligation**:
+The durable promise that one `(archive_batch_id, manifest_sha256)` contributes
+coverage which is not yet represented by a verified V2 final proof. An
+obligation is independent from a backfill attempt outcome, carries its exact
+time/account/current-rank impact, and remains a Supervisor candidate until it
+is resolved by final proof or marked as a terminal range-local gap. A changed
+manifest SHA creates a new obligation identity.
+_Avoid_: outcome-as-authority, invisible candidate suppression, global outage
 
 **Legacy Summary Snapshot Backfill**:
 The low-priority, seek-paged durable recovery that creates Summary Archive
 Snapshots for readable legacy archives during normal maintenance. It resumes
 from its committed cursor and never fabricates a snapshot for a missing or
 unreadable authority; that finite range remains unavailable until an exact
-source exists.
+source exists. Every page commits only progress; the final proof transaction
+resolves the corresponding Summary Coverage Obligation and is the point at
+which coverage becomes exact-ready.
 _Avoid_: release-blocking full scan, invented historical total, manual read path
 
 **Typed Summary Backfill Outcome**:
@@ -328,8 +341,9 @@ The durable state for one `(archive_batch_id, manifest_sha256)` recovery item:
 `Verified`, `InProgress`, `Deferred`, `TransientFailure`, or `Unrecoverable`.
 `Deferred` and `TransientFailure` retain the last committed proof cursor and a
 bounded `next_probe_at`; `Unrecoverable` is quarantined until the manifest
-identity changes. No outcome is allowed to advance a cursor without the page
-proof it describes.
+identity changes. `Complete` means only that an attempt returned; it does not
+resolve a Summary Coverage Obligation without a matching final proof marker.
+No outcome is allowed to advance a cursor without the page proof it describes.
 _Avoid_: string-only retry reason, unbounded retry, cursor-on-failure
 
 **Summary Recovery Permit**:

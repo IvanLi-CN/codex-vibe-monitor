@@ -727,7 +727,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
     for candidate in candidates {
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-                && !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256)
+                && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
                     .await?
             {
                 // A pending deletion from an older process is still subject to the durable
@@ -776,7 +776,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-            && !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256).await?
+            && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
+                .await?
         {
             // Source cleanup is allowed only after a normalized Snapshot page and its manifest
             // identity have committed. Legacy archives are picked up by the background
@@ -1042,6 +1043,9 @@ pub(crate) struct SummaryArchiveSnapshotBackfillWindowResult {
     pub(crate) unavailable_archive_batches: usize,
     pub(crate) hit_budget: bool,
     pub(crate) wrapped: bool,
+    pub(crate) pending_obligation_count: usize,
+    pub(crate) terminal_gap_count: usize,
+    pub(crate) verified_proof_count: usize,
 }
 
 async fn load_summary_archive_snapshot_backfill_checkpoint(
@@ -1106,9 +1110,49 @@ async fn load_summary_archive_snapshot_backfill_candidates(
           AND batches.id > ?2
           AND NOT EXISTS (
                 SELECT 1
-                FROM summary_archive_snapshot_backfill_outcome AS outcome
-                WHERE outcome.archive_batch_id = batches.id
-                  AND outcome.manifest_sha256 = batches.sha256
+                FROM summary_archive_snapshot_v2_proof AS proof
+                WHERE proof.archive_batch_id = batches.id
+                  AND proof.manifest_sha256 = batches.sha256
+          )
+          AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM summary_coverage_obligation AS obligation
+                    WHERE obligation.archive_batch_id = batches.id
+                      AND obligation.manifest_sha256 = batches.sha256
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM summary_coverage_obligation AS obligation
+                    WHERE obligation.archive_batch_id = batches.id
+                      AND obligation.manifest_sha256 = batches.sha256
+                      AND obligation.state <> 'resolved'
+                )
+          )
+          AND (
+                NOT EXISTS (
+                    SELECT 1 FROM summary_archive_snapshot_backfill_outcome AS outcome
+                    WHERE outcome.archive_batch_id = batches.id
+                      AND outcome.manifest_sha256 = batches.sha256
+                )
+                OR EXISTS (
+                    SELECT 1 FROM summary_archive_snapshot_backfill_outcome AS outcome
+                    WHERE outcome.archive_batch_id = batches.id
+                      AND outcome.manifest_sha256 = batches.sha256
+                      AND (
+                          outcome.disposition = 'complete'
+                          OR (
+                              julianday(outcome.next_probe_at) <= julianday('now')
+                              AND NOT (
+                                  outcome.disposition = 'unavailable'
+                                  AND outcome.failure_kind IN (
+                                      'verification_failed', 'manifest_sha_mismatch',
+                                      'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                                  )
+                              )
+                          )
+                      )
+                )
           )
         ORDER BY batches.id ASC
         LIMIT ?3
@@ -1148,26 +1192,73 @@ async fn load_summary_archive_snapshot_backfill_due_candidates(
                     AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now'))
                     AND NOT EXISTS (
                         SELECT 1
-                        FROM summary_archive_snapshot_backfill_outcome AS outcome
-                        WHERE outcome.archive_batch_id = batches.id
-                          AND outcome.manifest_sha256 = batches.sha256
+                        FROM summary_archive_snapshot_v2_proof AS proof
+                        WHERE proof.archive_batch_id = batches.id
+                          AND proof.manifest_sha256 = batches.sha256
+                    )
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1 FROM summary_coverage_obligation AS obligation
+                            WHERE obligation.archive_batch_id = batches.id
+                              AND obligation.manifest_sha256 = batches.sha256
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM summary_coverage_obligation AS obligation
+                            WHERE obligation.archive_batch_id = batches.id
+                              AND obligation.manifest_sha256 = batches.sha256
+                              AND obligation.state <> 'resolved'
+                        )
+                    )
+                    AND (
+                        NOT EXISTS (
+                            SELECT 1 FROM summary_archive_snapshot_backfill_outcome AS outcome
+                            WHERE outcome.archive_batch_id = batches.id
+                              AND outcome.manifest_sha256 = batches.sha256
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM summary_archive_snapshot_backfill_outcome AS outcome
+                            WHERE outcome.archive_batch_id = batches.id
+                              AND outcome.manifest_sha256 = batches.sha256
+                              AND (
+                                  outcome.disposition = 'complete'
+                                  OR (
+                                      julianday(outcome.next_probe_at) <= julianday('now')
+                                      AND NOT (
+                                          outcome.disposition = 'unavailable'
+                                          AND outcome.failure_kind IN (
+                                              'verification_failed', 'manifest_sha_mismatch',
+                                              'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                                          )
+                                      )
+                                  )
+                              )
+                        )
                     )
                 )
                 OR EXISTS (
                     SELECT 1
-                    FROM summary_archive_snapshot_backfill_outcome AS outcome
-                    WHERE outcome.archive_batch_id = batches.id
-                      AND outcome.manifest_sha256 = batches.sha256
-                      AND julianday(outcome.next_probe_at) <= julianday('now')
-                      AND outcome.disposition <> 'complete'
-                      AND NOT (
-                          outcome.disposition = 'unavailable'
-                          AND outcome.failure_kind IN (
-                              'verification_failed', 'manifest_sha_mismatch',
-                              'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                    FROM summary_coverage_obligation AS obligation
+                    LEFT JOIN summary_archive_snapshot_backfill_outcome AS outcome
+                      ON outcome.archive_batch_id = obligation.archive_batch_id
+                     AND outcome.manifest_sha256 = obligation.manifest_sha256
+                    WHERE obligation.archive_batch_id = batches.id
+                      AND obligation.manifest_sha256 = batches.sha256
+                      AND obligation.state <> 'resolved'
+                      AND (
+                          outcome.archive_batch_id IS NULL
+                          OR (
+                              julianday(outcome.next_probe_at) <= julianday('now')
+                              AND outcome.disposition <> 'complete'
+                              AND NOT (
+                                  outcome.disposition = 'unavailable'
+                                  AND outcome.failure_kind IN (
+                                      'verification_failed', 'manifest_sha_mismatch',
+                                      'invalid_timestamp', 'row_count_mismatch', 'empty_archive'
+                                  )
+                              )
                           )
                       )
-                )
+                  )
               )
         ORDER BY CASE
             WHEN batches.coverage_end_at IS NOT NULL
@@ -1306,6 +1397,50 @@ async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn record_summary_coverage_obligation_terminal_gap(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    reason: &str,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO summary_coverage_obligation \
+         (archive_batch_id, manifest_sha256, coverage_start, coverage_end, state) \
+         VALUES (?1, ?2, ?3, ?4, 'pending')",
+    )
+    .bind(candidate.id)
+    .bind(&candidate.sha256)
+    .bind(candidate.coverage_start_at.as_deref())
+    .bind(candidate.coverage_end_at.as_deref())
+    .execute(tx.as_mut())
+    .await
+    .context("ensure Summary coverage obligation for terminal gap")?;
+    sqlx::query(
+        "UPDATE summary_coverage_obligation \
+         SET state = 'terminal_gap', terminal_reason = ?3, resolved_at = NULL, updated_at = datetime('now') \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+    )
+    .bind(candidate.id)
+    .bind(&candidate.sha256)
+    .bind(reason)
+    .execute(tx.as_mut())
+    .await
+    .context("persist Summary coverage terminal gap")?;
+    tx.commit().await?;
+    Ok(())
+}
+
+fn summary_archive_backfill_failure_is_terminal(failure_kind: &str) -> bool {
+    matches!(
+        failure_kind,
+        "verification_failed"
+            | "manifest_sha_mismatch"
+            | "invalid_timestamp"
+            | "row_count_mismatch"
+            | "empty_archive"
+    )
 }
 
 fn classify_summary_archive_snapshot_backfill_error(error: &anyhow::Error) -> &'static str {
@@ -1506,7 +1641,7 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
     // A valid V2 page is already an exact authority and does not require reopening the raw
     // archive. Marking it complete here also upgrades V2 pages written by an older process into
     // the durable backfill outcome index.
-    if summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256).await? {
+    if summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256).await? {
         return Ok("complete");
     }
     if candidate.row_count <= 0 {
@@ -1768,7 +1903,9 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 total_rows
             );
         }
-        if !summary_archive_snapshot_has_proof(pool, candidate.id, &candidate.sha256).await? {
+        if !ensure_summary_archive_snapshot_v2_final_proof(pool, candidate.id, &candidate.sha256)
+            .await?
+        {
             bail!("Summary Snapshot V2 proof validation failed after backfill");
         }
         Ok("complete")
@@ -1825,10 +1962,33 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         }
     }
     let candidate_count = candidates.len();
+    let obligation_counts = sqlx::query_as::<_, (String, i64)>(
+        "SELECT state, COUNT(*) FROM summary_coverage_obligation GROUP BY state",
+    )
+    .fetch_all(pool)
+    .await?;
+    let pending_obligation_count = obligation_counts
+        .iter()
+        .filter(|(state, _)| state != "resolved")
+        .map(|(_, count)| usize::try_from((*count).max(0)).unwrap_or(usize::MAX))
+        .sum();
+    let terminal_gap_count = obligation_counts
+        .iter()
+        .find(|(state, _)| state == "terminal_gap")
+        .map(|(_, count)| usize::try_from((*count).max(0)).unwrap_or(usize::MAX))
+        .unwrap_or_default();
+    let verified_proof_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof")
+            .fetch_one(pool)
+            .await
+            .map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX))?;
     let mut result = SummaryArchiveSnapshotBackfillWindowResult {
         next_cursor_id: cursor_id,
         candidate_count,
         wrapped,
+        pending_obligation_count,
+        terminal_gap_count,
+        verified_proof_count,
         ..SummaryArchiveSnapshotBackfillWindowResult::default()
     };
     for candidate in candidates {
@@ -1889,6 +2049,10 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
                 progress,
             )
             .await?;
+            if summary_archive_backfill_failure_is_terminal(failure_kind) {
+                record_summary_coverage_obligation_terminal_gap(pool, &candidate, failure_kind)
+                    .await?;
+            }
             result.unavailable_archive_batches += 1;
         } else {
             record_summary_archive_snapshot_backfill_outcome(
@@ -4278,5 +4442,84 @@ mod tests {
         .await
         .expect("load source boundary after finalized removal");
         assert_eq!(integrity_source_start.as_deref(), Some("2025-01-04"));
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_obligation_requeues_stale_complete_outcome_without_proof() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (1, 'codex_invocations', '2026-09',
+                     '/missing/stale-complete.sqlite.gz', 'stale-complete', 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stale-complete manifest");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_backfill_outcome
+             (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at)
+             VALUES (1, 'stale-complete', 'complete', '', datetime('now', '+7 days'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed stale complete outcome");
+
+        let candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
+            .await
+            .expect("load obligation candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].sha256, "stale-complete");
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_terminal_gap_is_not_retried_until_manifest_changes() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (1, 'codex_invocations', '2026-09',
+                     '/missing/empty.sqlite.gz', 'terminal-empty', 0,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed terminal manifest");
+
+        let result = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+            .await
+            .expect("record terminal gap");
+        assert_eq!(result.unavailable_archive_batches, 1);
+        let candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
+            .await
+            .expect("load post-gap candidates");
+        assert!(candidates.is_empty());
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT state FROM summary_coverage_obligation
+                 WHERE archive_batch_id = 1 AND manifest_sha256 = 'terminal-empty'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("load terminal obligation state"),
+            "terminal_gap"
+        );
     }
 }

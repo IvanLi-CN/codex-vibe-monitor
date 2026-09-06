@@ -10814,6 +10814,9 @@ impl SummaryCoverageRecoverySupervisor {
             scanned_archive_batches = backfill.scanned_archive_batches,
             materialized_archive_batches = backfill.materialized_archive_batches,
             unavailable_archive_batches = backfill.unavailable_archive_batches,
+            pending_obligation_count = backfill.pending_obligation_count,
+            terminal_gap_count = backfill.terminal_gap_count,
+            verified_proof_count = backfill.verified_proof_count,
             hit_budget = backfill.hit_budget,
             "summary historical coverage recovery page completed"
         );
@@ -11963,7 +11966,7 @@ async fn summary_archive_snapshot_path_has_proof(
     else {
         return Ok(false);
     };
-    summary_archive_snapshot_has_proof(pool, archive_batch_id, &manifest_sha256).await
+    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256).await
 }
 
 async fn advance_summary_all_time_coverage_checkpoint_scope(
@@ -12866,7 +12869,9 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
             }
             continue;
         }
-        if !summary_archive_snapshot_has_proof(pool, archive_batch_id, &manifest_sha256).await? {
+        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+            .await?
+        {
             continue;
         }
         // Materialized archives are already represented by the durable rollup checkpoint. V2

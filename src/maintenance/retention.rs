@@ -3349,6 +3349,15 @@ pub(crate) async fn archive_old_invocations(
                 payload: snapshot_payload,
             };
             store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &snapshot_page).await?;
+            // The page is written as part of the authoritative archive transaction.  Mark the
+            // V2 proof in that same transaction so cleanup can never observe a page without its
+            // semantic authority.
+            store_summary_archive_snapshot_v2_final_proof_tx(
+                tx.as_mut(),
+                snapshot_archive_batch_id,
+                &archive_outcome.sha256,
+            )
+            .await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),

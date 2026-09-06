@@ -28,6 +28,13 @@
   archive SHA and materializes bounded V2 pages. Missing, unreadable or
   mismatched authority is recorded as a finite unavailable outcome and remains
   retryable; a budget boundary leaves the cursor at the last committed page.
+- V2 page progress is separate from coverage authority. Every completed
+  manifest has a durable `SummaryCoverageObligation`; a backfill outcome,
+  including `Complete`, cannot hide that obligation. Only the identity-bound
+  `SummaryArchiveSnapshotV2Proof` marker, committed after complete semantic
+  validation, resolves the obligation and advances the affected coverage fence.
+  Page or manifest mutation revokes the marker, while legacy terminal outcomes
+  become explicit range-local gaps.
 - Snapshot V2 backfill pages use the proof order `(UTC occurred_at, id)` rather
   than the generic historical-rollup ID pager. The durable outcome stores the
   cursor version, next timestamp, row ID and retry attempt. Legacy ID-only

@@ -64,3 +64,4 @@
   without waiting for request interest. Completed checkpoints skip repeated
   all-time finalization and usage scans, while retryable recent candidates honor
   their durable probe time instead of spinning on every maintenance cadence.
+- Snapshot V2 page progress is now separated from coverage authority by a durable obligation and identity-bound final-proof marker. Stale `Complete` outcomes no longer suppress recovery, intermediate pages do not churn the coverage fence, and terminal gaps remain local until the manifest identity changes.

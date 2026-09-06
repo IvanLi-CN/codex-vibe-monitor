@@ -12,9 +12,11 @@ older archive that intersected the current 30-day window. A deadline before
 raw-source hashing also restarted the entire SHA-256 scan on every attempt.
 
 Those failures leave exact current and short rolling selections available but
-can keep 30-day and all-time coverage unavailable indefinitely. Retrying in the
-handler, increasing deadlines, or returning a partial aggregate would violate
-the exact Projection contract.
+can keep 30-day and all-time coverage unavailable indefinitely. A backfill
+attempt can also report `complete` after writing pages while no complete V2
+proof exists; treating that attempt as coverage makes the next Supervisor pass
+silently report zero candidates. Retrying in the handler, increasing deadlines,
+or returning a partial aggregate would violate the exact Projection contract.
 
 ## Decision
 
@@ -50,6 +52,13 @@ the exact Projection contract.
   generation update cannot make a retained aggregate appear current.
 - Retryable recent candidates obey their persisted `next_probe_at` eligibility.
   An idle completed backfill checkpoint performs no repeated progress write.
+- Snapshot page progress and coverage authority are separate durable states.
+  Each completed archive manifest has a `SummaryCoverageObligation`; an attempt
+  outcome never satisfies it. The identity-bound V2 final-proof marker is
+  committed only after complete page, manifest, ordering, row-count and
+  semantic verification. Page or manifest mutation revokes that marker and
+  reopens the obligation. Legacy terminal outcomes are migrated to explicit
+  range-local gaps, and a changed manifest SHA creates a fresh obligation.
 
 ## Alternatives considered
 
@@ -61,6 +70,9 @@ the exact Projection contract.
   can consume every bounded maintenance budget without producing progress.
 - Trust a V1 payload hash for cleanup: rejected because it does not prove V2
   semantic fields, page order, coverage, or manifest identity.
+- Treat a successful attempt outcome as coverage: rejected because an
+  interrupted writer can persist `complete` without a complete V2 page set and
+  thereby hide the remaining recovery obligation.
 
 ## Consequences
 
@@ -72,3 +84,7 @@ or cannot be proved within a bounded attempt, only the affected selection stays
 unavailable until an exact authority exists. Continuous live rollup traffic no
 longer restarts historical checkpoint pages, and completed recovery no longer
 repeats all-time usage and Snapshot finalization work on every idle cadence.
+Intermediate Snapshot pages no longer churn the historical coverage fence, so a
+multi-page recovery cannot repeatedly cancel its own AllTime checkpoint. The
+Supervisor telemetry distinguishes pending obligations, retryable attempts,
+terminal gaps and verified proofs, making a zero-candidate pass explainable.
