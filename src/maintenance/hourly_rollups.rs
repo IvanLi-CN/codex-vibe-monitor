@@ -3628,6 +3628,10 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(sync_upstream_account),
         )
         .route(
+            "/api/pool/upstream-accounts/:id/models/refresh",
+            post(refresh_upstream_account_models),
+        )
+        .route(
             "/api/pool/upstream-accounts/:id/oauth/relogin",
             post(relogin_upstream_account),
         )

@@ -864,6 +864,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied": "Denied models",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsMode": "Model filter mode",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist": "Allowlist",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAll": "All sources",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceProject": "Project presets",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAccount": "This account",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefresh": "Refresh",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshing": "Refreshing...",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsLastRefreshed":
+      "Last refreshed {{value}}",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshError":
+      "The account model catalog refresh failed.",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsStale":
+      "This account catalog is older than 24 hours.",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsUnmatched": "Selected value",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist": "Denylist",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
@@ -4054,6 +4066,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied": "拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsMode": "模型过滤模式",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist": "白名单",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAll": "全部来源",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceProject": "项目预设",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAccount": "此账号上游",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefresh": "刷新目录",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshing": "正在刷新...",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsLastRefreshed":
+      "上次成功刷新 {{value}}",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshError":
+      "账号模型目录刷新失败。",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsStale":
+      "此账号目录已超过 24 小时未更新。",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsUnmatched": "当前已选",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist": "黑名单",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",

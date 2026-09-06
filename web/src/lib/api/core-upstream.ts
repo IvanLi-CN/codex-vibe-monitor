@@ -428,6 +428,29 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   recentActions?: UpstreamAccountActionEvent[];
   modelRoutingStates?: ModelRoutingState[];
   modelMappings?: ModelMapping[];
+  modelCatalog?: UpstreamAccountModelCatalog;
+}
+
+export type UpstreamAccountModelCatalogStatus =
+  | "never"
+  | "refreshing"
+  | "ready"
+  | "stale"
+  | "failed"
+  | string;
+
+export interface UpstreamAccountModelCatalogError {
+  code: string;
+  message: string;
+}
+
+export interface UpstreamAccountModelCatalog {
+  models: string[];
+  status: UpstreamAccountModelCatalogStatus;
+  lastAttemptedAt?: string | null;
+  lastSuccessfulAt?: string | null;
+  error?: UpstreamAccountModelCatalogError | null;
+  stale: boolean;
 }
 
 export interface ModelMapping {
@@ -1695,6 +1718,11 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     throw new Error("Request failed: invalid upstream account payload");
   }
   const historyRaw = Array.isArray(payload.history) ? payload.history : [];
+  const catalogPayload = (payload.modelCatalog ?? {}) as Record<string, unknown>;
+  const catalogModels = Array.isArray(catalogPayload.models)
+    ? catalogPayload.models.filter((value): value is string => typeof value === "string")
+    : [];
+  const catalogErrorPayload = (catalogPayload.error ?? null) as Record<string, unknown> | null;
   return {
     ...summary,
     routingStateVersion: normalizeRoutingStateVersion(payload.routingStateVersion),
@@ -1721,6 +1749,26 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
           .map(normalizeModelMapping)
           .filter((item): item is ModelMapping => item != null)
       : [],
+    modelCatalog: {
+      models: catalogModels,
+      status:
+        typeof catalogPayload.status === "string" && catalogPayload.status.trim()
+          ? catalogPayload.status
+          : "never",
+      lastAttemptedAt:
+        typeof catalogPayload.lastAttemptedAt === "string" ? catalogPayload.lastAttemptedAt : null,
+      lastSuccessfulAt:
+        typeof catalogPayload.lastSuccessfulAt === "string"
+          ? catalogPayload.lastSuccessfulAt
+          : null,
+      error:
+        catalogErrorPayload &&
+        typeof catalogErrorPayload.code === "string" &&
+        typeof catalogErrorPayload.message === "string"
+          ? { code: catalogErrorPayload.code, message: catalogErrorPayload.message }
+          : null,
+      stale: catalogPayload.stale === true,
+    },
   };
 }
 
@@ -2786,6 +2834,16 @@ export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAc
   const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sync`, {
     method: "POST",
   });
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function refreshUpstreamAccountModels(
+  accountId: number,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/models/refresh`,
+    { method: "POST" },
+  );
   return normalizeUpstreamAccountDetail(response);
 }
 
