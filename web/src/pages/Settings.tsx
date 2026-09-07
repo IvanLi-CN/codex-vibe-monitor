@@ -435,11 +435,18 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     isForwardProxySaving,
     isPricingSaving,
     isRoutingSaving,
+    proxySaveError,
+    forwardProxySaveError,
     pricingRollbackVersion,
     error,
     refresh: refreshSettings,
     saveProxy,
+    retryProxy,
+    revertProxy,
     saveForwardProxy,
+    flushForwardProxy,
+    retryForwardProxy,
+    revertForwardProxy,
     savePricing,
     saveRouting,
   } = useSettings();
@@ -588,6 +595,18 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   }, [routing]);
   const currentProxy = settings?.proxy ?? null;
   const currentForwardProxy = settings?.forwardProxy ?? null;
+  const proxySaveErrorMessage =
+    proxySaveError instanceof Error
+      ? proxySaveError.message
+      : proxySaveError
+        ? String(proxySaveError)
+        : null;
+  const forwardProxySaveErrorMessage =
+    forwardProxySaveError instanceof Error
+      ? forwardProxySaveError.message
+      : forwardProxySaveError
+        ? String(forwardProxySaveError)
+        : null;
   const enabledPresetModelSet = useMemo(
     () => new Set(currentProxy?.enabledModels ?? []),
     [currentProxy?.enabledModels],
@@ -956,18 +975,20 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
       subscriptionUrls: forwardProxySubscriptionUrls,
       subscriptionUpdateIntervalSecs: intervalSecs,
     };
-    void saveForwardProxy(nextForwardProxy);
+    saveForwardProxy(nextForwardProxy);
+    void flushForwardProxy();
     setForwardProxyDirty(false);
   }, [
     currentForwardProxy,
     forwardProxyIntervalSecs,
     forwardProxySubscriptionUrls,
     forwardProxyUrls,
+    flushForwardProxy,
     saveForwardProxy,
   ]);
 
   const handleRefreshForwardProxySubscriptions = useCallback(async () => {
-    if (isForwardProxyRefreshingSubscriptions || forwardProxyDirty) return;
+    if (isForwardProxyRefreshingSubscriptions || isForwardProxySaving || forwardProxyDirty) return;
     setIsForwardProxyRefreshingSubscriptions(true);
     setForwardProxyRefreshMessage(null);
     try {
@@ -997,6 +1018,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     applyForwardProxySubscriptionUrls,
     applyForwardProxyUrls,
     forwardProxyDirty,
+    isForwardProxySaving,
     isForwardProxyRefreshingSubscriptions,
     refreshSettings,
     t,
@@ -1759,7 +1781,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       <div className="pt-0.5">
                         <Switch
                           checked={currentProxy.hijackEnabled}
-                          disabled={isProxySaving}
                           onCheckedChange={() => handleToggleHijack()}
                         />
                       </div>
@@ -1784,7 +1805,7 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       <div className="pt-0.5">
                         <Switch
                           checked={currentProxy.mergeUpstreamEnabled}
-                          disabled={isProxySaving || !currentProxy.hijackEnabled}
+                          disabled={!currentProxy.hijackEnabled}
                           onCheckedChange={() => handleToggleMergeUpstream()}
                         />
                       </div>
@@ -1823,7 +1844,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                       <div className="flex shrink-0 flex-col items-end gap-2">
                         <Switch
                           checked={currentProxy.encryptedSessionOwnerRoutingEnabled}
-                          disabled={isProxySaving}
                           aria-label={t("settings.proxy.encryptedOwnerRoutingLabel")}
                           onCheckedChange={() => handleToggleEncryptedOwnerRouting()}
                         />
@@ -1875,7 +1895,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <Switch
                             checked={currentProxy.websocketEnabled}
-                            disabled={isProxySaving}
                             aria-label={t("settings.proxy.websocketDownstreamLabel")}
                             onCheckedChange={() => handleToggleWebsocketDownstream()}
                           />
@@ -1904,7 +1923,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <Switch
                             checked={currentProxy.upstreamWebsocketDefaultEnabled}
-                            disabled={isProxySaving}
                             aria-label={t("settings.proxy.websocketUpstreamLabel")}
                             onCheckedChange={() => handleToggleWebsocketUpstream()}
                           />
@@ -1952,7 +1970,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <Switch
                             checked={currentProxy.requestBodyLoggingEnabled}
-                            disabled={isProxySaving}
                             aria-label={t("settings.proxy.requestBodyLoggingLabel")}
                             onCheckedChange={() => handleToggleRequestBodyLogging()}
                           />
@@ -1980,7 +1997,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <Switch
                             checked={currentProxy.responseBodyLoggingEnabled}
-                            disabled={isProxySaving}
                             aria-label={t("settings.proxy.responseBodyLoggingLabel")}
                             onCheckedChange={() => handleToggleResponseBodyLogging()}
                           />
@@ -2020,14 +2036,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           className={cn(
                             "flex min-h-12 items-center gap-3 rounded-lg border px-3.5 py-2.5",
                             enabled ? "border-primary/45 bg-primary/10" : "surface-subtle",
-                            isProxySaving ? "opacity-70" : "hover:border-primary/40",
+                            "hover:border-primary/40",
                           )}
                         >
                           <span className="truncate pr-2 font-mono text-sm">{modelId}</span>
                           <div className="ml-auto shrink-0">
                             <Switch
                               checked={enabled}
-                              disabled={isProxySaving}
                               aria-label={modelId}
                               onCheckedChange={() => handleTogglePresetModel(modelId)}
                             />
@@ -2043,8 +2058,27 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                   )}
                 </div>
 
-                <div className="text-xs text-base-content/70">
-                  {isProxySaving ? t("settings.saving") : t("settings.autoSaved")}
+                <div
+                  className="flex flex-wrap items-center gap-2 text-xs text-base-content/70"
+                  aria-live="polite"
+                >
+                  <span>
+                    {isProxySaving
+                      ? t("settings.saving")
+                      : proxySaveErrorMessage
+                        ? t("settings.saveFailed", { error: proxySaveErrorMessage })
+                        : t("settings.autoSaved")}
+                  </span>
+                  {proxySaveErrorMessage ? (
+                    <>
+                      <Button type="button" size="sm" variant="secondary" onClick={retryProxy}>
+                        {t("settings.retrySave")}
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={revertProxy}>
+                        {t("settings.revertSave")}
+                      </Button>
+                    </>
+                  ) : null}
                 </div>
               </CardContent>
             </Card>
@@ -2609,14 +2643,33 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
               <Button
                 type="button"
                 className="h-10"
-                disabled={isForwardProxySaving || !forwardProxyDirty}
+                disabled={!forwardProxyDirty}
                 onClick={handleForwardProxySave}
               >
                 {isForwardProxySaving ? t("settings.saving") : t("settings.forwardProxy.save")}
               </Button>
-              <span className="text-xs text-base-content/70">
-                {t("settings.forwardProxy.supportHint")}
-              </span>
+              <div
+                className="flex flex-wrap items-center gap-2 text-xs text-base-content/70"
+                aria-live="polite"
+              >
+                <span>
+                  {isForwardProxySaving
+                    ? t("settings.saving")
+                    : forwardProxySaveErrorMessage
+                      ? t("settings.saveFailed", { error: forwardProxySaveErrorMessage })
+                      : t("settings.forwardProxy.supportHint")}
+                </span>
+                {forwardProxySaveErrorMessage ? (
+                  <>
+                    <Button type="button" size="sm" variant="secondary" onClick={retryForwardProxy}>
+                      {t("settings.retrySave")}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={revertForwardProxy}>
+                      {t("settings.revertSave")}
+                    </Button>
+                  </>
+                ) : null}
+              </div>
             </div>
 
             <div className="space-y-3 md:hidden">

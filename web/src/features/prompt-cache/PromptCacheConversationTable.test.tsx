@@ -3544,6 +3544,9 @@ describe("PromptCacheConversationTable", () => {
     await user.click(findButtonByAriaLabel("编辑对话覆盖: 代理")!);
     await user.click(document.querySelector('[role="combobox"][aria-label="代理"]') as HTMLElement);
     await user.click(findSelectOption("直连 · DIRECT")!);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
     await flushInteractive();
     await vi.waitFor(() =>
       expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(5),

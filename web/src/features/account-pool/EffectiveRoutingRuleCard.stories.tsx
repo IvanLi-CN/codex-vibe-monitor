@@ -93,6 +93,8 @@ const labels = {
   overrideClear: "Clear account override",
   statusChangeReasonResetAction: "Reset",
   overrideSaving: "Saving account override...",
+  overrideRetry: "Retry save",
+  overrideRevert: "Revert to saved",
   inheritValue: "Default value starts from the inherited value.",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
@@ -555,7 +557,10 @@ function applyPatchToRule(
 function EditableRoutingRuleDemo({
   initialRule,
   busyField,
+  saveStatusByField,
   errorByField,
+  onRetry,
+  onRevert,
   visibleRows,
   availableModelCatalog,
   availableModelCatalogStatus,
@@ -565,7 +570,10 @@ function EditableRoutingRuleDemo({
 }: {
   initialRule: EffectiveRoutingRule;
   busyField?: EditablePolicyConfig["busyField"];
+  saveStatusByField?: EditablePolicyConfig["saveStatusByField"];
   errorByField?: EditablePolicyConfig["errorByField"];
+  onRetry?: EditablePolicyConfig["onRetry"];
+  onRevert?: EditablePolicyConfig["onRevert"];
   visibleRows?: readonly EffectiveRoutingRuleCardRowKey[];
   availableModelCatalog?: AvailableModelOption[];
   availableModelCatalogStatus?: string;
@@ -581,7 +589,10 @@ function EditableRoutingRuleDemo({
       visibleRows={visibleRows ? [...visibleRows] : undefined}
       editablePolicy={{
         busyField,
+        saveStatusByField,
         errorByField,
+        onRetry,
+        onRevert,
         availableModelOptions: editableOptions,
         availableModelCatalog,
         availableModelCatalogStatus,
@@ -903,10 +914,12 @@ export const EditableSavingAndError: Story = {
   render: () => (
     <EditableRoutingRuleDemo
       initialRule={strictRule}
-      busyField="priorityTier"
+      saveStatusByField={{ priorityTier: "saving" }}
       errorByField={{
         allowCutIn: "Save failed. Check the account policy and retry.",
       }}
+      onRetry={() => undefined}
+      onRevert={() => undefined}
     />
   ),
 };
