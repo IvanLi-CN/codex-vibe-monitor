@@ -313,7 +313,7 @@ const meta = {
               className="min-h-screen bg-base-200 px-12 py-12 text-base-content"
             >
               <div
-                className="effective-routing-rule-story-surface mx-auto max-w-3xl bg-base-100 p-2"
+                className="effective-routing-rule-story-surface mx-auto w-full max-w-3xl"
                 data-visual-evidence-target="effective-routing-rule-card"
               >
                 <Story />
@@ -796,6 +796,84 @@ export const EditableAvailableModelsWithCatalogMobile: Story = {
       onRefreshAvailableModelCatalog={() => undefined}
     />
   ),
+};
+
+export const MobileFlatHierarchy: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const card = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="effective-routing-rule-card"]',
+    );
+    if (!card) throw new Error("missing effective routing rule card");
+
+    const staticSections = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const rowTables = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
+    );
+    if (staticSections.length !== 4 || rowTables.length !== 2) {
+      throw new Error("missing effective routing mobile hierarchy sections");
+    }
+
+    const modeToggle = canvasElement.querySelector('[data-testid="available-models-mode-toggle"]');
+    expect(modeToggle?.parentElement?.parentElement?.classList).toContain("min-w-0");
+    expect(modeToggle?.parentElement?.parentElement?.classList).toContain(
+      "min-[769px]:min-w-[18rem]",
+    );
+
+    const cardRect = card.getBoundingClientRect();
+    for (const section of staticSections) {
+      const rect = section.getBoundingClientRect();
+      expect(section.classList).toContain("border-0");
+      expect(section.classList).toContain("bg-transparent");
+      expect(section.classList).toContain("sm:border");
+      expect(section.classList).toContain("sm:rounded-xl");
+      expect(rect.left).toBeGreaterThanOrEqual(cardRect.left);
+      expect(rect.right).toBeLessThanOrEqual(cardRect.right);
+      expect(section.scrollWidth).toBeLessThanOrEqual(section.clientWidth);
+    }
+
+    for (const table of rowTables) {
+      expect(table.classList).toContain("border-0");
+      expect(table.classList).toContain("overflow-visible");
+      expect(table.classList).toContain("sm:border");
+      expect(table.classList).toContain("sm:overflow-hidden");
+      expect(table.scrollWidth).toBeLessThanOrEqual(table.clientWidth);
+    }
+  },
+};
+
+export const DesktopFramedHierarchy: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "desktop1280" },
+  },
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const staticSections = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const rowTables = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
+    );
+
+    for (const section of staticSections) {
+      const style = window.getComputedStyle(section);
+      expect(style.borderTopWidth).toBe("1px");
+      expect(style.borderTopLeftRadius).not.toBe("0px");
+    }
+
+    for (const table of rowTables) {
+      const style = window.getComputedStyle(table);
+      expect(style.borderTopWidth).toBe("1px");
+      expect(style.overflowX).toBe("hidden");
+    }
+  },
 };
 
 export const EditableMultipleAccountOverrides: Story = {

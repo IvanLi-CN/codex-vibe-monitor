@@ -165,6 +165,48 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
 }
 
 describe("EffectiveRoutingRuleCard", () => {
+  it("keeps mobile secondary grouping flat while retaining desktop section surfaces", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.5"],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "account",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    );
+
+    const card = document.querySelector('[data-testid="effective-routing-rule-card"]');
+    expect(card).not.toBeNull();
+
+    const sections = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const tables = Array.from(document.querySelectorAll<HTMLElement>('[data-testid$="-table"]'));
+    expect(sections).toHaveLength(4);
+    expect(tables).toHaveLength(2);
+
+    for (const section of sections) {
+      expect(section.className).toContain("border-0 bg-transparent p-0");
+      expect(section.className).toContain("sm:rounded-xl sm:border");
+    }
+
+    for (const table of tables) {
+      expect(table.className).toContain("overflow-visible border-0");
+      expect(table.className).toContain("sm:overflow-hidden sm:rounded-xl sm:border");
+    }
+
+    const modeToggle = document.querySelector('[data-testid="available-models-mode-toggle"]');
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain("min-w-0");
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain(
+      "min-[769px]:min-w-[18rem]",
+    );
+  });
+
   it("shows inherited copy when no available model constraint is defined", () => {
     render(<EffectiveRoutingRuleCard rule={buildRule()} labels={labels} />);
 

@@ -1272,18 +1272,25 @@ export function EffectiveRoutingRuleCard({
   };
 
   return (
-    <Card className="border-base-300/80 bg-base-100/72">
+    <Card className="border-base-300/80 bg-base-100/72" data-testid="effective-routing-rule-card">
       <CardHeader>
         <CardTitle>{labels.title}</CardTitle>
         <CardDescription>{labels.description}</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-6 sm:space-y-3">
         {visibleFieldRows.length > 0 || proxyBindingsVisible ? (
-          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-            <p className="metric-label">
+          <section
+            aria-labelledby="effective-routing-rule-field-source-heading"
+            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            data-testid="effective-routing-rule-field-source-section"
+          >
+            <p className="metric-label" id="effective-routing-rule-field-source-heading">
               {labels.sourceBreakdownTitle ?? "Field source breakdown"}
             </p>
-            <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
+            <div
+              className="mt-2 overflow-visible border-0 sm:mt-3 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
+              data-testid="effective-routing-rule-field-source-table"
+            >
               {visibleFieldRows.map((row) => {
                 const editable = row.field != null && editablePolicy != null;
                 const activeOverride = row.field != null && row.source === localOverrideSource;
@@ -1486,12 +1493,21 @@ export function EffectiveRoutingRuleCard({
                 </div>
               ) : null}
             </div>
-          </div>
+          </section>
         ) : null}
 
-        <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-          <p className="metric-label">{labels.timeoutSectionTitle ?? "Request path timeouts"}</p>
-          <div className="mt-3 overflow-hidden rounded-xl border border-base-300/70">
+        <section
+          aria-labelledby="effective-routing-rule-timeout-heading"
+          className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+          data-testid="effective-routing-rule-timeout-section"
+        >
+          <p className="metric-label" id="effective-routing-rule-timeout-heading">
+            {labels.timeoutSectionTitle ?? "Request path timeouts"}
+          </p>
+          <div
+            className="mt-2 overflow-visible border-0 sm:mt-3 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
+            data-testid="effective-routing-rule-timeout-table"
+          >
             {timeoutRows.map((row) => {
               const activeOverride = row.source === localOverrideSource;
               const expanded = expandedFields.includes(row.field);
@@ -1595,13 +1611,17 @@ export function EffectiveRoutingRuleCard({
               {labels.overrideSaving ?? "Saving..."}
             </p>
           ) : null}
-        </div>
+        </section>
 
         {showStatusChangeReasons ? (
-          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
+          <section
+            aria-labelledby="effective-routing-rule-status-change-heading"
+            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            data-testid="effective-routing-rule-status-change-section"
+          >
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="metric-label">
+                <p className="metric-label" id="effective-routing-rule-status-change-heading">
                   {labels.statusChangeReasonSectionTitle ?? "Status change trigger reasons"}
                 </p>
                 {labels.statusChangeReasonSectionHint ? (
@@ -1684,12 +1704,18 @@ export function EffectiveRoutingRuleCard({
                 {statusChangeReasonSectionError}
               </p>
             ) : null}
-          </div>
+          </section>
         ) : null}
 
         {showSourceTags ? (
-          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-3">
-            <p className="metric-label">{labels.sourceTags}</p>
+          <section
+            aria-labelledby="effective-routing-rule-source-tags-heading"
+            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            data-testid="effective-routing-rule-source-tags-section"
+          >
+            <p className="metric-label" id="effective-routing-rule-source-tags-heading">
+              {labels.sourceTags}
+            </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {resolvedRule.sourceTagNames.length === 0 ? (
                 <span className="text-sm text-base-content/60">{labels.noTags}</span>
@@ -1701,7 +1727,7 @@ export function EffectiveRoutingRuleCard({
                 ))
               )}
             </div>
-          </div>
+          </section>
         ) : null}
       </CardContent>
     </Card>
@@ -1939,7 +1965,7 @@ function AvailableModelsEditor({
   const modeToggleLabel = `${currentModeLabel} -> ${nextModeLabel}`;
 
   return (
-    <div className="min-w-[18rem]">
+    <div className="min-w-0 min-[769px]:min-w-[18rem]">
       <div className="flex flex-col gap-2 min-[769px]:flex-row min-[769px]:items-center">
         <Button
           type="button"
