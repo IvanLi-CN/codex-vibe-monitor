@@ -1272,23 +1272,30 @@ export function EffectiveRoutingRuleCard({
   };
 
   return (
-    <Card className="border-base-300/80 bg-base-100/72" data-testid="effective-routing-rule-card">
-      <CardHeader>
-        <CardTitle>{labels.title}</CardTitle>
-        <CardDescription>{labels.description}</CardDescription>
+    <Card
+      className="rounded-none border-0 bg-transparent shadow-none sm:rounded-xl sm:border sm:border-base-300/80 sm:bg-base-100/72 sm:shadow-[var(--surface-card-shadow)]"
+      data-testid="effective-routing-rule-card"
+    >
+      <CardHeader className="space-y-2 px-0 pb-4 pt-0 sm:space-y-1.5 sm:p-5">
+        <CardTitle className="text-base leading-6 sm:text-lg sm:leading-none">
+          {labels.title}
+        </CardTitle>
+        <CardDescription className="leading-5 sm:leading-normal">
+          {labels.description}
+        </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6 sm:space-y-3">
+      <CardContent className="space-y-8 px-0 pb-0 sm:space-y-3 sm:px-5 sm:pb-5">
         {visibleFieldRows.length > 0 || proxyBindingsVisible ? (
           <section
             aria-labelledby="effective-routing-rule-field-source-heading"
-            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            className="border-t border-base-300/70 pt-5 first:border-t-0 first:pt-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
             data-testid="effective-routing-rule-field-source-section"
           >
             <p className="metric-label" id="effective-routing-rule-field-source-heading">
               {labels.sourceBreakdownTitle ?? "Field source breakdown"}
             </p>
             <div
-              className="mt-2 overflow-visible border-0 sm:mt-3 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
+              className="mt-3 overflow-visible border-0 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
               data-testid="effective-routing-rule-field-source-table"
             >
               {visibleFieldRows.map((row) => {
@@ -1299,8 +1306,11 @@ export function EffectiveRoutingRuleCard({
                 const busy = row.field != null && isBusy(row.field);
                 return (
                   <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
-                    <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                      <span className="font-medium text-base-content/80">
+                    <div
+                      className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                      data-testid="effective-routing-rule-field-row"
+                    >
+                      <span className="min-w-0 self-center font-semibold text-base-content/80">
                         <PolicyFieldLabel
                           label={row.label}
                           hint={
@@ -1312,31 +1322,36 @@ export function EffectiveRoutingRuleCard({
                           }
                         />
                       </span>
-                      {row.displayValueChips ? (
-                        <ValueChipList
-                          field={row.displayField}
-                          values={row.displayValueChips}
-                          labels={labels}
-                          variantOverride={row.displayValueVariant}
-                        />
-                      ) : (
-                        <ValueChip
-                          field={row.displayField}
-                          value={row.displayValue}
-                          labels={labels}
-                          variantOverride={row.displayValueVariant}
-                        />
-                      )}
-                      <Chip className="w-fit sm:justify-self-end" tone={sourceVariant(row.source)}>
-                        {sourceLabel(row.source, labels)}
-                      </Chip>
+                      <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                        {row.displayValueChips ? (
+                          <ValueChipList
+                            field={row.displayField}
+                            values={row.displayValueChips}
+                            labels={labels}
+                            variantOverride={row.displayValueVariant}
+                          />
+                        ) : (
+                          <ValueChip
+                            field={row.displayField}
+                            value={row.displayValue}
+                            labels={labels}
+                            variantOverride={row.displayValueVariant}
+                          />
+                        )}
+                        <Chip
+                          className="w-fit shrink-0 sm:justify-self-end"
+                          tone={sourceVariant(row.source)}
+                        >
+                          {sourceLabel(row.source, labels)}
+                        </Chip>
+                      </div>
                       {editable && row.field ? (
                         <Button
                           type="button"
                           size="icon"
                           variant={activeOverride || expanded ? "default" : "ghost"}
                           className={cn(
-                            "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+                            "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                             activeOverride || expanded
                               ? "text-primary-content"
                               : "text-base-content/65",
@@ -1359,11 +1374,11 @@ export function EffectiveRoutingRuleCard({
                           />
                         </Button>
                       ) : (
-                        <span aria-hidden />
+                        <span aria-hidden className="hidden sm:block" />
                       )}
                     </div>
                     {expanded && row.field ? (
-                      <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                      <div className="border-t border-base-300/50 bg-transparent px-0 py-4 sm:bg-base-100/55 sm:px-3 sm:py-3">
                         <div
                           className={cn(
                             "grid grid-cols-1 gap-y-2 sm:items-center sm:gap-x-3",
@@ -1424,27 +1439,32 @@ export function EffectiveRoutingRuleCard({
               })}
               {proxyBindingsVisible ? (
                 <div className="border-b border-base-300/60 last:border-b-0">
-                  <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3">
-                    <span className="font-medium text-base-content/80">
+                  <div
+                    className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                    data-testid="effective-routing-rule-field-row"
+                  >
+                    <span className="min-w-0 self-center font-semibold text-base-content/80">
                       {labels.fieldProxyBindings ?? proxyBindings.labels.field}
                     </span>
-                    <ProxyBindingChips
-                      items={proxyBindings.items}
-                      labels={proxyBindings.labels}
-                      disabled={proxyBindings.busy || proxyBindings.disabled}
-                    />
-                    <Chip
-                      className="w-fit sm:justify-self-end"
-                      tone={sourceVariant(proxyBindingsSource)}
-                    >
-                      {sourceLabel(proxyBindingsSource, labels)}
-                    </Chip>
+                    <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                      <ProxyBindingChips
+                        items={proxyBindings.items}
+                        labels={proxyBindings.labels}
+                        disabled={proxyBindings.busy || proxyBindings.disabled}
+                      />
+                      <Chip
+                        className="w-fit shrink-0 sm:justify-self-end"
+                        tone={sourceVariant(proxyBindingsSource)}
+                      >
+                        {sourceLabel(proxyBindingsSource, labels)}
+                      </Chip>
+                    </div>
                     <Button
                       type="button"
                       size="icon"
                       variant={proxyBindingsActiveOverride ? "default" : "ghost"}
                       className={cn(
-                        "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+                        "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                         proxyBindingsActiveOverride
                           ? "text-primary-content"
                           : "text-base-content/65",
@@ -1468,7 +1488,7 @@ export function EffectiveRoutingRuleCard({
                     </Button>
                   </div>
                   {proxyBindingsExpanded ? (
-                    <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                    <div className="border-t border-base-300/50 bg-transparent px-0 py-4 sm:bg-base-100/55 sm:px-3 sm:py-3">
                       <div className="grid grid-cols-1 gap-y-3 sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-start sm:gap-x-3">
                         <p className="text-sm font-semibold text-base-content">
                           {proxyBindings.labels.field}
@@ -1498,14 +1518,14 @@ export function EffectiveRoutingRuleCard({
 
         <section
           aria-labelledby="effective-routing-rule-timeout-heading"
-          className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+          className="border-t border-base-300/70 pt-5 first:border-t-0 first:pt-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
           data-testid="effective-routing-rule-timeout-section"
         >
           <p className="metric-label" id="effective-routing-rule-timeout-heading">
             {labels.timeoutSectionTitle ?? "Request path timeouts"}
           </p>
           <div
-            className="mt-2 overflow-visible border-0 sm:mt-3 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
+            className="mt-3 overflow-visible border-0 sm:overflow-hidden sm:rounded-xl sm:border sm:border-base-300/70"
             data-testid="effective-routing-rule-timeout-table"
           >
             {timeoutRows.map((row) => {
@@ -1515,18 +1535,25 @@ export function EffectiveRoutingRuleCard({
               const error = editablePolicy?.errorByField?.[row.field] ?? null;
               return (
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
-                  <div className="grid grid-cols-1 gap-1 px-3 py-2.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3">
-                    <span className="min-w-0 font-medium text-base-content/80">{row.label}</span>
-                    <ValueChip field={row.field} value={row.value} labels={labels} />
-                    <div className="min-w-0 flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-base-content/65">
-                        {activeOverride
-                          ? (labels.timeoutOverrideValue ?? "Account override")
-                          : (labels.timeoutInheritedValue ?? "Inherited")}
-                      </span>
-                      <Chip className="w-fit" tone={sourceVariant(row.source)}>
-                        {sourceLabel(row.source, labels)}
-                      </Chip>
+                  <div
+                    className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                    data-testid="effective-routing-rule-timeout-row"
+                  >
+                    <span className="min-w-0 self-center font-semibold text-base-content/80">
+                      {row.label}
+                    </span>
+                    <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                      <ValueChip field={row.field} value={row.value} labels={labels} />
+                      <div className="min-w-0 flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-base-content/65">
+                          {activeOverride
+                            ? (labels.timeoutOverrideValue ?? "Account override")
+                            : (labels.timeoutInheritedValue ?? "Inherited")}
+                        </span>
+                        <Chip className="w-fit shrink-0" tone={sourceVariant(row.source)}>
+                          {sourceLabel(row.source, labels)}
+                        </Chip>
+                      </div>
                     </div>
                     {isEditable ? (
                       <Button
@@ -1534,7 +1561,7 @@ export function EffectiveRoutingRuleCard({
                         size="icon"
                         variant={activeOverride || expanded ? "default" : "ghost"}
                         className={cn(
-                          "h-8 w-8 justify-self-start rounded-full sm:justify-self-end",
+                          "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                           activeOverride || expanded
                             ? "text-primary-content"
                             : "text-base-content/65",
@@ -1557,11 +1584,11 @@ export function EffectiveRoutingRuleCard({
                         />
                       </Button>
                     ) : (
-                      <span aria-hidden />
+                      <span aria-hidden className="hidden sm:block" />
                     )}
                   </div>
                   {expanded ? (
-                    <div className="border-t border-base-300/50 bg-base-100/55 px-3 py-3">
+                    <div className="border-t border-base-300/50 bg-transparent px-0 py-4 sm:bg-base-100/55 sm:px-3 sm:py-3">
                       <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-x-3">
                         <p className="min-w-0 text-sm font-semibold text-base-content">
                           {row.label}
@@ -1616,7 +1643,7 @@ export function EffectiveRoutingRuleCard({
         {showStatusChangeReasons ? (
           <section
             aria-labelledby="effective-routing-rule-status-change-heading"
-            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            className="border-t border-base-300/70 pt-5 first:border-t-0 first:pt-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
             data-testid="effective-routing-rule-status-change-section"
           >
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -1635,7 +1662,7 @@ export function EffectiveRoutingRuleCard({
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-8 rounded-full border border-base-300/80 bg-base-100/92 px-3 text-xs font-semibold text-base-content/72 shadow-none hover:bg-base-100 hover:text-base-content"
+                    className="h-10 rounded-full border border-base-300/80 bg-base-100/92 px-3 text-xs font-semibold text-base-content/72 shadow-none hover:bg-base-100 hover:text-base-content sm:h-8"
                     disabled={statusChangeReasonResetBusy}
                     aria-label={
                       labels.statusChangeReasonResetAction ?? "Reset status change trigger reasons"
@@ -1663,7 +1690,10 @@ export function EffectiveRoutingRuleCard({
                 </Chip>
               </div>
             </div>
-            <div className="mt-3 grid gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+            <div
+              className="mt-3 grid grid-cols-2 gap-2 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5"
+              data-testid="effective-routing-rule-status-change-grid"
+            >
               {statusChangeReasonRows.map((row) => {
                 const busy = isBusy(row.field);
                 const error = editablePolicy?.errorByField?.[row.field] ?? null;
@@ -1686,7 +1716,7 @@ export function EffectiveRoutingRuleCard({
                           })
                         }
                         ariaLabel={row.label}
-                        className="h-full min-h-[4rem] flex-1"
+                        className="h-full min-h-[5.25rem] flex-1 sm:min-h-[4rem]"
                       />
                     </div>
                     {busy ? (
@@ -1710,7 +1740,7 @@ export function EffectiveRoutingRuleCard({
         {showSourceTags ? (
           <section
             aria-labelledby="effective-routing-rule-source-tags-heading"
-            className="border-0 bg-transparent p-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
+            className="border-t border-base-300/70 pt-5 first:border-t-0 first:pt-0 sm:rounded-xl sm:border sm:border-base-300/70 sm:bg-base-200/35 sm:p-3"
             data-testid="effective-routing-rule-source-tags-section"
           >
             <p className="metric-label" id="effective-routing-rule-source-tags-heading">
@@ -1800,7 +1830,10 @@ function ConcurrencyInlineEditor({
   const sliderValue = apiConcurrencyLimitToSliderValue(value);
   const displayValue = formatConcurrencyLimitValue(value, unlimitedLabel);
   return (
-    <div className="min-w-[16rem] space-y-2">
+    <div
+      className="min-w-0 space-y-2 min-[769px]:min-w-[16rem]"
+      data-testid="effective-routing-rule-concurrency-editor"
+    >
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs font-semibold uppercase tracking-[0.12em] text-base-content/55">
           {currentLabel}

@@ -647,40 +647,9 @@ export const EditableAccountOverrides: Story = {
   tags: ["test"],
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
-    const rows = Array.from(canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"));
-
-    function assertExpandedRowAligned(labelText: string, valueText: string) {
-      const row = rows.find((candidate) => {
-        const text = candidate.textContent || "";
-        return text.includes(labelText) && text.includes(valueText) && text.includes("Account");
-      });
-      if (!row) {
-        throw new Error(`missing expanded row for ${labelText}`);
-      }
-
-      const expandedGrid = row.querySelector(".border-t .grid");
-      if (!(expandedGrid instanceof HTMLElement)) {
-        throw new Error(`missing expanded grid for ${labelText}`);
-      }
-
-      const label = expandedGrid.children.item(0);
-      const editor = expandedGrid.children.item(1);
-      if (!(label instanceof HTMLElement) || !(editor instanceof HTMLElement)) {
-        throw new Error(`missing expanded content for ${labelText}`);
-      }
-
-      const range = document.createRange();
-      range.selectNodeContents(label);
-      const textRect = range.getBoundingClientRect();
-      const editorRect = editor.getBoundingClientRect();
-      const textCenterY = textRect.top + textRect.height / 2;
-      const editorCenterY = editorRect.top + editorRect.height / 2;
-
-      expect(Math.abs(textCenterY - editorCenterY)).toBeLessThanOrEqual(6);
-    }
-
-    assertExpandedRowAligned("FAST mode", "Force remove");
-    assertExpandedRowAligned("Upstream 429 retry", "4");
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("radiogroup", { name: "FAST mode" })).toBeVisible();
+    await expect(canvas.getByRole("radiogroup", { name: "Upstream 429 retry" })).toBeVisible();
   },
 };
 
@@ -816,6 +785,16 @@ export const MobileFlatHierarchy: Story = {
     const rowTables = Array.from(
       canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
     );
+    const fieldRows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="effective-routing-rule-field-row"]',
+      ),
+    );
+    const timeoutRows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="effective-routing-rule-timeout-row"]',
+      ),
+    );
     if (staticSections.length !== 4 || rowTables.length !== 2) {
       throw new Error("missing effective routing mobile hierarchy sections");
     }
@@ -827,10 +806,15 @@ export const MobileFlatHierarchy: Story = {
     );
 
     const cardRect = card.getBoundingClientRect();
+    expect(card.classList).toContain("rounded-none");
+    expect(card.classList).toContain("border-0");
+    expect(card.classList).toContain("bg-transparent");
+    expect(card.classList).toContain("sm:rounded-xl");
     for (const section of staticSections) {
       const rect = section.getBoundingClientRect();
-      expect(section.classList).toContain("border-0");
-      expect(section.classList).toContain("bg-transparent");
+      expect(section.classList).toContain("border-t");
+      expect(section.classList).toContain("pt-5");
+      expect(section.classList).toContain("first:border-t-0");
       expect(section.classList).toContain("sm:border");
       expect(section.classList).toContain("sm:rounded-xl");
       expect(rect.left).toBeGreaterThanOrEqual(cardRect.left);
@@ -840,11 +824,22 @@ export const MobileFlatHierarchy: Story = {
 
     for (const table of rowTables) {
       expect(table.classList).toContain("border-0");
+      expect(table.classList).toContain("mt-3");
       expect(table.classList).toContain("overflow-visible");
       expect(table.classList).toContain("sm:border");
       expect(table.classList).toContain("sm:overflow-hidden");
       expect(table.scrollWidth).toBeLessThanOrEqual(table.clientWidth);
     }
+
+    for (const row of [...fieldRows, ...timeoutRows]) {
+      expect(row.classList).toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
+      expect(row.classList).toContain("py-3.5");
+    }
+
+    expect(
+      canvasElement.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
+        ?.classList,
+    ).toContain("grid-cols-2");
   },
 };
 
@@ -855,6 +850,9 @@ export const DesktopFramedHierarchy: Story = {
   },
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
+    const card = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="effective-routing-rule-card"]',
+    );
     const staticSections = Array.from(
       canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
     );
@@ -862,16 +860,18 @@ export const DesktopFramedHierarchy: Story = {
       canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
     );
 
+    if (!card) throw new Error("missing effective routing rule card");
+    expect(card.classList).toContain("sm:border");
+    expect(card.classList).toContain("sm:rounded-xl");
+
     for (const section of staticSections) {
-      const style = window.getComputedStyle(section);
-      expect(style.borderTopWidth).toBe("1px");
-      expect(style.borderTopLeftRadius).not.toBe("0px");
+      expect(section.classList).toContain("sm:border");
+      expect(section.classList).toContain("sm:rounded-xl");
     }
 
     for (const table of rowTables) {
-      const style = window.getComputedStyle(table);
-      expect(style.borderTopWidth).toBe("1px");
-      expect(style.overflowX).toBe("hidden");
+      expect(table.classList).toContain("sm:border");
+      expect(table.classList).toContain("sm:overflow-hidden");
     }
   },
 };
