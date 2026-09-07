@@ -835,6 +835,7 @@ export const MobileFlatHierarchy: Story = {
       expect(row.classList).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
       expect(row.classList).toContain("py-3.5");
       expect(row.children.item(1)?.classList).not.toContain("col-span-2");
+      expect(row.children.item(1)?.classList).toContain("justify-end");
     }
 
     expect(

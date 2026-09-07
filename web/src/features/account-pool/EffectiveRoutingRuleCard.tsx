@@ -1322,7 +1322,7 @@ export function EffectiveRoutingRuleCard({
                           }
                         />
                       </span>
-                      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:contents">
                         {row.displayValueChips ? (
                           <ValueChipList
                             field={row.displayField}
@@ -1446,7 +1446,7 @@ export function EffectiveRoutingRuleCard({
                     <span className="min-w-0 self-center font-semibold text-base-content/80">
                       {labels.fieldProxyBindings ?? proxyBindings.labels.field}
                     </span>
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:contents">
                       <ProxyBindingChips
                         items={proxyBindings.items}
                         labels={proxyBindings.labels}
@@ -1542,7 +1542,7 @@ export function EffectiveRoutingRuleCard({
                     <span className="min-w-0 self-center font-semibold text-base-content/80">
                       {row.label}
                     </span>
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 sm:contents">
                       <ValueChip field={row.field} value={row.value} labels={labels} />
                       <div className="min-w-0 flex flex-wrap items-center gap-2">
                         <span className="text-xs text-base-content/65">

@@ -220,6 +220,7 @@ describe("EffectiveRoutingRuleCard", () => {
       expect(row.className).toContain("py-3.5");
       expect(row.className).toContain("sm:py-2.5");
       expect(row.children.item(1)?.className).not.toContain("col-span-2");
+      expect(row.children.item(1)?.className).toContain("justify-end");
     }
 
     expect(
