@@ -832,9 +832,15 @@ export const MobileFlatHierarchy: Story = {
     }
 
     for (const row of [...fieldRows, ...timeoutRows]) {
-      expect(row.classList).toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
+      expect(row.classList).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
       expect(row.classList).toContain("py-3.5");
+      expect(row.children.item(1)?.classList).not.toContain("col-span-2");
     }
+
+    expect(
+      canvasElement.querySelector('button[aria-label="Clear account override: Priority"]')
+        ?.classList,
+    ).toContain("col-start-3");
 
     expect(
       canvasElement.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')

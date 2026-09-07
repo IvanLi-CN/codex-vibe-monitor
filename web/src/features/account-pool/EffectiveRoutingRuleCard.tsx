@@ -1307,7 +1307,7 @@ export function EffectiveRoutingRuleCard({
                 return (
                   <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                     <div
-                      className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                      className="grid grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem] items-center gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:gap-3 sm:px-3 sm:py-2.5"
                       data-testid="effective-routing-rule-field-row"
                     >
                       <span className="min-w-0 self-center font-semibold text-base-content/80">
@@ -1322,7 +1322,7 @@ export function EffectiveRoutingRuleCard({
                           }
                         />
                       </span>
-                      <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
                         {row.displayValueChips ? (
                           <ValueChipList
                             field={row.displayField}
@@ -1351,7 +1351,7 @@ export function EffectiveRoutingRuleCard({
                           size="icon"
                           variant={activeOverride || expanded ? "default" : "ghost"}
                           className={cn(
-                            "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
+                            "col-start-3 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                             activeOverride || expanded
                               ? "text-primary-content"
                               : "text-base-content/65",
@@ -1440,13 +1440,13 @@ export function EffectiveRoutingRuleCard({
               {proxyBindingsVisible ? (
                 <div className="border-b border-base-300/60 last:border-b-0">
                   <div
-                    className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                    className="grid grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem] items-center gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[9rem_minmax(0,1fr)_minmax(5rem,auto)_2rem] sm:gap-3 sm:px-3 sm:py-2.5"
                     data-testid="effective-routing-rule-field-row"
                   >
                     <span className="min-w-0 self-center font-semibold text-base-content/80">
                       {labels.fieldProxyBindings ?? proxyBindings.labels.field}
                     </span>
-                    <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
                       <ProxyBindingChips
                         items={proxyBindings.items}
                         labels={proxyBindings.labels}
@@ -1464,7 +1464,7 @@ export function EffectiveRoutingRuleCard({
                       size="icon"
                       variant={proxyBindingsActiveOverride ? "default" : "ghost"}
                       className={cn(
-                        "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
+                        "col-start-3 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                         proxyBindingsActiveOverride
                           ? "text-primary-content"
                           : "text-base-content/65",
@@ -1536,13 +1536,13 @@ export function EffectiveRoutingRuleCard({
               return (
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
                   <div
-                    className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-start gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:items-center sm:gap-3 sm:px-3 sm:py-2.5"
+                    className="grid grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem] items-center gap-x-3 gap-y-2 py-3.5 text-sm sm:grid-cols-[minmax(0,1fr)_5rem_11rem_2rem] sm:gap-3 sm:px-3 sm:py-2.5"
                     data-testid="effective-routing-rule-timeout-row"
                   >
                     <span className="min-w-0 self-center font-semibold text-base-content/80">
                       {row.label}
                     </span>
-                    <div className="col-span-2 flex min-w-0 flex-wrap items-center gap-2 sm:contents">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2 sm:contents">
                       <ValueChip field={row.field} value={row.value} labels={labels} />
                       <div className="min-w-0 flex flex-wrap items-center gap-2">
                         <span className="text-xs text-base-content/65">
@@ -1561,7 +1561,7 @@ export function EffectiveRoutingRuleCard({
                         size="icon"
                         variant={activeOverride || expanded ? "default" : "ghost"}
                         className={cn(
-                          "col-start-2 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
+                          "col-start-3 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                           activeOverride || expanded
                             ? "text-primary-content"
                             : "text-base-content/65",

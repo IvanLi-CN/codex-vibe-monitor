@@ -216,10 +216,15 @@ describe("EffectiveRoutingRuleCard", () => {
     expect(timeoutRows.length).toBeGreaterThan(0);
 
     for (const row of [...fieldRows, ...timeoutRows]) {
-      expect(row.className).toContain("grid-cols-[minmax(0,1fr)_2.75rem]");
+      expect(row.className).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
       expect(row.className).toContain("py-3.5");
       expect(row.className).toContain("sm:py-2.5");
+      expect(row.children.item(1)?.className).not.toContain("col-span-2");
     }
+
+    expect(
+      document.querySelector('button[aria-label="Edit account override: Priority"]')?.className,
+    ).toContain("col-start-3 row-start-1");
 
     expect(
       document.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
