@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.1",
+  "base_stable_version": "2.71.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-07T15:43:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d28aa58531985d08e5410c7bd3425338c4f94e3c",
+  "pr_number": 914,
+  "pr_title": "fix(account-pool): align mobile routing values",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.1",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.1",
+  "target_sha": "c58f90981a9309c54ab96750ccc4b75fd5b7f7b0",
+  "type_label": "type:patch"
+}
