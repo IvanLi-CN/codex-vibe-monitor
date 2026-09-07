@@ -308,6 +308,7 @@ function render(initialEntry = "/account-pool/groups") {
             <Route path="/account-pool" element={<AccountPoolLayout />}>
               <Route path="groups" element={<GroupsPage />} />
               <Route path="upstream-accounts" element={<UpstreamAccountsStateEcho />} />
+              <Route path="pool" element={<UpstreamAccountsStateEcho />} />
               <Route
                 path="upstream-accounts/new"
                 element={<div data-testid="groups-test-create">create</div>}
@@ -348,8 +349,8 @@ describe("GroupsPage", () => {
     expect(document.body.textContent).toContain("production");
     expect(document.body.textContent).toContain("Premium traffic group.");
 
-    const activeLink = document.body.querySelector('a[href="/account-pool/groups"]');
-    expect(activeLink?.getAttribute("aria-current")).toBe("page");
+    const activeLink = document.body.querySelector('a[href="/account-pool/pool"]');
+    expect(activeLink).not.toBeNull();
     expect(document.body.querySelectorAll('[data-testid="account-pool-group-row"]').length).toBe(2);
     expect(document.body.querySelector('[data-testid="account-pool-groups-list"]')).not.toBeNull();
   });

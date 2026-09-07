@@ -3640,6 +3640,14 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(create_api_key_account),
         )
         .route(
+            "/api/pool/upstream-accounts/api-keys/migration/preflight",
+            post(preflight_api_key_group_migration),
+        )
+        .route(
+            "/api/pool/upstream-accounts/api-keys/migration/confirm",
+            post(confirm_api_key_group_migration),
+        )
+        .route(
             "/api/pool/upstream-accounts/oauth/login-sessions",
             post(create_oauth_login_session),
         )

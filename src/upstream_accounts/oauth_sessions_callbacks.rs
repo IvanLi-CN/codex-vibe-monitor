@@ -1408,40 +1408,33 @@ pub(crate) async fn create_api_key_account_inner(
     state: Arc<AppState>,
     payload: CreateApiKeyAccountRequest,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    if payload.group_name.is_some()
+        || payload.group_bound_proxy_keys.is_some()
+        || payload.group_node_shunt_enabled.is_some()
+        || payload.group_single_account_rotation_enabled.is_some()
+        || payload.group_note.is_some()
+        || payload.concurrency_limit.is_some()
+        || payload.is_mother == Some(true)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "API Key accounts cannot use groups, group policies, or mother-account routing"
+                .to_string(),
+        ));
+    }
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
     let email = normalize_optional_email(payload.email, "email")?;
     reject_manual_tag_ids(&payload.tag_ids)?;
-    let group_name = Some(normalize_upstream_account_group_name(payload.group_name));
+    let group_name: Option<String> = None;
     let note = normalize_optional_text(payload.note);
-    let has_group_note = payload.group_note.is_some();
-    let group_note = normalize_optional_text(payload.group_note);
-    let group_concurrency_limit =
-        normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        group_note.clone(),
-        has_group_note,
-        payload.group_bound_proxy_keys.clone(),
-        payload.group_bound_proxy_keys.is_some(),
-        group_concurrency_limit,
-        payload.concurrency_limit.is_some(),
-        payload.group_node_shunt_enabled,
-        payload.group_node_shunt_enabled.is_some(),
-        payload.group_single_account_rotation_enabled,
-        payload.group_single_account_rotation_enabled.is_some(),
+        None, false, None, false, 0, false, None, false, None, false,
     );
-    validate_group_note_target(group_name.as_deref(), has_group_note)?;
-    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
-        state.as_ref(),
-        group_name.clone(),
-        payload.group_bound_proxy_keys,
-        payload.group_node_shunt_enabled,
-    )
-    .await?;
-    let target_group_name = Some(resolved_group_binding.group_name.clone());
-    let is_mother = payload.is_mother.unwrap_or(false);
+    let target_group_name: Option<String> = None;
+    let is_mother = false;
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
     let masked_api_key = mask_api_key(&api_key);
@@ -1507,11 +1500,13 @@ pub(crate) async fn create_api_key_account_inner(
         inserted_id
     };
 
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_post_create_sync(state.clone(), inserted_id)
-        .await;
+    // API-key relays are account-scoped and do not participate in OAuth maintenance sync.
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), inserted_id)
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+        .and_then(|detail| {
+            detail.ok_or_else(|| anyhow::anyhow!("created API Key account was not found"))
+        });
     let routing_scope = if requested_group_metadata_changes.was_requested() {
         None
     } else {
@@ -1680,6 +1675,21 @@ pub(crate) async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && (payload.group_name.is_some()
+            || payload.group_bound_proxy_keys.is_some()
+            || payload.group_node_shunt_enabled.is_some()
+            || payload.group_single_account_rotation_enabled.is_some()
+            || payload.group_note.is_some()
+            || payload.concurrency_limit.is_some()
+            || payload.is_mother == Some(true))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "API Key accounts cannot use groups, group policies, or mother-account routing"
+                .to_string(),
+        ));
+    }
     let was_fresh_routable = is_account_selectable_for_fresh_assignment(&row, false, Utc::now());
     let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && account_update_requests_manual_recovery(&payload)

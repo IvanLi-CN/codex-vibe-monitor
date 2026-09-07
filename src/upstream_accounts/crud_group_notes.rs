@@ -2,7 +2,7 @@ use super::*;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, QueryBuilder, Sqlite};
-use std::time::Instant;
+use std::{collections::BTreeMap, time::Instant};
 
 const ACCOUNT_ATTEMPT_RETENTION_DAYS: u64 = 7;
 const ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND: &str = "__unbound__";
@@ -1237,6 +1237,9 @@ pub(crate) async fn list_upstream_accounts_from_params(
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
     let started_at = Instant::now();
 
+    normalize_upstream_account_kind_filter(params.kind.as_deref())
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+
     expire_pending_login_sessions(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -1251,9 +1254,13 @@ pub(crate) async fn list_upstream_accounts_from_params(
             .map_err(internal_error_tuple)?;
     let load_summaries_ms = load_summaries_started_at.elapsed().as_millis() as u64;
     let load_groups_started_at = Instant::now();
-    let groups = load_canonicalized_upstream_account_groups(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
+    let groups = if params.kind.as_deref() == Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX) {
+        Vec::new()
+    } else {
+        load_canonicalized_upstream_account_groups(state.as_ref())
+            .await
+            .map_err(internal_error_tuple)?
+    };
     let load_groups_ms = load_groups_started_at.elapsed().as_millis() as u64;
     let enrich_block_reason_started_at = Instant::now();
     enrich_transport_decode_sticky_escape_routing_block_reasons(state.as_ref(), &mut all_items)
@@ -1291,9 +1298,10 @@ pub(crate) async fn list_upstream_accounts_from_params(
     };
     let roster_core_ms = started_at.elapsed().as_millis() as u64;
     let usage_batch_ms = 0_u64;
-    let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
-        .await
-        .map_err(internal_error_tuple)?;
+    let has_ungrouped_accounts =
+        has_ungrouped_upstream_accounts(&state.pool, params.kind.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
     let load_routing_started_at = Instant::now();
     let routing = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
@@ -1340,6 +1348,8 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
     state: Arc<AppState>,
     params: ListUpstreamAccountActionEventsQuery,
 ) -> Result<Json<UpstreamAccountActionEventListResponse>, (StatusCode, String)> {
+    let kind_filter = normalize_upstream_account_kind_filter(params.kind.as_deref())
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
     let result_filter =
@@ -1351,6 +1361,11 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
 
     let mut conditions = Vec::new();
     let mut binds: Vec<String> = Vec::new();
+
+    if let Some(kind) = kind_filter {
+        conditions.push("account.kind = ?".to_string());
+        binds.push(kind.to_string());
+    }
 
     if let Some(filter) = account_filter.as_deref() {
         conditions.push(
@@ -1506,6 +1521,255 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
     }))
 }
 
+const API_KEY_GROUP_MIGRATION_AUDIT_ACTION: &str = "api_key_group_migrated";
+const API_KEY_GROUP_MIGRATION_AUDIT_SOURCE: &str = "account_migration";
+async fn load_api_key_group_migration_preflight(
+    pool: &Pool<Sqlite>,
+) -> Result<ApiKeyGroupMigrationPreflightResponse> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT id, group_name, is_mother, upstream_base_url,
+               local_primary_limit, local_secondary_limit, local_limit_unit
+        FROM pool_upstream_accounts
+        WHERE kind = ?1 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .fetch_all(pool)
+    .await?;
+
+    let mut blocked = BTreeSet::new();
+    let mut group_metadata_by_name = BTreeMap::new();
+    let group_names = rows
+        .iter()
+        .filter_map(|row| {
+            row.1
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
+        .collect::<BTreeSet<_>>();
+    for group_name in group_names {
+        let metadata = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+            "SELECT node_shunt_enabled, single_account_rotation_enabled FROM pool_upstream_account_group_notes WHERE group_name = ?1",
+        )
+        .bind(group_name)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((node_shunt, rotation)) = metadata {
+            if node_shunt.unwrap_or_default() != 0 {
+                blocked.insert("node_shunt".to_string());
+            }
+            if rotation.unwrap_or_default() != 0 {
+                blocked.insert("single_account_rotation".to_string());
+            }
+        }
+        group_metadata_by_name.insert(
+            group_name.to_string(),
+            load_group_metadata(pool, Some(group_name)).await?,
+        );
+    }
+    if rows.iter().any(|row| row.2 != 0) {
+        blocked.insert("mother_account".to_string());
+    }
+
+    let snapshot = rows
+        .iter()
+        .map(|row| {
+            let group_name = row.1.as_deref().unwrap_or_default();
+            let metadata = group_metadata_by_name.get(group_name);
+            serde_json::json!({
+                "id": row.0,
+                "groupName": row.1,
+                "isMother": row.2 != 0,
+                "upstreamBaseUrl": row.3,
+                "localPrimaryLimit": row.4,
+                "localSecondaryLimit": row.5,
+                "localLimitUnit": row.6,
+                "portableGroup": {
+                    "note": metadata.and_then(|item| item.note.clone()),
+                    "boundProxyKeys": metadata.map(|item| item.bound_proxy_keys.clone()).unwrap_or_default(),
+                    "concurrencyLimit": metadata.map(|item| item.concurrency_limit).unwrap_or_default(),
+                    "upstream429RetryEnabled": metadata.map(|item| item.upstream_429_retry_enabled).unwrap_or_default(),
+                    "upstream429MaxRetries": metadata.map(|item| item.upstream_429_max_retries).unwrap_or_default(),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let hash_input = serde_json::json!({
+        "accounts": snapshot,
+        "blockedStrategies": blocked.clone(),
+    });
+    let confirmation_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&hash_input)?));
+
+    Ok(ApiKeyGroupMigrationPreflightResponse {
+        confirmation_hash,
+        api_key_count: rows.len(),
+        portable_fields: vec![
+            "upstreamBaseUrl".to_string(),
+            "localPrimaryLimit".to_string(),
+            "localSecondaryLimit".to_string(),
+            "localLimitUnit".to_string(),
+            "boundProxyKeys".to_string(),
+            "note".to_string(),
+            "tags".to_string(),
+        ],
+        blocked_strategies: blocked.into_iter().collect(),
+        can_migrate: true,
+    })
+}
+
+pub(crate) async fn preflight_api_key_group_migration(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ApiKeyGroupMigrationPreflightResponse>, (StatusCode, String)> {
+    load_api_key_group_migration_preflight(&state.pool)
+        .await
+        .map(Json)
+        .map_err(internal_error_tuple)
+}
+
+pub(crate) async fn confirm_api_key_group_migration(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<ConfirmApiKeyGroupMigrationRequest>,
+) -> Result<Json<ApiKeyGroupMigrationResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let preflight = load_api_key_group_migration_preflight(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+    if payload.confirmation_hash.trim() != preflight.confirmation_hash {
+        return Err((
+            StatusCode::CONFLICT,
+            "API Key group migration confirmation hash is stale".to_string(),
+        ));
+    }
+    let disabled = payload
+        .disabled_strategies
+        .into_iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    if preflight
+        .blocked_strategies
+        .iter()
+        .any(|strategy| !disabled.contains(strategy))
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            "migration requires explicit confirmation to disable all blocked group strategies"
+                .to_string(),
+        ));
+    }
+
+    let now = format_utc_iso(Utc::now());
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, account_display_name, account_group_name,
+            result, result_description, reason_code, reason_message, created_at
+        )
+        SELECT id, ?1, ?2, ?3, display_name, group_name, 'success',
+               'API Key account migrated out of group domain', 'upstream_domain_migration',
+               'group strategies automatically disabled for transit accounts', ?1
+        FROM pool_upstream_accounts
+        WHERE kind = ?4 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
+        "#,
+    )
+    .bind(&now)
+    .bind(API_KEY_GROUP_MIGRATION_AUDIT_ACTION)
+    .bind(API_KEY_GROUP_MIGRATION_AUDIT_SOURCE)
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    let migrated_count = sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET bound_proxy_keys_json = COALESCE(
+                NULLIF(bound_proxy_keys_json, ''),
+                (
+                    SELECT NULLIF(group_notes.bound_proxy_keys_json, '')
+                    FROM pool_upstream_account_group_notes AS group_notes
+                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
+                )
+            ),
+            note = COALESCE(
+                note,
+                (
+                    SELECT group_notes.note
+                    FROM pool_upstream_account_group_notes AS group_notes
+                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
+                )
+            ),
+            policy_concurrency_limit = COALESCE(
+                policy_concurrency_limit,
+                (
+                    SELECT NULLIF(group_notes.concurrency_limit, 0)
+                    FROM pool_upstream_account_group_notes AS group_notes
+                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
+                )
+            ),
+            policy_upstream_429_retry_enabled = COALESCE(
+                policy_upstream_429_retry_enabled,
+                (
+                    SELECT group_notes.upstream_429_retry_enabled
+                    FROM pool_upstream_account_group_notes AS group_notes
+                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
+                )
+            ),
+            policy_upstream_429_max_retries = COALESCE(
+                policy_upstream_429_max_retries,
+                (
+                    SELECT group_notes.upstream_429_max_retries
+                    FROM pool_upstream_account_group_notes AS group_notes
+                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
+                )
+            ),
+            group_name = NULL,
+            is_mother = 0,
+            updated_at = ?1
+        WHERE kind = ?2 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
+        "#,
+    )
+    .bind(&now)
+    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?
+    .rows_affected() as usize;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(Json(ApiKeyGroupMigrationResponse {
+        migrated_count,
+        confirmation_hash: preflight.confirmation_hash,
+        audit_action: API_KEY_GROUP_MIGRATION_AUDIT_ACTION.to_string(),
+    }))
+}
+
 pub(crate) async fn get_upstream_account_window_usage(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UpstreamAccountWindowUsageRequest>,
@@ -1639,6 +1903,7 @@ pub(crate) fn parse_list_upstream_accounts_query(
     for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
         match key.as_ref() {
             "groupExact" => params.group_exact.push(value.into_owned()),
+            "kind" => params.kind = Some(value.into_owned()),
             "workStatus" => params.work_status.push(value.into_owned()),
             "enableStatus" => params.enable_status.push(value.into_owned()),
             "healthStatus" => params.health_status.push(value.into_owned()),
@@ -1664,6 +1929,21 @@ pub(crate) fn parse_list_upstream_accounts_query(
     }
 
     Ok(params)
+}
+
+pub(crate) fn normalize_upstream_account_kind_filter(
+    value: Option<&str>,
+) -> Result<Option<&'static str>, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    match value {
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => Ok(Some(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)),
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => Ok(Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)),
+        other => Err(format!(
+            "invalid kind value `{other}`; expected oauth_codex or api_key_codex"
+        )),
+    }
 }
 
 fn normalize_optional_search_filter(value: Option<&str>) -> Option<String> {

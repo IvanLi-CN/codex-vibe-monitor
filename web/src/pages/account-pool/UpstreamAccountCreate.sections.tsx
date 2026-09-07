@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
@@ -13,6 +13,9 @@ import { UpstreamAccountCreatePrimaryCard } from "./UpstreamAccountCreate.primar
 const CREATE_TABS = ["oauth", "batchOauth", "import", "importSession", "apiKey"] as const;
 
 export function UpstreamAccountCreatePageSections() {
+  const location = useLocation();
+  const isTransitRoute = location.pathname.startsWith("/account-pool/transits");
+  const listPath = isTransitRoute ? "/account-pool/transits" : "/account-pool/pool";
   const {
     actionError,
     activeTab,
@@ -39,7 +42,7 @@ export function UpstreamAccountCreatePageSections() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="section-heading">
               <Button asChild variant="ghost" size="sm" className="mb-1 self-start px-0">
-                <Link to="/account-pool/upstream-accounts">
+                <Link to={listPath}>
                   <AppIcon name="arrow-left" className="mr-2 h-4 w-4" aria-hidden />
                   {t("accountPool.upstreamAccounts.actions.backToList")}
                 </Link>
@@ -164,7 +167,7 @@ export function UpstreamAccountCreatePageSections() {
                 <div className="flex flex-wrap gap-2">
                   <Button asChild size="sm" variant="secondary">
                     <Link
-                      to="/account-pool/upstream-accounts"
+                      to={listPath}
                       state={{
                         selectedAccountId: oauthCompletedDetail.id,
                         openDetail: true,
@@ -186,7 +189,7 @@ export function UpstreamAccountCreatePageSections() {
             </Alert>
           ) : null}
 
-          {!isRelinking ? (
+          {!isRelinking && !isTransitRoute ? (
             <SegmentedControl
               className="self-start"
               role="tablist"

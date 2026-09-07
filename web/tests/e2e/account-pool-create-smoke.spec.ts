@@ -7,31 +7,31 @@ type RouteCase = {
 
 const routes: RouteCase[] = [
   {
-    path: "/#/account-pool/upstream-accounts",
+    path: "/#/account-pool/pool",
     waitFor: async (page) => {
       await expect(page.getByTestId("upstream-accounts-roster-region")).toBeVisible();
     },
   },
   {
-    path: "/#/account-pool/upstream-accounts/new?mode=oauth",
+    path: "/#/account-pool/pool/new?mode=oauth",
     waitFor: async (page) => {
       await expect(page.locator('input[name="oauthMailboxInput"]')).toBeVisible();
     },
   },
   {
-    path: "/#/account-pool/upstream-accounts/new?mode=batchOauth",
+    path: "/#/account-pool/pool/new?mode=batchOauth",
     waitFor: async (page) => {
       await expect(page.locator('[data-testid^="batch-oauth-row-"]').first()).toBeVisible();
     },
   },
   {
-    path: "/#/account-pool/upstream-accounts/new?mode=import",
+    path: "/#/account-pool/pool/new?mode=import",
     waitFor: async (page) => {
       await expect(page.locator('input[name="importOauthFiles"]')).toBeVisible();
     },
   },
   {
-    path: "/#/account-pool/upstream-accounts/new?mode=apiKey",
+    path: "/#/account-pool/transits/new?mode=apiKey",
     waitFor: async (page) => {
       await expect(page.locator('input[name="apiKeyValue"]')).toBeVisible();
     },

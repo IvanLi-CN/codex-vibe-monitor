@@ -1536,19 +1536,26 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(serde_json::json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": normalized_group_name,
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
     let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
         .expect("insert test pool api key account");
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load inserted test pool api key account id");
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(normalized_group_name)
+        .execute(&state.pool)
         .await
-        .expect("load inserted test pool api key account id")
+        .expect("restore legacy API key group fixture");
+    account_id
 }
 
 pub(crate) async fn spawn_usage_snapshot_server(

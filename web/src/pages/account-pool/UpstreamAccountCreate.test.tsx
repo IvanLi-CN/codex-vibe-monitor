@@ -1265,8 +1265,8 @@ describe("imported OAuth local validation", () => {
   });
 });
 
-describe("UpstreamAccountCreatePage group memory", () => {
-  it("uses the last successful API Key group when no draft overrides it", async () => {
+describe("UpstreamAccountCreatePage API Key domain boundary", () => {
+  it("does not render API Key group controls even when old draft data exists", async () => {
     vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
       if (key === "codex-vibe-monitor.locale") return "en";
       if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
@@ -1283,10 +1283,10 @@ describe("UpstreamAccountCreatePage group memory", () => {
     });
     await flushAsync();
 
-    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("beta");
+    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
   });
 
-  it("keeps an API Key draft group ahead of the last successful local preference", async () => {
+  it("ignores legacy API Key group drafts", async () => {
     vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
       if (key === "codex-vibe-monitor.locale") return "en";
       if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
@@ -1309,10 +1309,10 @@ describe("UpstreamAccountCreatePage group memory", () => {
     });
     await flushAsync();
 
-    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("alpha");
+    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
   });
 
-  it("ignores the last successful API Key group when it is not selectable", async () => {
+  it("does not expose API Key group selection for retired groups", async () => {
     vi.mocked(window.localStorage.getItem).mockImplementation((key: string) => {
       if (key === "codex-vibe-monitor.locale") return "en";
       if (key === UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY) {
@@ -1329,7 +1329,7 @@ describe("UpstreamAccountCreatePage group memory", () => {
     });
     await flushAsync();
 
-    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("");
+    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
   });
 
   it("uses the latest remembered group for batch OAuth when no draft overrides it", async () => {
@@ -1469,7 +1469,7 @@ describe("UpstreamAccountCreatePage group deletion", () => {
     expect(readHiddenInputValue('[name="importGroupName"]')).toBe("");
 
     clickCreateTab(/api key/i);
-    expect(readHiddenInputValue('[name="apiKeyGroupName"]')).toBe("");
+    expect(document.body.querySelector('[name="apiKeyGroupName"]')).toBeNull();
 
     clickCreateTab(/batch oauth|批量 oauth/i);
     expect(readHiddenInputValue('[name="batchOauthDefaultGroupName"]')).toBe("");

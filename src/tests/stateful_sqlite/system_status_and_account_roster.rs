@@ -2270,9 +2270,6 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": normalized_group_name,
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
-        "isMother": is_mother,
         "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
@@ -2281,11 +2278,47 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
             .await
             .expect("insert test pool upstream account");
     let _ = detail;
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load inserted test pool upstream account id");
+    restore_test_legacy_api_key_group(
+        &state.pool,
+        account_id,
+        normalized_group_name,
+        is_mother.unwrap_or(false),
+    )
+    .await;
+    account_id
+}
+
+pub(crate) async fn restore_test_legacy_api_key_group(
+    pool: &SqlitePool,
+    account_id: i64,
+    group_name: &str,
+    is_mother: bool,
+) {
+    ensure_test_group_binding(pool, group_name, None).await;
+    if is_mother {
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET is_mother = 0 WHERE group_name = ?1 AND id != ?2",
+        )
+        .bind(group_name)
+        .bind(account_id)
+        .execute(pool)
         .await
-        .expect("load inserted test pool upstream account id")
+        .expect("clear existing legacy api-key mother account");
+    }
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2, is_mother = ?3 WHERE id = ?1")
+        .bind(account_id)
+        .bind(group_name)
+        .bind(if is_mother { 1 } else { 0 })
+        .execute(pool)
+        .await
+        .expect("restore legacy api-key group state");
 }
 
 pub(crate) async fn create_test_fast_mode_tag(
@@ -2324,8 +2357,6 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
 ) -> i64 {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
         "apiKey": api_key,
     }))
@@ -2339,6 +2370,8 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
             .fetch_one(&state.pool)
             .await
             .expect("load tagged pool account id");
+    restore_test_legacy_api_key_group(&state.pool, account_id, test_required_group_name(), false)
+        .await;
     if !tag_ids.is_empty() {
         let now_iso = format_utc_iso(Utc::now());
         for tag_id in tag_ids {
@@ -2909,6 +2942,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
@@ -2941,6 +2975,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(exact_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: vec!["Prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -2969,6 +3004,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(multi_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: vec!["Prod".to_string(), "prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -2997,6 +3033,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3062,6 +3099,7 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3134,6 +3172,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3171,6 +3210,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(disabled_only) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3222,6 +3262,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3332,6 +3373,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3560,6 +3602,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3940,8 +3983,6 @@ async fn create_api_key_account_persists_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Gateway Key",
         "apiKey": "sk-gateway",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "https://proxy.example.com/gateway",
     }))
     .expect("deserialize api key account request");
@@ -4279,8 +4320,6 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Broken Key",
         "apiKey": "sk-broken",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "not-a-url",
     }))
     .expect("deserialize api key account request");

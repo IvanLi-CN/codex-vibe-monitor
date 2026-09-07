@@ -2551,6 +2551,7 @@ pub(crate) async fn load_upstream_account_groups(
                 COUNT(*) AS account_count
             FROM pool_upstream_accounts
             WHERE deleted_at IS NULL
+              AND kind = 'oauth_codex'
               AND group_name IS NOT NULL AND TRIM(group_name) <> ''
             GROUP BY TRIM(group_name)
         ),
@@ -2716,6 +2717,10 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
     query.push(" WHERE COALESCE(deleted_at, '') = ''");
+
+    if let Some(kind) = params.kind.as_deref() {
+        query.push(" AND kind = ").push_bind(kind);
+    }
 
     if params.group_ungrouped.unwrap_or(false) {
         query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
@@ -3049,6 +3054,21 @@ pub(crate) async fn apply_bulk_upstream_account_action(
     action: &str,
     group_name: Option<String>,
 ) -> Result<(), (StatusCode, String)> {
+    if action == BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP {
+        let kind = sqlx::query_scalar::<_, String>(
+            "SELECT kind FROM pool_upstream_accounts WHERE id = ?1 AND COALESCE(deleted_at, '') = ''",
+        )
+        .bind(account_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+        if kind.as_deref() == Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "API Key accounts cannot be assigned to groups".to_string(),
+            ));
+        }
+    }
     let payload = match action {
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -3140,15 +3160,20 @@ pub(crate) async fn apply_bulk_upstream_account_action(
     Ok(())
 }
 
-pub(crate) async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn has_ungrouped_upstream_accounts(
+    pool: &Pool<Sqlite>,
+    kind: Option<&str>,
+) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
         WHERE COALESCE(deleted_at, '') = ''
+          AND (?1 IS NULL OR (kind = ?1 AND kind = 'oauth_codex'))
           AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
         "#,
     )
+    .bind(kind)
     .fetch_one(pool)
     .await?;
     Ok(count > 0)

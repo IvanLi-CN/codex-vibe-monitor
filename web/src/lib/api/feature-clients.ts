@@ -1,4 +1,6 @@
 export type {
+  ApiKeyGroupMigrationPreflight,
+  ApiKeyGroupMigrationResult,
   DashboardActivityLiveAccount,
   DashboardActivityLiveSnapshot,
   DashboardActivityRateWindow,
@@ -41,6 +43,7 @@ export {
   cancelBulkUpstreamAccountSyncJob,
   cancelImportedOauthValidationJob,
   completeOauthLoginSession,
+  confirmApiKeyGroupMigration,
   confirmOauthIdentityOverwrite,
   createApiKeyUpstreamAccount,
   createBulkUpstreamAccountSyncJob,
@@ -112,6 +115,7 @@ export {
   importValidatedOauthAccounts,
   locateUpstreamAccountAttempt,
   normalizeForwardProxyLatencyTestStreamEvent,
+  preflightApiKeyGroupMigration,
   refreshForwardProxySubscriptions,
   refreshUpstreamAccountModels,
   reloginUpstreamAccount,

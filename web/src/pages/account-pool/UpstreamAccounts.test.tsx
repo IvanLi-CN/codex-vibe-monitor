@@ -532,7 +532,13 @@ function readStoredUpstreamFilters() {
 }
 
 function expectRosterHookQuery(expected: Record<string, unknown> | null) {
-  expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([expected]);
+  if (expected == null) {
+    expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([expected]);
+    return;
+  }
+  expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([
+    expect.objectContaining({ ...expected, kind: "oauth_codex" }),
+  ]);
 }
 
 function findButton(pattern: RegExp) {
@@ -2008,6 +2014,11 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
     expect(hookMocks.useUpstreamAccounts.mock.calls[0]?.[0]).toEqual({
       includeAll: true,
       groupExact: ["prod"],
+      kind: "oauth_codex",
+      healthStatus: undefined,
+      enableStatus: undefined,
+      workStatus: undefined,
+      tagIds: undefined,
     });
     expectRosterHookQuery({
       includeAll: true,
@@ -2018,6 +2029,7 @@ describe("UpstreamAccountsPage grouped roster toggle", () => {
         page: 1,
         pageSize: 20,
         groupExact: ["stale-group"],
+        kind: "oauth_codex",
       },
     ]);
     expect(readStoredUpstreamFilters()?.groupFilters).toEqual(["stale-group"]);

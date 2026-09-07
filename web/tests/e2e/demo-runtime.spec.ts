@@ -11,11 +11,17 @@ const allRoutes: RouteCase[] = [
   { path: "/#/stats", expectedPath: "/stats" },
   { path: "/#/live", expectedPath: "/live" },
   { path: "/#/records", expectedPath: "/records" },
-  { path: "/#/account-pool", expectedPath: "/account-pool/upstream-accounts" },
-  { path: "/#/account-pool/upstream-accounts", expectedPath: "/account-pool/upstream-accounts" },
+  { path: "/#/account-pool", expectedPath: "/account-pool/pool" },
+  { path: "/#/account-pool/upstream-accounts", expectedPath: "/account-pool/pool" },
+  { path: "/#/account-pool/transits", expectedPath: "/account-pool/transits" },
+  { path: "/#/account-pool/pool", expectedPath: "/account-pool/pool" },
   {
     path: "/#/account-pool/upstream-accounts/new?mode=apiKey",
-    expectedPath: "/account-pool/upstream-accounts/new",
+    expectedPath: "/account-pool/transits/new",
+  },
+  {
+    path: "/#/account-pool/upstream-accounts/new?mode=oauth",
+    expectedPath: "/account-pool/pool/new",
   },
   {
     path: "/#/account-pool/maintenance-records",

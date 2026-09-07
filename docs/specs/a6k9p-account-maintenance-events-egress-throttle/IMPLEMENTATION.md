@@ -46,3 +46,9 @@
 - `spec_disposition=update`
 - `project_doc_disposition=update`
 - `solution_disposition=update`
+
+## Upstream Domain Split
+
+- The event list handler validates and applies the optional `kind` filter in SQL, preserving mixed responses when omitted.
+- The Web maintenance-records page adds a type filter and suppresses the group filter for API-key transit records.
+- Demo and Storybook fixtures include both OAuth and API-key events while keeping transit group summaries empty.

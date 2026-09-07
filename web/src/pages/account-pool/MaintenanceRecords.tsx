@@ -72,6 +72,7 @@ function humanizeAction(value: string) {
 export default function MaintenanceRecordsPage() {
   const { t } = useTranslation();
   const [accountFilter, setAccountFilter] = useState("");
+  const [kindFilter, setKindFilter] = useState<"" | "oauth_codex" | "api_key_codex">("");
   const [groupFilter, setGroupFilter] = useState("");
   const [proxyKeyFilter, setProxyKeyFilter] = useState("");
   const [resultFilter, setResultFilter] = useState("");
@@ -86,13 +87,14 @@ export default function MaintenanceRecordsPage() {
   const query = useMemo<FetchUpstreamAccountActionEventsQuery>(
     () => ({
       account: accountFilter.trim() || undefined,
-      group: groupFilter.trim() || undefined,
+      kind: kindFilter || undefined,
+      group: kindFilter === "api_key_codex" ? undefined : groupFilter.trim() || undefined,
       proxyKey: proxyKeyFilter.trim() || undefined,
       result: resultFilter.trim() || undefined,
       page,
       pageSize,
     }),
-    [accountFilter, groupFilter, page, pageSize, proxyKeyFilter, resultFilter],
+    [accountFilter, groupFilter, kindFilter, page, pageSize, proxyKeyFilter, resultFilter],
   );
 
   useEffect(() => {
@@ -159,6 +161,20 @@ export default function MaintenanceRecordsPage() {
     ],
     [t],
   );
+  const kindOptions = useMemo(
+    () => [
+      { value: "", label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.allTypes") },
+      {
+        value: "oauth_codex",
+        label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.pool"),
+      },
+      {
+        value: "api_key_codex",
+        label: t("accountPool.upstreamAccounts.maintenanceEvents.filters.transit"),
+      },
+    ],
+    [t],
+  );
   const proxyNodeByKey = useMemo(
     () => new Map(forwardProxyNodes.map((node) => [node.key, node])),
     [forwardProxyNodes],
@@ -169,6 +185,7 @@ export default function MaintenanceRecordsPage() {
 
   const resetFilters = () => {
     setAccountFilter("");
+    setKindFilter("");
     setGroupFilter("");
     setProxyKeyFilter("");
     setResultFilter("");
@@ -305,7 +322,7 @@ export default function MaintenanceRecordsPage() {
           </Tooltip>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <label className="field min-w-0">
             <span className="field-label">
               {t("accountPool.upstreamAccounts.maintenanceEvents.filters.account")}
@@ -324,20 +341,38 @@ export default function MaintenanceRecordsPage() {
           </label>
           <label className="field min-w-0">
             <span className="field-label">
-              {t("accountPool.upstreamAccounts.maintenanceEvents.filters.group")}
+              {t("accountPool.upstreamAccounts.maintenanceEvents.filters.type")}
             </span>
-            <Input
-              value={groupFilter}
-              onChange={(event) => {
-                setGroupFilter(event.target.value);
+            <SelectField
+              size="sm"
+              value={kindFilter}
+              options={kindOptions}
+              triggerClassName="h-11 border-base-300/90 bg-base-100 lg:h-10"
+              onValueChange={(value) => {
+                setKindFilter(value as "" | "oauth_codex" | "api_key_codex");
+                if (value === "api_key_codex") setGroupFilter("");
                 setPage(1);
               }}
-              placeholder={t(
-                "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder",
-              )}
-              className="h-11 border-base-300/90 bg-base-100 lg:h-10"
             />
           </label>
+          {kindFilter !== "api_key_codex" ? (
+            <label className="field min-w-0">
+              <span className="field-label">
+                {t("accountPool.upstreamAccounts.maintenanceEvents.filters.group")}
+              </span>
+              <Input
+                value={groupFilter}
+                onChange={(event) => {
+                  setGroupFilter(event.target.value);
+                  setPage(1);
+                }}
+                placeholder={t(
+                  "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder",
+                )}
+                className="h-11 border-base-300/90 bg-base-100 lg:h-10"
+              />
+            </label>
+          ) : null}
           <label className="field min-w-0">
             <span className="field-label">
               {t("accountPool.upstreamAccounts.maintenanceEvents.filters.node")}
