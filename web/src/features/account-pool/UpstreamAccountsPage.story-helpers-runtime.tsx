@@ -512,9 +512,15 @@ export function StorybookUpstreamAccountsMock({
         path === "/api/pool/upstream-accounts/api-keys/migration/preflight" &&
         method === "POST"
       ) {
+        const legacyApiKeys = store.accounts.filter(
+          (account) =>
+            account.kind === "api_key_codex" &&
+            ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+              account.isMother === true),
+        );
         return jsonResponse({
           confirmationHash: "storybook-migration-confirmation-hash",
-          apiKeyCount: store.accounts.filter((account) => account.kind === "api_key_codex").length,
+          apiKeyCount: legacyApiKeys.length,
           portableFields: [
             "account-level routing policy",
             "bound proxy keys",
@@ -522,14 +528,27 @@ export function StorybookUpstreamAccountsMock({
             "note",
           ],
           blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
-          canMigrate: false,
+          canMigrate: true,
         });
       }
 
       if (path === "/api/pool/upstream-accounts/api-keys/migration/confirm" && method === "POST") {
+        const legacyApiKeys = store.accounts.filter(
+          (account) =>
+            account.kind === "api_key_codex" &&
+            ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+              account.isMother === true),
+        );
+        const legacyIds = new Set(legacyApiKeys.map((account) => account.id));
+        store.accounts = store.accounts.map((account) =>
+          legacyIds.has(account.id) ? { ...account, groupName: null, isMother: false } : account,
+        );
+        for (const accountId of legacyIds) {
+          const detail = store.details[accountId];
+          if (detail) store.details[accountId] = { ...detail, groupName: null, isMother: false };
+        }
         return jsonResponse({
-          migratedCount: store.accounts.filter((account) => account.kind === "api_key_codex")
-            .length,
+          migratedCount: legacyApiKeys.length,
           confirmationHash: "storybook-migration-confirmation-hash",
           auditAction: "api_key_group_migrated",
         });

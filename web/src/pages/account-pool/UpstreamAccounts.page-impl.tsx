@@ -45,7 +45,6 @@ import { useUpstreamAccounts } from "../../hooks/useUpstreamAccounts";
 import { useTranslation } from "../../i18n";
 import { buildAccountPoolGroupSummaries } from "../../lib/accountPoolGroups";
 import type {
-  ApiKeyGroupMigrationPreflight,
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncSnapshot,
@@ -96,93 +95,47 @@ export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
 
-function ApiKeyGroupMigrationGate({ onCompleted }: { onCompleted: () => void }) {
-  const { t } = useTranslation();
-  const [preflight, setPreflight] = useState<ApiKeyGroupMigrationPreflight | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+function ApiKeyGroupMigrationAutoRunner({
+  enabled,
+  onCompleted,
+}: {
+  enabled: boolean;
+  onCompleted: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    if (!enabled || startedRef.current) return;
+    startedRef.current = true;
+    let cancelled = false;
     void preflightApiKeyGroupMigration()
-      .then(setPreflight)
-      .catch(() => setPreflight(null));
-  }, []);
-
-  if (!preflight || preflight.apiKeyCount === 0) return null;
-  const allBlockedSelected = preflight.blockedStrategies.every((strategy) =>
-    selected.has(strategy),
-  );
-  const strategyLabel = (strategy: string) =>
-    t(`accountPool.upstreamAccounts.migration.strategies.${strategy}`);
-  const migrate = async () => {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const result = await confirmApiKeyGroupMigration({
-        confirmationHash: preflight.confirmationHash,
-        disabledStrategies: [...selected],
+      .then(async (preflight) => {
+        if (preflight.apiKeyCount === 0) return;
+        await confirmApiKeyGroupMigration({
+          confirmationHash: preflight.confirmationHash,
+          disabledStrategies: preflight.blockedStrategies,
+        });
+        if (!cancelled) onCompleted();
+      })
+      .catch((migrationError) => {
+        if (!cancelled) {
+          setError(
+            migrationError instanceof Error ? migrationError.message : String(migrationError),
+          );
+        }
       });
-      setMessage(
-        t("accountPool.upstreamAccounts.migration.completed", {
-          count: result.migratedCount,
-        }),
-      );
-      onCompleted();
-      setPreflight(null);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Alert variant="warning">
-      <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div className="min-w-0 flex-1 space-y-3">
-        <div>
-          <p className="font-medium">{t("accountPool.upstreamAccounts.migration.title")}</p>
-          <p className="mt-1 text-sm text-warning/90">
-            {t("accountPool.upstreamAccounts.migration.description", {
-              count: preflight.apiKeyCount,
-            })}
-          </p>
-        </div>
-        {preflight.blockedStrategies.length > 0 ? (
-          <div className="grid gap-2 sm:grid-cols-3">
-            {preflight.blockedStrategies.map((strategy) => (
-              <label key={strategy} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={selected.has(strategy)}
-                  onChange={(event) => {
-                    setSelected((current) => {
-                      const next = new Set(current);
-                      if (event.target.checked) next.add(strategy);
-                      else next.delete(strategy);
-                      return next;
-                    });
-                  }}
-                />
-                {strategyLabel(strategy)}
-              </label>
-            ))}
-          </div>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => void migrate()}
-            disabled={busy || !allBlockedSelected}
-          >
-            {t("accountPool.upstreamAccounts.migration.confirm")}
-          </Button>
-          {message ? <span className="text-sm text-warning/90">{message}</span> : null}
-        </div>
-      </div>
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, onCompleted]);
+
+  return error ? (
+    <Alert variant="error">
+      <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+      <div>{error}</div>
     </Alert>
-  );
+  ) : null;
 }
 
 function normalizeRosterGroupName(value?: string | null) {
@@ -1642,7 +1595,10 @@ export default function UpstreamAccountsPage() {
             ) : null}
 
             {!isTransitPage ? (
-              <ApiKeyGroupMigrationGate onCompleted={() => void refresh()} />
+              <ApiKeyGroupMigrationAutoRunner
+                enabled={writesEnabled}
+                onCompleted={() => void refresh()}
+              />
             ) : null}
 
             {duplicateWarning ? (

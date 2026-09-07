@@ -2822,7 +2822,7 @@ async fn update_upstream_account_persists_node_shunt_for_existing_multi_account_
 }
 
 #[tokio::test]
-async fn api_key_group_migration_requires_stable_confirmation_and_preserves_oauth_groups() {
+async fn api_key_group_migration_is_idempotent_and_preserves_oauth_groups() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let api_key_id = insert_api_key_account(&state.pool, "Legacy Relay Group").await;
     set_test_account_group_name(&state.pool, api_key_id, Some("legacy-relay-group")).await;
@@ -2844,7 +2844,7 @@ async fn api_key_group_migration_requires_stable_confirmation_and_preserves_oaut
             .iter()
             .any(|item| item == "mother_account")
     );
-    assert!(!preflight.can_migrate);
+    assert!(preflight.can_migrate);
 
     let stale = confirm_api_key_group_migration(
         State(state.clone()),
@@ -2895,6 +2895,10 @@ async fn api_key_group_migration_requires_stable_confirmation_and_preserves_oaut
         .expect("count migration audit"),
         1
     );
+    let Json(post_migration_preflight) = preflight_api_key_group_migration(State(state.clone()))
+        .await
+        .expect("preflight after migration");
+    assert_eq!(post_migration_preflight.api_key_count, 0);
 }
 
 #[tokio::test]

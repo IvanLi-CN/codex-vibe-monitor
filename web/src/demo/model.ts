@@ -715,6 +715,26 @@ class DemoModel {
     return clone(account);
   }
 
+  migrateLegacyApiKeyAccounts() {
+    const legacyAccounts = this.#state.accounts.filter(
+      (account) =>
+        account.kind === "api_key_codex" &&
+        ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+          account.isMother === true),
+    );
+    if (legacyAccounts.length === 0) return 0;
+    this.#state = {
+      ...this.#state,
+      accounts: this.#state.accounts.map((account) =>
+        legacyAccounts.includes(account)
+          ? { ...account, groupName: null, isMother: false }
+          : account,
+      ),
+    };
+    this.record("自动迁移 API Key 分组");
+    return legacyAccounts.length;
+  }
+
   createExternalApiKey() {
     const key = {
       id: 40 + this.#state.externalApiKeys.length + 1,

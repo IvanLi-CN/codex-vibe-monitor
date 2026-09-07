@@ -143,11 +143,12 @@ const baseTranslations = {
     "accountPool.nav.maintenanceRecords": "Records",
     "accountPool.nav.groups": "Groups",
     "accountPool.nav.tags": "Tags",
-    "accountPool.upstreamAccounts.migration.title": "API key group migration required",
+    "accountPool.upstreamAccounts.migration.title": "API key group migration",
     "accountPool.upstreamAccounts.migration.description":
-      "{{count}} API key accounts still carry legacy group state. Review and disable non-portable strategies before clearing it.",
-    "accountPool.upstreamAccounts.migration.confirm": "Confirm migration",
-    "accountPool.upstreamAccounts.migration.completed": "Migrated {{count}} API key accounts.",
+      "Legacy group strategies are disabled automatically for {{count}} transit API key accounts.",
+    "accountPool.upstreamAccounts.migration.confirm": "Migrate automatically",
+    "accountPool.upstreamAccounts.migration.completed":
+      "Automatically migrated {{count}} API key accounts.",
     "accountPool.upstreamAccounts.migration.strategies.node_shunt": "Node shunting",
     "accountPool.upstreamAccounts.migration.strategies.single_account_rotation":
       "Single-account rotation",
@@ -3408,11 +3409,11 @@ const baseTranslations = {
     "accountPool.nav.maintenanceRecords": "维护记录",
     "accountPool.nav.groups": "分组",
     "accountPool.nav.tags": "标签",
-    "accountPool.upstreamAccounts.migration.title": "需要迁移 API Key 分组",
+    "accountPool.upstreamAccounts.migration.title": "API Key 分组迁移",
     "accountPool.upstreamAccounts.migration.description":
-      "仍有 {{count}} 个 API Key 账号带有旧分组状态。请先确认停用不可下沉策略，再清除分组关系。",
-    "accountPool.upstreamAccounts.migration.confirm": "确认迁移",
-    "accountPool.upstreamAccounts.migration.completed": "已迁移 {{count}} 个 API Key 账号。",
+      "旧分组策略会自动对 {{count}} 个中转 API Key 账号停用，并清除分组关系。",
+    "accountPool.upstreamAccounts.migration.confirm": "自动迁移",
+    "accountPool.upstreamAccounts.migration.completed": "已自动迁移 {{count}} 个 API Key 账号。",
     "accountPool.upstreamAccounts.migration.strategies.node_shunt": "节点分流",
     "accountPool.upstreamAccounts.migration.strategies.single_account_rotation": "单号轮换",
     "accountPool.upstreamAccounts.migration.strategies.mother_account": "母号",

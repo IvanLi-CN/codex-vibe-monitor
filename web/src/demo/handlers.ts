@@ -3527,9 +3527,15 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/pool/upstream-accounts" && request.method === "GET")
     return json(accountList(url.searchParams.get("kind")));
   if (pathname === "/api/pool/upstream-accounts/api-keys/migration/preflight") {
+    const legacyApiKeyCount = demoAccounts().filter(
+      (account) =>
+        account.kind === "api_key_codex" &&
+        ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+          account.isMother === true),
+    ).length;
     return json({
       confirmationHash: "demo-migration-confirmation-hash",
-      apiKeyCount: demoAccounts().filter((account) => account.kind === "api_key_codex").length,
+      apiKeyCount: legacyApiKeyCount,
       portableFields: [
         "account-level routing policy",
         "bound proxy keys",
@@ -3537,12 +3543,13 @@ export async function handleDemoRequest(request: Request) {
         "note",
       ],
       blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
-      canMigrate: false,
+      canMigrate: true,
     });
   }
   if (pathname === "/api/pool/upstream-accounts/api-keys/migration/confirm") {
+    const migratedCount = demoModel.migrateLegacyApiKeyAccounts();
     return json({
-      migratedCount: demoAccounts().filter((account) => account.kind === "api_key_codex").length,
+      migratedCount,
       confirmationHash: "demo-migration-confirmation-hash",
       auditAction: "api_key_group_migrated",
     });

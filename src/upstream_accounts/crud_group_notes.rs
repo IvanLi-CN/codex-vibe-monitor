@@ -1543,6 +1543,7 @@ async fn load_api_key_group_migration_preflight(
                local_primary_limit, local_secondary_limit, local_limit_unit
         FROM pool_upstream_accounts
         WHERE kind = ?1 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
         ORDER BY id ASC
         "#,
     )
@@ -1614,7 +1615,6 @@ async fn load_api_key_group_migration_preflight(
     });
     let confirmation_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&hash_input)?));
 
-    let can_migrate = blocked.is_empty();
     Ok(ApiKeyGroupMigrationPreflightResponse {
         confirmation_hash,
         api_key_count: rows.len(),
@@ -1628,7 +1628,7 @@ async fn load_api_key_group_migration_preflight(
             "tags".to_string(),
         ],
         blocked_strategies: blocked.into_iter().collect(),
-        can_migrate,
+        can_migrate: true,
     })
 }
 
@@ -1693,9 +1693,10 @@ pub(crate) async fn confirm_api_key_group_migration(
         )
         SELECT id, ?1, ?2, ?3, display_name, group_name, 'success',
                'API Key account migrated out of group domain', 'upstream_domain_migration',
-               'group strategies explicitly disabled by owner', ?1
+               'group strategies automatically disabled for transit accounts', ?1
         FROM pool_upstream_accounts
         WHERE kind = ?4 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
         "#,
     )
     .bind(&now)
@@ -1752,6 +1753,7 @@ pub(crate) async fn confirm_api_key_group_migration(
             is_mother = 0,
             updated_at = ?1
         WHERE kind = ?2 AND COALESCE(deleted_at, '') = ''
+          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
         "#,
     )
     .bind(&now)
