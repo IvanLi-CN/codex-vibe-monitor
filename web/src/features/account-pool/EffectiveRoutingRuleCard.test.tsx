@@ -165,6 +165,84 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
 }
 
 describe("EffectiveRoutingRuleCard", () => {
+  it("uses open mobile rule rows while retaining desktop section surfaces", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.5"],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "account",
+            concurrencyLimit: "account",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    );
+
+    const card = document.querySelector('[data-testid="effective-routing-rule-card"]');
+    expect(card).not.toBeNull();
+
+    const sections = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const tables = Array.from(document.querySelectorAll<HTMLElement>('[data-testid$="-table"]'));
+    expect(sections).toHaveLength(4);
+    expect(tables).toHaveLength(2);
+    expect(card?.className).toContain("rounded-none border-0 bg-transparent shadow-none");
+    expect(card?.className).toContain("sm:rounded-xl sm:border");
+    expect(card?.className).toContain("sm:bg-base-100/72");
+
+    for (const section of sections) {
+      expect(section.className).toContain("border-t border-base-300/70 pt-5");
+      expect(section.className).toContain("first:border-t-0 first:pt-0");
+      expect(section.className).toContain("sm:rounded-xl sm:border");
+      expect(section.className).toContain("sm:bg-base-200/35");
+    }
+
+    for (const table of tables) {
+      expect(table.className).toContain("mt-3 overflow-visible border-0");
+      expect(table.className).toContain("sm:overflow-hidden sm:rounded-xl sm:border");
+    }
+
+    const fieldRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="effective-routing-rule-field-row"]'),
+    );
+    const timeoutRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="effective-routing-rule-timeout-row"]'),
+    );
+    expect(fieldRows.length).toBeGreaterThan(0);
+    expect(timeoutRows.length).toBeGreaterThan(0);
+
+    for (const row of [...fieldRows, ...timeoutRows]) {
+      expect(row.className).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
+      expect(row.className).toContain("py-3.5");
+      expect(row.className).toContain("sm:py-2.5");
+      expect(row.children.item(1)?.className).not.toContain("col-span-2");
+      expect(row.children.item(1)?.className).toContain("justify-end");
+    }
+
+    expect(
+      document.querySelector('button[aria-label="Edit account override: Priority"]')?.className,
+    ).toContain("col-start-3 row-start-1");
+
+    expect(
+      document.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
+        ?.className,
+    ).toContain("grid-cols-2");
+    expect(
+      document.querySelector('[data-testid="effective-routing-rule-concurrency-editor"]')
+        ?.className,
+    ).toContain("min-[769px]:min-w-[16rem]");
+
+    const modeToggle = document.querySelector('[data-testid="available-models-mode-toggle"]');
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain("min-w-0");
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain(
+      "min-[769px]:min-w-[18rem]",
+    );
+  });
+
   it("shows inherited copy when no available model constraint is defined", () => {
     render(<EffectiveRoutingRuleCard rule={buildRule()} labels={labels} />);
 

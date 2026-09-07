@@ -313,7 +313,7 @@ const meta = {
               className="min-h-screen bg-base-200 px-12 py-12 text-base-content"
             >
               <div
-                className="effective-routing-rule-story-surface mx-auto max-w-3xl bg-base-100 p-2"
+                className="effective-routing-rule-story-surface mx-auto w-full max-w-3xl"
                 data-visual-evidence-target="effective-routing-rule-card"
               >
                 <Story />
@@ -647,40 +647,9 @@ export const EditableAccountOverrides: Story = {
   tags: ["test"],
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
-    const rows = Array.from(canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"));
-
-    function assertExpandedRowAligned(labelText: string, valueText: string) {
-      const row = rows.find((candidate) => {
-        const text = candidate.textContent || "";
-        return text.includes(labelText) && text.includes(valueText) && text.includes("Account");
-      });
-      if (!row) {
-        throw new Error(`missing expanded row for ${labelText}`);
-      }
-
-      const expandedGrid = row.querySelector(".border-t .grid");
-      if (!(expandedGrid instanceof HTMLElement)) {
-        throw new Error(`missing expanded grid for ${labelText}`);
-      }
-
-      const label = expandedGrid.children.item(0);
-      const editor = expandedGrid.children.item(1);
-      if (!(label instanceof HTMLElement) || !(editor instanceof HTMLElement)) {
-        throw new Error(`missing expanded content for ${labelText}`);
-      }
-
-      const range = document.createRange();
-      range.selectNodeContents(label);
-      const textRect = range.getBoundingClientRect();
-      const editorRect = editor.getBoundingClientRect();
-      const textCenterY = textRect.top + textRect.height / 2;
-      const editorCenterY = editorRect.top + editorRect.height / 2;
-
-      expect(Math.abs(textCenterY - editorCenterY)).toBeLessThanOrEqual(6);
-    }
-
-    assertExpandedRowAligned("FAST mode", "Force remove");
-    assertExpandedRowAligned("Upstream 429 retry", "4");
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("radiogroup", { name: "FAST mode" })).toBeVisible();
+    await expect(canvas.getByRole("radiogroup", { name: "Upstream 429 retry" })).toBeVisible();
   },
 };
 
@@ -796,6 +765,122 @@ export const EditableAvailableModelsWithCatalogMobile: Story = {
       onRefreshAvailableModelCatalog={() => undefined}
     />
   ),
+};
+
+export const MobileFlatHierarchy: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile390" },
+  },
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const card = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="effective-routing-rule-card"]',
+    );
+    if (!card) throw new Error("missing effective routing rule card");
+
+    const staticSections = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const rowTables = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
+    );
+    const fieldRows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="effective-routing-rule-field-row"]',
+      ),
+    );
+    const timeoutRows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="effective-routing-rule-timeout-row"]',
+      ),
+    );
+    if (staticSections.length !== 4 || rowTables.length !== 2) {
+      throw new Error("missing effective routing mobile hierarchy sections");
+    }
+
+    const modeToggle = canvasElement.querySelector('[data-testid="available-models-mode-toggle"]');
+    expect(modeToggle?.parentElement?.parentElement?.classList).toContain("min-w-0");
+    expect(modeToggle?.parentElement?.parentElement?.classList).toContain(
+      "min-[769px]:min-w-[18rem]",
+    );
+
+    const cardRect = card.getBoundingClientRect();
+    expect(card.classList).toContain("rounded-none");
+    expect(card.classList).toContain("border-0");
+    expect(card.classList).toContain("bg-transparent");
+    expect(card.classList).toContain("sm:rounded-xl");
+    for (const section of staticSections) {
+      const rect = section.getBoundingClientRect();
+      expect(section.classList).toContain("border-t");
+      expect(section.classList).toContain("pt-5");
+      expect(section.classList).toContain("first:border-t-0");
+      expect(section.classList).toContain("sm:border");
+      expect(section.classList).toContain("sm:rounded-xl");
+      expect(rect.left).toBeGreaterThanOrEqual(cardRect.left);
+      expect(rect.right).toBeLessThanOrEqual(cardRect.right);
+      expect(section.scrollWidth).toBeLessThanOrEqual(section.clientWidth);
+    }
+
+    for (const table of rowTables) {
+      expect(table.classList).toContain("border-0");
+      expect(table.classList).toContain("mt-3");
+      expect(table.classList).toContain("overflow-visible");
+      expect(table.classList).toContain("sm:border");
+      expect(table.classList).toContain("sm:overflow-hidden");
+      expect(table.scrollWidth).toBeLessThanOrEqual(table.clientWidth);
+    }
+
+    for (const row of [...fieldRows, ...timeoutRows]) {
+      expect(row.classList).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
+      expect(row.classList).toContain("py-3.5");
+      expect(row.children.item(1)?.classList).not.toContain("col-span-2");
+      expect(row.children.item(1)?.classList).toContain("justify-end");
+    }
+
+    expect(
+      canvasElement.querySelector('button[aria-label="Clear account override: Priority"]')
+        ?.classList,
+    ).toContain("col-start-3");
+
+    expect(
+      canvasElement.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
+        ?.classList,
+    ).toContain("grid-cols-2");
+  },
+};
+
+export const DesktopFramedHierarchy: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "desktop1280" },
+  },
+  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
+  play: async ({ canvasElement }) => {
+    const card = canvasElement.querySelector<HTMLElement>(
+      '[data-testid="effective-routing-rule-card"]',
+    );
+    const staticSections = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const rowTables = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
+    );
+
+    if (!card) throw new Error("missing effective routing rule card");
+    expect(card.classList).toContain("sm:border");
+    expect(card.classList).toContain("sm:rounded-xl");
+
+    for (const section of staticSections) {
+      expect(section.classList).toContain("sm:border");
+      expect(section.classList).toContain("sm:rounded-xl");
+    }
+
+    for (const table of rowTables) {
+      expect(table.classList).toContain("sm:border");
+      expect(table.classList).toContain("sm:overflow-hidden");
+    }
+  },
 };
 
 export const EditableMultipleAccountOverrides: Story = {
