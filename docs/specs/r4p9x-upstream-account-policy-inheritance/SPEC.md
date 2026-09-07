@@ -608,7 +608,7 @@ Visual evidence is captured from stable Storybook scenarios for:
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the 上游 navigation, 中转 tab, API-key-only metrics, account-level filters, and absence of grouping controls.
-  candidate_sha: `2c5b8458821c00536f3ed19329820102726ade5ed688499bd1d9503be10c4bd7`
+  candidate_sha: `63ba747ef0d3cad7283ea6d405d2961c25e952df4babbb9e4953d558b479fb9e`
   target_program: mock-only
   capture_scope: browser viewport
   sensitive_exclusion: deterministic ui_demo fixtures only
@@ -624,7 +624,7 @@ Visual evidence is captured from stable Storybook scenarios for:
   margin_policy: trim_only
   evidence_surface: page
   evidence_note: verifies the mobile 上游 → 号池 context, OAuth-only pool copy, migration acknowledgement gate, and responsive single-column layout.
-  candidate_sha: `732ae4e5e36b855d5514d0c8b7046d9146d42b5bbaf10bfbfca70f0b55619c0a`
+  candidate_sha: `107171cf1377f0912369b0c21edc424db3a4ae7c1f45e470abd298d236d5bef9`
   target_program: mock-only
   capture_scope: browser viewport
   sensitive_exclusion: deterministic ui_demo fixtures only
