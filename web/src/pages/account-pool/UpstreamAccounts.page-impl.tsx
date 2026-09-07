@@ -1738,12 +1738,12 @@ export default function UpstreamAccountsPage() {
                   </p>
                 </div>
                 <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center sm:justify-start lg:justify-end">
-                  <SegmentedControl
-                    size="compact"
-                    role="tablist"
-                    aria-label={t("accountPool.upstreamAccounts.viewToggleAria")}
-                  >
-                    {!isTransitPage ? (
+                  {!isTransitPage ? (
+                    <SegmentedControl
+                      size="compact"
+                      role="tablist"
+                      aria-label={t("accountPool.upstreamAccounts.viewToggleAria")}
+                    >
                       <SegmentedControlItem
                         type="button"
                         role="tab"
@@ -1753,8 +1753,6 @@ export default function UpstreamAccountsPage() {
                       >
                         {t("accountPool.upstreamAccounts.viewMode.grid")}
                       </SegmentedControlItem>
-                    ) : null}
-                    {!isTransitPage ? (
                       <SegmentedControlItem
                         type="button"
                         role="tab"
@@ -1764,17 +1762,17 @@ export default function UpstreamAccountsPage() {
                       >
                         {t("accountPool.upstreamAccounts.viewMode.grouped")}
                       </SegmentedControlItem>
-                    ) : null}
-                    <SegmentedControlItem
-                      type="button"
-                      role="tab"
-                      aria-selected={rosterViewMode === "flat"}
-                      active={rosterViewMode === "flat"}
-                      onClick={() => setRosterViewMode("flat")}
-                    >
-                      {t("accountPool.upstreamAccounts.viewMode.flat")}
-                    </SegmentedControlItem>
-                  </SegmentedControl>
+                      <SegmentedControlItem
+                        type="button"
+                        role="tab"
+                        aria-selected={rosterViewMode === "flat"}
+                        active={rosterViewMode === "flat"}
+                        onClick={() => setRosterViewMode("flat")}
+                      >
+                        {t("accountPool.upstreamAccounts.viewMode.flat")}
+                      </SegmentedControlItem>
+                    </SegmentedControl>
+                  ) : null}
                   {isLoading ? (
                     <div className="flex items-center justify-start lg:justify-end">
                       <Spinner className="text-primary" />

@@ -478,6 +478,7 @@ export const TransitOnly: Story = {
       await expect(
         canvasScope.queryByRole("tab", { name: /grouped|分组/i }),
       ).not.toBeInTheDocument();
+      await expect(canvasScope.queryByRole("tablist")).not.toBeInTheDocument();
       await expect(canvasScope.queryByText(/account group|账号分组/i)).not.toBeInTheDocument();
     });
   },
