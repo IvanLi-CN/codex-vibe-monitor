@@ -1817,6 +1817,9 @@ const baseTranslations = {
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
     "settings.autoSaved": "Auto save enabled",
+    "settings.saveFailed": "Save failed: {{error}}",
+    "settings.retrySave": "Retry save",
+    "settings.revertSave": "Revert to saved",
     "settings.routing.title": "Upstream request defaults",
     "settings.routing.description":
       "Configure the global request-body compression and request path timeouts for API key upstream HTTP requests. Group and account rules can override only the algorithm.",
@@ -4983,6 +4986,9 @@ const baseTranslations = {
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
     "settings.autoSaved": "已启用自动保存",
+    "settings.saveFailed": "保存失败：{{error}}",
+    "settings.retrySave": "重试保存",
+    "settings.revertSave": "还原到已保存值",
     "settings.routing.title": "上游请求默认值",
     "settings.routing.description":
       "为 API Key 上游 HTTP 请求配置全局默认的请求体压缩和请求链路超时。分组和账号规则只允许覆盖算法。",

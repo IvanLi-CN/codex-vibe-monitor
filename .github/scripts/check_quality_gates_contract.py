@@ -1314,11 +1314,13 @@ def validate_release(path: Path, contract: ContractModel) -> None:
         "release.yml.jobs.release-publish.if drifted",
     )
     publish_permissions = require_mapping(publish.get("permissions"), "release.yml.jobs.release-publish.permissions")
+    require(
+        set(publish_permissions) == {"actions", "contents", "packages"},
+        "release.yml.jobs.release-publish.permissions must exclude source-PR comment permissions",
+    )
     require(publish_permissions.get("actions") == "write", "release.yml.jobs.release-publish.permissions.actions must stay write")
     require(publish_permissions.get("contents") == "write", "release.yml.jobs.release-publish.permissions.contents must stay write")
-    require(publish_permissions.get("issues") == "write", "release.yml.jobs.release-publish.permissions.issues must stay write")
     require(publish_permissions.get("packages") == "write", "release.yml.jobs.release-publish.permissions.packages must stay write")
-    require(publish_permissions.get("pull-requests") == "write", "release.yml.jobs.release-publish.permissions.pull-requests must stay write")
     publish_checkout = checkout_step(publish, "Checkout code", "release.yml.jobs.release-publish")
     require(publish_checkout.get("ref") == "${{ needs.release-meta.outputs.target_sha }}", "release.yml.jobs.release-publish checkout ref drifted")
     tag_step = step_config(publish, "Create and push git tag", "release.yml.jobs.release-publish")
@@ -1360,16 +1362,15 @@ def validate_release(path: Path, contract: ContractModel) -> None:
             forbidden_marker not in create_release_body,
             f"release.yml.jobs.release-publish: createRelease must not render {forbidden_marker!r}",
         )
-    comment_step = step_config(publish, "Upsert PR release version comment", "release.yml.jobs.release-publish")
-    comment_env = require_mapping(comment_step.get("env"), "release.yml.jobs.release-publish.steps['Upsert PR release version comment'].env")
-    require(comment_env.get("RELEASE_PR_NUMBER") == "${{ needs.release-meta.outputs.pr_number }}", "release.yml.jobs.release-publish: PR release comment must consume pr_number")
-    require(comment_env.get("RELEASE_TAG") == "${{ needs.release-meta.outputs.release_tag }}", "release.yml.jobs.release-publish: PR release comment must consume release_tag")
-    comment_script = str(comment_step.get("with", {}).get("script", ""))
-    require("codex-release-version-comment" in comment_script, "release.yml.jobs.release-publish: PR release comment marker drifted")
-    require("issues.listComments" in comment_script, "release.yml.jobs.release-publish: PR release comment must inspect existing comments")
-    require("issues.updateComment" in comment_script, "release.yml.jobs.release-publish: PR release comment must support updates")
-    require("github-actions[bot]" in comment_script, "release.yml.jobs.release-publish: PR release comment must only update github-actions[bot] comments")
-    require("leaving PR comment unchanged" in comment_script, "release.yml.jobs.release-publish: PR release comment must warn on foreign marker comments")
+    publish_steps = require_mapping(publish, "release.yml.jobs.release-publish").get("steps")
+    require(isinstance(publish_steps, list), "release.yml.jobs.release-publish.steps must be a list")
+    require(
+        not any(
+            isinstance(step, dict) and step.get("name") == "Upsert PR release version comment"
+            for step in publish_steps
+        ),
+        "release.yml.jobs.release-publish: source-PR release comment step must stay removed",
+    )
     next_step = step_config(publish, "Resolve next pending release target", "release.yml.jobs.release-publish")
     require(next_step.get("if") == "github.event_name != 'workflow_dispatch'", "release.yml.jobs.release-publish: next pending target gate drifted")
     next_env = require_mapping(next_step.get("env"), "release.yml.jobs.release-publish.steps['Resolve next pending release target'].env")

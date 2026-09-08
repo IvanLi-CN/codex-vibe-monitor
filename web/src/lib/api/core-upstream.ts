@@ -825,6 +825,25 @@ export interface ApiKeyGroupMigrationResult {
   auditAction: string;
 }
 
+export interface ApiKeyGroupMigrationPreflight {
+  confirmationHash: string;
+  apiKeyCount: number;
+  portableFields: string[];
+  blockedStrategies: string[];
+  canMigrate: boolean;
+}
+
+export interface ConfirmApiKeyGroupMigrationPayload {
+  confirmationHash: string;
+  disabledStrategies: string[];
+}
+
+export interface ApiKeyGroupMigrationResult {
+  migratedCount: number;
+  confirmationHash: string;
+  auditAction: string;
+}
+
 export interface UpdateUpstreamAccountPayload {
   displayName?: string;
   email?: string | null;

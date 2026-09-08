@@ -44,6 +44,7 @@ import {
   resolveConversationDetailScope,
   useConversationDetailTopics,
 } from "../../hooks/useConversationDetailTopics";
+import { useLatestDebouncedMutation } from "../../hooks/useLatestDebouncedMutation";
 import { useTranslation } from "../../i18n";
 import type {
   ApiInvocation,
@@ -152,6 +153,36 @@ type ConversationInlinePolicyField =
   | "timeoutImageFirstByte"
   | "timeoutResponsesStream"
   | "timeoutCompactStream";
+
+type ConversationInlinePatch =
+  | { allowSwitchUpstream: boolean | null }
+  | { fastModeRewriteMode: PromptCacheConversationRewriteMode | null }
+  | { imageToolRewriteMode: PromptCacheConversationRewriteMode | null }
+  | { codexImagegenRewriteMode: PromptCacheConversationRewriteMode | null }
+  | {
+      availableModels: string[] | null;
+      availableModelsMode?: "allowlist" | "denylist" | null;
+    }
+  | { forwardProxyKeys: string[] | null }
+  | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> };
+
+type ConversationInlineMutationEntry = {
+  conversationKey: string;
+  fields: ConversationInlinePolicyField[];
+  patch: ConversationInlinePatch;
+};
+
+function isOlderBindingSnapshot(
+  nextBinding: PromptCacheConversationBindingResponse,
+  confirmedBinding: PromptCacheConversationBindingResponse | null,
+): boolean {
+  if (!nextBinding.updatedAt || !confirmedBinding?.updatedAt) return false;
+  const nextTimestamp = Date.parse(nextBinding.updatedAt);
+  const confirmedTimestamp = Date.parse(confirmedBinding.updatedAt);
+  return Number.isFinite(nextTimestamp) && Number.isFinite(confirmedTimestamp)
+    ? nextTimestamp < confirmedTimestamp
+    : false;
+}
 
 const CONVERSATION_ACTIVITY_METRICS: Array<{
   key: ConversationActivityMetric;
@@ -291,6 +322,99 @@ function buildConversationEffectiveRoutingRule(
     timeouts: binding.timeouts,
     timeoutFieldSources: binding.timeoutFieldSources,
   };
+}
+
+function applyConversationInlinePatch(
+  binding: PromptCacheConversationBindingResponse,
+  patch: ConversationInlinePatch,
+): PromptCacheConversationBindingResponse {
+  const next = { ...binding };
+  const nextPolicyFieldSources: NonNullable<
+    PromptCacheConversationBindingResponse["policyFieldSources"]
+  > = {
+    allowSwitchUpstream: binding.policyFieldSources?.allowSwitchUpstream ?? "account",
+    fastModeRewriteMode: binding.policyFieldSources?.fastModeRewriteMode ?? "account",
+    imageToolRewriteMode: binding.policyFieldSources?.imageToolRewriteMode ?? "account",
+    codexImagegenRewriteMode: binding.policyFieldSources?.codexImagegenRewriteMode ?? "account",
+    availableModels: binding.policyFieldSources?.availableModels ?? "account",
+    availableModelsMode: binding.policyFieldSources?.availableModelsMode ?? "account",
+    forwardProxyKey: binding.policyFieldSources?.forwardProxyKey ?? "account",
+  };
+  const nextTimeoutFieldSources = { ...binding.timeoutFieldSources };
+  next.policyFieldSources = nextPolicyFieldSources;
+  next.timeoutFieldSources = nextTimeoutFieldSources;
+
+  if ("allowSwitchUpstream" in patch) {
+    nextPolicyFieldSources.allowSwitchUpstream =
+      patch.allowSwitchUpstream == null ? "account" : "conversation";
+    next.allowSwitchUpstream = patch.allowSwitchUpstream;
+  }
+  if ("fastModeRewriteMode" in patch) {
+    nextPolicyFieldSources.fastModeRewriteMode =
+      patch.fastModeRewriteMode == null ? "account" : "conversation";
+    next.fastModeRewriteMode = patch.fastModeRewriteMode;
+  }
+  if ("imageToolRewriteMode" in patch) {
+    nextPolicyFieldSources.imageToolRewriteMode =
+      patch.imageToolRewriteMode == null ? "account" : "conversation";
+    next.imageToolRewriteMode = patch.imageToolRewriteMode;
+  }
+  if ("codexImagegenRewriteMode" in patch) {
+    nextPolicyFieldSources.codexImagegenRewriteMode =
+      patch.codexImagegenRewriteMode == null ? "account" : "conversation";
+    next.codexImagegenRewriteMode = patch.codexImagegenRewriteMode;
+  }
+  if ("availableModels" in patch) {
+    nextPolicyFieldSources.availableModels =
+      patch.availableModels == null ? "account" : "conversation";
+    next.availableModels = patch.availableModels ? [...patch.availableModels] : null;
+    if ("availableModelsMode" in patch) next.availableModelsMode = patch.availableModelsMode;
+  }
+  if ("forwardProxyKeys" in patch) {
+    nextPolicyFieldSources.forwardProxyKey =
+      patch.forwardProxyKeys == null ? "account" : "conversation";
+    next.forwardProxyKeys =
+      patch.forwardProxyKeys == null ? undefined : [...patch.forwardProxyKeys];
+  }
+  if ("timeouts" in patch) {
+    next.timeouts = {
+      ...(binding.timeouts ?? {}),
+      ...patch.timeouts,
+    } as PromptCacheConversationBindingResponse["timeouts"];
+    for (const [key, value] of Object.entries(patch.timeouts)) {
+      nextTimeoutFieldSources[
+        key as keyof NonNullable<PromptCacheConversationBindingResponse["timeoutFieldSources"]>
+      ] = value == null ? "account" : "conversation";
+    }
+  }
+
+  return next;
+}
+
+function conversationBindingPayloadBase(
+  binding: PromptCacheConversationBindingResponse | null,
+):
+  | { bindingKind: "group"; groupName: string }
+  | { bindingKind: "upstreamAccount"; upstreamAccountId: number }
+  | { bindingKind: "none" } {
+  if (binding?.bindingKind === "group" && binding.groupName) {
+    return { bindingKind: "group", groupName: binding.groupName };
+  }
+  if (binding?.bindingKind === "upstreamAccount" && binding.upstreamAccountId != null) {
+    return { bindingKind: "upstreamAccount", upstreamAccountId: binding.upstreamAccountId };
+  }
+  return { bindingKind: "none" };
+}
+
+function mergeConversationInlinePatch(
+  base: ConversationInlinePatch | null,
+  patch: ConversationInlinePatch,
+): ConversationInlinePatch {
+  if (!base) return patch;
+  if ("timeouts" in base && "timeouts" in patch) {
+    return { timeouts: { ...base.timeouts, ...patch.timeouts } };
+  }
+  return { ...base, ...patch } as ConversationInlinePatch;
 }
 
 function buildConversationRowValueOverrides(
@@ -2213,9 +2337,15 @@ export function PromptCacheConversationHistoryDrawer({
   const pendingCallRecordsRef = useRef<ApiInvocation[]>([]);
   const bindingDraftDirtyRef = useRef(false);
   const bindingTopicLoadingRef = useRef(false);
+  const bindingHydratedRef = useRef(false);
+  const bindingScopeRef = useRef<{ conversationKey: string | null; open: boolean }>({
+    conversationKey,
+    open,
+  });
   const bindingTopicSseUnavailableCapturedRef = useRef(false);
   const bindingTopicSseUnavailableCaptureKeyRef = useRef<string | null>(null);
   const staleBindingTopicPayloadRef = useRef<PromptCacheConversationBindingResponse | null>(null);
+  const confirmedBindingRef = useRef<PromptCacheConversationBindingResponse | null>(null);
   const operationEventsRef = useRef<PromptCacheConversationOperationEvent[]>([]);
   const operationsTopicKeyRef = useRef<string | null>(null);
   const operationsPageRef = useRef(1);
@@ -2245,11 +2375,117 @@ export function PromptCacheConversationHistoryDrawer({
   const [availableModelsMode, setAvailableModelsMode] = useState<"inherit" | "override">("inherit");
   const [availableModelsDraft, setAvailableModelsDraft] = useState("");
   const [forwardProxyKeysDraft, setForwardProxyKeysDraft] = useState<string[]>([]);
-  const [inlinePolicyBusyField, setInlinePolicyBusyField] =
-    useState<ConversationInlinePolicyField | null>(null);
   const [inlinePolicyErrors, setInlinePolicyErrors] = useState<
     Partial<Record<ConversationInlinePolicyField, string | null>>
   >({});
+  const inlinePolicyDraftRef = useRef<{
+    conversationKey: string;
+    patch: ConversationInlinePatch;
+    fields: Set<ConversationInlinePolicyField>;
+  } | null>(null);
+  const inlinePolicyMutation = useLatestDebouncedMutation<
+    ConversationInlineMutationEntry,
+    PromptCacheConversationBindingResponse
+  >({
+    resourceKey: conversationKey,
+    mutate: (entry) =>
+      updatePromptCacheConversationBinding(entry.conversationKey, {
+        ...conversationBindingPayloadBase(binding),
+        ...entry.patch,
+      }),
+    onSuccess: (nextBinding) => {
+      confirmedBindingRef.current = nextBinding;
+      inlinePolicyDraftRef.current = null;
+      setBinding(nextBinding);
+      setBindingKind(nextBinding.bindingKind);
+      applyBindingPolicyDraft(nextBinding, {
+        setAllowSwitchUpstreamDraft,
+        setFastModeDraft,
+        setImageToolDraft,
+        setCodexImagegenDraft,
+        setAvailableModelsMode,
+        setAvailableModelsDraft,
+        setForwardProxyKeysDraft,
+      });
+      setBindingGroupName(nextBinding.groupName ?? bindingGroups[0] ?? "");
+      setBindingAccountId(
+        nextBinding.upstreamAccountId != null
+          ? String(nextBinding.upstreamAccountId)
+          : bindingAccounts[0]
+            ? String(bindingAccounts[0].id)
+            : "",
+      );
+      bindingDraftDirtyRef.current = false;
+      setBindingRemoteConflict(null);
+      setInlinePolicyErrors({});
+    },
+    onError: (error, entry) => {
+      bindingDraftDirtyRef.current = true;
+      setInlinePolicyErrors((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          entry.fields.map((field) => [
+            field,
+            error instanceof Error ? error.message : String(error),
+          ]),
+        ),
+      }));
+    },
+    onRevert: (confirmedBinding) => {
+      if (!confirmedBinding) return;
+      confirmedBindingRef.current = confirmedBinding;
+      inlinePolicyDraftRef.current = null;
+      setBinding(confirmedBinding);
+      setBindingKind(confirmedBinding.bindingKind);
+      applyBindingPolicyDraft(confirmedBinding, {
+        setAllowSwitchUpstreamDraft,
+        setFastModeDraft,
+        setImageToolDraft,
+        setCodexImagegenDraft,
+        setAvailableModelsMode,
+        setAvailableModelsDraft,
+        setForwardProxyKeysDraft,
+      });
+      setBindingGroupName(confirmedBinding.groupName ?? bindingGroups[0] ?? "");
+      setBindingAccountId(
+        confirmedBinding.upstreamAccountId != null
+          ? String(confirmedBinding.upstreamAccountId)
+          : bindingAccounts[0]
+            ? String(bindingAccounts[0].id)
+            : "",
+      );
+      bindingDraftDirtyRef.current = false;
+      setBindingRemoteConflict(null);
+      setInlinePolicyErrors({});
+    },
+  });
+  const inlinePolicySaving =
+    inlinePolicyMutation.status === "pending" || inlinePolicyMutation.status === "saving";
+  const inlinePolicyStatusByField = useMemo(() => {
+    if (!inlinePolicySaving || !inlinePolicyDraftRef.current) return {};
+    return Object.fromEntries(
+      Array.from(inlinePolicyDraftRef.current.fields).map((field) => [
+        field,
+        inlinePolicyMutation.status,
+      ]),
+    ) as Partial<Record<ConversationInlinePolicyField, "pending" | "saving">>;
+  }, [inlinePolicyMutation.status, inlinePolicySaving]);
+  const retryInlinePolicy = useCallback(() => {
+    setInlinePolicyErrors((current) => {
+      const next = { ...current };
+      for (const field of inlinePolicyDraftRef.current?.fields ?? []) delete next[field];
+      return next;
+    });
+    inlinePolicyMutation.retry();
+  }, [inlinePolicyMutation.retry]);
+  const revertInlinePolicy = useCallback(() => {
+    inlinePolicyMutation.revert();
+  }, [inlinePolicyMutation.revert]);
+
+  useEffect(() => {
+    if (open) return;
+    void inlinePolicyMutation.flush();
+  }, [inlinePolicyMutation.flush, open]);
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [affinityResetConfirmOpen, setAffinityResetConfirmOpen] = useState(false);
   const [bindingRemoteConflict, setBindingRemoteConflict] =
@@ -2729,20 +2965,28 @@ export function PromptCacheConversationHistoryDrawer({
   );
 
   useEffect(() => {
+    if (
+      bindingScopeRef.current.conversationKey !== conversationKey ||
+      bindingScopeRef.current.open !== open
+    ) {
+      bindingScopeRef.current = { conversationKey, open };
+      bindingHydratedRef.current = false;
+      confirmedBindingRef.current = null;
+    }
+    if (inlinePolicyMutation.hasPending || inlinePolicyMutation.status === "error") return;
+    inlinePolicyDraftRef.current = null;
     if (!open || !conversationKey) {
       bindingDraftDirtyRef.current = false;
       setBindingRemoteConflict(null);
       setBindingOwnerConfirmAllowsRemoteOverwrite(false);
-      setInlinePolicyBusyField(null);
       setInlinePolicyErrors({});
       return;
     }
     bindingDraftDirtyRef.current = false;
     setBindingRemoteConflict(null);
     setBindingOwnerConfirmAllowsRemoteOverwrite(false);
-    setInlinePolicyBusyField(null);
     setInlinePolicyErrors({});
-  }, [conversationKey, open]);
+  }, [conversationKey, inlinePolicyMutation.hasPending, inlinePolicyMutation.status, open]);
 
   useEffect(() => {
     if (!open || !conversationKey) {
@@ -2766,7 +3010,6 @@ export function PromptCacheConversationHistoryDrawer({
       setAvailableModelsMode("inherit");
       setAvailableModelsDraft("");
       setForwardProxyKeysDraft([]);
-      setInlinePolicyBusyField(null);
       setInlinePolicyErrors({});
       operationsLoadControllerRef.current?.abort();
       operationEventsRef.current = [];
@@ -2792,7 +3035,9 @@ export function PromptCacheConversationHistoryDrawer({
     const controller = new AbortController();
     const hydrationSeq = bindingHydrationSeqRef.current + 1;
     bindingHydrationSeqRef.current = hydrationSeq;
-    setBindingLoading(isSseUnavailable || bindingTopicLoadingRef.current);
+    if (!bindingHydratedRef.current) {
+      setBindingLoading(isSseUnavailable || bindingTopicLoadingRef.current);
+    }
     setBindingError(null);
     void Promise.all([
       isSseUnavailable
@@ -2816,7 +3061,17 @@ export function PromptCacheConversationHistoryDrawer({
         setBindingProxyNodes(
           (accountList.forwardProxyNodes ?? []).filter((node) => node.selectable),
         );
-        if (!nextBinding || hydrationSeq !== bindingHydrationSeqRef.current) return;
+        if (
+          !nextBinding ||
+          hydrationSeq !== bindingHydrationSeqRef.current ||
+          bindingDraftDirtyRef.current ||
+          inlinePolicyMutation.hasPending
+        )
+          return;
+        if (isOlderBindingSnapshot(nextBinding, confirmedBindingRef.current)) return;
+        inlinePolicyMutation.reconcile(nextBinding);
+        confirmedBindingRef.current = nextBinding;
+        bindingHydratedRef.current = true;
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
         applyBindingPolicyDraft(nextBinding, {
@@ -2853,7 +3108,14 @@ export function PromptCacheConversationHistoryDrawer({
       });
 
     return () => controller.abort();
-  }, [activeTab, conversationKey, isSseUnavailable, open]);
+  }, [
+    activeTab,
+    conversationKey,
+    inlinePolicyMutation.hasPending,
+    inlinePolicyMutation.reconcile,
+    isSseUnavailable,
+    open,
+  ]);
 
   useEffect(() => {
     if (!isSseUnavailable) {
@@ -2889,6 +3151,10 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingRemoteConflict(nextBinding);
       return;
     }
+    if (isOlderBindingSnapshot(nextBinding, confirmedBindingRef.current)) return;
+    confirmedBindingRef.current = nextBinding;
+    bindingHydratedRef.current = true;
+    inlinePolicyMutation.reconcile(nextBinding);
     setBinding(nextBinding);
     setBindingKind(nextBinding.bindingKind);
     applyBindingPolicyDraft(nextBinding, {
@@ -2910,7 +3176,15 @@ export function PromptCacheConversationHistoryDrawer({
     );
     setBindingLoading(false);
     setBindingError(null);
-  }, [activeTab, bindingAccounts, bindingGroups, bindingTopic.data, isSseUnavailable, open]);
+  }, [
+    activeTab,
+    bindingAccounts,
+    bindingGroups,
+    bindingTopic.data,
+    inlinePolicyMutation.reconcile,
+    isSseUnavailable,
+    open,
+  ]);
 
   useEffect(() => {
     if (operationsFilter !== "routing") {
@@ -3003,7 +3277,6 @@ export function PromptCacheConversationHistoryDrawer({
     !binding ||
     bindingLoading ||
     bindingSaving ||
-    inlinePolicyBusyField != null ||
     (bindingKind === "group" && !bindingGroupName) ||
     (bindingKind === "upstreamAccount" && !bindingAccountId);
   const timeoutFieldLabels = useMemo(
@@ -3048,88 +3321,35 @@ export function PromptCacheConversationHistoryDrawer({
     ],
     [t],
   );
-  const buildCurrentBindingPayloadBase = useCallback(() => {
-    if (binding?.bindingKind === "group" && binding.groupName) {
-      return {
-        bindingKind: "group" as const,
-        groupName: binding.groupName,
-      };
-    }
-    if (binding?.bindingKind === "upstreamAccount" && binding.upstreamAccountId != null) {
-      return {
-        bindingKind: "upstreamAccount" as const,
-        upstreamAccountId: binding.upstreamAccountId,
-      };
-    }
-    return {
-      bindingKind: "none" as const,
-    };
-  }, [binding]);
   const saveConversationInlinePolicy = useCallback(
-    async (
-      field: ConversationInlinePolicyField,
-      patch:
-        | { allowSwitchUpstream: boolean | null }
-        | { fastModeRewriteMode: PromptCacheConversationRewriteMode | null }
-        | { imageToolRewriteMode: PromptCacheConversationRewriteMode | null }
-        | { codexImagegenRewriteMode: PromptCacheConversationRewriteMode | null }
-        | {
-            availableModels: string[] | null;
-            availableModelsMode?: "allowlist" | "denylist" | null;
-          }
-        | { forwardProxyKeys: string[] | null }
-        | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> },
-    ) => {
-      if (!conversationKey || !binding || bindingSaving || inlinePolicyBusyField != null) return;
+    (field: ConversationInlinePolicyField, patch: ConversationInlinePatch) => {
+      if (!conversationKey || !binding || bindingSaving) return;
+      const existingDraft = inlinePolicyDraftRef.current;
+      const nextPatch = mergeConversationInlinePatch(existingDraft?.patch ?? null, patch);
+      const nextFields = new Set(existingDraft?.fields ?? []);
+      nextFields.add(field);
+      inlinePolicyDraftRef.current = { conversationKey, patch: nextPatch, fields: nextFields };
       bindingDraftDirtyRef.current = true;
       setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
       setBindingError(null);
-      setInlinePolicyBusyField(field);
-      try {
-        const nextBinding = await updatePromptCacheConversationBinding(conversationKey, {
-          ...buildCurrentBindingPayloadBase(),
-          ...patch,
-        });
-        setBinding(nextBinding);
-        applyBindingPolicyDraft(nextBinding, {
-          setAllowSwitchUpstreamDraft,
-          setFastModeDraft,
-          setImageToolDraft,
-          setCodexImagegenDraft,
-          setAvailableModelsMode,
-          setAvailableModelsDraft,
-          setForwardProxyKeysDraft,
-        });
-        setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
-        const hasUnsavedManualBindingDraft =
-          nextBinding.bindingKind !== bindingKind ||
-          (bindingKind === "group" && nextBinding.groupName !== bindingGroupName) ||
-          (bindingKind === "upstreamAccount" &&
-            String(nextBinding.upstreamAccountId ?? "") !== bindingAccountId);
-        bindingDraftDirtyRef.current = hasUnsavedManualBindingDraft;
-        if (!hasUnsavedManualBindingDraft) {
-          setBindingRemoteConflict(null);
-        }
-      } catch (err) {
-        bindingDraftDirtyRef.current = true;
-        setInlinePolicyErrors((current) => ({
-          ...current,
-          [field]: err instanceof Error ? err.message : String(err),
-        }));
-      } finally {
-        setInlinePolicyBusyField((current) => (current === field ? null : current));
-      }
+      const nextBinding = applyConversationInlinePatch(binding, nextPatch);
+      setBinding(nextBinding);
+      applyBindingPolicyDraft(nextBinding, {
+        setAllowSwitchUpstreamDraft,
+        setFastModeDraft,
+        setImageToolDraft,
+        setCodexImagegenDraft,
+        setAvailableModelsMode,
+        setAvailableModelsDraft,
+        setForwardProxyKeysDraft,
+      });
+      inlinePolicyMutation.schedule({
+        conversationKey,
+        fields: Array.from(nextFields),
+        patch: nextPatch,
+      });
     },
-    [
-      binding,
-      bindingAccountId,
-      bindingGroupName,
-      bindingKind,
-      bindingSaving,
-      buildCurrentBindingPayloadBase,
-      conversationKey,
-      inlinePolicyBusyField,
-    ],
+    [binding, bindingSaving, conversationKey, inlinePolicyMutation.schedule],
   );
   const conversationEffectiveRoutingRule = useMemo(
     () => buildConversationEffectiveRoutingRule(binding),
@@ -3142,7 +3362,7 @@ export function PromptCacheConversationHistoryDrawer({
       editor: (
         <SelectField
           value={allowSwitchUpstreamDraft}
-          disabled={inlinePolicyBusyField != null}
+          disabled={bindingSaving}
           aria-label={t("live.conversations.drawer.policy.cutOut")}
           size="sm"
           options={[
@@ -3169,7 +3389,7 @@ export function PromptCacheConversationHistoryDrawer({
       editor: (
         <SelectField
           value={fastModeDraft}
-          disabled={inlinePolicyBusyField != null}
+          disabled={bindingSaving}
           aria-label={t("live.conversations.drawer.policy.fastMode")}
           size="sm"
           options={rewriteModeOptions}
@@ -3187,7 +3407,7 @@ export function PromptCacheConversationHistoryDrawer({
       editor: (
         <SelectField
           value={imageToolDraft}
-          disabled={inlinePolicyBusyField != null}
+          disabled={bindingSaving}
           aria-label={t("live.conversations.drawer.policy.imageTool")}
           size="sm"
           options={rewriteModeOptions}
@@ -3205,7 +3425,7 @@ export function PromptCacheConversationHistoryDrawer({
       editor: (
         <SelectField
           value={codexImagegenDraft}
-          disabled={inlinePolicyBusyField != null}
+          disabled={bindingSaving}
           aria-label="Codex imagegen"
           size="sm"
           options={rewriteModeOptions}
@@ -3224,7 +3444,7 @@ export function PromptCacheConversationHistoryDrawer({
         <div className="space-y-2">
           <Input
             value={availableModelsDraft}
-            disabled={inlinePolicyBusyField != null}
+            disabled={bindingSaving}
             aria-label={t("live.conversations.drawer.policy.availableModels")}
             placeholder={t("live.conversations.drawer.policy.availableModelsPlaceholder")}
             className="h-9"
@@ -3242,7 +3462,7 @@ export function PromptCacheConversationHistoryDrawer({
           <Button
             type="button"
             size="sm"
-            disabled={inlinePolicyBusyField != null || availableModelsOverrideList.length === 0}
+            disabled={bindingSaving || availableModelsOverrideList.length === 0}
             onClick={() =>
               void saveConversationInlinePolicy("availableModels", {
                 availableModels: availableModelsOverrideList,
@@ -3265,7 +3485,7 @@ export function PromptCacheConversationHistoryDrawer({
     fastModeDraft,
     imageToolDraft,
     codexImagegenDraft,
-    inlinePolicyBusyField,
+    bindingSaving,
     rewriteModeOptions,
     saveConversationInlinePolicy,
     t,
@@ -3345,7 +3565,7 @@ export function PromptCacheConversationHistoryDrawer({
         <div className="mt-3 grid gap-2 sm:grid-cols-[8.5rem_minmax(0,1fr)_auto]">
           <SelectField
             value={bindingKind}
-            disabled={bindingLoading || bindingSaving || inlinePolicyBusyField != null}
+            disabled={bindingLoading || bindingSaving}
             aria-label={t("live.conversations.drawer.binding.kind")}
             size="sm"
             options={bindingKindOptions}
@@ -3357,7 +3577,7 @@ export function PromptCacheConversationHistoryDrawer({
           {bindingKind === "group" ? (
             <SelectField
               value={bindingGroupName}
-              disabled={bindingLoading || bindingSaving || inlinePolicyBusyField != null}
+              disabled={bindingLoading || bindingSaving}
               aria-label={t("live.conversations.drawer.binding.group")}
               size="sm"
               options={bindingGroups.map((groupName) => ({
@@ -3372,7 +3592,7 @@ export function PromptCacheConversationHistoryDrawer({
           ) : bindingKind === "upstreamAccount" ? (
             <SelectField
               value={bindingAccountId}
-              disabled={bindingLoading || bindingSaving || inlinePolicyBusyField != null}
+              disabled={bindingLoading || bindingSaving}
               aria-label={t("live.conversations.drawer.binding.account")}
               size="sm"
               options={bindingAccounts.map((account) => ({
@@ -3410,6 +3630,7 @@ export function PromptCacheConversationHistoryDrawer({
                   variant="secondary"
                   onClick={() => {
                     const latest = bindingRemoteConflict;
+                    confirmedBindingRef.current = latest;
                     bindingDraftDirtyRef.current = false;
                     setBinding(latest);
                     setBindingKind(latest.bindingKind);
@@ -3609,8 +3830,10 @@ export function PromptCacheConversationHistoryDrawer({
           }}
           rowValueOverrides={conversationRowValueOverrides}
           editablePolicy={{
-            busyField: inlinePolicyBusyField,
+            saveStatusByField: inlinePolicyStatusByField,
             errorByField: inlinePolicyErrors,
+            onRetry: retryInlinePolicy,
+            onRevert: revertInlinePolicy,
             onChange: (field, payload) => {
               if (field === "allowCutOut") {
                 void saveConversationInlinePolicy("allowCutOut", {
@@ -3661,11 +3884,14 @@ export function PromptCacheConversationHistoryDrawer({
                 label: node ? conversationForwardProxyLabel(node) : key,
               };
             }),
-            busy: inlinePolicyBusyField === "proxyBindings",
-            disabled:
-              bindingLoading ||
-              bindingSaving ||
-              (inlinePolicyBusyField != null && inlinePolicyBusyField !== "proxyBindings"),
+            busy: false,
+            saving:
+              inlinePolicySaving &&
+              inlinePolicyDraftRef.current?.fields.has("proxyBindings") === true,
+            error: inlinePolicyErrors.proxyBindings,
+            disabled: bindingLoading || bindingSaving,
+            onRetry: retryInlinePolicy,
+            onRevert: revertInlinePolicy,
             onClear: () =>
               void saveConversationInlinePolicy("proxyBindings", { forwardProxyKeys: null }),
             onRemove: (key) => {
@@ -3680,7 +3906,7 @@ export function PromptCacheConversationHistoryDrawer({
                 <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <SelectField
                     value=""
-                    disabled={bindingLoading || bindingSaving || inlinePolicyBusyField != null}
+                    disabled={bindingLoading || bindingSaving}
                     aria-label={t("live.conversations.drawer.policy.proxy")}
                     size="sm"
                     options={[
@@ -3708,7 +3934,7 @@ export function PromptCacheConversationHistoryDrawer({
                     type="button"
                     variant="secondary"
                     size="sm"
-                    disabled={inlinePolicyBusyField != null || forwardProxyKeysDraft.length === 0}
+                    disabled={bindingSaving || forwardProxyKeysDraft.length === 0}
                     onClick={() => {
                       setForwardProxyKeysDraft([]);
                       void saveConversationInlinePolicy("proxyBindings", {
@@ -3740,7 +3966,7 @@ export function PromptCacheConversationHistoryDrawer({
                           <button
                             type="button"
                             className="rounded-full px-1 text-base-content/55 hover:bg-base-200 hover:text-base-content"
-                            disabled={inlinePolicyBusyField != null}
+                            disabled={bindingSaving}
                             aria-label={t("live.conversations.drawer.policy.proxyRemove")}
                             onClick={() => {
                               const nextKeys = toggleConversationProxyKey(
@@ -3850,6 +4076,8 @@ export function PromptCacheConversationHistoryDrawer({
             overrideEdit: t("live.conversations.drawer.policy.editField"),
             overrideClear: t("live.conversations.drawer.policy.clearField"),
             overrideSaving: t("live.conversations.drawer.binding.saving"),
+            overrideRetry: t("settings.retrySave"),
+            overrideRevert: t("settings.revertSave"),
             inheritValue: t("live.conversations.drawer.policy.inherit"),
             cutOutLabel: t("live.conversations.drawer.policy.cutOut"),
             cutInLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutIn"),
@@ -4168,6 +4396,7 @@ export function PromptCacheConversationHistoryDrawer({
     async (options?: { skipOwnerWarning?: boolean; allowRemoteOverwrite?: boolean }) => {
       if (!conversationKey || bindingSubmitDisabled) return;
       if (bindingRemoteConflict && !options?.allowRemoteOverwrite) return;
+      if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
       if (
         !options?.skipOwnerWarning &&
         nextBindingWouldOverrideEncryptedOwner(
@@ -4199,6 +4428,8 @@ export function PromptCacheConversationHistoryDrawer({
                 }
               : { bindingKind: "none" },
         );
+        inlinePolicyMutation.reconcile(nextBinding);
+        confirmedBindingRef.current = nextBinding;
         setBinding(nextBinding);
         setBindingKind(nextBinding.bindingKind);
         applyBindingPolicyDraft(nextBinding, {
@@ -4237,6 +4468,9 @@ export function PromptCacheConversationHistoryDrawer({
       bindingRemoteConflict,
       bindingSubmitDisabled,
       conversationKey,
+      inlinePolicyMutation.hasPending,
+      inlinePolicyMutation.flush,
+      inlinePolicyMutation.reconcile,
     ],
   );
   const revealPendingCalls = useCallback(() => {
@@ -4251,10 +4485,13 @@ export function PromptCacheConversationHistoryDrawer({
 
   const resetAffinity = useCallback(async () => {
     if (!conversationKey || bindingSaving) return;
+    if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
     setBindingSaving(true);
     setBindingError(null);
     try {
       const nextBinding = await resetPromptCacheConversationAffinity(conversationKey);
+      inlinePolicyMutation.reconcile(nextBinding);
+      confirmedBindingRef.current = nextBinding;
       setBinding(nextBinding);
       setBindingKind(nextBinding.bindingKind);
       applyBindingPolicyDraft(nextBinding, {
@@ -4282,7 +4519,15 @@ export function PromptCacheConversationHistoryDrawer({
     } finally {
       setBindingSaving(false);
     }
-  }, [bindingAccounts, bindingGroups, bindingSaving, conversationKey]);
+  }, [
+    bindingAccounts,
+    bindingGroups,
+    bindingSaving,
+    conversationKey,
+    inlinePolicyMutation.hasPending,
+    inlinePolicyMutation.flush,
+    inlinePolicyMutation.reconcile,
+  ]);
 
   return (
     <>

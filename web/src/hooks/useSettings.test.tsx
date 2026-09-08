@@ -113,6 +113,13 @@ async function flushAsync() {
   });
 }
 
+async function flushDebouncedMutation() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(600);
+  });
+  await flushAsync();
+}
+
 function click(testId: string) {
   const element = host?.querySelector(`[data-testid="${testId}"]`);
   if (!(element instanceof HTMLButtonElement)) {
@@ -132,7 +139,16 @@ function text(testId: string) {
 }
 
 function Probe() {
-  const { settings, error, isLoading, saveProxy, saveForwardProxy, savePricing } = useSettings();
+  const {
+    settings,
+    error,
+    isLoading,
+    saveProxy,
+    retryProxy,
+    revertProxy,
+    saveForwardProxy,
+    savePricing,
+  } = useSettings();
 
   return (
     <div>
@@ -169,6 +185,12 @@ function Probe() {
         }}
       >
         save proxy
+      </button>
+      <button type="button" data-testid="retry-proxy" onClick={retryProxy}>
+        retry
+      </button>
+      <button type="button" data-testid="revert-proxy" onClick={revertProxy}>
+        revert
       </button>
       <button
         type="button"
@@ -229,6 +251,7 @@ function Probe() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.useFakeTimers();
   apiMocks.fetchSettings.mockResolvedValue(createSettingsPayload());
   apiMocks.updateProxySettings.mockImplementation(async (payload) => ({
     hijackEnabled: payload.hijackEnabled,
@@ -269,17 +292,18 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
+  vi.useRealTimers();
 });
 
 describe("useSettings", () => {
-  it("saves proxy settings and rolls back when save fails", async () => {
+  it("debounces proxy settings and keeps the draft available when save fails", async () => {
     render(<Probe />);
     await flushAsync();
 
     expect(text("proxy-enabled-models")).toContain("gpt-5.4");
 
     click("save-proxy");
-    await flushAsync();
+    await flushDebouncedMutation();
 
     expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(1);
     expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
@@ -295,13 +319,18 @@ describe("useSettings", () => {
 
     apiMocks.updateProxySettings.mockRejectedValueOnce(new Error("proxy save failed"));
     click("save-proxy");
-    await flushAsync();
+    await flushDebouncedMutation();
 
     expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(2);
     expect(text("error")).toBe("proxy save failed");
     expect(text("proxy-enabled-models")).toContain("gpt-5.6-sol");
     expect(text("proxy-enabled-models")).toContain("gpt-5.6-terra");
     expect(text("proxy-enabled-models")).toContain("gpt-5.6-luna");
+
+    click("retry-proxy");
+    await flushDebouncedMutation();
+    expect(apiMocks.updateProxySettings).toHaveBeenCalledTimes(3);
+    expect(text("error")).toBe("");
   });
 
   it("emits the upstream-accounts invalidation event after forward-proxy settings save succeeds", async () => {
@@ -319,7 +348,7 @@ describe("useSettings", () => {
       expect(text("proxy-urls")).toContain("http://initial-proxy.example.com");
 
       click("save-forward-proxy");
-      await flushAsync();
+      await flushDebouncedMutation();
 
       expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
       expect(eventCount).toBe(1);
@@ -344,12 +373,12 @@ describe("useSettings", () => {
       await flushAsync();
 
       click("save-forward-proxy");
-      await flushAsync();
+      await flushDebouncedMutation();
 
       expect(apiMocks.updateForwardProxySettings).toHaveBeenCalledTimes(1);
       expect(eventCount).toBe(0);
       expect(text("error")).toBe("save failed");
-      expect(text("proxy-urls")).toContain("http://initial-proxy.example.com");
+      expect(text("proxy-urls")).toContain("http://refreshed-proxy.example.com");
     } finally {
       window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged);
     }
