@@ -29,7 +29,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderDrawer(revision: number, open = true) {
+function renderDrawer(
+  revision: number,
+  open = true,
+  options?: { presentation?: "overlay" | "page"; showCloseButton?: boolean },
+) {
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -44,6 +48,8 @@ function renderDrawer(revision: number, open = true) {
           labelledBy="drawer-shell-title"
           closeLabel="Close drawer"
           onClose={() => undefined}
+          presentation={options?.presentation}
+          showCloseButton={options?.showCloseButton}
           shellClassName="drawer-shell--detail-wide"
           header={
             <div>
@@ -110,5 +116,16 @@ describe("AccountDetailDrawerShell", () => {
 
     expect(dialog?.className).toContain("drawer-shell--detail-wide");
     expect(frame?.className).toContain("drawer-frame");
+  });
+
+  it("can omit the close button for route-backed page presentations", async () => {
+    renderDrawer(1, true, { presentation: "page", showCloseButton: false });
+    await flushTimers();
+
+    const closeButton = Array.from(document.body.querySelectorAll("button")).find((candidate) =>
+      candidate.textContent?.includes("Close drawer"),
+    );
+
+    expect(closeButton).toBeUndefined();
   });
 });

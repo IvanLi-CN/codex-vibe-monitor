@@ -64,6 +64,7 @@ import { StickyKeyConversationTable } from "../../features/prompt-cache/StickyKe
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useAvailableModelOptions } from "../../hooks/useAvailableModelOptions";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
+import { useLatestDebouncedMutation } from "../../hooks/useLatestDebouncedMutation";
 import { useMotherSwitchNotifications } from "../../hooks/useMotherSwitchNotifications";
 import {
   type UpstreamAccountDetailRouteTab,
@@ -77,6 +78,7 @@ import type {
   ForwardProxyBindingNode,
   StickyKeyConversationSelection,
   UpdateGroupAccountRoutingRulePayload,
+  UpdateUpstreamAccountPayload,
   UpstreamAccountActionEvent,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
@@ -88,6 +90,7 @@ import {
   resetUpstreamAccountModelRouting,
   updateUpstreamAccountModelMappings,
 } from "../../lib/api";
+import { applyRoutingRulePatchToEffectiveRule } from "../../lib/routingRulePatches";
 import { upstreamPlanChipRecipe } from "../../lib/upstreamAccountChips";
 import {
   type AccountDraft,
@@ -395,7 +398,47 @@ type InlinePolicyField =
   | "timeoutResponsesStream"
   | "timeoutCompactStream"
   | "statusChangeReasons"
+  | "proxyBindings"
   | StatusChangeReasonFieldKey;
+
+type AccountInlineMutationEntry = {
+  accountId: number;
+  fields: InlinePolicyField[];
+  payload: Pick<UpdateUpstreamAccountPayload, "routingRule" | "boundProxyKeys">;
+};
+
+type AccountInlineDraft = {
+  accountId: number;
+  routingRule: UpdateGroupAccountRoutingRulePayload;
+  boundProxyKeys?: string[] | null;
+  fields: Set<InlinePolicyField>;
+};
+
+function mergeInlineRoutingRulePatch(
+  base: UpdateGroupAccountRoutingRulePayload,
+  patch: UpdateGroupAccountRoutingRulePayload,
+): UpdateGroupAccountRoutingRulePayload {
+  return {
+    ...base,
+    ...patch,
+    ...(patch.statusChangeReasons
+      ? {
+          statusChangeReasons: {
+            ...(base.statusChangeReasons ?? {}),
+            ...patch.statusChangeReasons,
+          },
+        }
+      : {}),
+    ...(patch.timeouts
+      ? {
+          timeouts: {
+            ...(base.timeouts ?? {}),
+            ...patch.timeouts,
+          },
+        }
+      : {}),
+  };
+}
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`;
@@ -1108,9 +1151,6 @@ function SharedUpstreamAccountDetailDrawerInner({
     routing: false,
     accountActions: new Set(),
   }));
-  const [inlinePolicyBusyField, setInlinePolicyBusyField] = useState<InlinePolicyField | null>(
-    null,
-  );
   const [inlinePolicyErrors, setInlinePolicyErrors] = useState<
     Partial<Record<InlinePolicyField, string | null>>
   >({});
@@ -1908,8 +1948,6 @@ function SharedUpstreamAccountDetailDrawerInner({
   const selectedGroupProxyKeys = normalizeProxyKeys(
     selectedDetail?.groupName ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName) : [],
   );
-  const selectedEffectiveProxyKeys =
-    selectedAccountProxyKeys.length > 0 ? selectedAccountProxyKeys : selectedGroupProxyKeys;
   const selectedProxyNodeByKey = new Map(forwardProxyNodes.map((node) => [node.key, node]));
   const accountProxyEditorBusy = Boolean(
     selectedDetail && hasBusyAccountAction(busyAction, selectedDetail.id),
@@ -2187,6 +2225,73 @@ function SharedUpstreamAccountDetailDrawerInner({
     [onClose],
   );
 
+  const [inlineOptimisticRule, setInlineOptimisticRule] = useState<
+    UpstreamAccountDetail["effectiveRoutingRule"] | null
+  >(null);
+  const [inlineOptimisticProxyKeys, setInlineOptimisticProxyKeys] = useState<string[] | null>(null);
+  const [inlinePolicyQueuedFields, setInlinePolicyQueuedFields] = useState<InlinePolicyField[]>([]);
+  const inlineAccountDraftRef = useRef<AccountInlineDraft | null>(null);
+  const inlineAccountMutation = useLatestDebouncedMutation<
+    AccountInlineMutationEntry,
+    UpstreamAccountDetail
+  >({
+    resourceKey: selectedDetail?.id ?? null,
+    mutate: (entry) => saveAccount(entry.accountId, entry.payload),
+    onSuccess: (response, entry) => {
+      notifyMotherChange(response);
+      inlineAccountDraftRef.current = null;
+      setInlineOptimisticRule(response.effectiveRoutingRule);
+      setInlineOptimisticProxyKeys(normalizeProxyKeys(response.boundProxyKeys));
+      setInlinePolicyQueuedFields([]);
+      setInlinePolicyErrors((current) => {
+        const next = { ...current };
+        for (const field of entry.fields) delete next[field];
+        return next;
+      });
+    },
+    onError: (error, entry) => {
+      if (handleNotFoundClose(entry.accountId, error)) return;
+      setInlinePolicyQueuedFields(entry.fields);
+      setInlinePolicyErrors((current) => {
+        const next = { ...current };
+        for (const field of entry.fields) {
+          next[field] = error instanceof Error ? error.message : String(error);
+        }
+        return next;
+      });
+    },
+    onRevert: (response) => {
+      if (!response) return;
+      inlineAccountDraftRef.current = null;
+      setInlineOptimisticRule(response.effectiveRoutingRule);
+      setInlineOptimisticProxyKeys(normalizeProxyKeys(response.boundProxyKeys));
+      setInlinePolicyQueuedFields([]);
+      setInlinePolicyErrors({});
+    },
+  });
+
+  useEffect(() => {
+    if (inlineAccountMutation.hasPending || inlineAccountMutation.status === "error") return;
+    inlineAccountDraftRef.current = null;
+    setInlineOptimisticRule(selectedDetail?.effectiveRoutingRule ?? null);
+    setInlineOptimisticProxyKeys(
+      selectedDetail ? normalizeProxyKeys(selectedDetail.boundProxyKeys) : null,
+    );
+    setInlinePolicyQueuedFields([]);
+  }, [inlineAccountMutation.hasPending, inlineAccountMutation.status, selectedDetail]);
+
+  useEffect(() => {
+    if (selectedDetail) inlineAccountMutation.reconcile(selectedDetail);
+  }, [inlineAccountMutation.reconcile, selectedDetail]);
+
+  useEffect(() => {
+    if (open) return;
+    void inlineAccountMutation.flush();
+  }, [inlineAccountMutation.flush, open]);
+  const displayedAccountProxyKeys = inlineOptimisticProxyKeys ?? selectedAccountProxyKeys;
+  const displayedEffectiveProxyKeys =
+    displayedAccountProxyKeys.length > 0 ? displayedAccountProxyKeys : selectedGroupProxyKeys;
+
   const applySavedAccountDraftResponse = useCallback(
     (
       sourceId: number,
@@ -2239,6 +2344,7 @@ function SharedUpstreamAccountDetailDrawerInner({
     async (source: UpstreamAccountDetail) => {
       if (source.kind === "api_key_codex" && draftUpstreamBaseUrlError) return;
       if (hasBusyAccountAction(busyAction, source.id)) return;
+      if (inlineAccountMutation.hasPending) await inlineAccountMutation.flush();
       const saveDraftSessionKey = activeDraftSessionKey;
       const saveStartedDraft = draft;
       const pendingSaveSession = {
@@ -2286,6 +2392,7 @@ function SharedUpstreamAccountDetailDrawerInner({
             source.kind === "api_key_codex" ? draft.localLimitUnit.trim() || undefined : undefined,
         });
         notifyMotherChange(response);
+        inlineAccountMutation.reconcile(response);
         applySavedAccountDraftResponse(
           source.id,
           saveDraftSessionKey,
@@ -2320,6 +2427,9 @@ function SharedUpstreamAccountDetailDrawerInner({
       draft,
       draftUpstreamBaseUrlError,
       handleNotFoundClose,
+      inlineAccountMutation.flush,
+      inlineAccountMutation.hasPending,
+      inlineAccountMutation.reconcile,
       notifyMotherChange,
       resolvePendingGroupNoteForName,
       saveAccount,
@@ -2344,6 +2454,7 @@ function SharedUpstreamAccountDetailDrawerInner({
           boundProxyKeys: normalizedProxyKeys.length > 0 ? normalizedProxyKeys : null,
         });
         notifyMotherChange(response);
+        inlineAccountMutation.reconcile(response);
         return true;
       } catch (err) {
         if (handleNotFoundClose(source.id, err)) return false;
@@ -2363,43 +2474,113 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
+    [
+      busyAction,
+      handleNotFoundClose,
+      inlineAccountMutation.reconcile,
+      notifyMotherChange,
+      saveAccount,
+    ],
+  );
+  const scheduleInlineAccountChange = useCallback(
+    (
+      source: UpstreamAccountDetail,
+      field: InlinePolicyField,
+      patch: UpdateGroupAccountRoutingRulePayload,
+      boundProxyKeys?: string[] | null,
+    ) => {
+      if (hasBusyAccountAction(busyAction, source.id)) return;
+      const currentRule = inlineOptimisticRule ?? source.effectiveRoutingRule;
+      const draft = inlineAccountDraftRef.current ?? {
+        accountId: source.id,
+        routingRule: {},
+        fields: new Set<InlinePolicyField>(),
+      };
+      if (draft.accountId !== source.id) {
+        draft.accountId = source.id;
+        draft.routingRule = {};
+        draft.boundProxyKeys = undefined;
+        draft.fields = new Set<InlinePolicyField>();
+      }
+      draft.routingRule = mergeInlineRoutingRulePatch(draft.routingRule, patch);
+      if (boundProxyKeys !== undefined) {
+        draft.boundProxyKeys = normalizeProxyKeys(boundProxyKeys ?? undefined);
+      }
+      draft.fields.add(field);
+      inlineAccountDraftRef.current = draft;
+
+      const nextRule = applyRoutingRulePatchToEffectiveRule(currentRule, patch, "account");
+      setInlineOptimisticRule(nextRule);
+      if (boundProxyKeys !== undefined) {
+        setInlineOptimisticProxyKeys(normalizeProxyKeys(boundProxyKeys ?? undefined));
+      }
+      setInlinePolicyQueuedFields(Array.from(draft.fields));
+      setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
+      inlineAccountMutation.schedule({
+        accountId: source.id,
+        fields: Array.from(draft.fields),
+        payload: {
+          routingRule: Object.keys(draft.routingRule).length > 0 ? draft.routingRule : undefined,
+          boundProxyKeys:
+            draft.boundProxyKeys == null
+              ? undefined
+              : draft.boundProxyKeys.length > 0
+                ? draft.boundProxyKeys
+                : null,
+        },
+      });
+    },
+    [busyAction, inlineAccountMutation.schedule, inlineOptimisticRule],
   );
   const applyAccountProxyEditor = useCallback(async () => {
     if (!selectedDetail) return;
+    if (inlineAccountMutation.hasPending) await inlineAccountMutation.flush();
     const saved = await handleSaveAccountProxyBindings(selectedDetail, accountProxyDraftKeys);
     if (saved) {
       setAccountProxyEditorOpen(false);
     }
-  }, [accountProxyDraftKeys, handleSaveAccountProxyBindings, selectedDetail]);
+  }, [
+    accountProxyDraftKeys,
+    handleSaveAccountProxyBindings,
+    inlineAccountMutation.flush,
+    inlineAccountMutation.hasPending,
+    selectedDetail,
+  ]);
   const handleSaveInlineAccountPolicy = useCallback(
-    async (
+    (
       source: UpstreamAccountDetail,
       field: InlinePolicyField,
       payload: UpdateGroupAccountRoutingRulePayload,
     ) => {
-      if (inlinePolicyBusyField != null || hasBusyAccountAction(busyAction, source.id)) {
-        return;
-      }
-      setInlinePolicyErrors((current) => ({ ...current, [field]: null }));
-      setInlinePolicyBusyField(field);
-      try {
-        const response = await saveAccount(source.id, {
-          routingRule: payload,
-        });
-        notifyMotherChange(response);
-      } catch (err) {
-        if (handleNotFoundClose(source.id, err)) return;
-        setInlinePolicyErrors((current) => ({
-          ...current,
-          [field]: err instanceof Error ? err.message : String(err),
-        }));
-      } finally {
-        setInlinePolicyBusyField((current) => (current === field ? null : current));
-      }
+      scheduleInlineAccountChange(source, field, payload);
     },
-    [busyAction, handleNotFoundClose, inlinePolicyBusyField, notifyMotherChange, saveAccount],
+    [scheduleInlineAccountChange],
   );
+  const scheduleInlineAccountProxyBindings = useCallback(
+    (source: UpstreamAccountDetail, proxyKeys: string[]) => {
+      scheduleInlineAccountChange(source, "proxyBindings", {}, proxyKeys);
+    },
+    [scheduleInlineAccountChange],
+  );
+  const retryInlineAccountPolicy = useCallback(() => {
+    setInlinePolicyErrors((current) => {
+      const next = { ...current };
+      for (const field of inlinePolicyQueuedFields) delete next[field];
+      return next;
+    });
+    inlineAccountMutation.retry();
+  }, [inlineAccountMutation.retry, inlinePolicyQueuedFields]);
+  const revertInlineAccountPolicy = useCallback(() => {
+    inlineAccountMutation.revert();
+  }, [inlineAccountMutation.revert]);
+  const inlinePolicySaving =
+    inlineAccountMutation.status === "pending" || inlineAccountMutation.status === "saving";
+  const inlinePolicySaveStatusByField = useMemo(() => {
+    if (!inlinePolicySaving) return {};
+    return Object.fromEntries(
+      inlinePolicyQueuedFields.map((field) => [field, inlineAccountMutation.status]),
+    ) as Partial<Record<InlinePolicyField, "pending" | "saving">>;
+  }, [inlineAccountMutation.status, inlinePolicyQueuedFields, inlinePolicySaving]);
   const handleSaveCapabilityOverride = useCallback(
     async (
       source: UpstreamAccountDetail,
@@ -2611,11 +2792,15 @@ function SharedUpstreamAccountDetailDrawerInner({
           labelledBy={detailDrawerTitleId}
           closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
           closeDisabled={isBusyAction(busyAction, "delete", accountId)}
+          showCloseButton={presentation !== "page"}
           autoFocusCloseButton={!isDeleteConfirmOpen}
           onPortalContainerChange={setDetailDrawerPortalContainer}
           onBodyElementChange={setDetailDrawerBodyElement}
           onClose={handleDetailDrawerClose}
-          shellClassName="drawer-shell--detail-wide"
+          shellClassName={cn(
+            "drawer-shell--detail-wide",
+            isCompactViewport && presentation === "page" && "border-t-0 bg-transparent shadow-none",
+          )}
           header={
             <div className="space-y-4">
               <div className="space-y-3">
@@ -2942,11 +3127,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="w-fit max-w-full flex-wrap justify-start justify-self-start"
+                size="compact"
+                className="w-full max-w-full flex-nowrap justify-start justify-self-start overflow-x-auto"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.overview.tab}
                   active={detailTab === "overview"}
                   role="tab"
@@ -2957,6 +3144,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.overview")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.records.tab}
                   active={detailTab === "records"}
                   role="tab"
@@ -2967,6 +3155,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.records")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.edit.tab}
                   active={detailTab === "edit"}
                   role="tab"
@@ -2977,6 +3166,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.edit")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.routing.tab}
                   active={detailTab === "routing"}
                   role="tab"
@@ -2987,6 +3177,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.routing")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.healthEvents.tab}
                   active={detailTab === "healthEvents"}
                   role="tab"
@@ -3708,7 +3899,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </DialogContent>
                   </Dialog>
                   <EffectiveRoutingRuleCard
-                    rule={selectedDetail.effectiveRoutingRule}
+                    rule={inlineOptimisticRule ?? selectedDetail.effectiveRoutingRule}
                     identityKey={selectedDetail.id}
                     visibleRows={
                       selectedDetail.kind === "api_key_codex"
@@ -3727,26 +3918,31 @@ function SharedUpstreamAccountDetailDrawerInner({
                           ]
                     }
                     proxyBindings={{
-                      source: selectedAccountProxyKeys.length > 0 ? "account" : "group",
-                      items: selectedEffectiveProxyKeys.map((key) => {
+                      source: displayedAccountProxyKeys.length > 0 ? "account" : "group",
+                      items: displayedEffectiveProxyKeys.map((key) => {
                         const node = selectedProxyNodeByKey.get(key);
                         return {
                           key,
                           label: proxyNodeLabel(node, key),
                           status: proxyNodeStatusLabel(node, key, t),
                           tone: proxyNodeTone(node, key),
-                          accountOverride: selectedAccountProxyKeys.includes(key),
+                          accountOverride: displayedAccountProxyKeys.includes(key),
                         };
                       }),
                       busy: accountProxyEditorBusy,
+                      saving:
+                        inlinePolicySaving && inlinePolicyQueuedFields.includes("proxyBindings"),
+                      error: inlinePolicyErrors.proxyBindings,
                       disabled: !writesEnabled,
                       onEdit: openAccountProxyEditor,
-                      onClear: () => void handleSaveAccountProxyBindings(selectedDetail, []),
+                      onClear: () => scheduleInlineAccountProxyBindings(selectedDetail, []),
                       onRemove: (key) =>
-                        void handleSaveAccountProxyBindings(
+                        scheduleInlineAccountProxyBindings(
                           selectedDetail,
-                          toggleProxyKey(selectedAccountProxyKeys, key),
+                          toggleProxyKey(displayedAccountProxyKeys, key),
                         ),
+                      onRetry: retryInlineAccountPolicy,
+                      onRevert: revertInlineAccountPolicy,
                       labels: {
                         field: t("accountPool.upstreamAccounts.proxyBindings.accountTitle"),
                         add: t("accountPool.upstreamAccounts.proxyBindings.addLabel"),
@@ -3757,8 +3953,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                       },
                     }}
                     editablePolicy={{
-                      busyField: inlinePolicyBusyField,
+                      saveStatusByField: inlinePolicySaveStatusByField,
                       errorByField: inlinePolicyErrors,
+                      onRetry: retryInlineAccountPolicy,
+                      onRevert: revertInlineAccountPolicy,
                       availableModelOptions,
                       availableModelCatalog,
                       availableModelCatalogStatus: modelCatalogRefreshing
@@ -3884,6 +4082,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                       overrideSaving: t(
                         "accountPool.upstreamAccounts.effectiveRule.overrideSaving",
                       ),
+                      overrideRetry: t("settings.retrySave"),
+                      overrideRevert: t("settings.revertSave"),
                       inheritValue: t("accountPool.upstreamAccounts.effectiveRule.inheritValue"),
                       cutOutLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutOut"),
                       cutInLabel: t("accountPool.upstreamAccounts.effectiveRule.fieldCutIn"),
@@ -4028,8 +4228,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </div>
                   </Alert>
 
-                  <Card>
-                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <Card className="mobile-flat-surface !rounded-none overflow-hidden">
+                    <CardHeader className="mobile-flat-surface-header flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                       <div>
                         <CardTitle>
                           {t("accountPool.upstreamAccounts.stickyConversations.title")}
@@ -4070,7 +4270,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         />
                       </div>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="mobile-flat-surface-body">
                       <StickyKeyConversationTable
                         accountId={selectedDetail.id}
                         accountDisplayName={selectedDetail.displayName}

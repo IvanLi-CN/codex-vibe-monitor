@@ -120,6 +120,7 @@ const editableFieldSourceKeys: Array<[EditablePolicyField, keyof FieldSourceMap]
 
 interface EditablePolicyConfig {
   busyField?: EditablePolicyField | null;
+  saveStatusByField?: Partial<Record<EditablePolicyField, "pending" | "saving">>;
   errorByField?: Partial<Record<EditablePolicyField, string | null>>;
   availableModelOptions?: string[];
   availableModelCatalog?: AvailableModelOption[];
@@ -128,6 +129,8 @@ interface EditablePolicyConfig {
   availableModelCatalogStale?: boolean;
   availableModelCatalogError?: string | null;
   onRefreshAvailableModelCatalog?: () => void;
+  onRetry?: (field: EditablePolicyField) => void;
+  onRevert?: (field: EditablePolicyField) => void;
   onChange: (
     field: EditablePolicyField,
     payload: UpdateGroupAccountRoutingRulePayload,
@@ -151,11 +154,15 @@ interface EffectiveProxyBindingConfig {
   source: EffectiveRoutingRuleSource;
   items: EffectiveProxyBindingItem[];
   busy?: boolean;
+  saving?: boolean;
+  error?: string | null;
   disabled?: boolean;
   editor?: ReactNode;
   onEdit?: () => void;
   onClear?: () => void;
   onRemove?: (key: string) => void;
+  onRetry?: () => void;
+  onRevert?: () => void;
   labels: {
     field: string;
     add: string;
@@ -266,6 +273,8 @@ interface EffectiveRoutingRuleCardProps {
     overrideActive?: string;
     overrideClear?: string;
     overrideSaving?: string;
+    overrideRetry?: string;
+    overrideRevert?: string;
     inheritValue?: string;
     allowLabel?: string;
     denyLabel?: string;
@@ -310,6 +319,70 @@ function PolicyFieldLabel({ label, hint }: { label: string; hint?: string }) {
       <span>{label}</span>
       {hint ? <InfoTooltip label={`${label} help`} content={hint} /> : null}
     </span>
+  );
+}
+
+interface InlineSaveStatusProps {
+  message: string;
+  retryLabel?: string;
+  revertLabel?: string;
+  onRetry?: () => void;
+  onRevert?: () => void;
+  className?: string;
+}
+
+function InlineSaveStatus({
+  message,
+  retryLabel,
+  revertLabel,
+  onRetry,
+  onRevert,
+  className,
+}: InlineSaveStatusProps) {
+  return (
+    <div className={cn("flex min-w-0 items-center gap-2 text-xs tone-ink-error", className)}>
+      <span
+        className="flex min-w-0 flex-1 items-center gap-1.5 font-medium leading-5"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <AppIcon name="alert-circle-outline" className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate" title={message}>
+          {message}
+        </span>
+      </span>
+      {onRetry || onRevert ? (
+        <span className="ml-auto inline-flex shrink-0 items-center gap-0.5">
+          {onRetry ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-base-content/62 hover:bg-base-200 hover:text-base-content"
+              aria-label={retryLabel ?? "Retry"}
+              title={retryLabel ?? "Retry"}
+              onClick={onRetry}
+            >
+              <AppIcon name="refresh" className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          ) : null}
+          {onRevert ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-base-content/62 hover:bg-base-200 hover:text-base-content"
+              aria-label={revertLabel ?? "Revert"}
+              title={revertLabel ?? "Revert"}
+              onClick={onRevert}
+            >
+              <AppIcon name="undo-variant" className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -824,6 +897,8 @@ export function EffectiveRoutingRuleCard({
   ]);
 
   const isBusy = (field: EditablePolicyField) => editablePolicy?.busyField === field;
+  const isSaving = (field: EditablePolicyField) =>
+    isBusy(field) || editablePolicy?.saveStatusByField?.[field] != null;
   const changeField = (
     field: EditablePolicyField,
     payload: UpdateGroupAccountRoutingRulePayload,
@@ -889,8 +964,8 @@ export function EffectiveRoutingRuleCard({
     resolvedRule.upstream429RetryEnabled === true
       ? Math.min(5, Math.max(0, Math.trunc(resolvedRule.upstream429MaxRetries ?? 0)))
       : 0;
-  const inlineTimeoutBusy = ROUTING_TIMEOUT_FIELD_ORDER.some(
-    (key) => editablePolicy?.busyField === timeoutFieldToInlineField[key],
+  const inlineTimeoutBusy = ROUTING_TIMEOUT_FIELD_ORDER.some((key) =>
+    isSaving(timeoutFieldToInlineField[key]),
   );
   const timeoutRows = ROUTING_TIMEOUT_FIELD_ORDER.map((key) => {
     const field = timeoutFieldToInlineField[key];
@@ -1304,6 +1379,7 @@ export function EffectiveRoutingRuleCard({
                 const expanded = row.field != null && expandedFields.includes(row.field);
                 const error = row.field != null ? editablePolicy?.errorByField?.[row.field] : null;
                 const busy = row.field != null && isBusy(row.field);
+                const saving = row.field != null && isSaving(row.field);
                 return (
                   <div key={row.label} className="border-b border-base-300/60 last:border-b-0">
                     <div
@@ -1363,13 +1439,13 @@ export function EffectiveRoutingRuleCard({
                         >
                           <AppIcon
                             name={
-                              busy
+                              saving
                                 ? "loading"
                                 : activeOverride || expanded
                                   ? "check-decagram-outline"
                                   : "pencil-outline"
                             }
-                            className={cn("h-4 w-4", busy ? "animate-spin" : "")}
+                            className={cn("h-4 w-4", saving ? "animate-spin" : "")}
                             aria-hidden
                           />
                         </Button>
@@ -1409,7 +1485,7 @@ export function EffectiveRoutingRuleCard({
                           >
                             {row.displayEditor}
                           </div>
-                          {busy ? (
+                          {saving ? (
                             <p
                               className={cn(
                                 "text-xs text-base-content/60",
@@ -1420,19 +1496,45 @@ export function EffectiveRoutingRuleCard({
                             </p>
                           ) : null}
                           {error ? (
-                            <p
+                            <InlineSaveStatus
                               className={cn(
-                                "text-xs font-medium text-error",
                                 row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
                               )}
-                            >
-                              {error}
-                            </p>
+                              message={error}
+                              retryLabel={labels.overrideRetry}
+                              revertLabel={labels.overrideRevert}
+                              onRetry={
+                                editablePolicy?.onRetry && row.field
+                                  ? () => editablePolicy.onRetry?.(row.field as EditablePolicyField)
+                                  : undefined
+                              }
+                              onRevert={
+                                editablePolicy?.onRevert && row.field
+                                  ? () =>
+                                      editablePolicy.onRevert?.(row.field as EditablePolicyField)
+                                  : undefined
+                              }
+                            />
                           ) : null}
                         </div>
                       </div>
                     ) : error ? (
-                      <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
+                      <InlineSaveStatus
+                        className="mx-3 mb-2"
+                        message={error}
+                        retryLabel={labels.overrideRetry}
+                        revertLabel={labels.overrideRevert}
+                        onRetry={
+                          editablePolicy?.onRetry && row.field
+                            ? () => editablePolicy.onRetry?.(row.field as EditablePolicyField)
+                            : undefined
+                        }
+                        onRevert={
+                          editablePolicy?.onRevert && row.field
+                            ? () => editablePolicy.onRevert?.(row.field as EditablePolicyField)
+                            : undefined
+                        }
+                      />
                     ) : null}
                   </div>
                 );
@@ -1476,13 +1578,16 @@ export function EffectiveRoutingRuleCard({
                     >
                       <AppIcon
                         name={
-                          proxyBindings.busy
+                          proxyBindings.busy || proxyBindings.saving
                             ? "loading"
                             : proxyBindingsActiveOverride
                               ? "check-decagram-outline"
                               : "pencil-outline"
                         }
-                        className={cn("h-4 w-4", proxyBindings.busy ? "animate-spin" : "")}
+                        className={cn(
+                          "h-4 w-4",
+                          proxyBindings.busy || proxyBindings.saving ? "animate-spin" : "",
+                        )}
                         aria-hidden
                       />
                     </Button>
@@ -1506,6 +1611,20 @@ export function EffectiveRoutingRuleCard({
                           <p className="text-xs leading-5 text-base-content/65">
                             {proxyBindings.labels.hint}
                           </p>
+                          {proxyBindings.saving ? (
+                            <p className="text-xs text-base-content/60" aria-live="polite">
+                              {labels.overrideSaving ?? "Saving..."}
+                            </p>
+                          ) : null}
+                          {proxyBindings.error ? (
+                            <InlineSaveStatus
+                              message={proxyBindings.error}
+                              retryLabel={labels.overrideRetry}
+                              revertLabel={labels.overrideRevert}
+                              onRetry={proxyBindings.onRetry}
+                              onRevert={proxyBindings.onRevert}
+                            />
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -1532,6 +1651,7 @@ export function EffectiveRoutingRuleCard({
               const activeOverride = row.source === localOverrideSource;
               const expanded = expandedFields.includes(row.field);
               const busy = isBusy(row.field);
+              const saving = isSaving(row.field);
               const error = editablePolicy?.errorByField?.[row.field] ?? null;
               return (
                 <div key={row.key} className="border-b border-base-300/60 last:border-b-0">
@@ -1573,13 +1693,13 @@ export function EffectiveRoutingRuleCard({
                       >
                         <AppIcon
                           name={
-                            busy
+                            saving
                               ? "loading"
                               : activeOverride || expanded
                                 ? "check-decagram-outline"
                                 : "pencil-outline"
                           }
-                          className={cn("h-4 w-4", busy ? "animate-spin" : "")}
+                          className={cn("h-4 w-4", saving ? "animate-spin" : "")}
                           aria-hidden
                         />
                       </Button>
@@ -1614,20 +1734,32 @@ export function EffectiveRoutingRuleCard({
                             }}
                           />
                         </div>
-                        {busy ? (
+                        {saving ? (
                           <p className="text-xs text-base-content/60 sm:col-start-2 sm:col-span-3">
                             {labels.overrideSaving ?? "Saving..."}
                           </p>
                         ) : null}
                         {error ? (
-                          <p className="text-xs font-medium text-error sm:col-start-2 sm:col-span-3">
-                            {error}
-                          </p>
+                          <InlineSaveStatus
+                            className="sm:col-start-2 sm:col-span-3"
+                            message={error}
+                            retryLabel={labels.overrideRetry}
+                            revertLabel={labels.overrideRevert}
+                            onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                            onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                          />
                         ) : null}
                       </div>
                     </div>
                   ) : error ? (
-                    <p className="px-3 pb-2 text-xs font-medium text-error">{error}</p>
+                    <InlineSaveStatus
+                      className="mx-3 mb-2"
+                      message={error}
+                      retryLabel={labels.overrideRetry}
+                      revertLabel={labels.overrideRevert}
+                      onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                      onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                    />
                   ) : null}
                 </div>
               );
@@ -1696,6 +1828,7 @@ export function EffectiveRoutingRuleCard({
             >
               {statusChangeReasonRows.map((row) => {
                 const busy = isBusy(row.field);
+                const saving = isSaving(row.field);
                 const error = editablePolicy?.errorByField?.[row.field] ?? null;
                 return (
                   <div key={row.reason} className="flex h-full flex-col gap-1.5">
@@ -1719,20 +1852,33 @@ export function EffectiveRoutingRuleCard({
                         className="h-full min-h-[5.25rem] flex-1 sm:min-h-[4rem]"
                       />
                     </div>
-                    {busy ? (
+                    {saving ? (
                       <p className="text-xs text-base-content/60">
                         {labels.overrideSaving ?? "Saving..."}
                       </p>
                     ) : null}
-                    {error ? <p className="text-xs font-medium text-error">{error}</p> : null}
+                    {error ? (
+                      <InlineSaveStatus
+                        message={error}
+                        retryLabel={labels.overrideRetry}
+                        revertLabel={labels.overrideRevert}
+                        onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                        onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                      />
+                    ) : null}
                   </div>
                 );
               })}
             </div>
             {statusChangeReasonSectionError ? (
-              <p className="mt-3 text-xs font-medium text-error">
-                {statusChangeReasonSectionError}
-              </p>
+              <InlineSaveStatus
+                className="mt-3"
+                message={statusChangeReasonSectionError}
+                retryLabel={labels.overrideRetry}
+                revertLabel={labels.overrideRevert}
+                onRetry={() => editablePolicy?.onRetry?.("statusChangeReasons")}
+                onRevert={() => editablePolicy?.onRevert?.("statusChangeReasons")}
+              />
             ) : null}
           </section>
         ) : null}

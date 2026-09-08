@@ -4,13 +4,11 @@ import type {
   ApiPoolUpstreamRequestAttempt,
   CompleteOauthLoginSessionPayload,
   CreateApiKeyAccountPayload,
-  EffectiveRoutingRule,
   ImportOauthCredentialFilePayload,
   ModelMapping,
   OauthMailboxStatus,
   StatsResponse,
   TimeseriesResponse,
-  UpdateGroupAccountRoutingRulePayload,
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
@@ -18,86 +16,13 @@ import type {
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
 } from "../../lib/api";
+import { applyRoutingRulePatchToEffectiveRule } from "../../lib/routingRulePatches";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import GroupsPage from "../../pages/account-pool/Groups";
 import MaintenanceRecordsPage from "../../pages/account-pool/MaintenanceRecords";
 import UpstreamAccountCreatePage from "../../pages/account-pool/UpstreamAccountCreate";
 import { resolveDisplayNameAfterEmailChange } from "../../pages/account-pool/UpstreamAccountCreate.shared";
 import UpstreamAccountsPage from "../../pages/account-pool/UpstreamAccounts";
-
-function applyRoutingRulePatchToEffectiveRule(
-  rule: EffectiveRoutingRule,
-  patch: UpdateGroupAccountRoutingRulePayload,
-): EffectiveRoutingRule {
-  const fieldSources = {
-    allowCutOut: rule.fieldSources?.allowCutOut ?? "root",
-    allowCutIn: rule.fieldSources?.allowCutIn ?? "root",
-    priorityTier: rule.fieldSources?.priorityTier ?? "root",
-    fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? "root",
-    imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? "root",
-    requestCompressionAlgorithm: rule.fieldSources?.requestCompressionAlgorithm ?? "root",
-    concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? "root",
-    upstream429Retry: rule.fieldSources?.upstream429Retry ?? "root",
-    availableModels: rule.fieldSources?.availableModels ?? "root",
-    systemDeniedModels: rule.fieldSources?.systemDeniedModels ?? "root",
-  };
-  return {
-    ...rule,
-    ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
-    ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
-    ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
-    ...(patch.fastModeRewriteMode == null
-      ? {}
-      : { fastModeRewriteMode: patch.fastModeRewriteMode }),
-    ...(patch.imageToolRewriteMode == null
-      ? {}
-      : { imageToolRewriteMode: patch.imageToolRewriteMode }),
-    ...(patch.requestCompressionAlgorithm == null
-      ? {}
-      : { requestCompressionAlgorithm: patch.requestCompressionAlgorithm }),
-    ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
-    ...(patch.upstream429RetryEnabled == null
-      ? {}
-      : { upstream429RetryEnabled: patch.upstream429RetryEnabled }),
-    ...(patch.upstream429MaxRetries == null
-      ? {}
-      : { upstream429MaxRetries: patch.upstream429MaxRetries }),
-    ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
-    fieldSources: {
-      ...fieldSources,
-      ...(Object.hasOwn(patch, "allowCutOut")
-        ? { allowCutOut: patch.allowCutOut == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "allowCutIn")
-        ? { allowCutIn: patch.allowCutIn == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "priorityTier")
-        ? { priorityTier: patch.priorityTier == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "fastModeRewriteMode")
-        ? { fastModeRewriteMode: patch.fastModeRewriteMode == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "imageToolRewriteMode")
-        ? { imageToolRewriteMode: patch.imageToolRewriteMode == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "requestCompressionAlgorithm")
-        ? {
-            requestCompressionAlgorithm:
-              patch.requestCompressionAlgorithm == null ? "root" : "account",
-          }
-        : {}),
-      ...(Object.hasOwn(patch, "concurrencyLimit")
-        ? { concurrencyLimit: patch.concurrencyLimit == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "upstream429RetryEnabled")
-        ? { upstream429Retry: patch.upstream429RetryEnabled == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "availableModels")
-        ? { availableModels: patch.availableModels == null ? "root" : "account" }
-        : {}),
-    },
-  };
-}
 
 import {
   applyDynamicRosterLiveRefresh,

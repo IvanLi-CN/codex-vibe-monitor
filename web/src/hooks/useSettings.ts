@@ -14,6 +14,22 @@ import {
   updateProxySettings,
 } from "../lib/api";
 import { emitUpstreamAccountsChanged } from "../lib/upstreamAccountsEvents";
+import { useLatestDebouncedMutation } from "./useLatestDebouncedMutation";
+
+function toProxyUpdatePayload(proxy: ProxySettings) {
+  return {
+    hijackEnabled: proxy.hijackEnabled,
+    mergeUpstreamEnabled: proxy.mergeUpstreamEnabled,
+    fastModeRewriteMode: proxy.fastModeRewriteMode,
+    upstream429MaxRetries: proxy.upstream429MaxRetries,
+    websocketEnabled: proxy.websocketEnabled,
+    upstreamWebsocketDefaultEnabled: proxy.upstreamWebsocketDefaultEnabled,
+    requestBodyLoggingEnabled: proxy.requestBodyLoggingEnabled,
+    responseBodyLoggingEnabled: proxy.responseBodyLoggingEnabled,
+    encryptedSessionOwnerRoutingEnabled: proxy.encryptedSessionOwnerRoutingEnabled,
+    enabledModels: proxy.enabledModels,
+  };
+}
 
 function toPricingKey(pricing: PricingSettings): string {
   return JSON.stringify({
@@ -41,8 +57,6 @@ export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isProxySaving, setIsProxySaving] = useState(false);
-  const [isForwardProxySaving, setIsForwardProxySaving] = useState(false);
   const [isPricingSaving, setIsPricingSaving] = useState(false);
   const [isRoutingSaving, setIsRoutingSaving] = useState(false);
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0);
@@ -50,8 +64,84 @@ export function useSettings() {
   const serverSnapshotRef = useRef<SettingsPayload | null>(null);
   const pendingPricingRef = useRef<PricingSettings | null>(null);
   const pricingSaveInFlightRef = useRef(false);
-  const pendingForwardProxyRef = useRef<ForwardProxySettings | null>(null);
-  const forwardProxySaveInFlightRef = useRef(false);
+  const proxyMutation = useLatestDebouncedMutation<ProxySettings, ProxySettings>({
+    resourceKey: "settings-proxy",
+    mutate: async (candidate) => updateProxySettings(toProxyUpdatePayload(candidate)),
+    onSuccess: (saved) => {
+      const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+        ? { ...serverSnapshotRef.current, proxy: saved }
+        : null;
+      if (confirmedSnapshot) serverSnapshotRef.current = confirmedSnapshot;
+      setSettings((current) =>
+        current ? { ...current, proxy: saved } : (confirmedSnapshot ?? current),
+      );
+      setError(null);
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : String(err));
+    },
+    onRevert: (confirmed) => {
+      if (!confirmed) return;
+      const snapshot = serverSnapshotRef.current;
+      if (snapshot) serverSnapshotRef.current = { ...snapshot, proxy: confirmed };
+      setSettings((current) => (current ? { ...current, proxy: confirmed } : current));
+      setError(null);
+    },
+  });
+
+  const forwardProxyMutation = useLatestDebouncedMutation<
+    ForwardProxySettings,
+    ForwardProxySettings
+  >({
+    resourceKey: "settings-forward-proxy",
+    mutate: async (candidate) =>
+      updateForwardProxySettings({
+        proxyUrls: candidate.proxyUrls,
+        subscriptionUrls: candidate.subscriptionUrls,
+        subscriptionUpdateIntervalSecs: candidate.subscriptionUpdateIntervalSecs,
+      }),
+    onSuccess: (saved) => {
+      const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
+        ? { ...serverSnapshotRef.current, forwardProxy: saved }
+        : null;
+      if (confirmedSnapshot) serverSnapshotRef.current = confirmedSnapshot;
+      setSettings((current) =>
+        current ? { ...current, forwardProxy: saved } : (confirmedSnapshot ?? current),
+      );
+      emitUpstreamAccountsChanged();
+      setError(null);
+    },
+    onError: (err) => {
+      setError(err instanceof Error ? err.message : String(err));
+    },
+    onRevert: (confirmed) => {
+      if (!confirmed) return;
+      const snapshot = serverSnapshotRef.current;
+      if (snapshot) serverSnapshotRef.current = { ...snapshot, forwardProxy: confirmed };
+      setSettings((current) => (current ? { ...current, forwardProxy: confirmed } : current));
+      setError(null);
+    },
+  });
+  const retryProxy = useCallback(() => {
+    setError(null);
+    proxyMutation.retry();
+  }, [proxyMutation.retry]);
+  const revertProxy = useCallback(() => {
+    setError(null);
+    proxyMutation.revert();
+  }, [proxyMutation.revert]);
+  const retryForwardProxy = useCallback(() => {
+    setError(null);
+    forwardProxyMutation.retry();
+  }, [forwardProxyMutation.retry]);
+  const revertForwardProxy = useCallback(() => {
+    setError(null);
+    forwardProxyMutation.revert();
+  }, [forwardProxyMutation.revert]);
+  const proxyMutationPendingRef = useRef(false);
+  const forwardProxyMutationPendingRef = useRef(false);
+  proxyMutationPendingRef.current = proxyMutation.hasPending;
+  forwardProxyMutationPendingRef.current = forwardProxyMutation.hasPending;
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -65,8 +155,21 @@ export function useSettings() {
         throw settingsResult.reason;
       }
 
-      setSettings(settingsResult.value);
       serverSnapshotRef.current = settingsResult.value;
+      setSettings((current) => {
+        if (!current) return settingsResult.value;
+        return {
+          ...settingsResult.value,
+          proxy: proxyMutationPendingRef.current ? current.proxy : settingsResult.value.proxy,
+          forwardProxy: forwardProxyMutationPendingRef.current
+            ? current.forwardProxy
+            : settingsResult.value.forwardProxy,
+        };
+      });
+      if (!proxyMutationPendingRef.current) proxyMutation.reconcile(settingsResult.value.proxy);
+      if (!forwardProxyMutationPendingRef.current) {
+        forwardProxyMutation.reconcile(settingsResult.value.forwardProxy);
+      }
 
       if (routingResult.status === "fulfilled") {
         setRouting(routingResult.value);
@@ -85,7 +188,7 @@ export function useSettings() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [forwardProxyMutation.reconcile, proxyMutation.reconcile]);
 
   useEffect(() => {
     void load();
@@ -98,7 +201,7 @@ export function useSettings() {
   }, []);
 
   const saveProxy = useCallback(
-    async (nextProxy: ProxySettings) => {
+    (nextProxy: ProxySettings) => {
       if (!serverSnapshotRef.current) return;
       const normalizedProxy: ProxySettings = {
         hijackEnabled: nextProxy.hijackEnabled,
@@ -127,45 +230,9 @@ export function useSettings() {
           proxy: normalizedProxy,
         };
       });
-      setIsProxySaving(true);
-      try {
-        const savedProxy = await updateProxySettings({
-          hijackEnabled: normalizedProxy.hijackEnabled,
-          mergeUpstreamEnabled: normalizedProxy.mergeUpstreamEnabled,
-          fastModeRewriteMode: normalizedProxy.fastModeRewriteMode,
-          upstream429MaxRetries: normalizedProxy.upstream429MaxRetries,
-          websocketEnabled: normalizedProxy.websocketEnabled,
-          upstreamWebsocketDefaultEnabled: normalizedProxy.upstreamWebsocketDefaultEnabled,
-          requestBodyLoggingEnabled: normalizedProxy.requestBodyLoggingEnabled,
-          responseBodyLoggingEnabled: normalizedProxy.responseBodyLoggingEnabled,
-          encryptedSessionOwnerRoutingEnabled: normalizedProxy.encryptedSessionOwnerRoutingEnabled,
-          enabledModels: normalizedProxy.enabledModels,
-        });
-        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
-          ? {
-              ...serverSnapshotRef.current,
-              proxy: savedProxy,
-            }
-          : null;
-        if (confirmedSnapshot) {
-          serverSnapshotRef.current = confirmedSnapshot;
-        }
-        setSettings((current) => {
-          if (!current) return confirmedSnapshot ?? current;
-          return {
-            ...current,
-            proxy: savedProxy,
-          };
-        });
-        setError(null);
-      } catch (err) {
-        rollback();
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setIsProxySaving(false);
-      }
+      proxyMutation.schedule(normalizedProxy);
     },
-    [rollback],
+    [proxyMutation.schedule],
   );
 
   const savePricing = useCallback(
@@ -238,7 +305,7 @@ export function useSettings() {
   );
 
   const saveForwardProxy = useCallback(
-    async (nextForwardProxy: ForwardProxySettings) => {
+    (nextForwardProxy: ForwardProxySettings) => {
       if (!serverSnapshotRef.current) return;
       setSettings((current) => {
         if (!current) return current;
@@ -247,63 +314,9 @@ export function useSettings() {
           forwardProxy: nextForwardProxy,
         };
       });
-      pendingForwardProxyRef.current = nextForwardProxy;
-
-      if (forwardProxySaveInFlightRef.current) {
-        return;
-      }
-
-      forwardProxySaveInFlightRef.current = true;
-      setIsForwardProxySaving(true);
-      while (pendingForwardProxyRef.current) {
-        const candidate = pendingForwardProxyRef.current;
-        pendingForwardProxyRef.current = null;
-
-        try {
-          const saved = await updateForwardProxySettings({
-            proxyUrls: candidate.proxyUrls,
-            subscriptionUrls: candidate.subscriptionUrls,
-            subscriptionUpdateIntervalSecs: candidate.subscriptionUpdateIntervalSecs,
-          });
-
-          // Ignore stale payload when a newer draft is already queued.
-          if (pendingForwardProxyRef.current == null) {
-            const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
-              ? {
-                  ...serverSnapshotRef.current,
-                  forwardProxy: saved,
-                }
-              : null;
-            if (confirmedSnapshot) {
-              serverSnapshotRef.current = confirmedSnapshot;
-            }
-            setSettings((current) => {
-              if (!current) return confirmedSnapshot ?? current;
-              return {
-                ...current,
-                forwardProxy: saved,
-              };
-            });
-          } else if (serverSnapshotRef.current) {
-            serverSnapshotRef.current = {
-              ...serverSnapshotRef.current,
-              forwardProxy: saved,
-            };
-          }
-          emitUpstreamAccountsChanged();
-          setError(null);
-        } catch (err) {
-          if (pendingForwardProxyRef.current == null) {
-            rollback();
-          }
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      }
-
-      forwardProxySaveInFlightRef.current = false;
-      setIsForwardProxySaving(false);
+      forwardProxyMutation.schedule(nextForwardProxy);
     },
-    [rollback],
+    [forwardProxyMutation.schedule],
   );
 
   const saveRouting = useCallback(async (payload: UpdatePoolRoutingSettingsPayload) => {
@@ -326,15 +339,24 @@ export function useSettings() {
     settings,
     routing,
     isLoading,
-    isProxySaving,
-    isForwardProxySaving,
+    isProxySaving: proxyMutation.status === "pending" || proxyMutation.status === "saving",
+    isForwardProxySaving:
+      forwardProxyMutation.status === "pending" || forwardProxyMutation.status === "saving",
+    proxySaveError: proxyMutation.error,
+    forwardProxySaveError: forwardProxyMutation.error,
     isPricingSaving,
     isRoutingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
     saveProxy,
+    flushProxy: proxyMutation.flush,
+    retryProxy,
+    revertProxy,
     saveForwardProxy,
+    flushForwardProxy: forwardProxyMutation.flush,
+    retryForwardProxy,
+    revertForwardProxy,
     savePricing,
     saveRouting,
   };
