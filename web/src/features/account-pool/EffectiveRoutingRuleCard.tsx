@@ -322,6 +322,70 @@ function PolicyFieldLabel({ label, hint }: { label: string; hint?: string }) {
   );
 }
 
+interface InlineSaveStatusProps {
+  message: string;
+  retryLabel?: string;
+  revertLabel?: string;
+  onRetry?: () => void;
+  onRevert?: () => void;
+  className?: string;
+}
+
+function InlineSaveStatus({
+  message,
+  retryLabel,
+  revertLabel,
+  onRetry,
+  onRevert,
+  className,
+}: InlineSaveStatusProps) {
+  return (
+    <div className={cn("flex min-w-0 items-center gap-2 text-xs tone-ink-error", className)}>
+      <span
+        className="flex min-w-0 flex-1 items-center gap-1.5 font-medium leading-5"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <AppIcon name="alert-circle-outline" className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 truncate" title={message}>
+          {message}
+        </span>
+      </span>
+      {onRetry || onRevert ? (
+        <span className="ml-auto inline-flex shrink-0 items-center gap-0.5">
+          {onRetry ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-base-content/62 hover:bg-base-200 hover:text-base-content"
+              aria-label={retryLabel ?? "Retry"}
+              title={retryLabel ?? "Retry"}
+              onClick={onRetry}
+            >
+              <AppIcon name="refresh" className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          ) : null}
+          {onRevert ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-base-content/62 hover:bg-base-200 hover:text-base-content"
+              aria-label={revertLabel ?? "Revert"}
+              title={revertLabel ?? "Revert"}
+              onClick={onRevert}
+            >
+              <AppIcon name="undo-variant" className="h-3.5 w-3.5" aria-hidden />
+            </Button>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function defaultRule(rule?: EffectiveRoutingRule | null): EffectiveRoutingRule {
   return (
     rule ?? {
@@ -1432,75 +1496,45 @@ export function EffectiveRoutingRuleCard({
                             </p>
                           ) : null}
                           {error ? (
-                            <div
+                            <InlineSaveStatus
                               className={cn(
-                                "flex flex-wrap items-center gap-2 text-xs font-medium text-error",
                                 row.key !== "availableModels" && "sm:col-start-2 sm:col-span-3",
                               )}
-                              role="alert"
-                              aria-live="polite"
-                            >
-                              <span>{error}</span>
-                              {editablePolicy?.onRetry && row.field ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() => {
-                                    if (row.field) editablePolicy.onRetry?.(row.field);
-                                  }}
-                                >
-                                  {labels.overrideRetry ?? "Retry"}
-                                </Button>
-                              ) : null}
-                              {editablePolicy?.onRevert && row.field ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => {
-                                    if (row.field) editablePolicy.onRevert?.(row.field);
-                                  }}
-                                >
-                                  {labels.overrideRevert ?? "Revert"}
-                                </Button>
-                              ) : null}
-                            </div>
+                              message={error}
+                              retryLabel={labels.overrideRetry}
+                              revertLabel={labels.overrideRevert}
+                              onRetry={
+                                editablePolicy?.onRetry && row.field
+                                  ? () => editablePolicy.onRetry?.(row.field as EditablePolicyField)
+                                  : undefined
+                              }
+                              onRevert={
+                                editablePolicy?.onRevert && row.field
+                                  ? () =>
+                                      editablePolicy.onRevert?.(row.field as EditablePolicyField)
+                                  : undefined
+                              }
+                            />
                           ) : null}
                         </div>
                       </div>
                     ) : error ? (
-                      <div
-                        className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs font-medium text-error"
-                        role="alert"
-                        aria-live="polite"
-                      >
-                        <span>{error}</span>
-                        {editablePolicy?.onRetry && row.field ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => {
-                              if (row.field) editablePolicy.onRetry?.(row.field);
-                            }}
-                          >
-                            {labels.overrideRetry ?? "Retry"}
-                          </Button>
-                        ) : null}
-                        {editablePolicy?.onRevert && row.field ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => {
-                              if (row.field) editablePolicy.onRevert?.(row.field);
-                            }}
-                          >
-                            {labels.overrideRevert ?? "Revert"}
-                          </Button>
-                        ) : null}
-                      </div>
+                      <InlineSaveStatus
+                        className="mx-3 mb-2"
+                        message={error}
+                        retryLabel={labels.overrideRetry}
+                        revertLabel={labels.overrideRevert}
+                        onRetry={
+                          editablePolicy?.onRetry && row.field
+                            ? () => editablePolicy.onRetry?.(row.field as EditablePolicyField)
+                            : undefined
+                        }
+                        onRevert={
+                          editablePolicy?.onRevert && row.field
+                            ? () => editablePolicy.onRevert?.(row.field as EditablePolicyField)
+                            : undefined
+                        }
+                      />
                     ) : null}
                   </div>
                 );
@@ -1583,33 +1617,13 @@ export function EffectiveRoutingRuleCard({
                             </p>
                           ) : null}
                           {proxyBindings.error ? (
-                            <div
-                              className="flex flex-wrap items-center gap-2 text-xs font-medium text-error"
-                              role="alert"
-                              aria-live="polite"
-                            >
-                              <span>{proxyBindings.error}</span>
-                              {proxyBindings.onRetry ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={proxyBindings.onRetry}
-                                >
-                                  {labels.overrideRetry ?? "Retry"}
-                                </Button>
-                              ) : null}
-                              {proxyBindings.onRevert ? (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={proxyBindings.onRevert}
-                                >
-                                  {labels.overrideRevert ?? "Revert"}
-                                </Button>
-                              ) : null}
-                            </div>
+                            <InlineSaveStatus
+                              message={proxyBindings.error}
+                              retryLabel={labels.overrideRetry}
+                              revertLabel={labels.overrideRevert}
+                              onRetry={proxyBindings.onRetry}
+                              onRevert={proxyBindings.onRevert}
+                            />
                           ) : null}
                         </div>
                       </div>
@@ -1726,64 +1740,26 @@ export function EffectiveRoutingRuleCard({
                           </p>
                         ) : null}
                         {error ? (
-                          <div
-                            className="flex flex-wrap items-center gap-2 text-xs font-medium text-error sm:col-start-2 sm:col-span-3"
-                            role="alert"
-                            aria-live="polite"
-                          >
-                            <span>{error}</span>
-                            {editablePolicy?.onRetry ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => editablePolicy.onRetry?.(row.field)}
-                              >
-                                {labels.overrideRetry ?? "Retry"}
-                              </Button>
-                            ) : null}
-                            {editablePolicy?.onRevert ? (
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => editablePolicy.onRevert?.(row.field)}
-                              >
-                                {labels.overrideRevert ?? "Revert"}
-                              </Button>
-                            ) : null}
-                          </div>
+                          <InlineSaveStatus
+                            className="sm:col-start-2 sm:col-span-3"
+                            message={error}
+                            retryLabel={labels.overrideRetry}
+                            revertLabel={labels.overrideRevert}
+                            onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                            onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                          />
                         ) : null}
                       </div>
                     </div>
                   ) : error ? (
-                    <div
-                      className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs font-medium text-error"
-                      role="alert"
-                      aria-live="polite"
-                    >
-                      <span>{error}</span>
-                      {editablePolicy?.onRetry ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => editablePolicy.onRetry?.(row.field)}
-                        >
-                          {labels.overrideRetry ?? "Retry"}
-                        </Button>
-                      ) : null}
-                      {editablePolicy?.onRevert ? (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => editablePolicy.onRevert?.(row.field)}
-                        >
-                          {labels.overrideRevert ?? "Revert"}
-                        </Button>
-                      ) : null}
-                    </div>
+                    <InlineSaveStatus
+                      className="mx-3 mb-2"
+                      message={error}
+                      retryLabel={labels.overrideRetry}
+                      revertLabel={labels.overrideRevert}
+                      onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                      onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                    />
                   ) : null}
                 </div>
               );
@@ -1882,66 +1858,27 @@ export function EffectiveRoutingRuleCard({
                       </p>
                     ) : null}
                     {error ? (
-                      <div
-                        className="flex flex-wrap items-center gap-2 text-xs font-medium text-error"
-                        role="alert"
-                        aria-live="polite"
-                      >
-                        <span>{error}</span>
-                        {editablePolicy?.onRetry ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => editablePolicy.onRetry?.(row.field)}
-                          >
-                            {labels.overrideRetry ?? "Retry"}
-                          </Button>
-                        ) : null}
-                        {editablePolicy?.onRevert ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => editablePolicy.onRevert?.(row.field)}
-                          >
-                            {labels.overrideRevert ?? "Revert"}
-                          </Button>
-                        ) : null}
-                      </div>
+                      <InlineSaveStatus
+                        message={error}
+                        retryLabel={labels.overrideRetry}
+                        revertLabel={labels.overrideRevert}
+                        onRetry={() => editablePolicy?.onRetry?.(row.field)}
+                        onRevert={() => editablePolicy?.onRevert?.(row.field)}
+                      />
                     ) : null}
                   </div>
                 );
               })}
             </div>
             {statusChangeReasonSectionError ? (
-              <div
-                className="mt-3 flex flex-wrap items-center gap-2 text-xs font-medium text-error"
-                role="alert"
-                aria-live="polite"
-              >
-                <span>{statusChangeReasonSectionError}</span>
-                {editablePolicy?.onRetry ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => editablePolicy.onRetry?.("statusChangeReasons")}
-                  >
-                    {labels.overrideRetry ?? "Retry"}
-                  </Button>
-                ) : null}
-                {editablePolicy?.onRevert ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => editablePolicy.onRevert?.("statusChangeReasons")}
-                  >
-                    {labels.overrideRevert ?? "Revert"}
-                  </Button>
-                ) : null}
-              </div>
+              <InlineSaveStatus
+                className="mt-3"
+                message={statusChangeReasonSectionError}
+                retryLabel={labels.overrideRetry}
+                revertLabel={labels.overrideRevert}
+                onRetry={() => editablePolicy?.onRetry?.("statusChangeReasons")}
+                onRevert={() => editablePolicy?.onRevert?.("statusChangeReasons")}
+              />
             ) : null}
           </section>
         ) : null}

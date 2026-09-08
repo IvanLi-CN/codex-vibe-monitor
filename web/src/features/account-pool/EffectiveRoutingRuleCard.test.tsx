@@ -116,6 +116,8 @@ const labels = {
   overrideEdit: "Edit account override",
   overrideClear: "Clear account override",
   overrideSaving: "Saving account override...",
+  overrideRetry: "Retry save",
+  overrideRevert: "Revert to saved",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
   requestCompressionFollow: "Follow",
@@ -411,6 +413,59 @@ describe("EffectiveRoutingRuleCard", () => {
     });
 
     expect(onChange).toHaveBeenCalledWith("allowCutIn", { allowCutIn: null });
+  });
+
+  it("keeps save recovery actions in a compact accessible status", () => {
+    const onRetry = vi.fn();
+    const onRevert = vi.fn();
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          fieldSources: {
+            ...buildRule().fieldSources,
+            allowCutIn: "account",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{
+          onChange: vi.fn(),
+          errorByField: {
+            allowCutIn: "Save failed. Check the account policy and retry.",
+          },
+          onRetry,
+          onRevert,
+        }}
+      />,
+    );
+
+    const status = document.querySelector<HTMLElement>('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(status?.getAttribute("aria-atomic")).toBe("true");
+    expect(status?.parentElement?.className).toContain("tone-ink-error");
+    const message = status?.querySelector<HTMLElement>("span[title]");
+    expect(message?.className).toContain("truncate");
+    expect(message?.getAttribute("title")).toBe("Save failed. Check the account policy and retry.");
+
+    const statusRow = status?.parentElement;
+    const retryButton = statusRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry save"]',
+    );
+    const revertButton = statusRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Revert to saved"]',
+    );
+    expect(retryButton).not.toBeUndefined();
+    expect(revertButton).not.toBeUndefined();
+    expect(retryButton?.getAttribute("title")).toBe("Retry save");
+    expect(revertButton?.getAttribute("title")).toBe("Revert to saved");
+
+    act(() => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      revertButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onRetry).toHaveBeenCalledWith("allowCutIn");
+    expect(onRevert).toHaveBeenCalledWith("allowCutIn");
   });
 
   it("keeps inherited timeout rows collapsed until the user expands one", () => {

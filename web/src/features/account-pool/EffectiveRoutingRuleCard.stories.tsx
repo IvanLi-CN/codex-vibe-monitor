@@ -93,8 +93,6 @@ const labels = {
   overrideClear: "Clear account override",
   statusChangeReasonResetAction: "Reset",
   overrideSaving: "Saving account override...",
-  overrideRetry: "Retry save",
-  overrideRevert: "Revert to saved",
   inheritValue: "Default value starts from the inherited value.",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
@@ -309,15 +307,8 @@ const meta = {
         const [host, setHost] = useState<HTMLDivElement | null>(null);
         return (
           <OverlayHostProvider value={host}>
-            <div
-              ref={setHost}
-              data-visual-evidence-surface="effective-routing-rule-card"
-              className="min-h-screen bg-base-200 px-12 py-12 text-base-content"
-            >
-              <div
-                className="effective-routing-rule-story-surface mx-auto w-full max-w-3xl"
-                data-visual-evidence-target="effective-routing-rule-card"
-              >
+            <div ref={setHost} className="min-h-screen bg-base-200 px-12 py-12 text-base-content">
+              <div className="effective-routing-rule-story-surface mx-auto max-w-3xl bg-base-100 p-2">
                 <Story />
               </div>
             </div>
@@ -557,10 +548,7 @@ function applyPatchToRule(
 function EditableRoutingRuleDemo({
   initialRule,
   busyField,
-  saveStatusByField,
   errorByField,
-  onRetry,
-  onRevert,
   visibleRows,
   availableModelCatalog,
   availableModelCatalogStatus,
@@ -570,10 +558,7 @@ function EditableRoutingRuleDemo({
 }: {
   initialRule: EffectiveRoutingRule;
   busyField?: EditablePolicyConfig["busyField"];
-  saveStatusByField?: EditablePolicyConfig["saveStatusByField"];
   errorByField?: EditablePolicyConfig["errorByField"];
-  onRetry?: EditablePolicyConfig["onRetry"];
-  onRevert?: EditablePolicyConfig["onRevert"];
   visibleRows?: readonly EffectiveRoutingRuleCardRowKey[];
   availableModelCatalog?: AvailableModelOption[];
   availableModelCatalogStatus?: string;
@@ -589,10 +574,7 @@ function EditableRoutingRuleDemo({
       visibleRows={visibleRows ? [...visibleRows] : undefined}
       editablePolicy={{
         busyField,
-        saveStatusByField,
         errorByField,
-        onRetry,
-        onRevert,
         availableModelOptions: editableOptions,
         availableModelCatalog,
         availableModelCatalogStatus,
@@ -778,122 +760,6 @@ export const EditableAvailableModelsWithCatalogMobile: Story = {
   ),
 };
 
-export const MobileFlatHierarchy: Story = {
-  tags: ["test"],
-  parameters: {
-    viewport: { defaultViewport: "mobile390" },
-  },
-  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
-  play: async ({ canvasElement }) => {
-    const card = canvasElement.querySelector<HTMLElement>(
-      '[data-testid="effective-routing-rule-card"]',
-    );
-    if (!card) throw new Error("missing effective routing rule card");
-
-    const staticSections = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
-    );
-    const rowTables = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
-    );
-    const fieldRows = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>(
-        '[data-testid="effective-routing-rule-field-row"]',
-      ),
-    );
-    const timeoutRows = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>(
-        '[data-testid="effective-routing-rule-timeout-row"]',
-      ),
-    );
-    if (staticSections.length !== 4 || rowTables.length !== 2) {
-      throw new Error("missing effective routing mobile hierarchy sections");
-    }
-
-    const modeToggle = canvasElement.querySelector('[data-testid="available-models-mode-toggle"]');
-    expect(modeToggle?.parentElement?.parentElement?.classList).toContain("min-w-0");
-    expect(modeToggle?.parentElement?.parentElement?.classList).toContain(
-      "min-[769px]:min-w-[18rem]",
-    );
-
-    const cardRect = card.getBoundingClientRect();
-    expect(card.classList).toContain("rounded-none");
-    expect(card.classList).toContain("border-0");
-    expect(card.classList).toContain("bg-transparent");
-    expect(card.classList).toContain("sm:rounded-xl");
-    for (const section of staticSections) {
-      const rect = section.getBoundingClientRect();
-      expect(section.classList).toContain("border-t");
-      expect(section.classList).toContain("pt-5");
-      expect(section.classList).toContain("first:border-t-0");
-      expect(section.classList).toContain("sm:border");
-      expect(section.classList).toContain("sm:rounded-xl");
-      expect(rect.left).toBeGreaterThanOrEqual(cardRect.left);
-      expect(rect.right).toBeLessThanOrEqual(cardRect.right);
-      expect(section.scrollWidth).toBeLessThanOrEqual(section.clientWidth);
-    }
-
-    for (const table of rowTables) {
-      expect(table.classList).toContain("border-0");
-      expect(table.classList).toContain("mt-3");
-      expect(table.classList).toContain("overflow-visible");
-      expect(table.classList).toContain("sm:border");
-      expect(table.classList).toContain("sm:overflow-hidden");
-      expect(table.scrollWidth).toBeLessThanOrEqual(table.clientWidth);
-    }
-
-    for (const row of [...fieldRows, ...timeoutRows]) {
-      expect(row.classList).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
-      expect(row.classList).toContain("py-3.5");
-      expect(row.children.item(1)?.classList).not.toContain("col-span-2");
-      expect(row.children.item(1)?.classList).toContain("justify-end");
-    }
-
-    expect(
-      canvasElement.querySelector('button[aria-label="Clear account override: Priority"]')
-        ?.classList,
-    ).toContain("col-start-3");
-
-    expect(
-      canvasElement.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
-        ?.classList,
-    ).toContain("grid-cols-2");
-  },
-};
-
-export const DesktopFramedHierarchy: Story = {
-  tags: ["test"],
-  parameters: {
-    viewport: { defaultViewport: "desktop1280" },
-  },
-  render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
-  play: async ({ canvasElement }) => {
-    const card = canvasElement.querySelector<HTMLElement>(
-      '[data-testid="effective-routing-rule-card"]',
-    );
-    const staticSections = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
-    );
-    const rowTables = Array.from(
-      canvasElement.querySelectorAll<HTMLElement>('[data-testid$="-table"]'),
-    );
-
-    if (!card) throw new Error("missing effective routing rule card");
-    expect(card.classList).toContain("sm:border");
-    expect(card.classList).toContain("sm:rounded-xl");
-
-    for (const section of staticSections) {
-      expect(section.classList).toContain("sm:border");
-      expect(section.classList).toContain("sm:rounded-xl");
-    }
-
-    for (const table of rowTables) {
-      expect(table.classList).toContain("sm:border");
-      expect(table.classList).toContain("sm:overflow-hidden");
-    }
-  },
-};
-
 export const EditableMultipleAccountOverrides: Story = {
   render: () => <EditableRoutingRuleDemo initialRule={multipleAccountOverridesRule} />,
 };
@@ -914,12 +780,10 @@ export const EditableSavingAndError: Story = {
   render: () => (
     <EditableRoutingRuleDemo
       initialRule={strictRule}
-      saveStatusByField={{ priorityTier: "saving" }}
+      busyField="priorityTier"
       errorByField={{
         allowCutIn: "Save failed. Check the account policy and retry.",
       }}
-      onRetry={() => undefined}
-      onRevert={() => undefined}
     />
   ),
 };

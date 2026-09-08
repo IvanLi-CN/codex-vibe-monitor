@@ -2792,11 +2792,15 @@ function SharedUpstreamAccountDetailDrawerInner({
           labelledBy={detailDrawerTitleId}
           closeLabel={t("accountPool.upstreamAccounts.actions.closeDetails")}
           closeDisabled={isBusyAction(busyAction, "delete", accountId)}
+          showCloseButton={presentation !== "page"}
           autoFocusCloseButton={!isDeleteConfirmOpen}
           onPortalContainerChange={setDetailDrawerPortalContainer}
           onBodyElementChange={setDetailDrawerBodyElement}
           onClose={handleDetailDrawerClose}
-          shellClassName="drawer-shell--detail-wide"
+          shellClassName={cn(
+            "drawer-shell--detail-wide",
+            isCompactViewport && presentation === "page" && "border-t-0 bg-transparent shadow-none",
+          )}
           header={
             <div className="space-y-4">
               <div className="space-y-3">
@@ -3123,11 +3127,13 @@ function SharedUpstreamAccountDetailDrawerInner({
                 </Alert>
               ) : null}
               <SegmentedControl
-                className="w-fit max-w-full flex-wrap justify-start justify-self-start"
+                size="compact"
+                className="w-full max-w-full flex-nowrap justify-start justify-self-start overflow-x-auto"
                 role="tablist"
                 aria-label={t("accountPool.upstreamAccounts.detailTitle")}
               >
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.overview.tab}
                   active={detailTab === "overview"}
                   role="tab"
@@ -3138,6 +3144,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.overview")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.records.tab}
                   active={detailTab === "records"}
                   role="tab"
@@ -3148,6 +3155,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.records")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.edit.tab}
                   active={detailTab === "edit"}
                   role="tab"
@@ -3158,6 +3166,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.edit")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.routing.tab}
                   active={detailTab === "routing"}
                   role="tab"
@@ -3168,6 +3177,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                   {t("accountPool.upstreamAccounts.detailTabs.routing")}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  className="shrink-0"
                   id={detailTabIds.healthEvents.tab}
                   active={detailTab === "healthEvents"}
                   role="tab"
@@ -4218,8 +4228,8 @@ function SharedUpstreamAccountDetailDrawerInner({
                     </div>
                   </Alert>
 
-                  <Card>
-                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <Card className="mobile-flat-surface !rounded-none overflow-hidden">
+                    <CardHeader className="mobile-flat-surface-header flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                       <div>
                         <CardTitle>
                           {t("accountPool.upstreamAccounts.stickyConversations.title")}
@@ -4260,7 +4270,7 @@ function SharedUpstreamAccountDetailDrawerInner({
                         />
                       </div>
                     </CardHeader>
-                    <CardContent>
+                    <CardContent className="mobile-flat-surface-body">
                       <StickyKeyConversationTable
                         accountId={selectedDetail.id}
                         accountDisplayName={selectedDetail.displayName}
