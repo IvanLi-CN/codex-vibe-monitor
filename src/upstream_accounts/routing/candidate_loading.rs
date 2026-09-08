@@ -296,6 +296,7 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
     let tags_by_account = load_account_tag_map(pool, account_ids).await?;
     let group_names = account_group_map
         .values()
+        .filter(|row| row.kind.trim() != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
         .filter_map(|row| normalize_optional_text(row.group_name.clone()))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -316,7 +317,8 @@ pub(crate) async fn load_effective_routing_rules_for_accounts(
         let normalized_group_name = normalize_optional_text(account_row.group_name.clone());
         let request_compression_override_enabled =
             account_row.kind.trim() == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
-        if let Some(group_name) = normalized_group_name.as_ref()
+        if account_row.kind.trim() != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+            && let Some(group_name) = normalized_group_name.as_ref()
             && let Some(group_policy) = group_policy_overrides.get(group_name)
         {
             apply_group_routing_policy_override(&mut rule, group_policy);
@@ -924,7 +926,11 @@ pub(crate) async fn prepare_pool_account(
     conversation_override: Option<&ConversationRoutingOverride>,
 ) -> Result<Option<PoolResolvedAccount>> {
     let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
-    let account_proxy_scope = account_bound_forward_proxy_scope(row);
+    let account_proxy_scope = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        Some(transit_account_forward_proxy_scope(row))
+    } else {
+        account_bound_forward_proxy_scope(row)
+    };
     let refresh_proxy_scope =
         conversation_proxy_scope
             .clone()

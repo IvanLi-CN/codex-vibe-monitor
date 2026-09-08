@@ -3,6 +3,7 @@ import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
+import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
@@ -12,9 +13,11 @@ export function UpstreamAccountCreateApiKeySection() {
     ? "/account-pool/transits"
     : "/account-pool/pool";
   const {
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyGroupProxyState,
+    apiKeyForwardProxyCatalogState,
+    apiKeyForwardProxyNodes,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -25,6 +28,7 @@ export function UpstreamAccountCreateApiKeySection() {
     busyAction,
     cn,
     handleCreateApiKey,
+    setApiKeyBoundProxyKeys,
     setApiKeyDisplayName,
     setApiKeyLimitUnit,
     setApiKeyNote,
@@ -83,6 +87,46 @@ export function UpstreamAccountCreateApiKeySection() {
           />
         </div>
       </label>
+      <div className="field md:col-span-2">
+        <FormFieldFeedback
+          label={t("accountPool.upstreamAccounts.transitProxy.label")}
+          message={
+            apiKeyBoundProxyKeys.length === 0
+              ? t("accountPool.upstreamAccounts.transitProxy.required")
+              : null
+          }
+        />
+        <ForwardProxyBindingSelector
+          selectedKeys={apiKeyBoundProxyKeys}
+          availableProxyNodes={apiKeyForwardProxyNodes}
+          disabled={busyAction === "apiKey" || !writesEnabled}
+          catalogKind={apiKeyForwardProxyCatalogState.kind}
+          catalogFreshness={apiKeyForwardProxyCatalogState.freshness}
+          onChange={(nextKeys) => {
+            const normalized = nextKeys.map((key) => key.trim()).filter(Boolean);
+            setApiKeyBoundProxyKeys(normalized.length > 0 ? normalized : ["__direct__"]);
+          }}
+          showAutomaticNotice={false}
+          labels={{
+            loading: t("accountPool.upstreamAccounts.proxyBindings.loading"),
+            empty: t("accountPool.upstreamAccounts.proxyBindings.dialogEmpty"),
+            missing: t("accountPool.upstreamAccounts.proxyBindings.statusMissing"),
+            unavailable: t("accountPool.upstreamAccounts.proxyBindings.statusUnavailable"),
+            chartLabel: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel"),
+            chartSuccess: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess"),
+            chartFailure: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure"),
+            chartEmpty: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty"),
+            chartTotal: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal"),
+            chartAriaLabel: t(
+              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel",
+            ),
+            chartInteractionHint: t(
+              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint",
+            ),
+            chartLocaleTag: typeof navigator === "undefined" ? "en-US" : navigator.language,
+          }}
+        />
+      </div>
       <label className="field">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.primaryLimit")}</span>
         <Input
@@ -130,7 +174,7 @@ export function UpstreamAccountCreateApiKeySection() {
             !writesEnabled ||
             apiKeyDisplayNameConflict != null ||
             Boolean(apiKeyUpstreamBaseUrlError) ||
-            Boolean(apiKeyGroupProxyState.error)
+            apiKeyBoundProxyKeys.length === 0
           }
         >
           {busyAction === "apiKey" ? (

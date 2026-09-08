@@ -327,13 +327,16 @@ pub(crate) async fn sync_upstream_account_by_id(
         return Ok(Some(detail));
     }
 
-    let group_metadata =
+    let group_metadata = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        UpstreamAccountGroupMetadata::default()
+    } else {
         match resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
             .await?
         {
             PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
             PoolAccountGroupProxyRoutingReadiness::Blocked(message) => bail!(message),
-        };
+        }
+    };
     let sync_result = match row.kind.as_str() {
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => {
             if group_metadata.node_shunt_enabled {
@@ -3860,10 +3863,12 @@ pub(crate) async fn load_canonicalized_upstream_account_group(
             SELECT COUNT(*)
             FROM pool_upstream_accounts
             WHERE deleted_at IS NULL
+              AND kind = ?2
               AND TRIM(COALESCE(group_name, '')) = ?1
             "#,
         )
         .bind(group_name)
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .fetch_one(&state.pool)
         .await?,
         note: metadata.note.clone(),

@@ -539,6 +539,11 @@ pub(crate) async fn evaluate_live_pool_candidate(
     conversation_override: Option<&ConversationRoutingOverride>,
     now: DateTime<Utc>,
 ) -> Result<LivePoolCandidateEvaluation> {
+    let group_metadata = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        UpstreamAccountGroupMetadata::default()
+    } else {
+        group_metadata.clone()
+    };
     let conversation_proxy_scope = conversation_forward_proxy_scope(conversation_override);
     let build_evaluation =
         |eligibility, dispatch_state, resolved_account, assigned_blocked, blocked_message| {
@@ -560,6 +565,35 @@ pub(crate) async fn evaluate_live_pool_candidate(
                 blocked_message,
             }
         };
+
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        let transit_proxy_scope = transit_account_forward_proxy_scope(row);
+        let resolved_account = prepare_pool_account_with_scopes(
+            state,
+            row,
+            effective_rule,
+            group_metadata.clone(),
+            transit_proxy_scope.clone(),
+            transit_proxy_scope,
+            routing_source,
+        )
+        .await?;
+        return Ok(build_evaluation(
+            if resolved_account.is_some() {
+                PoolRoutingCandidateEligibility::Assignable
+            } else {
+                PoolRoutingCandidateEligibility::HardBlocked
+            },
+            if resolved_account.is_some() {
+                PoolRoutingCandidateDispatchState::ReadyOnOwnedNode
+            } else {
+                PoolRoutingCandidateDispatchState::HardBlocked
+            },
+            resolved_account,
+            None,
+            None,
+        ));
+    }
 
     if group_metadata.node_shunt_enabled {
         if let Some(conversation_proxy_scope) = conversation_proxy_scope {
@@ -1323,7 +1357,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 {
                     sticky_route_still_reusable = true;
                     let mut sticky_route_was_excluded = false;
-                    let group_readiness = if row.bound_proxy_keys().is_empty() {
+                    let group_readiness = if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+                        && row.bound_proxy_keys().is_empty()
+                    {
                         resolve_pool_account_group_proxy_routing_readiness(
                             state,
                             row.group_name.as_deref(),
@@ -1886,7 +1922,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             saw_other_non_rate_limited_routing_candidate = true;
             continue;
         }
-        let group_readiness = if row.bound_proxy_keys().is_empty() {
+        let group_readiness = if row.kind != UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+            && row.bound_proxy_keys().is_empty()
+        {
             resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
                 .await?
         } else {

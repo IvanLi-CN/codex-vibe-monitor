@@ -796,20 +796,14 @@ export interface OauthMailboxStatusRequestPayload {
 export interface CreateApiKeyAccountPayload {
   displayName: string;
   email?: string;
-  groupName?: string;
-  groupBoundProxyKeys?: string[];
-  groupNodeShuntEnabled?: boolean;
-  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
-  groupNote?: string;
-  concurrencyLimit?: number;
   upstreamBaseUrl?: string;
   apiKey: string;
-  isMother?: boolean;
   localPrimaryLimit?: number;
   localSecondaryLimit?: number;
   localLimitUnit?: string;
   tagIds?: number[];
+  boundProxyKeys?: string[];
 }
 
 export interface ApiKeyGroupMigrationPreflight {

@@ -2625,6 +2625,8 @@ pub(crate) struct CreateApiKeyAccountRequest {
     pub(crate) note: Option<String>,
     pub(crate) group_note: Option<String>,
     pub(crate) concurrency_limit: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) bound_proxy_keys: OptionalField<Vec<String>>,
     pub(crate) upstream_base_url: Option<String>,
     pub(crate) api_key: String,
     pub(crate) is_mother: Option<bool>,

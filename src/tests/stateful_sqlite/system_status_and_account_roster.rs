@@ -4005,6 +4005,120 @@ async fn create_api_key_account_persists_upstream_base_url() {
     .await
     .expect("load stored upstream base url");
     assert_eq!(stored.as_deref(), Some("https://proxy.example.com/gateway"));
+
+    let bound_proxy_keys: Option<String> = sqlx::query_scalar(
+        "SELECT bound_proxy_keys_json FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind("Gateway Key")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stored default transit proxy binding");
+    assert_eq!(
+        decode_group_bound_proxy_keys_json(bound_proxy_keys.as_deref()),
+        vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn create_api_key_account_rejects_empty_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "No Transit Proxy",
+        "apiKey": "sk-no-transit-proxy",
+        "boundProxyKeys": [],
+    }))
+    .expect("deserialize empty transit proxy request");
+
+    let err = create_api_key_account(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("empty transit proxy bindings must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn create_api_key_account_rejects_null_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "Null Transit Proxy",
+        "apiKey": "sk-null-transit-proxy",
+        "boundProxyKeys": null,
+    }))
+    .expect("deserialize null transit proxy request");
+
+    let err = create_api_key_account(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("null transit proxy bindings must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn update_api_key_account_rejects_empty_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Existing Transit", "sk-existing-transit").await;
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "boundProxyKeys": [],
+    }))
+    .expect("deserialize empty transit proxy update");
+
+    let err = update_upstream_account(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+        Json(payload),
+    )
+    .await
+    .expect_err("empty transit proxy bindings must be rejected on update");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn update_api_key_account_rejects_null_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Null Transit Update", "sk-null-update").await;
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "boundProxyKeys": null,
+    }))
+    .expect("deserialize null transit proxy update");
+
+    let err = update_upstream_account(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+        Json(payload),
+    )
+    .await
+    .expect_err("null transit proxy bindings must be rejected on update");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
 }
 
 #[tokio::test]

@@ -2838,36 +2838,19 @@ async fn api_key_group_migration_is_idempotent_and_preserves_oauth_groups() {
         .await
         .expect("preflight migration");
     assert_eq!(preflight.api_key_count, 1);
-    assert!(
-        preflight
-            .blocked_strategies
-            .iter()
-            .any(|item| item == "mother_account")
-    );
+    assert!(preflight.blocked_strategies.is_empty());
     assert!(preflight.can_migrate);
-
-    let stale = confirm_api_key_group_migration(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ConfirmApiKeyGroupMigrationRequest {
-            confirmation_hash: "stale".to_string(),
-            disabled_strategies: vec!["mother_account".to_string()],
-        }),
-    )
-    .await
-    .expect_err("stale confirmation must be rejected");
-    assert_eq!(stale.0, StatusCode::CONFLICT);
 
     let Json(migrated) = confirm_api_key_group_migration(
         State(state.clone()),
         HeaderMap::new(),
         Json(ConfirmApiKeyGroupMigrationRequest {
-            confirmation_hash: preflight.confirmation_hash,
-            disabled_strategies: vec!["mother_account".to_string()],
+            confirmation_hash: "stale".to_string(),
+            disabled_strategies: Vec::new(),
         }),
     )
     .await
-    .expect("confirm migration");
+    .expect("migration automatically disables obsolete group strategies");
     assert_eq!(migrated.migrated_count, 1);
     let api_key_state = sqlx::query_as::<_, (Option<String>, i64)>(
         "SELECT group_name, is_mother FROM pool_upstream_accounts WHERE id = ?1",
@@ -2887,7 +2870,7 @@ async fn api_key_group_migration_is_idempotent_and_preserves_oauth_groups() {
     assert_eq!(oauth_group.as_deref(), Some("legacy-relay-group"));
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND action = 'api_key_group_migrated'",
+        "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND action = 'api_key_transit_proxy_binding_migrated'",
         )
         .bind(api_key_id)
         .fetch_one(&state.pool)

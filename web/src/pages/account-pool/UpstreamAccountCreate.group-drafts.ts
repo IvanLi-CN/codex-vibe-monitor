@@ -46,7 +46,6 @@ type ForwardProxyNodeLike = {
 
 export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateControllerContext) {
   const {
-    apiKeyGroupName,
     batchDefaultGroupName,
     batchRows,
     forwardProxyNodes,
@@ -80,7 +79,6 @@ export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateCo
     setGroupNoteEditor,
     setGroupNoteError,
     setPersistedGroupNoteSyncDrafts,
-    setApiKeyGroupName,
     setBatchDefaultGroupName,
     setBatchRows,
     t,
@@ -289,11 +287,6 @@ export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateCo
     () => formatImportedOauthSelectionLabel(importFiles, t),
     [importFiles, t],
   );
-  const apiKeyGroupProxyState = useMemo(
-    () => resolveRequiredGroupProxyState(apiKeyGroupName),
-    [apiKeyGroupName, resolveRequiredGroupProxyState],
-  );
-
   const clearDraftGroupSettings = useCallback((groupName: string) => {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return;
@@ -351,9 +344,6 @@ export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateCo
       if (normalizeGroupName(importGroupName) === normalizedGroupName) {
         setImportGroupName("");
       }
-      if (normalizeGroupName(apiKeyGroupName) === normalizedGroupName) {
-        setApiKeyGroupName("");
-      }
       const deletedDefaultGroup = normalizeGroupName(batchDefaultGroupName) === normalizedGroupName;
       if (deletedDefaultGroup) {
         setBatchDefaultGroupName("");
@@ -381,12 +371,10 @@ export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateCo
       }
     },
     [
-      apiKeyGroupName,
       batchDefaultGroupName,
       batchRows,
       importGroupName,
       oauthGroupName,
-      setApiKeyGroupName,
       setBatchDefaultGroupName,
       setBatchRows,
       setImportGroupName,
@@ -625,7 +613,6 @@ export function useUpstreamAccountCreateGroupDrafts(ctx: UpstreamAccountCreateCo
     oauthGroupProxyState,
     importGroupProxyState,
     importSelectionLabel,
-    apiKeyGroupProxyState,
     clearDraftGroupSettings,
     persistDraftGroupSettings,
     openGroupNoteEditor,

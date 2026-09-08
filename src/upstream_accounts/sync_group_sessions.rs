@@ -893,10 +893,13 @@ pub(crate) async fn group_account_count_conn(
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
-        WHERE COALESCE(deleted_at, '') = '' AND group_name = ?1
+        WHERE COALESCE(deleted_at, '') = ''
+          AND kind = ?2
+          AND group_name = ?1
         "#,
     )
     .bind(group_name)
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .fetch_one(conn)
     .await
     .map_err(Into::into)
@@ -1482,7 +1485,10 @@ pub(crate) async fn load_upstream_account_rows_for_groups(
             separated.push_bind(group_name);
         }
     }
-    query.push(") ORDER BY id ASC");
+    query
+        .push(") AND kind = ")
+        .push_bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+        .push(" ORDER BY id ASC");
 
     query
         .build_query_as::<UpstreamAccountRow>()
@@ -1798,11 +1804,25 @@ pub(crate) fn account_bound_forward_proxy_scope(
     })
 }
 
+pub(crate) fn transit_account_forward_proxy_scope(
+    row: &UpstreamAccountRow,
+) -> ForwardProxyRouteScope {
+    account_bound_forward_proxy_scope(row).unwrap_or_else(|| {
+        ForwardProxyRouteScope::bound_scope(
+            format!("account:{}", row.id()),
+            vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+        )
+    })
+}
+
 pub(crate) async fn resolve_account_forward_proxy_scope(
     state: &AppState,
     row: &UpstreamAccountRow,
     group_metadata: Option<UpstreamAccountGroupMetadata>,
 ) -> Result<ForwardProxyRouteScope> {
+    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        return Ok(transit_account_forward_proxy_scope(row));
+    }
     let group_metadata = match group_metadata {
         Some(metadata) => metadata,
         None => load_group_metadata(&state.pool, row.group_name.as_deref()).await?,

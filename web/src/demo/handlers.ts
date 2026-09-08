@@ -3542,7 +3542,7 @@ export async function handleDemoRequest(request: Request) {
         "local quota limits",
         "note",
       ],
-      blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
+      blockedStrategies: [],
       canMigrate: true,
     });
   }
@@ -3551,7 +3551,7 @@ export async function handleDemoRequest(request: Request) {
     return json({
       migratedCount,
       confirmationHash: "demo-migration-confirmation-hash",
-      auditAction: "api_key_group_migrated",
+      auditAction: "api_key_transit_proxy_binding_migrated",
     });
   }
   if (pathname === "/api/pool/upstream-account-events") {

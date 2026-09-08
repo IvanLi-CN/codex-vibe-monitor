@@ -637,11 +637,11 @@ Visual evidence is captured from stable Storybook scenarios for:
 The upstream area has two explicit account domains backed by the same account table and IDs:
 
 - `oauth_codex` is the official account pool. Group policy, group proxy bindings, node shunting, single-account rotation, mother-account assignment, OAuth maintenance, and pool access/sync settings apply only here.
-- `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface.
+- `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, an explicit non-empty proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface.
 
 Account roster and maintenance-event APIs accept `kind=oauth_codex|api_key_codex`. The filter is applied before metrics, totals, pagination, group summaries, and event filtering. Omitting `kind` preserves the legacy mixed response for compatibility. API-key group writes are rejected server-side; UI hiding is not the enforcement boundary.
 
-Legacy API-key records that still carry group state require the upstream-domain migration gate. A preflight returns a stable confirmation hash, portable account-level fields, and blocked group-only strategies. Confirmation must repeat that hash and explicitly disable every blocked strategy; the transaction clears only API-key `group_name` and `is_mother`, writes an audit event, and preserves OAuth members, group metadata, account IDs, encrypted credentials, and tags.
+Startup schema maintenance automatically migrates every legacy API-key record in one SQLite transaction. It retains an existing non-empty account proxy binding first; otherwise it copies a non-empty legacy group proxy binding; otherwise it writes the explicit direct binding. The migration clears API-key `group_name` and `is_mother`, detaches transit accounts from legacy group-only strategies, and writes an audit event. It preserves OAuth members, group metadata, account IDs, encrypted credentials, and tags. Create and update APIs reject an explicit empty proxy binding; UI creation defaults to direct and cannot submit without at least one binding.
 
 ## Domain Acceptance
 

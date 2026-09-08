@@ -52,3 +52,4 @@
 - The event list handler validates and applies the optional `kind` filter in SQL, preserving mixed responses when omitted.
 - The Web maintenance-records page adds a type filter and suppresses the group filter for API-key transit records.
 - Demo and Storybook fixtures include both OAuth and API-key events while keeping transit group summaries empty.
+- API-key transit has a non-empty account-level proxy binding. Startup migration preserves an existing binding, otherwise copies the legacy group binding, and otherwise stores direct before clearing legacy group state; OAuth maintenance behavior is unchanged.

@@ -194,7 +194,8 @@ Validation covers:
 - `kind` is now accepted by account-roster and maintenance-event queries and is applied server-side before totals, metrics, paging, and filtering.
 - OAuth-only group summaries and maintenance controls are enforced in Rust; API-key create, update, and bulk group writes return `400`.
 - `/account-pool/transits` is the API-key-only surface; `/account-pool/pool` is the OAuth/Session surface; `/account-pool/maintenance-records` remains cross-domain with type-aware filtering.
-- API-key group migration has preflight/confirmation endpoints with a stable hash, blocked-strategy acknowledgement, transactional cleanup, and an audit event.
+- Startup schema maintenance migrates legacy API-key group state transactionally without an acknowledgement step: it keeps an existing non-empty account binding, otherwise copies a legacy group binding, otherwise writes direct; it then clears the API-key group/mother fields, detaches transit from group-only strategy state, and records one audit event without changing OAuth group metadata.
+- API-key create/update writes preserve a non-empty explicit proxy binding. The current UI defaults new transit accounts to direct, prevents removal of the final binding, and the server rejects an explicit empty binding.
 - backend regressions covering request-compression schema migration, root/group/account inheritance, mixed-group API-key gating, unsupported `follow` encodings, request rewrite plus compression, and stateful upstream round-trips
 - backend regressions covering proactive fallback sticky comparison, higher-priority handoff without pre-success sticky mutation, same/lower-priority retention, and generation-guarded successful rebinding
 - frontend regressions and Storybook states proving flat button-style reason toggles, the account panel-level reset behavior, and desktop / narrow-width readability

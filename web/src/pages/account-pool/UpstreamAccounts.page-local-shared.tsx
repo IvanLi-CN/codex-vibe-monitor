@@ -1902,22 +1902,32 @@ function SharedUpstreamAccountDetailDrawerInner({
     routingBlockNowMsOverride == null,
   );
   const routingBlockNowMs = routingBlockNowMsOverride ?? localRoutingBlockNowMs;
+  const selectedIsTransit = selectedDetail?.kind === "api_key_codex";
   const selectedAccountProxyKeys = normalizeProxyKeys(selectedDetail?.boundProxyKeys);
   const [accountProxyEditorOpen, setAccountProxyEditorOpen] = useState(false);
   const [accountProxyDraftKeys, setAccountProxyDraftKeys] = useState<string[]>([]);
   const selectedGroupProxyKeys = normalizeProxyKeys(
     selectedDetail?.groupName ? resolveGroupBoundProxyKeysForName(selectedDetail.groupName) : [],
   );
-  const selectedEffectiveProxyKeys =
-    selectedAccountProxyKeys.length > 0 ? selectedAccountProxyKeys : selectedGroupProxyKeys;
+  const selectedEffectiveProxyKeys = selectedIsTransit
+    ? selectedAccountProxyKeys.length > 0
+      ? selectedAccountProxyKeys
+      : [DIRECT_PROXY_KEY]
+    : selectedAccountProxyKeys.length > 0
+      ? selectedAccountProxyKeys
+      : selectedGroupProxyKeys;
   const selectedProxyNodeByKey = new Map(forwardProxyNodes.map((node) => [node.key, node]));
   const accountProxyEditorBusy = Boolean(
     selectedDetail && hasBusyAccountAction(busyAction, selectedDetail.id),
   );
   const openAccountProxyEditor = useCallback(() => {
-    setAccountProxyDraftKeys(selectedAccountProxyKeys);
+    setAccountProxyDraftKeys(
+      selectedIsTransit && selectedAccountProxyKeys.length === 0
+        ? [DIRECT_PROXY_KEY]
+        : selectedAccountProxyKeys,
+    );
     setAccountProxyEditorOpen(true);
-  }, [selectedAccountProxyKeys]);
+  }, [selectedAccountProxyKeys, selectedIsTransit]);
   const closeAccountProxyEditor = useCallback(() => {
     if (accountProxyEditorBusy) return;
     setAccountProxyEditorOpen(false);
@@ -2264,10 +2274,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         const response = await saveAccount(source.id, {
           displayName: draft.displayName.trim() || undefined,
           email: normalizedEmail || null,
-          groupName: draft.groupName.trim(),
-          isMother: draft.isMother,
           note: draft.note.trim() || undefined,
-          groupNote: pendingGroupNote || undefined,
           upstreamBaseUrl:
             source.kind === "api_key_codex" ? draft.upstreamBaseUrl.trim() || null : undefined,
           apiKey:
@@ -2284,6 +2291,13 @@ function SharedUpstreamAccountDetailDrawerInner({
               : undefined,
           localLimitUnit:
             source.kind === "api_key_codex" ? draft.localLimitUnit.trim() || undefined : undefined,
+          ...(source.kind === "api_key_codex"
+            ? {}
+            : {
+                groupName: draft.groupName.trim(),
+                isMother: draft.isMother,
+                groupNote: pendingGroupNote || undefined,
+              }),
         });
         notifyMotherChange(response);
         applySavedAccountDraftResponse(
@@ -2329,6 +2343,16 @@ function SharedUpstreamAccountDetailDrawerInner({
     async (source: UpstreamAccountDetail, proxyKeys: string[]) => {
       if (hasBusyAccountAction(busyAction, source.id)) return;
       const normalizedProxyKeys = normalizeProxyKeys(proxyKeys);
+      if (source.kind === "api_key_codex" && normalizedProxyKeys.length === 0) {
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: t("accountPool.upstreamAccounts.transitProxy.required"),
+          },
+        }));
+        return false;
+      }
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
         delete nextMessages[source.id];
@@ -2363,7 +2387,7 @@ function SharedUpstreamAccountDetailDrawerInner({
         });
       }
     },
-    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount],
+    [busyAction, handleNotFoundClose, notifyMotherChange, saveAccount, t],
   );
   const applyAccountProxyEditor = useCallback(async () => {
     if (!selectedDetail) return;
@@ -3626,7 +3650,9 @@ function SharedUpstreamAccountDetailDrawerInner({
                             {t("accountPool.upstreamAccounts.proxyBindings.dialogTitle")}
                           </DialogTitle>
                           <DialogDescription>
-                            {t("accountPool.upstreamAccounts.proxyBindings.dialogDescription")}
+                            {selectedIsTransit
+                              ? t("accountPool.upstreamAccounts.transitProxy.dialogDescription")
+                              : t("accountPool.upstreamAccounts.proxyBindings.dialogDescription")}
                           </DialogDescription>
                         </DialogHeader>
                         <DialogCloseIcon
@@ -3690,7 +3716,12 @@ function SharedUpstreamAccountDetailDrawerInner({
                         </Button>
                         <Button
                           type="button"
-                          disabled={accountProxyEditorBusy || !writesEnabled || !selectedDetail}
+                          disabled={
+                            accountProxyEditorBusy ||
+                            !writesEnabled ||
+                            !selectedDetail ||
+                            (selectedIsTransit && accountProxyDraftKeys.length === 0)
+                          }
                           onClick={() => void applyAccountProxyEditor()}
                         >
                           {accountProxyEditorBusy ? (
@@ -3727,7 +3758,10 @@ function SharedUpstreamAccountDetailDrawerInner({
                           ]
                     }
                     proxyBindings={{
-                      source: selectedAccountProxyKeys.length > 0 ? "account" : "group",
+                      source:
+                        selectedIsTransit || selectedAccountProxyKeys.length > 0
+                          ? "account"
+                          : "group",
                       items: selectedEffectiveProxyKeys.map((key) => {
                         const node = selectedProxyNodeByKey.get(key);
                         return {
@@ -3735,18 +3769,24 @@ function SharedUpstreamAccountDetailDrawerInner({
                           label: proxyNodeLabel(node, key),
                           status: proxyNodeStatusLabel(node, key, t),
                           tone: proxyNodeTone(node, key),
-                          accountOverride: selectedAccountProxyKeys.includes(key),
+                          accountOverride:
+                            selectedIsTransit || selectedAccountProxyKeys.includes(key),
                         };
                       }),
                       busy: accountProxyEditorBusy,
                       disabled: !writesEnabled,
                       onEdit: openAccountProxyEditor,
-                      onClear: () => void handleSaveAccountProxyBindings(selectedDetail, []),
-                      onRemove: (key) =>
-                        void handleSaveAccountProxyBindings(
-                          selectedDetail,
-                          toggleProxyKey(selectedAccountProxyKeys, key),
-                        ),
+                      onClear: selectedIsTransit
+                        ? undefined
+                        : () => void handleSaveAccountProxyBindings(selectedDetail, []),
+                      onRemove:
+                        selectedIsTransit && selectedAccountProxyKeys.length <= 1
+                          ? undefined
+                          : (key) =>
+                              void handleSaveAccountProxyBindings(
+                                selectedDetail,
+                                toggleProxyKey(selectedAccountProxyKeys, key),
+                              ),
                       labels: {
                         field: t("accountPool.upstreamAccounts.proxyBindings.accountTitle"),
                         add: t("accountPool.upstreamAccounts.proxyBindings.addLabel"),

@@ -54,12 +54,10 @@ import type {
   UpstreamAccountSummary,
 } from "../../lib/api";
 import {
-  confirmApiKeyGroupMigration,
   createBulkUpstreamAccountSyncJobEventSource,
   normalizeBulkUpstreamAccountSyncFailedEventPayload,
   normalizeBulkUpstreamAccountSyncRowEventPayload,
   normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
-  preflightApiKeyGroupMigration,
 } from "../../lib/api";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
 import { buildGroupNameSuggestions, buildGroupOptions } from "../../lib/upstreamAccountGroups";
@@ -94,49 +92,6 @@ import { useUpstreamAccountGroupSettingsDialog } from "./useUpstreamAccountGroup
 export { SharedUpstreamAccountDetailDrawer } from "./UpstreamAccounts.page-local-shared";
 
 type AccountRosterViewMode = "flat" | "grouped" | "grid";
-
-function ApiKeyGroupMigrationAutoRunner({
-  enabled,
-  onCompleted,
-}: {
-  enabled: boolean;
-  onCompleted: () => void;
-}) {
-  const [error, setError] = useState<string | null>(null);
-  const startedRef = useRef(false);
-
-  useEffect(() => {
-    if (!enabled || startedRef.current) return;
-    startedRef.current = true;
-    let cancelled = false;
-    void preflightApiKeyGroupMigration()
-      .then(async (preflight) => {
-        if (preflight.apiKeyCount === 0) return;
-        await confirmApiKeyGroupMigration({
-          confirmationHash: preflight.confirmationHash,
-          disabledStrategies: preflight.blockedStrategies,
-        });
-        if (!cancelled) onCompleted();
-      })
-      .catch((migrationError) => {
-        if (!cancelled) {
-          setError(
-            migrationError instanceof Error ? migrationError.message : String(migrationError),
-          );
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, onCompleted]);
-
-  return error ? (
-    <Alert variant="error">
-      <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-      <div>{error}</div>
-    </Alert>
-  ) : null;
-}
 
 function normalizeRosterGroupName(value?: string | null) {
   const normalized = value?.trim();
@@ -1592,13 +1547,6 @@ export default function UpstreamAccountsPage() {
                 />
                 <div>{visibleRoutingError}</div>
               </Alert>
-            ) : null}
-
-            {!isTransitPage ? (
-              <ApiKeyGroupMigrationAutoRunner
-                enabled={writesEnabled}
-                onCompleted={() => void refresh()}
-              />
             ) : null}
 
             {duplicateWarning ? (
