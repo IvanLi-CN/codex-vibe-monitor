@@ -128,6 +128,53 @@ done
 
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$simplified_topology_repo" --profile final
 
+release_comment_permissions_repo="$tmp_dir/release-comment-permissions-repo"
+copy_repo_snapshot "$baseline_repo" "$release_comment_permissions_repo"
+python3 - <<'PY' "$release_comment_permissions_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "      packages: write\n"
+replacement = "      issues: write\n      packages: write\n      pull-requests: write\n"
+if needle not in text:
+    raise SystemExit("failed to locate release-publish package permission")
+prefix, suffix = text.rsplit(needle, 1)
+path.write_text(prefix + replacement + suffix)
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_comment_permissions_repo" --profile final >/dev/null 2>"$tmp_dir/release-comment-permissions.log"; then
+  echo "expected source-PR comment permissions fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "permissions must exclude source-PR comment permissions" "$tmp_dir/release-comment-permissions.log"
+
+release_comment_step_repo="$tmp_dir/release-comment-step-repo"
+copy_repo_snapshot "$baseline_repo" "$release_comment_step_repo"
+python3 - <<'PY' "$release_comment_step_repo"
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+path = repo / ".github/workflows/release.yml"
+text = path.read_text()
+needle = "      - name: Resolve next pending release target\n"
+replacement = "      - name: Upsert PR release version comment\n        run: echo 'legacy source-PR comment'\n\n" + needle
+if needle not in text:
+    raise SystemExit("failed to locate release queue step")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$release_comment_step_repo" --profile final >/dev/null 2>"$tmp_dir/release-comment-step.log"; then
+  echo "expected source-PR comment step fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "source-PR release comment step must stay removed" "$tmp_dir/release-comment-step.log"
+
 release_notes_repo="$tmp_dir/release-notes-repo"
 copy_repo_snapshot "$baseline_repo" "$release_notes_repo"
 python3 - <<'PY' "$release_notes_repo"
