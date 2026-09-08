@@ -637,7 +637,7 @@ Visual evidence is captured from stable Storybook scenarios for:
 The upstream area has two explicit account domains backed by the same account table and IDs:
 
 - `oauth_codex` is the official account pool. Group policy, group proxy bindings, node shunting, single-account rotation, mother-account assignment, OAuth maintenance, and pool access/sync settings apply only here. Group summaries, counts, and node-shunt candidate queries enforce this kind at the server boundary.
-- `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, an explicit non-empty proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface.
+- `api_key_codex` is the third-party transit domain. It keeps account-level routing, request compression, an explicit non-empty proxy binding, local limits, notes, and read-only system tags, but has no group, mother-account, node-shunt, single-account-rotation, or OAuth maintenance surface. Runtime routing uses the account binding (or direct fallback), with an explicit conversation proxy override taking precedence, and never consumes legacy group proxy/policy state.
 
 Account roster and maintenance-event APIs accept `kind=oauth_codex|api_key_codex`. The filter is applied before metrics, totals, pagination, group summaries, and event filtering. Omitting `kind` preserves the legacy mixed response for compatibility. API-key group writes are rejected server-side; UI hiding is not the enforcement boundary.
 

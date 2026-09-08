@@ -25,3 +25,4 @@
 - Group rotation metadata and runtime resolution are OAuth-only.
 - API-key group writes are rejected at the account create/update/bulk boundaries, so transit cannot accidentally enter the sticky-route rotation policy.
 - Startup migration automatically detaches transit accounts from the non-applicable rotation strategy, clears legacy API-key group state, and records the audit event without changing OAuth group metadata.
+- Transit candidate resolution uses the account proxy binding (or direct fallback) and ignores legacy group rotation/readiness state; explicit conversation proxy overrides still take precedence for the active request.
