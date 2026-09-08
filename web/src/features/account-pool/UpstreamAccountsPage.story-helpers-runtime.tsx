@@ -452,7 +452,7 @@ export function StorybookUpstreamAccountsMock({
             "local quota limits",
             "note",
           ],
-          blockedStrategies: ["node_shunt", "single_account_rotation", "mother_account"],
+          blockedStrategies: [],
           canMigrate: true,
         });
       }
@@ -465,17 +465,36 @@ export function StorybookUpstreamAccountsMock({
               account.isMother === true),
         );
         const legacyIds = new Set(legacyApiKeys.map((account) => account.id));
-        store.accounts = store.accounts.map((account) =>
-          legacyIds.has(account.id) ? { ...account, groupName: null, isMother: false } : account,
-        );
+        store.accounts = store.accounts.map((account) => {
+          if (!legacyIds.has(account.id)) return account;
+          return {
+            ...account,
+            groupName: null,
+            isMother: false,
+            boundProxyKeys:
+              account.boundProxyKeys && account.boundProxyKeys.length > 0
+                ? account.boundProxyKeys
+                : ["__direct__"],
+          };
+        });
         for (const accountId of legacyIds) {
           const detail = store.details[accountId];
-          if (detail) store.details[accountId] = { ...detail, groupName: null, isMother: false };
+          if (detail) {
+            store.details[accountId] = {
+              ...detail,
+              groupName: null,
+              isMother: false,
+              boundProxyKeys:
+                detail.boundProxyKeys && detail.boundProxyKeys.length > 0
+                  ? detail.boundProxyKeys
+                  : ["__direct__"],
+            };
+          }
         }
         return jsonResponse({
           migratedCount: legacyApiKeys.length,
           confirmationHash: "storybook-migration-confirmation-hash",
-          auditAction: "api_key_group_migrated",
+          auditAction: "api_key_transit_proxy_binding_migrated",
         });
       }
 
@@ -955,11 +974,13 @@ export function StorybookUpstreamAccountsMock({
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
           email: body.email ?? null,
-          groupName: body.groupName ?? "default",
-          isMother: body.isMother === true,
           note: body.note ?? null,
           upstreamBaseUrl: body.upstreamBaseUrl ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
+          boundProxyKeys:
+            Array.isArray(body.boundProxyKeys) && body.boundProxyKeys.length > 0
+              ? body.boundProxyKeys
+              : ["__direct__"],
           localLimits: {
             primaryLimit: body.localPrimaryLimit ?? 120,
             secondaryLimit: body.localSecondaryLimit ?? 500,
@@ -967,10 +988,6 @@ export function StorybookUpstreamAccountsMock({
           },
         });
         const synced = syncLocalWindows(detail);
-        const normalizedGroupName = normalizeGroupName(synced.groupName);
-        if (normalizedGroupName && body.groupNote?.trim()) {
-          store.groupNotes[normalizedGroupName] = body.groupNote.trim();
-        }
         store.details[nextId] = synced;
         store.accounts = [toSummary(synced), ...store.accounts];
         return jsonResponse(clone(synced), 201);
@@ -1270,14 +1287,18 @@ export function StorybookUpstreamAccountsMock({
             ? Array.from(new Set(body.boundProxyKeys.map((value) => value.trim()).filter(Boolean)))
             : []
           : (detail.boundProxyKeys ?? []);
+        const effectiveBoundProxyKeys =
+          detail.kind === "api_key_codex" && nextBoundProxyKeys.length === 0
+            ? ["__direct__"]
+            : nextBoundProxyKeys;
         const updated = syncLocalWindows({
           ...detail,
           displayName:
             body.displayName ??
             resolveDisplayNameAfterEmailChange(detail.displayName, detail.email, nextEmail),
           email: nextEmail,
-          groupName: body.groupName ?? detail.groupName,
-          isMother: body.isMother ?? detail.isMother,
+          groupName: detail.kind === "api_key_codex" ? null : (body.groupName ?? detail.groupName),
+          isMother: detail.kind === "api_key_codex" ? false : (body.isMother ?? detail.isMother),
           note: body.note ?? detail.note,
           upstreamBaseUrl:
             detail.kind === "api_key_codex" && Object.hasOwn(body, "upstreamBaseUrl")
@@ -1291,7 +1312,7 @@ export function StorybookUpstreamAccountsMock({
                 ? "active"
                 : detail.status,
           maskedApiKey: body.apiKey ? maskApiKey(body.apiKey) : detail.maskedApiKey,
-          boundProxyKeys: nextBoundProxyKeys,
+          boundProxyKeys: effectiveBoundProxyKeys,
           localLimits:
             detail.kind === "api_key_codex"
               ? {

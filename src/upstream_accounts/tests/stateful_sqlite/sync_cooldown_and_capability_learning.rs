@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::insert_test_pool_oauth_account;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -7389,28 +7390,27 @@ async fn resolver_allows_fallback_failover_when_sticky_source_is_unusable() {
 async fn resolver_keeps_higher_priority_soft_degraded_candidate_ahead_of_lower_priority_ready_account()
  {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let slot_owner_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Node Shunt Slot Owner",
-        "sk-soft-degrade-owner",
-        Some("soft-degrade-priority"),
-        Some("https://soft-degrade-owner.example.com/backend-api/codex"),
-    )
-    .await;
-    let soft_degraded_id = insert_test_pool_api_key_account_with_options(
+    let slot_owner_id =
+        insert_test_pool_oauth_account(&state, "Node Shunt Slot Owner", "oauth-soft-degrade-owner")
+            .await;
+    let soft_degraded_id = insert_test_pool_oauth_account(
         &state,
         "Node Shunt Soft Degraded",
-        "sk-soft-degrade-target",
-        Some("soft-degrade-priority"),
-        Some("https://soft-degrade-target.example.com/backend-api/codex"),
+        "oauth-soft-degrade-target",
     )
     .await;
-    let fallback_ready_id = insert_test_pool_api_key_account_with_options(
+    let fallback_ready_id = insert_test_pool_oauth_account(
         &state,
         "Fallback Ready Candidate",
-        "sk-soft-degrade-fallback",
+        "oauth-soft-degrade-fallback",
+    )
+    .await;
+    set_test_account_group_name(&state.pool, slot_owner_id, Some("soft-degrade-priority")).await;
+    set_test_account_group_name(&state.pool, soft_degraded_id, Some("soft-degrade-priority")).await;
+    set_test_account_group_name(
+        &state.pool,
+        fallback_ready_id,
         Some("soft-degrade-fallback"),
-        Some("https://soft-degrade-fallback.example.com/backend-api/codex"),
     )
     .await;
 

@@ -36,6 +36,16 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function normalizeDemoTransitProxyKeys(value: unknown): string[] {
+  const keys = Array.isArray(value)
+    ? value
+        .filter((key): key is string => typeof key === "string")
+        .map((key) => key.trim())
+        .filter((key) => key.length > 0)
+    : [];
+  return keys.length > 0 ? Array.from(new Set(keys)) : ["__direct__"];
+}
+
 const SENSITIVE_FIELD =
   /api[-_]?key|authorization|cookie|credential|oauth|password|secret|session|token/i;
 
@@ -202,7 +212,7 @@ function createAccounts(scene: DemoScene = "operational") {
       102,
       DEMO_API_KEY_DISPLAY_NAMES[102],
       null,
-      "production",
+      null,
       "api",
       "api_key_codex",
       "fallback",
@@ -250,7 +260,7 @@ function createAccounts(scene: DemoScene = "operational") {
       106,
       DEMO_API_KEY_DISPLAY_NAMES[106],
       null,
-      "production",
+      null,
       "api",
       "api_key_codex",
       "research",
@@ -274,7 +284,7 @@ function createAccounts(scene: DemoScene = "operational") {
       108,
       DEMO_API_KEY_DISPLAY_NAMES[108],
       null,
-      "batch",
+      null,
       "api",
       "api_key_codex",
       "primary",
@@ -298,7 +308,7 @@ function createAccounts(scene: DemoScene = "operational") {
       110,
       DEMO_API_KEY_DISPLAY_NAMES[110],
       null,
-      "recovery",
+      null,
       "api",
       "api_key_codex",
       "sandbox",
@@ -322,7 +332,7 @@ function createAccounts(scene: DemoScene = "operational") {
       112,
       DEMO_API_KEY_DISPLAY_NAMES[112],
       null,
-      "analytics",
+      null,
       "api",
       "api_key_codex",
       "edge",
@@ -358,7 +368,7 @@ function createAccounts(scene: DemoScene = "operational") {
       115,
       DEMO_API_KEY_DISPLAY_NAMES[115],
       null,
-      "production",
+      null,
       "api",
       "api_key_codex",
       "fallback",
@@ -727,7 +737,12 @@ class DemoModel {
       ...this.#state,
       accounts: this.#state.accounts.map((account) =>
         legacyAccounts.includes(account)
-          ? { ...account, groupName: null, isMother: false }
+          ? {
+              ...account,
+              groupName: null,
+              isMother: false,
+              boundProxyKeys: normalizeDemoTransitProxyKeys(account.boundProxyKeys),
+            }
           : account,
       ),
     };

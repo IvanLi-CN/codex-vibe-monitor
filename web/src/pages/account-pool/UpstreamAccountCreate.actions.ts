@@ -13,8 +13,8 @@ import {
 export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateControllerContext) {
   const {
     activeOauthMailboxSession,
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
-    apiKeyGroupProxyState,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -1285,8 +1285,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
   const handleCreateApiKey = async () => {
     if (apiKeyUpstreamBaseUrlError) return;
-    if (apiKeyGroupProxyState.error) {
-      setActionError(apiKeyGroupProxyState.error);
+    if (apiKeyBoundProxyKeys.length === 0) {
+      setActionError(t("accountPool.upstreamAccounts.transitProxy.required"));
       return;
     }
     setActionError(null);
@@ -1301,6 +1301,7 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
+        boundProxyKeys: apiKeyBoundProxyKeys,
       });
       notifyMotherChange(response);
       navigate("/account-pool/transits", {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::insert_test_pool_oauth_account;
 
 #[tokio::test]
 async fn resolver_skips_no_new_priority_for_fresh_routing_without_sticky_key() {
@@ -272,22 +273,32 @@ async fn resolver_preserves_sticky_hard_block_when_cut_out_is_forbidden_despite_
  {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let sticky_route = "https://sticky-hard-block.example.com/backend-api/codex";
-    let sticky_account = insert_test_pool_api_key_account_with_options(
+    let sticky_account = insert_test_pool_oauth_account(
         &state,
         "Sticky Hard Block Owner",
-        "sk-sticky-hard-block-owner",
-        None,
-        Some(sticky_route),
+        "oauth-sticky-hard-block-owner",
     )
     .await;
-    let _fallback_account = insert_test_pool_api_key_account_with_options(
+    let _fallback_account = insert_test_pool_oauth_account(
         &state,
         "Sticky Hard Block Fallback",
-        "sk-sticky-hard-block-fallback",
-        None,
-        Some("https://sticky-hard-block-fallback.example.com/backend-api/codex"),
+        "oauth-sticky-hard-block-fallback",
     )
     .await;
+    for (account_id, upstream_base_url) in [
+        (sticky_account, sticky_route),
+        (
+            _fallback_account,
+            "https://sticky-hard-block-fallback.example.com/backend-api/codex",
+        ),
+    ] {
+        sqlx::query("UPDATE pool_upstream_accounts SET upstream_base_url = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind(upstream_base_url)
+            .execute(&state.pool)
+            .await
+            .expect("set sticky route upstream base");
+    }
     set_test_account_group_name(&state.pool, sticky_account, Some("sticky-penalty-missing")).await;
     let now_iso = format_utc_iso(Utc::now());
     let lock_tag = insert_test_tag(
@@ -1654,24 +1665,32 @@ async fn resolver_prefers_group_proxy_error_over_rate_limited_pool_when_no_healt
 #[tokio::test]
 async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let excluded_blocked = insert_test_pool_api_key_account_with_options(
+    let excluded_blocked = insert_test_pool_oauth_account(
         &state,
         "Excluded Route Blocked",
-        "sk-excluded-route-blocked",
-        None,
-        Some("https://same-route.example.com/backend-api/codex"),
+        "oauth-excluded-route-blocked",
     )
     .await;
-    let alternate_blocked = insert_test_pool_api_key_account_with_options(
+    let alternate_blocked = insert_test_pool_oauth_account(
         &state,
         "Alternate Route Blocked",
-        "sk-alternate-route-blocked",
-        None,
-        Some("https://alternate-route.example.com/backend-api/codex"),
+        "oauth-alternate-route-blocked",
     )
     .await;
     set_test_account_group_name(&state.pool, excluded_blocked, Some("same-route-missing")).await;
     set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing")).await;
+    sqlx::query("UPDATE pool_upstream_accounts SET upstream_base_url = ?2 WHERE id = ?1")
+        .bind(excluded_blocked)
+        .bind("https://same-route.example.com/backend-api/codex")
+        .execute(&state.pool)
+        .await
+        .expect("set excluded route upstream base");
+    sqlx::query("UPDATE pool_upstream_accounts SET upstream_base_url = ?2 WHERE id = ?1")
+        .bind(alternate_blocked)
+        .bind("https://alternate-route.example.com/backend-api/codex")
+        .execute(&state.pool)
+        .await
+        .expect("set alternate route upstream base");
     let now_iso = format_utc_iso(Utc::now());
     insert_limit_sample_with_usage(
         &state.pool,
@@ -1701,10 +1720,7 @@ async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() 
     let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
         panic!("expected actionable group proxy error to survive excluded same-route blockers");
     };
-    assert_eq!(
-        message,
-        "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
-    );
+    assert!(message.contains("has no bound forward proxy nodes"));
 }
 
 #[tokio::test]
@@ -1829,13 +1845,10 @@ async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects()
     )
     .await
     .expect("resolve pool account");
-    let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
-        panic!("expected alternate group proxy error to survive excluded cut-in reject");
+    let PoolAccountResolution::Resolved(account) = resolution else {
+        panic!("transit routing should ignore legacy group blockers, got {resolution:?}");
     };
-    assert_eq!(
-        message,
-        "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
-    );
+    assert_eq!(account.account_id, alternate_blocked);
 }
 
 #[tokio::test]

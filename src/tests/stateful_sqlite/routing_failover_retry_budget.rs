@@ -716,7 +716,7 @@ fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
 }
 
 #[test]
-fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() {
+fn pool_route_transit_upstream_429_switches_account_without_group_retry() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 2)]).await;
@@ -737,20 +737,6 @@ fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() 
         )
         .await;
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-
-        let retry_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
-            "upstream429RetryEnabled": true,
-            "upstream429MaxRetries": 2
-        }))
-        .expect("deserialize retry payload");
-        let _ = update_upstream_account_group(
-            State(state.clone()),
-            HeaderMap::new(),
-            axum::extract::Path("latam".to_string()),
-            Json(retry_payload),
-        )
-        .await
-        .expect("enable group 429 retry");
 
         let response = proxy_openai_v1(
             State(state.clone()),
@@ -773,16 +759,16 @@ fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() 
             .await
             .expect("read proxy response");
         let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
-        assert_eq!(payload["authorization"], "Bearer upstream-primary");
-        assert_eq!(payload["attempt"], 3);
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+        assert_eq!(payload["attempt"], 1);
 
         {
             let attempts = attempts.lock().expect("lock attempts");
-            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
         }
 
-        wait_for_pool_upstream_request_attempts(&state.pool, 3).await;
+        wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
         let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
             r#"
         SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
@@ -793,7 +779,7 @@ fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() 
         .fetch_all(&state.pool)
         .await
         .expect("load retry attempt rows");
-        assert_eq!(attempt_rows.len(), 3);
+        assert_eq!(attempt_rows.len(), 2);
         assert_eq!(
             attempt_rows[0],
             (
@@ -803,32 +789,20 @@ fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() 
                 Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
             )
         );
-        assert_eq!(
-            attempt_rows[1],
-            (
-                2,
-                1,
-                2,
-                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
-            )
-        );
-        assert_eq!(attempt_rows[2].0, 3);
-        assert_eq!(attempt_rows[2].1, 1);
-        assert_eq!(attempt_rows[2].2, 3);
-        assert_eq!(attempt_rows[2].3, None);
+        assert_eq!(attempt_rows[1], (2, 2, 1, None));
 
         let route_account_id =
             wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-group-retry")
                 .await
                 .expect("sticky route should stay on primary account");
-        assert_eq!(route_account_id, primary_id);
+        assert_ne!(route_account_id, primary_id);
 
         upstream_handle.abort();
     });
 }
 
 #[test]
-fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors() {
+fn pool_route_transit_upstream_429_uses_account_failover_after_server_error() {
     run_routing_failover_future_with_large_stack(async move {
         let (upstream_base, attempts, upstream_handle) =
             spawn_pool_sequential_failure_responses_upstream(vec![(
@@ -858,20 +832,6 @@ fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors(
         .await;
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
 
-        let retry_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
-            "upstream429RetryEnabled": true,
-            "upstream429MaxRetries": 2
-        }))
-        .expect("deserialize retry payload");
-        let _ = update_upstream_account_group(
-            State(state.clone()),
-            HeaderMap::new(),
-            axum::extract::Path("latam".to_string()),
-            Json(retry_payload),
-        )
-        .await
-        .expect("enable group 429 retry");
-
         let response = proxy_openai_v1(
             State(state.clone()),
             OriginalUri("/v1/responses".parse().expect("valid uri")),
@@ -893,16 +853,16 @@ fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors(
             .await
             .expect("read proxy response");
         let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
-        assert_eq!(payload["authorization"], "Bearer upstream-primary");
-        assert_eq!(payload["attempt"], 4);
+        assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+        assert_eq!(payload["attempt"], 1);
 
         {
             let attempts = attempts.lock().expect("lock attempts");
-            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(4));
-            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(2));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
         }
 
-        wait_for_pool_upstream_request_attempts(&state.pool, 4).await;
+        wait_for_pool_upstream_request_attempts(&state.pool, 3).await;
         let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
             r#"
         SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
@@ -913,7 +873,7 @@ fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors(
         .fetch_all(&state.pool)
         .await
         .expect("load retry attempt rows");
-        assert_eq!(attempt_rows.len(), 4);
+        assert_eq!(attempt_rows.len(), 3);
         assert_eq!(
             attempt_rows[0],
             (
@@ -932,25 +892,13 @@ fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors(
                 Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
             )
         );
-        assert_eq!(
-            attempt_rows[2],
-            (
-                3,
-                1,
-                3,
-                Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
-            )
-        );
-        assert_eq!(attempt_rows[3].0, 4);
-        assert_eq!(attempt_rows[3].1, 1);
-        assert_eq!(attempt_rows[3].2, 4);
-        assert_eq!(attempt_rows[3].3, None);
+        assert_eq!(attempt_rows[2], (3, 2, 1, None));
 
         let route_account_id =
             wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-mixed-budget")
                 .await
                 .expect("sticky route should stay on primary account");
-        assert_eq!(route_account_id, primary_id);
+        assert_ne!(route_account_id, primary_id);
 
         upstream_handle.abort();
     });

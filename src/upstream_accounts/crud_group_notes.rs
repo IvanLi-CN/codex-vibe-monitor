@@ -1521,8 +1521,6 @@ pub(crate) async fn list_upstream_account_action_events_from_params(
     }))
 }
 
-const API_KEY_GROUP_MIGRATION_AUDIT_ACTION: &str = "api_key_group_migrated";
-const API_KEY_GROUP_MIGRATION_AUDIT_SOURCE: &str = "account_migration";
 async fn load_api_key_group_migration_preflight(
     pool: &Pool<Sqlite>,
 ) -> Result<ApiKeyGroupMigrationPreflightResponse> {
@@ -1627,7 +1625,9 @@ async fn load_api_key_group_migration_preflight(
             "note".to_string(),
             "tags".to_string(),
         ],
-        blocked_strategies: blocked.into_iter().collect(),
+        // Transit accounts never consume group-only strategies. Keep this field for
+        // response compatibility, but do not surface an obsolete confirmation step.
+        blocked_strategies: Vec::new(),
         can_migrate: true,
     })
 }
@@ -1644,7 +1644,7 @@ pub(crate) async fn preflight_api_key_group_migration(
 pub(crate) async fn confirm_api_key_group_migration(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(payload): Json<ConfirmApiKeyGroupMigrationRequest>,
+    Json(_payload): Json<ConfirmApiKeyGroupMigrationRequest>,
 ) -> Result<Json<ApiKeyGroupMigrationResponse>, (StatusCode, String)> {
     if !is_same_origin_settings_write(&headers) {
         return Err((
@@ -1656,117 +1656,13 @@ pub(crate) async fn confirm_api_key_group_migration(
     let preflight = load_api_key_group_migration_preflight(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    if payload.confirmation_hash.trim() != preflight.confirmation_hash {
-        return Err((
-            StatusCode::CONFLICT,
-            "API Key group migration confirmation hash is stale".to_string(),
-        ));
-    }
-    let disabled = payload
-        .disabled_strategies
-        .into_iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
-    if preflight
-        .blocked_strategies
-        .iter()
-        .any(|strategy| !disabled.contains(strategy))
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            "migration requires explicit confirmation to disable all blocked group strategies"
-                .to_string(),
-        ));
-    }
-
-    let now = format_utc_iso(Utc::now());
-    let mut tx = state
-        .pool
-        .begin_with("BEGIN IMMEDIATE")
+    let migrated_count = ensure_api_key_transit_proxy_bindings_migrated(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    sqlx::query(
-        r#"
-        INSERT INTO pool_upstream_account_events (
-            account_id, occurred_at, action, source, account_display_name, account_group_name,
-            result, result_description, reason_code, reason_message, created_at
-        )
-        SELECT id, ?1, ?2, ?3, display_name, group_name, 'success',
-               'API Key account migrated out of group domain', 'upstream_domain_migration',
-               'group strategies automatically disabled for transit accounts', ?1
-        FROM pool_upstream_accounts
-        WHERE kind = ?4 AND COALESCE(deleted_at, '') = ''
-          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
-        "#,
-    )
-    .bind(&now)
-    .bind(API_KEY_GROUP_MIGRATION_AUDIT_ACTION)
-    .bind(API_KEY_GROUP_MIGRATION_AUDIT_SOURCE)
-    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
-    .execute(&mut *tx)
-    .await
-    .map_err(internal_error_tuple)?;
-    let migrated_count = sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET bound_proxy_keys_json = COALESCE(
-                NULLIF(bound_proxy_keys_json, ''),
-                (
-                    SELECT NULLIF(group_notes.bound_proxy_keys_json, '')
-                    FROM pool_upstream_account_group_notes AS group_notes
-                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
-                )
-            ),
-            note = COALESCE(
-                note,
-                (
-                    SELECT group_notes.note
-                    FROM pool_upstream_account_group_notes AS group_notes
-                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
-                )
-            ),
-            policy_concurrency_limit = COALESCE(
-                policy_concurrency_limit,
-                (
-                    SELECT NULLIF(group_notes.concurrency_limit, 0)
-                    FROM pool_upstream_account_group_notes AS group_notes
-                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
-                )
-            ),
-            policy_upstream_429_retry_enabled = COALESCE(
-                policy_upstream_429_retry_enabled,
-                (
-                    SELECT group_notes.upstream_429_retry_enabled
-                    FROM pool_upstream_account_group_notes AS group_notes
-                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
-                )
-            ),
-            policy_upstream_429_max_retries = COALESCE(
-                policy_upstream_429_max_retries,
-                (
-                    SELECT group_notes.upstream_429_max_retries
-                    FROM pool_upstream_account_group_notes AS group_notes
-                    WHERE group_notes.group_name = pool_upstream_accounts.group_name
-                )
-            ),
-            group_name = NULL,
-            is_mother = 0,
-            updated_at = ?1
-        WHERE kind = ?2 AND COALESCE(deleted_at, '') = ''
-          AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NOT NULL OR is_mother <> 0)
-        "#,
-    )
-    .bind(&now)
-    .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
-    .execute(&mut *tx)
-    .await
-    .map_err(internal_error_tuple)?
-    .rows_affected() as usize;
-    tx.commit().await.map_err(internal_error_tuple)?;
     Ok(Json(ApiKeyGroupMigrationResponse {
         migrated_count,
         confirmation_hash: preflight.confirmation_hash,
-        audit_action: API_KEY_GROUP_MIGRATION_AUDIT_ACTION.to_string(),
+        audit_action: API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION.to_string(),
     }))
 }
 

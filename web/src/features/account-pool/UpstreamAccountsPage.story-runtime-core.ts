@@ -1624,7 +1624,7 @@ export function createApiKeyAccount(
     kind: "api_key_codex",
     provider: "codex",
     displayName: "Team key - staging",
-    groupName: "staging",
+    groupName: null,
     isMother: false,
     status: "active",
     displayStatus: "active",
@@ -1683,6 +1683,7 @@ export function createApiKeyAccount(
       secondaryLimit,
       limitUnit,
     },
+    boundProxyKeys: ["__direct__"],
     tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     upstreamBaseUrl: "https://proxy.example.com/gateway",
@@ -1738,6 +1739,12 @@ export function createApiKeyAccount(
   return withDerivedStatusFields({
     ...detail,
     ...overrides,
+    groupName: null,
+    isMother: false,
+    boundProxyKeys:
+      overrides?.boundProxyKeys && overrides.boundProxyKeys.length > 0
+        ? overrides.boundProxyKeys
+        : ["__direct__"],
     history: overrides?.history ?? detail.history,
     recentActions: overrides?.recentActions ?? detail.recentActions,
   });

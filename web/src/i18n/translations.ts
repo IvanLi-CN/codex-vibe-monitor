@@ -1304,6 +1304,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.upstreamBaseUrl": "Upstream base URL",
     "accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder":
       "Leave blank to use OPENAI_UPSTREAM_BASE_URL",
+    "accountPool.upstreamAccounts.transitProxy.label": "Outbound proxy",
+    "accountPool.upstreamAccounts.transitProxy.required":
+      "Select at least one outbound proxy. Direct is selected by default.",
+    "accountPool.upstreamAccounts.transitProxy.dialogDescription":
+      "Choose one or more explicit outbound proxies for this transit. It cannot inherit a group proxy.",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid":
       "Use an absolute http(s) URL, for example https://proxy.example.com/gateway",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment":
@@ -4515,6 +4520,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.upstreamBaseUrl": "上游地址",
     "accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder":
       "留空则使用全局 OPENAI_UPSTREAM_BASE_URL",
+    "accountPool.upstreamAccounts.transitProxy.label": "出口代理",
+    "accountPool.upstreamAccounts.transitProxy.required":
+      "请至少选择一个出口代理；默认已选择直连。",
+    "accountPool.upstreamAccounts.transitProxy.dialogDescription":
+      "为这个中转选择一个或多个显式出口代理；中转不能继承分组代理。",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid":
       "请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment":

@@ -25,9 +25,36 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(payload).toMatchObject({
       displayName: "Gateway Key",
       apiKey: "sk-gateway",
+      boundProxyKeys: ["__direct__"],
     });
     expect(payload).not.toHaveProperty("email");
     expect(payload).not.toHaveProperty("isMother");
+  });
+
+  it("keeps the direct transit binding when the final node is toggled", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    clickButton(/^Direct/);
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ boundProxyKeys: ["__direct__"] }),
+    );
   });
 
   it("submits upstreamBaseUrl for API key accounts", async () => {

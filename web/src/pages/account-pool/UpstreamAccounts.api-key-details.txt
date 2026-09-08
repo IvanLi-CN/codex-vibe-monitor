@@ -371,6 +371,10 @@ describe("UpstreamAccountsPage api key details", () => {
         upstreamBaseUrl: "https://proxy.example.com/gateway/v2",
       }),
     );
+    const [, payload] = saveAccount.mock.calls[0];
+    expect(payload).not.toHaveProperty("groupName");
+    expect(payload).not.toHaveProperty("isMother");
+    expect(payload).not.toHaveProperty("groupNote");
   });
 
   it("clears api key upstreamBaseUrl from the detail drawer with null payload", async () => {
@@ -566,7 +570,7 @@ describe("UpstreamAccountsPage api key details", () => {
     expect(saveAccount).not.toHaveBeenCalled();
   });
 
-  it("persists a new group before saving an account into it", async () => {
+  it("omits group fields when saving a transit account", async () => {
     const saveAccount = vi.fn().mockResolvedValue({
       id: 8,
       kind: "api_key_codex",
@@ -697,84 +701,14 @@ describe("UpstreamAccountsPage api key details", () => {
 
     clickFirstRosterRow();
     clickTab(/Edit/i);
-    setComboboxValue('input[name="detailGroupName"]', "latam");
+    expect(document.body.querySelector('input[name="detailGroupName"][type="text"]')).toBeNull();
+    clickButton(/Save changes/i);
     await flushAsync();
 
-    const dialogStack = Array.from(
-      document.body.querySelectorAll('[role="dialog"]'),
-    );
-    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
-    if (!(groupSettingsDialog instanceof HTMLElement)) {
-      throw new Error("missing group settings dialog");
-    }
-    expect(groupSettingsDialog.textContent || "").toContain(
-      "Bound proxy nodes",
-    );
-    expect(groupSettingsDialog.textContent || "").toContain(
-      "Upstream 429 retry",
-    );
-    expect(groupSettingsDialog.textContent || "").toContain("Direct");
-    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
-    expect(groupSettingsDialog.textContent || "").toContain("VLESS");
-    expect(groupSettingsDialog.textContent || "").not.toContain("vless://");
-
-    const groupNoteField = groupSettingsDialog.querySelector("textarea");
-    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
-      throw new Error("missing group note textarea");
-    }
-    setFieldValue(groupNoteField, "LATAM draft note");
-
-    const proxyOption = Array.from(
-      groupSettingsDialog.querySelectorAll("button"),
-    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
-    if (!(proxyOption instanceof HTMLButtonElement)) {
-      throw new Error("missing proxy binding option");
-    }
-    pressButton(proxyOption);
-
-    const saveDialogButton = Array.from(
-      groupSettingsDialog.querySelectorAll("button"),
-    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
-    if (!(saveDialogButton instanceof HTMLButtonElement)) {
-      throw new Error("missing group settings save button");
-    }
-    pressButton(saveDialogButton);
-    await flushAsync();
-
-    expect(saveGroupNote).toHaveBeenCalledWith("latam", {
-      note: "LATAM draft note",
-      boundProxyKeys: ["jp-edge-01"],
-      concurrencyLimit: 0,
-      nodeShuntEnabled: false,
-      routingRule: undefined,
-      singleAccountRotationEnabled: false,
-      upstream429RetryEnabled: false,
-      upstream429MaxRetries: 0,
-    });
-
-    const remainingDialogs = Array.from(
-      document.body.querySelectorAll('[role="dialog"]'),
-    );
-    const detailDialog = remainingDialogs[remainingDialogs.length - 1];
-    if (!(detailDialog instanceof HTMLElement)) {
-      throw new Error("missing detail drawer dialog");
-    }
-
-    const saveDetailButton = Array.from(
-      detailDialog.querySelectorAll("button"),
-    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
-    if (!(saveDetailButton instanceof HTMLButtonElement)) {
-      throw new Error("missing detail save button");
-    }
-    pressButton(saveDetailButton);
-    await flushAsync();
-
-    expect(saveAccount).toHaveBeenCalledWith(
-      8,
-      expect.objectContaining({
-        groupName: "latam",
-      }),
-    );
-    expect(saveAccount.mock.lastCall?.[1].groupNote).toBeUndefined();
+    expect(saveAccount).toHaveBeenCalledWith(8, expect.any(Object));
+    const [, payload] = saveAccount.mock.calls[0];
+    expect(payload).not.toHaveProperty("groupName");
+    expect(payload).not.toHaveProperty("isMother");
+    expect(payload).not.toHaveProperty("groupNote");
   });
 });

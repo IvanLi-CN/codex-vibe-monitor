@@ -57,4 +57,4 @@
 
 ## Domain Boundary
 
-Single-account rotation is an OAuth `oauth_codex` group policy. API-key transit accounts are never group members for this contract and cannot create, update, or bulk-assign this setting. Existing API-key group records are handled only by the upstream-domain migration gate, which requires explicit owner acknowledgement before clearing the legacy group and mother-account state.
+Single-account rotation is an OAuth `oauth_codex` group policy. API-key transit accounts are never group members for this contract and cannot create, update, or bulk-assign this setting. Startup migration automatically clears legacy API-key group and mother-account state, detaches transit accounts from this non-applicable group strategy, and records the migration audit without changing OAuth group metadata. Group account counts and node-shunt candidates enforce the OAuth kind at the query boundary. Transit candidate resolution never reads this group policy, even when legacy group fields remain in a row. No owner acknowledgement is required.

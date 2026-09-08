@@ -1326,11 +1326,12 @@ export function EffectiveRoutingRuleCard({
   const proxyBindingsSource = proxyBindings?.source ?? "group";
   const proxyBindingsVisible = proxyBindings != null && visibleRowSet.has("proxyBindings");
   const proxyBindingsActiveOverride = proxyBindingsSource === localOverrideSource;
+  const proxyBindingsCanClear = proxyBindingsActiveOverride && proxyBindings?.onClear != null;
   const proxyBindingsExpanded = expandedFields.includes("proxyBindings");
   const toggleProxyBindingsRow = () => {
     if (!proxyBindings || proxyBindings.busy) return;
     userTouchedExpansionRef.current = true;
-    if (proxyBindingsActiveOverride) {
+    if (proxyBindingsCanClear) {
       proxyBindings.onClear?.();
       setExpandedFields((current) => current.filter((value) => value !== "proxyBindings"));
       return;
@@ -1564,7 +1565,7 @@ export function EffectiveRoutingRuleCard({
                     <Button
                       type="button"
                       size="icon"
-                      variant={proxyBindingsActiveOverride ? "default" : "ghost"}
+                      variant={proxyBindingsCanClear ? "default" : "ghost"}
                       className={cn(
                         "col-start-3 row-start-1 h-11 w-11 justify-self-end rounded-full sm:col-auto sm:row-auto sm:h-8 sm:w-8 sm:justify-self-end",
                         proxyBindingsActiveOverride
@@ -1573,14 +1574,14 @@ export function EffectiveRoutingRuleCard({
                       )}
                       disabled={proxyBindings.busy || proxyBindings.disabled}
                       aria-pressed={proxyBindingsActiveOverride}
-                      aria-label={`${proxyBindingsActiveOverride ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${proxyBindings.labels.field}`}
+                      aria-label={`${proxyBindingsCanClear ? (labels.overrideClear ?? "Clear override") : (labels.overrideEdit ?? "Edit override")}: ${proxyBindings.labels.field}`}
                       onClick={toggleProxyBindingsRow}
                     >
                       <AppIcon
                         name={
                           proxyBindings.busy || proxyBindings.saving
                             ? "loading"
-                            : proxyBindingsActiveOverride
+                            : proxyBindingsCanClear
                               ? "check-decagram-outline"
                               : "pencil-outline"
                         }

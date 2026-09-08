@@ -162,9 +162,11 @@ export type CreatePageDraft = {
   };
   apiKey?: {
     displayName?: string;
+    // Accepted only to discard stale local drafts created before transit accounts were separated.
     groupName?: string;
     note?: string;
     tagIds?: number[];
+    boundProxyKeys?: string[];
     apiKeyValue?: string;
     upstreamBaseUrl?: string;
     primaryLimit?: string;
