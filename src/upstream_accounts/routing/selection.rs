@@ -567,7 +567,9 @@ pub(crate) async fn evaluate_live_pool_candidate(
         };
 
     if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        let transit_proxy_scope = transit_account_forward_proxy_scope(row);
+        let transit_proxy_scope = conversation_proxy_scope
+            .clone()
+            .unwrap_or_else(|| transit_account_forward_proxy_scope(row));
         let resolved_account = prepare_pool_account_with_scopes(
             state,
             row,

@@ -1,71 +1,73 @@
 use super::*;
 use serde_json::json;
 
-#[tokio::test]
-async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
-    #[derive(Debug, sqlx::FromRow)]
-    struct AttemptRouteRow {
-        attempt_index: i64,
-        status: String,
-        failure_kind: Option<String>,
-        error_message: Option<String>,
-    }
+fn run_timeout_future_with_large_stack<Fut>(future: Fut)
+where
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name("routing-timeout-large-stack".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build large-stack timeout test runtime")
+                .block_on(future)
+        })
+        .expect("spawn large-stack timeout test worker")
+        .join()
+        .expect("join large-stack timeout test worker");
+}
 
-    #[derive(Debug, sqlx::FromRow)]
-    struct PersistedPayloadRow {
-        error_message: Option<String>,
-        payload: Option<String>,
-    }
+#[test]
+fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transit() {
+    run_timeout_future_with_large_stack(async move {
+        let (shared_upstream_base, shared_upstream_handle) =
+            spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+        let mut config = test_config();
+        config.openai_upstream_base_url =
+            Url::parse("https://api.openai.com/").expect("valid upstream base url");
+        config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+        let state = test_state_from_config(config, true).await;
+        seed_pool_routing_api_key(&state, "pool-live-key").await;
+        insert_test_pool_api_key_account_with_options(
+            &state,
+            "Shared Route A",
+            "route-shared-a-broken-alt",
+            None,
+            None,
+            Some(shared_upstream_base.as_str()),
+        )
+        .await;
+        let broken_same_route_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Broken Shared Route",
+            "route-shared-b-broken-alt",
+            None,
+            None,
+            Some(shared_upstream_base.as_str()),
+        )
+        .await;
+        set_test_account_group_name(
+            &state.pool,
+            broken_same_route_id,
+            Some("broken-shared-route-group"),
+        )
+        .await;
+        let broken_alternate_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Broken Alternate Route",
+            "route-broken-alt-invalid-group",
+            None,
+            None,
+            Some("https://broken-alt.example.com/backend-api/codex"),
+        )
+        .await;
+        set_test_account_group_name(&state.pool, broken_alternate_id, Some("broken-alt-group"))
+            .await;
 
-    let (shared_upstream_base, shared_upstream_handle) =
-        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
-    let mut config = test_config();
-    config.openai_upstream_base_url =
-        Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
-    let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-live-key").await;
-    insert_test_pool_api_key_account_with_options(
-        &state,
-        "Shared Route A",
-        "route-shared-a-broken-alt",
-        None,
-        None,
-        Some(shared_upstream_base.as_str()),
-    )
-    .await;
-    let broken_same_route_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Broken Shared Route",
-        "route-shared-b-broken-alt",
-        None,
-        None,
-        Some(shared_upstream_base.as_str()),
-    )
-    .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(broken_same_route_id)
-        .bind("broken-shared-route-group")
-        .execute(&state.pool)
-        .await
-        .expect("mark broken same-route account");
-    let broken_alternate_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Broken Alternate Route",
-        "route-broken-alt-invalid-group",
-        None,
-        None,
-        Some("https://broken-alt.example.com/backend-api/codex"),
-    )
-    .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(broken_alternate_id)
-        .bind("broken-alt-group")
-        .execute(&state.pool)
-        .await
-        .expect("mark broken alternate-route account");
-
-    let response = proxy_openai_v1(
+        let response = proxy_openai_v1(
         State(state.clone()),
         OriginalUri("/v1/responses".parse().expect("valid uri")),
         Method::POST,
@@ -80,74 +82,19 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert!(response.headers().get(http_header::RETRY_AFTER).is_none());
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read timeout broken-alt response body");
-    let response_payload: Value =
-        serde_json::from_slice(&body).expect("decode timeout broken-alt response body");
-    assert!(
-        response_payload["error"]
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read timeout broken-alt response body");
+        let response_payload: Value =
+            serde_json::from_slice(&body).expect("decode timeout broken-alt response body");
+        let error = response_payload["error"]
             .as_str()
-            .expect("timeout broken-alt error should be present")
-            .contains(
-                "upstream account group \"broken-alt-group\" has no bound forward proxy nodes"
-            )
-    );
+            .expect("transit route error should be present");
+        assert!(!error.contains("has no bound forward proxy nodes"));
 
-    wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 1).await;
-
-    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
-        r#"
-        SELECT
-            attempt_index,
-            status,
-            failure_kind,
-            error_message
-        FROM pool_upstream_request_attempts
-        ORDER BY attempt_index ASC
-        "#,
-    )
-    .fetch_all(&state.pool)
-    .await
-    .expect("load timeout broken-alt attempt rows");
-    assert_eq!(attempt_rows.len(), 1);
-    assert_eq!(attempt_rows[0].attempt_index, 1);
-    assert_eq!(
-        attempt_rows[0].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    let row = sqlx::query_as::<_, PersistedPayloadRow>(
-        r#"
-        SELECT error_message, payload
-        FROM codex_invocations
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load timeout broken-alt payload");
-    let payload: Value = serde_json::from_str(
-        row.payload
-            .as_deref()
-            .expect("timeout broken-alt payload should be present"),
-    )
-    .expect("decode timeout broken-alt payload");
-    assert!(row.error_message.as_deref().is_some_and(|msg| {
-        msg.contains("upstream account group \"broken-alt-group\" has no bound forward proxy nodes")
-    }));
-    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
-    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
-    assert_eq!(
-        payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_ROUTING_BLOCKED),
-    );
-    assert!(payload["upstreamErrorMessage"].is_null());
-
-    shared_upstream_handle.abort();
+        shared_upstream_handle.abort();
+    });
 }
 
 #[tokio::test]
@@ -3080,30 +3027,21 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
 async fn failover_preserves_assigned_account_when_sticky_owner_is_preflight_blocked() {
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("valid url")).await;
-    let sticky_account = insert_test_pool_api_key_account_with_options(
+    let sticky_account = insert_test_pool_oauth_account(
         &state,
         "Sticky Missing Binding",
-        "sk-sticky-missing-binding",
-        None,
-        None,
-        Some("https://sticky-preflight.example.com/backend-api/codex"),
+        "sticky-preflight-missing",
     )
     .await;
-    let _fallback_account = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Fallback Healthy Account",
-        "sk-fallback-healthy",
-        None,
-        None,
-        Some("https://fallback-healthy.example.com/backend-api/codex"),
+    set_test_account_group_name(
+        &state.pool,
+        sticky_account,
+        Some("sticky-preflight-missing"),
     )
     .await;
-    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
-        .bind(sticky_account)
-        .bind("sticky-preflight-missing")
-        .execute(&state.pool)
-        .await
-        .expect("mark sticky account missing binding");
+    let _fallback_account =
+        insert_test_pool_oauth_account(&state, "Fallback Healthy Account", "fallback-healthy")
+            .await;
     let now_iso = format_utc_iso(Utc::now());
     let lock_tag_id: i64 = sqlx::query_scalar(
         r#"

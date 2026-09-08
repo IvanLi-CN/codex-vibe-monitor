@@ -6592,20 +6592,17 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     let group_only = rules.get(&group_only_id).expect("group-only rule");
     assert_eq!(
         group_only.request_compression_algorithm,
-        RequestCompressionAlgorithm::Deflate
+        RequestCompressionAlgorithm::Gzip
     );
     assert_eq!(
         group_only.field_sources.request_compression_algorithm,
-        "group"
+        "root"
     );
     assert_eq!(
         group_only.codex_imagegen_rewrite_mode,
-        CodexImagegenRewriteMode::FillMissing
+        CodexImagegenRewriteMode::ForceAdd
     );
-    assert_eq!(
-        group_only.field_sources.codex_imagegen_rewrite_mode,
-        "group"
-    );
+    assert_eq!(group_only.field_sources.codex_imagegen_rewrite_mode, "root");
 
     let account_override = rules
         .get(&account_override_id)

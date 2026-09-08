@@ -19,16 +19,18 @@ describe("demoModel", () => {
     expect(demoModel.snapshot.scene).toBe("attention");
     expect(demoModel.snapshot.accounts).toHaveLength(15);
     expect(demoModel.snapshot.accounts.map((account) => account.groupName)).toEqual(
-      expect.arrayContaining([
-        "production",
-        "research",
-        "standby",
-        "batch",
-        "recovery",
-        "edge",
-        "analytics",
-      ]),
+      expect.arrayContaining(["production", "research", "standby", "edge"]),
     );
+    expect(
+      demoModel.snapshot.accounts
+        .filter((account) => account.kind === "api_key_codex")
+        .every(
+          (account) =>
+            account.groupName === null &&
+            Array.isArray(account.boundProxyKeys) &&
+            account.boundProxyKeys.length > 0,
+        ),
+    ).toBe(true);
     expect(demoModel.snapshot.actions).toEqual([]);
   });
 

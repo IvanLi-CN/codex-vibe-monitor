@@ -540,7 +540,11 @@ pub(crate) fn build_pool_resolved_account(
         kind: row.kind.clone(),
         auth,
         group_name: row.group_name.clone(),
-        bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
+        bound_proxy_keys: if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+            row.bound_proxy_keys()
+        } else {
+            group_metadata.bound_proxy_keys.clone()
+        },
         forward_proxy_scope,
         single_account_rotation_enabled: group_metadata.single_account_rotation_enabled,
         upstream_429_retry_enabled: effective_rule.upstream_429_retry_enabled,

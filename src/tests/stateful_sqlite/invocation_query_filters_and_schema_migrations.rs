@@ -4530,24 +4530,20 @@ async fn prompt_cache_conversation_binding_patch_is_mutually_exclusive_and_clear
     .await;
     let group_name = "prompt-cache-bindings-api-group";
     ensure_test_group_binding(&state.pool, group_name, None).await;
-    let account_id = insert_test_pool_api_key_account_with_options(
+    let account_id = insert_test_pool_oauth_account(
         &state,
-        "Prompt Cache Binding API",
-        "sk-prompt-cache-binding-api",
-        Some(group_name),
-        None,
-        None,
+        "Prompt Cache Binding OAuth",
+        "oauth-prompt-cache-binding",
     )
     .await;
-    let unselectable_account_id = insert_test_pool_api_key_account_with_options(
+    set_test_account_group_name(&state.pool, account_id, Some(group_name)).await;
+    let unselectable_account_id = insert_test_pool_oauth_account(
         &state,
-        "Prompt Cache Binding Unselectable API",
-        "sk-prompt-cache-binding-unselectable-api",
-        Some(group_name),
-        None,
-        None,
+        "Prompt Cache Binding Unselectable OAuth",
+        "oauth-prompt-cache-binding-unselectable",
     )
     .await;
+    set_test_account_group_name(&state.pool, unselectable_account_id, Some(group_name)).await;
     sqlx::query("UPDATE pool_upstream_accounts SET encrypted_credentials = NULL WHERE id = ?1")
         .bind(unselectable_account_id)
         .execute(&state.pool)
@@ -7597,24 +7593,20 @@ async fn prompt_cache_group_promotion_ignores_stale_group_after_operator_rebind(
     ensure_test_group_binding(&state.pool, original_group, None).await;
     ensure_test_group_binding(&state.pool, rebound_group, None).await;
 
-    let stale_success_account_id = insert_test_pool_api_key_account_with_options(
+    let stale_success_account_id = insert_test_pool_oauth_account(
         &state,
-        "Prompt Cache Stale Promote Account",
-        "sk-prompt-cache-stale-promote",
-        Some(original_group),
-        None,
-        None,
+        "Prompt Cache Stale Promote OAuth",
+        "oauth-prompt-cache-stale-promote",
     )
     .await;
-    let rebound_account_id = insert_test_pool_api_key_account_with_options(
+    set_test_account_group_name(&state.pool, stale_success_account_id, Some(original_group)).await;
+    let rebound_account_id = insert_test_pool_oauth_account(
         &state,
-        "Prompt Cache Rebound Group Account",
-        "sk-prompt-cache-rebound-group",
-        Some(rebound_group),
-        None,
-        None,
+        "Prompt Cache Rebound Group OAuth",
+        "oauth-prompt-cache-rebound-group",
     )
     .await;
+    set_test_account_group_name(&state.pool, rebound_account_id, Some(rebound_group)).await;
     let prompt_cache_key = "prompt-cache-stale-group-promotion-key";
 
     let original_group_payload: UpdatePromptCacheConversationBindingRequest =
