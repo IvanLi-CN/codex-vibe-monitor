@@ -972,7 +972,10 @@ async fn summary_archive_snapshot_cleanup_gate_satisfied(
     .await?
         != 0;
     if !v2_page_exists {
-        return Ok(true);
+        // A legacy archive without even an intermediate V2 page is still the only raw
+        // authority.  Do not let retention cleanup race the recovery supervisor; raw deletion
+        // is admitted only after a final V2 proof exists.
+        return Ok(false);
     }
     summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
 }

@@ -312,7 +312,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     summary_archive_snapshot_has_proof_tx(&mut connection, archive_batch_id, manifest_sha256).await
 }
 
-async fn summary_archive_snapshot_has_proof_tx(
+pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     connection: &mut SqliteConnection,
     archive_batch_id: i64,
     manifest_sha256: &str,
@@ -463,6 +463,10 @@ pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<()> {
+    if !summary_archive_snapshot_has_proof_tx(connection, archive_batch_id, manifest_sha256).await?
+    {
+        bail!("Summary Snapshot V2 semantic proof validation failed");
+    }
     let pages = sqlx::query_as::<_, (i64, String, i64, String, String)>(
         "SELECT page_index, snapshot_sha256, row_count, coverage_start, coverage_end \
          FROM summary_archive_snapshot \

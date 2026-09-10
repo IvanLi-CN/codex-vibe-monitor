@@ -59,9 +59,14 @@ stage_wait_secs="${SUMMARY_TESTBOX_STAGE_WAIT_SECS:-$default_stage_wait_secs}"
 }
 runner_log="$(mktemp "${TMPDIR:-/tmp}/summary-production-run.XXXXXX")"
 runner_pid=""
+copy_pid=""
 run_id=""
 scratch_path=""
 cleanup_runner() {
+  if [[ -n "$copy_pid" ]] && kill -0 "$copy_pid" 2>/dev/null; then
+    kill -TERM "$copy_pid" 2>/dev/null || true
+    wait "$copy_pid" 2>/dev/null || true
+  fi
   if [[ -n "$runner_pid" ]] && kill -0 "$runner_pid" 2>/dev/null; then
     kill -TERM "$runner_pid" 2>/dev/null || true
     wait "$runner_pid" 2>/dev/null || true
@@ -139,7 +144,8 @@ done
   exit 75
 }
 
-if ! ssh -o BatchMode=yes "$testbox" bash -s -- "$source_path" "$scratch_path" <<'REMOTE'
+copy_log="$(mktemp "${TMPDIR:-/tmp}/summary-production-copy.XXXXXX")"
+ssh -o BatchMode=yes "$testbox" bash -s -- "$source_path" "$scratch_path" <<'REMOTE' >"$copy_log" 2>&1 &
 set -euo pipefail
 source_path="$1"
 scratch_path="$2"
@@ -161,7 +167,24 @@ mv -- "$partial" "$scratch_path/production-copy"
 trap - EXIT
 touch "$scratch_path/READY"
 REMOTE
-then
+copy_pid="$!"
+copy_deadline=$((SECONDS + stage_wait_secs))
+copy_status=0
+while kill -0 "$copy_pid" 2>/dev/null; do
+  if (( SECONDS >= copy_deadline )); then
+    kill -TERM "$copy_pid" 2>/dev/null || true
+    copy_status=124
+    wait "$copy_pid" 2>/dev/null || true
+    break
+  fi
+  sleep 1
+done
+if (( copy_status == 0 )); then
+  wait "$copy_pid" || copy_status="$?"
+fi
+copy_pid=""
+rm -f "$copy_log"
+if (( copy_status != 0 )); then
   printf 'shared-testbox-environment: production copy staging failed\n' >&2
   kill -TERM "$runner_pid" 2>/dev/null || true
   wait "$runner_pid" 2>/dev/null || true
