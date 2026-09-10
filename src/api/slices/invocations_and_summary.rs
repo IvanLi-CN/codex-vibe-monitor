@@ -37453,6 +37453,72 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_generic_build_does_not_overwrite_newer_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-generic-cas-base', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed generic projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish base projection");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create generic build interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        );
+        let state_for_build = state.clone();
+        let build = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(
+                state_for_build.as_ref(),
+                SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
+            .await
+            .expect("generic build reaches publication fence");
+
+        let base = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("base projection remains published while build is paused");
+        let replacement_revision = base.revision().saturating_add(1);
+        state
+            .subscription_hub
+            .store_summary_projection(
+                Arc::unwrap_or_clone(base).with_revision(replacement_revision),
+            )
+            .await;
+        interleave.resume_build();
+        let result = tokio::time::timeout(Duration::from_secs(5), build)
+            .await
+            .expect("generic build completes after replacement")
+            .expect("join generic build");
+        clear_summary_projection_test_interleave();
+        result.expect("stale generic build is discarded without error");
+
+        let published = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("replacement projection remains published");
+        assert_eq!(published.revision(), replacement_revision);
+    }
+
+    #[tokio::test]
     async fn summary_projection_all_time_generation_change_preserves_coverage_and_replays_tail() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -41211,8 +41277,6 @@ mod request_compression_query_tests {
             .subscription_hub
             .store_summary_projection(Arc::unwrap_or_clone(projection))
             .await;
-        state.pool.close().await;
-
         let expired_global = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
@@ -41271,6 +41335,7 @@ mod request_compression_query_tests {
             missing_account_usage,
             Err(ApiError::Unavailable(_))
         ));
+        state.pool.close().await;
     }
 
     #[tokio::test]
