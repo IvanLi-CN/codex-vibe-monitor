@@ -11820,16 +11820,14 @@ impl SubscriptionTopic {
                         gaps,
                     )) = projection_with_overlay
                     {
-                        if !matches!(summary_window, SummaryWindow::All)
-                            && crate::summary_delta_gap_affects_selection(
-                                projection.as_ref(),
-                                &gaps,
-                                &pending_terminal_deltas,
-                                &summary_window,
-                                reporting_tz,
-                                *upstream_account_id,
-                            )
-                        {
+                        if crate::summary_delta_gap_affects_selection(
+                            projection.as_ref(),
+                            &gaps,
+                            &pending_terminal_deltas,
+                            &summary_window,
+                            reporting_tz,
+                            *upstream_account_id,
+                        ) {
                             return Err(ApiError::unavailable(anyhow!(
                                 "summary delta journal has an unproven change for the requested selection"
                             )));

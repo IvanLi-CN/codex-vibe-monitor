@@ -36993,6 +36993,17 @@ mod request_compression_query_tests {
             "a current limit reaching the first unproven rank must fail closed"
         );
         assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+            ),
+            "an all-time gap must fail closed for both HTTP and Summary SSE"
+        );
+        assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 std::slice::from_ref(&gap),
