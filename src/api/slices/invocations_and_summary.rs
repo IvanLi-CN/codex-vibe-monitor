@@ -15934,7 +15934,11 @@ fn summary_projection_all_time_manifest_scope_coverage(
     // prove the complete StatsResponse, so keep the archive unavailable until its usage replay
     // (or a verified V2 replacement) is present as well.
     let mut global_covered = replay_coverage.overall && replay_coverage.usage_breakdown;
-    let mut accounts_covered = replay_coverage.account_stats && account_manifest_complete;
+    // Account-scoped totals expose the same usage/cost dimensions as the global response. An
+    // account replay marker without its usage-breakdown proof must therefore remain unavailable.
+    let mut accounts_covered = replay_coverage.account_stats
+        && replay_coverage.usage_breakdown
+        && account_manifest_complete;
     let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
     let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
     while bucket <= last_bucket {
@@ -41134,7 +41138,7 @@ mod request_compression_query_tests {
         assert!(matches!(expired_global, Err(ApiError::Unavailable(_))));
 
         let Json(account) = fetch_summary(
-            State(state),
+            State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
                 limit: None,
@@ -41146,6 +41150,39 @@ mod request_compression_query_tests {
         .expect("independently proven account coverage remains exact");
         assert_eq!(account.total_count, 3);
         assert_eq!(account.total_tokens, 91);
+
+        // Account stats replay alone does not prove the usage/cost dimensions of an all-time
+        // response. Removing that marker must invalidate the account scope instead of publishing
+        // a structurally incomplete success response.
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay \
+             WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(archive_path)
+        .execute(&state.pool)
+        .await
+        .expect("remove account usage replay marker");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh account coverage after usage proof removal");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile account coverage after usage proof removal");
+        let missing_account_usage = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            missing_account_usage,
+            Err(ApiError::Unavailable(_))
+        ));
     }
 
     #[tokio::test]
