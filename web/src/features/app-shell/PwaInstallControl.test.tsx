@@ -58,7 +58,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe("PwaInstallControl", () => {
-  it("renders the install prompt as a centered modal without any trigger button", async () => {
+  it("renders the install prompt as a centered modal independently of the app-shell trigger", async () => {
     const onPromptInstall = vi.fn(async () => undefined);
 
     render(
