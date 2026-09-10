@@ -17,6 +17,8 @@ pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES: usize = 64 * 1024 * 10
 pub(crate) const SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION: i64 = 1;
 pub(crate) const SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE: &str = "summary-global";
 pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS: usize = 400;
+const SUMMARY_ARCHIVE_SNAPSHOT_MAX_PROOF_PAGES: i64 = 4_096;
+const SUMMARY_ARCHIVE_SNAPSHOT_MAX_PROOF_PAYLOAD_BYTES: i64 = 512 * 1024 * 1024;
 // V1 pages remain useful as backfill input but are intentionally not accepted as an archive
 // cleanup proof. Newly written pages use V2 only after semantic records are verified.
 pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_V1: i64 = 1;
@@ -305,6 +307,15 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
+    let mut connection = pool.acquire().await?;
+    summary_archive_snapshot_has_proof_tx(&mut connection, archive_batch_id, manifest_sha256).await
+}
+
+async fn summary_archive_snapshot_has_proof_tx(
+    connection: &mut SqliteConnection,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<bool> {
     macro_rules! reject_proof {
         ($reason:literal) => {{
             tracing::info!(
@@ -322,7 +333,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
              FROM archive_batches WHERE id = ?1",
         )
         .bind(archive_batch_id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *connection)
         .await
         .context("load Summary Snapshot archive manifest proof")?
     else {
@@ -335,6 +346,21 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     {
         reject_proof!("manifest_identity_or_status");
     }
+    let (page_count, payload_bytes) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) \
+         FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(&mut *connection)
+    .await
+    .context("check Summary Snapshot V2 proof bounds")?;
+    if page_count > SUMMARY_ARCHIVE_SNAPSHOT_MAX_PROOF_PAGES
+        || payload_bytes > SUMMARY_ARCHIVE_SNAPSHOT_MAX_PROOF_PAYLOAD_BYTES
+    {
+        reject_proof!("proof_budget");
+    }
     let row = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
          FROM summary_archive_snapshot \
@@ -342,7 +368,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     )
     .bind(archive_batch_id)
     .bind(manifest_sha256)
-    .fetch_all(pool)
+        .fetch_all(&mut *connection)
     .await
     .context("check summary archive snapshot proof")?;
     if row.is_empty() {
@@ -513,10 +539,13 @@ pub(crate) async fn ensure_summary_archive_snapshot_v2_final_proof(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
-    if !summary_archive_snapshot_has_proof(pool, archive_batch_id, manifest_sha256).await? {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if !summary_archive_snapshot_has_proof_tx(tx.as_mut(), archive_batch_id, manifest_sha256)
+        .await?
+    {
+        tx.rollback().await?;
         return Ok(false);
     }
-    let mut tx = pool.begin().await?;
     store_summary_archive_snapshot_v2_final_proof_tx(
         tx.as_mut(),
         archive_batch_id,

@@ -149,7 +149,7 @@ ARG CARGO_NEXTEST_VERSION=0.9.138
 ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev \
+    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev zstd \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add clippy \
     && curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \

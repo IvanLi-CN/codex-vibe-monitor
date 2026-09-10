@@ -5750,7 +5750,12 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "OLD.sha256",
             "NEW.id",
             "NEW.sha256",
-            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+            "WHEN (OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations') \
+                  AND (OLD.id IS NOT NEW.id OR OLD.sha256 IS NOT NEW.sha256 \
+                    OR OLD.dataset IS NOT NEW.dataset OR OLD.status IS NOT NEW.status \
+                    OR OLD.row_count IS NOT NEW.row_count \
+                    OR OLD.coverage_start_at IS NOT NEW.coverage_start_at \
+                    OR OLD.coverage_end_at IS NOT NEW.coverage_end_at)",
         ),
         (
             "delete",
@@ -5762,6 +5767,14 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "WHEN OLD.dataset = 'codex_invocations'",
         ),
     ] {
+        if name == "update" {
+            sqlx::query(
+                "DROP TRIGGER IF EXISTS trg_summary_archive_manifest_invalidates_proof_update",
+            )
+            .execute(pool)
+            .await
+            .context("failed to replace Summary manifest proof invalidation trigger")?;
+        }
         let trigger = format!(
             "CREATE TRIGGER IF NOT EXISTS trg_summary_archive_manifest_invalidates_proof_{name} \
              AFTER {event} ON archive_batches {predicate} BEGIN \

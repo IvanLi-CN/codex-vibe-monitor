@@ -58,6 +58,9 @@ async fn insert_summary_archive_snapshot_proof(
         .await
         .expect("store Summary Snapshot proof");
     tx.commit().await.expect("commit Summary Snapshot proof");
+    ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, manifest_sha256)
+        .await
+        .expect("commit Summary Snapshot final proof");
 }
 
 #[tokio::test]

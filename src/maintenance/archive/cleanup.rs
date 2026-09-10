@@ -520,6 +520,15 @@ where
     };
 
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        let v2_page_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot \
+             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND format_version = 2)",
+        )
+        .bind(archive_batch_id)
+        .bind(expected_sha256)
+        .fetch_one(tx.as_mut())
+        .await?
+            != 0;
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
@@ -529,7 +538,7 @@ where
         .fetch_one(tx.as_mut())
         .await?
             != 0;
-        if !proof_exists {
+        if v2_page_exists && !proof_exists {
             tx.rollback().await?;
             return Ok(false);
         }
@@ -601,15 +610,15 @@ where
         )
         .await?;
     }
-    if !delete_archive_batch_metadata_tx(
+    let metadata_deleted = delete_archive_batch_metadata_tx(
         tx.as_mut(),
         archive_batch_id,
         dataset,
         file_path,
         expected_sha256,
     )
-    .await?
-    {
+    .await?;
+    if !metadata_deleted {
         tx.rollback().await?;
         return Ok(false);
     }
@@ -743,8 +752,12 @@ pub(crate) async fn cleanup_expired_archive_batches(
     for candidate in candidates {
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-                && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
-                    .await?
+                && !summary_archive_snapshot_cleanup_gate_satisfied(
+                    pool,
+                    candidate.id,
+                    &candidate.sha256,
+                )
+                .await?
             {
                 // A pending deletion from an older process is still subject to the durable
                 // Summary Snapshot gate.  Without a matching proof, retaining the manifest is
@@ -792,8 +805,12 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-            && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
-                .await?
+            && !summary_archive_snapshot_cleanup_gate_satisfied(
+                pool,
+                candidate.id,
+                &candidate.sha256,
+            )
+            .await?
         {
             // Source cleanup is allowed only after a normalized Snapshot page and its manifest
             // identity have committed. Legacy archives are picked up by the background
@@ -914,7 +931,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
         } else {
             None
         };
-        if stage_archive_batch_deletion(
+        let staged = stage_archive_batch_deletion(
             pool,
             candidate.id,
             &candidate.dataset,
@@ -922,7 +939,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
             &candidate.sha256,
             integrity_source_safe_start,
         )
-        .await?
+        .await?;
+        if staged
             && finalize_archive_batch_file_deletion(
                 pool,
                 candidate.id,
@@ -937,6 +955,26 @@ pub(crate) async fn cleanup_expired_archive_batches(
     }
 
     Ok(deleted)
+}
+
+async fn summary_archive_snapshot_cleanup_gate_satisfied(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<bool> {
+    let v2_page_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND format_version = 2)",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !v2_page_exists {
+        return Ok(true);
+    }
+    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
 }
 
 #[derive(Debug, FromRow)]

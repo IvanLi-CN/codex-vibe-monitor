@@ -3818,6 +3818,41 @@ impl SubscriptionHub {
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
+        Self::store_summary_projection_locked(&mut state, projection);
+    }
+
+    /// Publish a projection only if it is still based on the hub revision observed by the
+    /// caller.  The revision check, allocation, and swap happen under one state lock so a slow
+    /// coverage reducer cannot publish an older clone after a concurrent rolling refresh.
+    pub(crate) async fn store_summary_projection_if_revision(
+        &self,
+        mut projection: SummaryProjection,
+        expected_revision: u64,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let current_revision = state
+            .summary_projection
+            .as_ref()
+            .map(|current| current.revision())
+            .unwrap_or_default();
+        if current_revision != expected_revision {
+            tracing::debug!(
+                current_revision,
+                expected_revision,
+                "discarding summary projection based on an older hub revision"
+            );
+            return false;
+        }
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        projection = projection.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, projection)
+    }
+
+    fn store_summary_projection_locked(
+        state: &mut SubscriptionHubState,
+        projection: SummaryProjection,
+    ) -> bool {
         // Projection builders run under different maintenance single-flight locks. A slower
         // builder can therefore finish after a newer rolling or coverage publication has already
         // assigned a higher revision. Keep the hub monotonically increasing so an older snapshot
@@ -3835,7 +3870,7 @@ impl SubscriptionHub {
                 rejected_revision = projection.revision(),
                 "discarding stale summary projection publication"
             );
-            return;
+            return false;
         }
         state.summary_delta_journal.base_cursor =
             state
@@ -3943,6 +3978,7 @@ impl SubscriptionHub {
                 .is_none_or(|row_id| !projection.contains_persisted_live_terminal_by_row_id(row_id))
         });
         state.summary_projection = Some(Arc::new(projection));
+        true
     }
 
     async fn summary_projection_terminal_overlay(

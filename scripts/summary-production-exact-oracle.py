@@ -47,7 +47,8 @@ def source_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         "cost",
     }
     if not required.issubset(columns):
-        return []
+        missing = ",".join(sorted(required - columns))
+        raise RuntimeError(f"codex_invocations is missing required columns: {missing}")
     optional = [
         "error_message",
         "failure_kind",
@@ -57,6 +58,7 @@ def source_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         "output_tokens",
         "cache_input_tokens",
         "reasoning_tokens",
+        "reasoning_effort",
         "model",
         "response_model",
         "upstream_account_id",
@@ -118,7 +120,7 @@ def decode_v2_payload(payload: bytes) -> list[dict[str, Any]]:
     normalized = []
     for record in records:
         if not isinstance(record, dict):
-            continue
+            raise RuntimeError("V2 Snapshot payload contains a non-object record")
         normalized.append(
             {field_names.get(key, key): value for key, value in record.items()}
         )
@@ -144,17 +146,26 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
             if "archive_batches" in tables
             else []
         )
-        snapshot_rows = (
-            connection.execute(
-                "SELECT payload, format_version FROM summary_archive_snapshot "
-                "WHERE format_version >= 2 ORDER BY archive_batch_id, manifest_sha256, page_index"
+        if "summary_archive_snapshot" in tables and "summary_archive_snapshot_v2_proof" in tables:
+            proofs = connection.execute(
+                "SELECT archive_batch_id, manifest_sha256, page_count, row_count "
+                "FROM summary_archive_snapshot_v2_proof"
             ).fetchall()
-            if "summary_archive_snapshot" in tables
-            else []
-        )
-        for payload, format_version in snapshot_rows:
-            if int(format_version) >= 2:
-                rows.extend(decode_v2_payload(payload))
+            for batch_id, manifest_sha, page_count, row_count in proofs:
+                pages = connection.execute(
+                    "SELECT page_index, row_count, payload FROM summary_archive_snapshot "
+                    "WHERE archive_batch_id = ? AND manifest_sha256 = ? AND format_version = 2 "
+                    "ORDER BY page_index",
+                    (batch_id, manifest_sha),
+                ).fetchall()
+                if len(pages) != int(page_count) or sum(int(page[1]) for page in pages) != int(row_count):
+                    raise RuntimeError(
+                        f"V2 final proof page metadata is incomplete for archive batch {batch_id}"
+                    )
+                for page_index, _page_row_count, payload in pages:
+                    if int(page_index) < 0:
+                        raise RuntimeError("V2 final proof contains an invalid page index")
+                    rows.extend(decode_v2_payload(payload))
         for _batch_id, stored_path, _status in batches:
             parts = Path(stored_path).parts
             try:
@@ -183,8 +194,37 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
             row.get("invoke_id"),
             row.get("occurred_at"),
         )
+        previous = deduplicated.get(identity)
+        if previous is not None and canonical_row(previous) != canonical_row(row):
+            raise RuntimeError(f"conflicting authoritative rows for {identity!r}")
         deduplicated[identity] = row
     return list(deduplicated.values())
+
+
+def canonical_row(row: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the fields whose disagreement would change Summary exactness."""
+    fields = (
+        "id",
+        "invoke_id",
+        "occurred_at",
+        "source",
+        "status",
+        "total_tokens",
+        "cost",
+        "input_tokens",
+        "output_tokens",
+        "cache_input_tokens",
+        "reasoning_tokens",
+        "model",
+        "response_model",
+        "reasoning_effort",
+        "upstream_account_id",
+        "error_message",
+        "failure_kind",
+        "failure_class",
+        "is_actionable",
+    )
+    return tuple(row.get(field) for field in fields)
 
 
 def is_success(row: dict[str, Any]) -> bool:
@@ -235,11 +275,79 @@ def expected(rows: list[dict[str, Any]], window: str, now: dt.datetime) -> dict[
         "totalTokens": total_tokens,
         "totalCost": total_cost,
         "nonSuccessCost": non_success_cost,
+        "usageBreakdown": usage_breakdown(selected),
     }
     if window in {"1d", "7d", "30d", "today"}:
         result["nonSuccessTokens"] = sum(
             int(row.get("total_tokens") or 0) for row in selected if is_terminal_failure(row)
         )
+    return result
+
+
+def usage_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    model_groups: dict[tuple[str, str | None], dict[str, Any]] = {}
+    totals = {
+        "cacheWriteTokens": 0,
+        "cacheReadTokens": 0,
+        "outputTokens": 0,
+    }
+    total_costs = {key: 0.0 for key in ("input", "cache_write", "cache_read", "output", "reasoning", "unknown")}
+    has_cost = False
+    for row in rows:
+        cache_read = max(int(row.get("cache_input_tokens") or 0), 0)
+        cache_write = max(int(row.get("input_tokens") or 0) - cache_read, 0)
+        output = max(int(row.get("output_tokens") or 0), 0)
+        totals["cacheWriteTokens"] += cache_write
+        totals["cacheReadTokens"] += cache_read
+        totals["outputTokens"] += output
+        model = str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
+        reasoning = str(row["reasoning_effort"]).strip() if row.get("reasoning_effort") else None
+        group = model_groups.setdefault(
+            (model, reasoning),
+            {"model": model, "reasoningEffort": reasoning, "cacheWriteTokens": 0, "cacheReadTokens": 0, "outputTokens": 0, "costs": None},
+        )
+        group["cacheWriteTokens"] += cache_write
+        group["cacheReadTokens"] += cache_read
+        group["outputTokens"] += output
+        cost = row.get("cost")
+        if cost is not None:
+            has_cost = True
+            cost_fields = [row.get(key) for key in ("cost_input", "cost_cache_write", "cost_cache_read", "cost_output", "cost_reasoning")]
+            if all(value is not None for value in cost_fields):
+                for target, value in zip(("input", "cache_write", "cache_read", "output", "reasoning"), cost_fields, strict=True):
+                    total_costs[target] += float(value or 0)
+            else:
+                total_costs["unknown"] += float(cost or 0)
+            group_costs = group["costs"] or {key: 0.0 for key in ("input", "cacheWrite", "cacheRead", "output", "reasoning", "unknown")}
+            if all(value is not None for value in cost_fields):
+                for target, value in zip(("input", "cacheWrite", "cacheRead", "output", "reasoning"), cost_fields, strict=True):
+                    group_costs[target] += float(value or 0)
+            else:
+                group_costs["unknown"] += float(cost or 0)
+            group["costs"] = group_costs
+    for group in model_groups.values():
+        if group["costs"] is None:
+            group.pop("costs")
+        if group.get("reasoningEffort") is None:
+            group.pop("reasoningEffort", None)
+    result = dict(totals)
+    if has_cost:
+        result["costs"] = {
+            "input": total_costs["input"],
+            "cacheWrite": total_costs["cache_write"],
+            "cacheRead": total_costs["cache_read"],
+            "output": total_costs["output"],
+            "reasoning": total_costs["reasoning"],
+            "unknown": total_costs["unknown"],
+        }
+    result["models"] = []
+    for key in sorted(model_groups, key=lambda item: (item[0], item[1] or "")):
+        entry = model_groups[key]
+        if any(
+            entry.get(field, 0)
+            for field in ("cacheWriteTokens", "cacheReadTokens", "outputTokens")
+        ) or entry.get("costs"):
+            result["models"].append(entry)
     return result
 
 

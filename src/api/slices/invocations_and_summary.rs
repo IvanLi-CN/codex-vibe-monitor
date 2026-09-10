@@ -7852,6 +7852,11 @@ impl SummaryProjection {
         self.revision
     }
 
+    pub(crate) fn with_revision(mut self, revision: u64) -> Self {
+        self.revision = revision;
+        self
+    }
+
     fn rolling_refreshed_at(&self) -> Option<Instant> {
         self.freshness_lease
             .latest(self.freshness.rolling_at(self.refreshed_at))
@@ -14361,11 +14366,14 @@ async fn publish_summary_coverage_overlay_once(
         {
             return Ok(false);
         }
-        next.revision = state
+        let expected_revision = next.revision;
+        if !state
             .subscription_hub
-            .next_summary_projection_revision()
-            .await;
-        state.subscription_hub.store_summary_projection(next).await;
+            .store_summary_projection_if_revision(next, expected_revision)
+            .await
+        {
+            return Ok(false);
+        }
         info!(
             stage = "coverage_overlay_revocation",
             revoked_bucket_count = revoked_global_count + revoked_account_count,
@@ -14549,10 +14557,7 @@ async fn publish_summary_coverage_overlay_once(
     }
     next.coverage_overlay = Some(overlay);
     next.generation_fence = durable_fence;
-    next.revision = state
-        .subscription_hub
-        .next_summary_projection_revision()
-        .await;
+    let expected_revision = next.revision;
     let unavailable_unmaterialized_range_count =
         next.unavailable_unmaterialized_archive_ranges.len();
     let unavailable_boundary_range_count = next.unavailable_boundary_archive_ranges.len();
@@ -14562,7 +14567,17 @@ async fn publish_summary_coverage_overlay_once(
         .iter()
         .filter(|range| range.start < Utc::now() && thirty_day_start < range.end)
         .count();
-    state.subscription_hub.store_summary_projection(next).await;
+    if !state
+        .subscription_hub
+        .store_summary_projection_if_revision(next, expected_revision)
+        .await
+    {
+        debug!(
+            stage = "coverage_overlay_stale_revision",
+            "discarding coverage overlay because a concurrent projection publication won the CAS"
+        );
+        return Ok(false);
+    }
     info!(
         stage = "coverage_overlay_publication",
         global_bucket_count,
@@ -15060,10 +15075,6 @@ async fn publish_summary_all_time_projection_checkpoint(
     }
     next.all_time_oldest_account_refreshed_at =
         next.all_time_account_refreshed_at.values().copied().min();
-    next.revision = state
-        .subscription_hub
-        .next_summary_projection_revision()
-        .await;
     let current_generation_fence = load_summary_projection_generation_fence(state).await?;
     if !current_generation_fence.coverage_sources_match(generation_fence) {
         return Err(SummaryProjectionAllTimeGenerationChanged.into());
@@ -15072,7 +15083,14 @@ async fn publish_summary_all_time_projection_checkpoint(
     // watermark remains the checkpoint's proof watermark, so newly committed tail entries stay
     // visible through the in-memory all-time overlay until a later checkpoint absorbs them.
     next.generation_fence = current_generation_fence;
-    state.subscription_hub.store_summary_projection(next).await;
+    let expected_revision = next.revision;
+    if !state
+        .subscription_hub
+        .store_summary_projection_if_revision(next, expected_revision)
+        .await
+    {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
     debug!(
         global_ready = checkpoint.global_ready(),
         account_ready = checkpoint.account_ready(),
@@ -15229,14 +15247,58 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
     .context("summary projection overflowed boundary unproven-range hydration failed")?;
 
     if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        let (min_start_epoch, max_end_epoch) = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+            "SELECT MIN(COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER))), \
+                    MAX(COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER))) \
+             FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.id <= ?1 \
+               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+                   WHERE proof.archive_batch_id = batches.id \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND proof.manifest_sha256 = batches.sha256 \
+               )",
+        )
+        .bind(high_watermark_id)
+        .bind(exact_horizon.start.timestamp())
+        .bind(exact_horizon.end.timestamp())
+        .fetch_one(pool)
+        .await
+        .context("summary projection overflowed boundary range bounds failed")?;
+        let bounded_range = match (min_start_epoch, max_end_epoch) {
+            (Some(start_epoch), Some(end_epoch)) => {
+                match (
+                    Utc.timestamp_opt(start_epoch, 0).single(),
+                    Utc.timestamp_opt(end_epoch, 0).single(),
+                ) {
+                    (Some(start), Some(end)) => Some(ExactUtcRange {
+                        start: start.max(exact_horizon.start),
+                        end: end
+                            .checked_add_signed(ChronoDuration::seconds(1))
+                            .unwrap_or(end)
+                            .min(exact_horizon.end),
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+        .filter(|range| range.start < range.end);
+        let fallback_range = bounded_range.unwrap_or(exact_horizon);
         info!(
             stage = "overflowed_boundary_unproven_range_budget",
             source_row_count = rows.len(),
-            "summary projection metadata scan exceeded its bounded archive budget; retaining the full horizon as unavailable"
+            "summary projection metadata scan exceeded its bounded archive budget; retaining a bounded unavailable range"
         );
         return Ok(SummaryProjectionOverflowedBoundaryUnprovenRanges {
-            global: vec![exact_horizon],
-            account: vec![exact_horizon],
+            global: vec![fallback_range],
+            account: vec![fallback_range],
         });
     }
 
@@ -16323,10 +16385,27 @@ async fn build_summary_projection_once(
                 Some(&hourly_rollup_usage),
             )
             .await?;
-            paged_boundary_manifest_unknown_coverage_ranges.extend(unproven.global);
+            let mut global_unproven = unproven.global;
+            // The bounded recent archive prefix is hydrated below.  Keep older overflow gaps
+            // fail-closed without letting their coarse budget fallback poison a disjoint recent
+            // global selection. Account-scoped gaps remain conservative until their manifest is
+            // refreshed.
+            let recent_exact_start = end - SUMMARY_PROJECTION_MIN_EXACT_HORIZON;
+            for range in &mut global_unproven {
+                range.end = range.end.min(recent_exact_start);
+            }
+            global_unproven.retain(|range| range.start < range.end);
+            paged_boundary_manifest_unknown_coverage_ranges.extend(global_unproven);
             paged_boundary_manifest_unknown_account_coverage_ranges.extend(unproven.account);
+            // Preserve the bounded recent archive prefix for exact current/rolling selections;
+            // only the older overflowed manifests remain owned by the recovery supervisor.
+            (
+                current_archive_admission.clone(),
+                Some(coverage.high_watermark_id),
+            )
+        } else {
+            (Vec::new(), Some(coverage.high_watermark_id))
         }
-        (Vec::new(), Some(coverage.high_watermark_id))
     } else {
         (boundary_archive_admission, None)
     };
@@ -16774,7 +16853,9 @@ async fn build_summary_projection_once(
         )?;
     }
     let mut paged_boundary_raw_archive_admissions = 0usize;
-    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
+    if mode.includes_all_time()
+        && let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id
+    {
         // Page only bounded manifest metadata while planning the finite exact buckets. The raw
         // archives themselves are opened later one at a time after live boundary records have
         // been admitted; each page retains its actual replay/materialization proof.
