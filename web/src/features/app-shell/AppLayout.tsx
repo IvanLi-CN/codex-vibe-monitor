@@ -31,6 +31,7 @@ import { frontendVersion, normalizeVersion } from "../../lib/version";
 import { useTheme } from "../../theme";
 import { AppIcon } from "../shared/AppIcon";
 import { HeaderBrandMark, type HeaderBrandMarkState } from "./HeaderBrandMark";
+import { LanguageFlag } from "./LanguageFlag";
 import {
   desktopNavItems,
   matchesNavigationPath,
@@ -38,6 +39,7 @@ import {
   resolveAppNavigation,
 } from "./navigation";
 import { PwaInstallControl } from "./PwaInstallControl";
+import { PwaInstallTrigger } from "./PwaInstallTrigger";
 import { UpdateAvailableBanner } from "./UpdateAvailableBanner";
 
 const repositoryUrl = "https://github.com/IvanLi-CN/codex-vibe-monitor";
@@ -412,25 +414,37 @@ export function AppLayout() {
     pwaRuntime.installMode === "prompt" || pwaRuntime.installMode === "manual-ios"
       ? pwaRuntime.installMode
       : null;
-  const [dismissedInstallDialogMode, setDismissedInstallDialogMode] =
-    useState<InstallPromptMode | null>(null);
-  const installDialogOpen =
-    installDialogMode != null && dismissedInstallDialogMode !== installDialogMode;
+  const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const suppressInstallDeferRef = useRef(false);
+  useEffect(() => {
+    if (pwaRuntime.shouldAutoOpenInstallDialog && installDialogMode) {
+      setInstallDialogOpen(true);
+    }
+  }, [installDialogMode, pwaRuntime.shouldAutoOpenInstallDialog]);
   const handleInstallDialogOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen) {
-        setDismissedInstallDialogMode(null);
+        setInstallDialogOpen(true);
         return;
       }
-      if (installDialogMode) {
-        setDismissedInstallDialogMode(installDialogMode);
+      if (installDialogMode && !suppressInstallDeferRef.current) {
+        pwaRuntime.deferInstallPrompt();
       }
+      suppressInstallDeferRef.current = false;
+      setInstallDialogOpen(false);
     },
-    [installDialogMode],
+    [installDialogMode, pwaRuntime.deferInstallPrompt],
   );
+  const openInstallDialog = useCallback(() => {
+    setInstallDialogOpen(true);
+  }, []);
   const handleInstallPrompt = useCallback(async () => {
-    await pwaRuntime.promptInstall();
-    setDismissedInstallDialogMode("prompt");
+    suppressInstallDeferRef.current = true;
+    try {
+      await pwaRuntime.promptInstall();
+    } finally {
+      setInstallDialogOpen(false);
+    }
   }, [pwaRuntime.promptInstall]);
   const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
   const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";
@@ -445,6 +459,7 @@ export function AppLayout() {
           shellReady={pwaRuntime.shellReady}
           isOffline={pwaRuntime.isOffline}
           onPromptInstall={handleInstallPrompt}
+          canPromptInstall={pwaRuntime.installPromptAvailable}
           labels={{
             promptButton: t("app.pwa.install.promptButton"),
             laterButton: t("app.pwa.install.laterButton"),
@@ -512,6 +527,27 @@ export function AppLayout() {
           </div>
 
           <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
+            {installDialogMode ? (
+              <>
+                <div className="hidden desktop:block">
+                  <PwaInstallTrigger
+                    mode={installDialogMode}
+                    label={t("app.pwa.install.promptButton")}
+                    ariaLabel={t("app.pwa.install.switcherAria")}
+                    onClick={openInstallDialog}
+                  />
+                </div>
+                <div className="desktop:hidden">
+                  <PwaInstallTrigger
+                    mode={installDialogMode}
+                    label={t("app.pwa.install.promptButton")}
+                    ariaLabel={t("app.pwa.install.switcherAria")}
+                    compact
+                    onClick={openInstallDialog}
+                  />
+                </div>
+              </>
+            ) : null}
             <div className="hidden overflow-x-auto no-scrollbar desktop:block">
               <SegmentedControl size="nav" className="min-w-max" aria-label={t("app.brand")}>
                 {desktopNavItems.map((item) => (
@@ -547,7 +583,18 @@ export function AppLayout() {
               <span className="hidden md:inline">{themeLabel}</span>
             </button>
 
-            <div ref={languageMenuRef} className="relative">
+            <div className="desktop:hidden">
+              <button
+                type="button"
+                className="control-pill"
+                aria-label={t("app.language.switcherAria")}
+                onClick={() => handleLocaleChange(locale === "zh" ? "en" : "zh")}
+                data-testid="mobile-language-toggle"
+              >
+                <LanguageFlag locale={locale} />
+              </button>
+            </div>
+            <div ref={languageMenuRef} className="relative hidden desktop:block">
               <button
                 type="button"
                 className="control-pill min-w-0 justify-between sm:min-w-[6.75rem]"

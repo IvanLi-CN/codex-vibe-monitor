@@ -43,6 +43,7 @@ export interface PwaInstallControlProps {
   isOffline: boolean;
   labels: PwaInstallControlLabels;
   onPromptInstall?: () => Promise<void> | void;
+  canPromptInstall?: boolean;
 }
 
 export function PwaInstallControl({
@@ -53,6 +54,7 @@ export function PwaInstallControl({
   isOffline,
   labels,
   onPromptInstall,
+  canPromptInstall = true,
 }: PwaInstallControlProps) {
   const iconName = mode === "installed" ? "check-circle-outline" : "content-save-plus-outline";
   const title =
@@ -145,7 +147,7 @@ export function PwaInstallControl({
             >
               {mode === "prompt" ? labels.laterButton : labels.closeButton}
             </Button>
-            {mode === "prompt" ? (
+            {mode === "prompt" && canPromptInstall ? (
               <Button onClick={() => void handlePromptInstall()} data-testid="pwa-install-confirm">
                 {labels.promptButton}
               </Button>

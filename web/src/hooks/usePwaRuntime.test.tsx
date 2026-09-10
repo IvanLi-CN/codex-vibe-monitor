@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import usePwaRuntime from "./usePwaRuntime";
+import usePwaRuntime, { PWA_INSTALL_DEFER_MS } from "./usePwaRuntime";
 
 const registerSwMock = vi.hoisted(() => vi.fn());
 
@@ -65,7 +65,9 @@ function Harness() {
   return (
     <div>
       <span data-testid="install-mode">{runtime.installMode}</span>
+      <span data-testid="install-prompt-available">{String(runtime.installPromptAvailable)}</span>
       <span data-testid="install-supported">{String(runtime.installSupported)}</span>
+      <span data-testid="auto-install">{String(runtime.shouldAutoOpenInstallDialog)}</span>
       <span data-testid="is-offline">{String(runtime.isOffline)}</span>
       <span data-testid="shell-ready">{String(runtime.shellReady)}</span>
       <span data-testid="update-visible">{String(runtime.update.visible)}</span>
@@ -77,6 +79,7 @@ function Harness() {
           void runtime.promptInstall();
         }}
       />
+      <button type="button" data-testid="defer-install" onClick={runtime.deferInstallPrompt} />
       <button
         type="button"
         data-testid="apply-update"
@@ -114,6 +117,7 @@ beforeEach(() => {
     vi.fn(async () => new Response(JSON.stringify({ version: "0.2.1" }), { status: 200 })),
   );
   registerSwMock.mockReset();
+  window.localStorage.clear();
 });
 
 afterEach(() => {
@@ -158,6 +162,38 @@ describe("usePwaRuntime", () => {
 
     expect(promptMock).toHaveBeenCalledTimes(1);
     expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("installed");
+    expect(window.localStorage.getItem("codex-vibe-monitor.pwa-install-deferred-until")).toBeNull();
+  });
+
+  it("consumes a dismissed native prompt and does not reuse the single-use event", async () => {
+    registerSwMock.mockImplementation(() => vi.fn());
+    render();
+    const promptMock = vi.fn(async () => undefined);
+    const installEvent = new Event("beforeinstallprompt") as Event & {
+      prompt: () => Promise<void>;
+      userChoice: Promise<{ outcome: "dismissed"; platform: "web" }>;
+    };
+    installEvent.preventDefault = vi.fn();
+    installEvent.prompt = promptMock;
+    installEvent.userChoice = Promise.resolve({ outcome: "dismissed", platform: "web" });
+
+    await act(async () => {
+      window.dispatchEvent(installEvent);
+      await Promise.resolve();
+      (host?.querySelector('[data-testid="prompt-install"]') as HTMLButtonElement)?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      (host?.querySelector('[data-testid="prompt-install"]') as HTMLButtonElement)?.click();
+      await Promise.resolve();
+    });
+
+    expect(promptMock).toHaveBeenCalledTimes(1);
+    expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("prompt");
+    expect(host?.querySelector('[data-testid="install-prompt-available"]')?.textContent).toBe(
+      "false",
+    );
+    expect(host?.querySelector('[data-testid="auto-install"]')?.textContent).toBe("false");
   });
 
   it("exposes manual iOS Safari guidance when no native install prompt is available", async () => {
@@ -184,6 +220,60 @@ describe("usePwaRuntime", () => {
 
     expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("manual-ios");
     expect(host?.querySelector('[data-testid="install-supported"]')?.textContent).toBe("true");
+  });
+
+  it("defers automatic install dialog for 30 days while keeping install support available", async () => {
+    registerSwMock.mockImplementation(() => vi.fn());
+    render();
+    const installEvent = new Event("beforeinstallprompt") as Event & {
+      prompt: () => Promise<void>;
+      userChoice: Promise<{ outcome: "dismissed"; platform: "web" }>;
+    };
+    installEvent.preventDefault = vi.fn();
+    installEvent.prompt = vi.fn(async () => undefined);
+    installEvent.userChoice = Promise.resolve({ outcome: "dismissed", platform: "web" });
+
+    await act(async () => {
+      window.dispatchEvent(installEvent);
+      await Promise.resolve();
+    });
+    expect(host?.querySelector('[data-testid="auto-install"]')?.textContent).toBe("true");
+
+    act(() => {
+      const deferButton = host?.querySelector('[data-testid="defer-install"]');
+      if (deferButton instanceof HTMLButtonElement) deferButton.click();
+    });
+    expect(host?.querySelector('[data-testid="auto-install"]')?.textContent).toBe("false");
+    expect(
+      window.localStorage.getItem("codex-vibe-monitor.pwa-install-deferred-until"),
+    ).not.toBeNull();
+    const deferredUntil = Number(
+      window.localStorage.getItem("codex-vibe-monitor.pwa-install-deferred-until"),
+    );
+    expect(deferredUntil - Date.now()).toBeGreaterThan(PWA_INSTALL_DEFER_MS - 1000);
+  });
+
+  it("keeps an existing cooldown after a fresh runtime mounts", async () => {
+    window.localStorage.setItem(
+      "codex-vibe-monitor.pwa-install-deferred-until",
+      String(Date.now() + PWA_INSTALL_DEFER_MS),
+    );
+    registerSwMock.mockImplementation(() => vi.fn());
+    render();
+    const installEvent = new Event("beforeinstallprompt") as Event & {
+      prompt: () => Promise<void>;
+      userChoice: Promise<{ outcome: "dismissed"; platform: "web" }>;
+    };
+    installEvent.preventDefault = vi.fn();
+    installEvent.prompt = vi.fn(async () => undefined);
+    installEvent.userChoice = Promise.resolve({ outcome: "dismissed", platform: "web" });
+
+    await act(async () => {
+      window.dispatchEvent(installEvent);
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector('[data-testid="auto-install"]')?.textContent).toBe("false");
   });
 
   it("surfaces offline shell readiness, browser offline state, and prompt-style updates", async () => {

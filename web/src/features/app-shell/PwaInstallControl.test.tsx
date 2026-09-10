@@ -58,7 +58,7 @@ function render(ui: React.ReactNode) {
 }
 
 describe("PwaInstallControl", () => {
-  it("renders the install prompt as a centered modal without any trigger button", async () => {
+  it("renders the install prompt as a centered modal independently of the app-shell trigger", async () => {
     const onPromptInstall = vi.fn(async () => undefined);
 
     render(
@@ -99,5 +99,24 @@ describe("PwaInstallControl", () => {
     });
 
     expect(onPromptInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the dialog usable without rendering a stale native confirm action", () => {
+    render(
+      <PwaInstallControl
+        mode="prompt"
+        open
+        onOpenChange={() => undefined}
+        shellReady
+        isOffline={false}
+        labels={labels}
+        canPromptInstall={false}
+      />,
+    );
+
+    expect(document.body.querySelector('[data-testid="pwa-install-confirm"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="pwa-install-close"]')).toBeInstanceOf(
+      HTMLButtonElement,
+    );
   });
 });
