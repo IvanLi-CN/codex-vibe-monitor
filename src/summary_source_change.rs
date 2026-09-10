@@ -389,6 +389,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     let mut previous_record_key = None;
     let mut total_rows = 0_i64;
     let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_invoke_ids = std::collections::HashSet::new();
     let mut validated_pages = 0_i64;
     let mut rows = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
@@ -456,6 +457,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             }
             previous_record_key = Some(key);
             !seen_ids.insert(record.id)
+                || !seen_invoke_ids.insert(record.invoke_id.clone())
                 || occurred_at < coverage_start
                 || occurred_at > coverage_end
         }) {

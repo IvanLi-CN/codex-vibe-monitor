@@ -7639,12 +7639,12 @@ impl SummaryProjectionGenerationFence {
     // discard an already committed seek cursor here.
     fn global_coverage_checkpoint_compatible(self, other: Self) -> bool {
         self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
-            && other.coverage_revision == self.coverage_revision
+            && other.coverage_revision >= self.coverage_revision
     }
 
     fn account_coverage_checkpoint_compatible(self, other: Self) -> bool {
         self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
-            && other.account_coverage_revision == self.account_coverage_revision
+            && other.account_coverage_revision >= self.account_coverage_revision
     }
 
     pub(crate) fn coverage_fence(self) -> SummaryCoverageFence {
@@ -11813,63 +11813,62 @@ async fn refresh_summary_snapshots_with_deadline(
             "summary projection startup hydration deferred because a refresh is already in flight"
         ));
     };
-    let previous_all_time = state
-        .subscription_hub
-        .summary_projection()
-        .await
-        .map(|projection| PreviousSummaryProjectionAllTime {
-            all_time_by_account: projection.all_time_by_account.clone(),
-            all_time_refreshed_at: projection.all_time_refreshed_at,
-            all_time_manifest_admission_blocked_at: projection
-                .all_time_manifest_admission_blocked_at,
-            all_time_account_manifest_admission_blocked_at: projection
-                .all_time_account_manifest_admission_blocked_at,
-            all_time_account_refreshed_at: projection.all_time_account_refreshed_at.clone(),
-            archive_account_ids_by_file: projection.archive_account_ids_by_file.clone(),
-            archive_coverage_ranges_by_file: projection.archive_coverage_ranges_by_file.clone(),
-            global_all_time_eligible: projection.freshness.global_all_time_eligible,
-            account_all_time_eligible: projection.freshness.account_all_time_eligible.clone(),
-            all_time_terminal_coverage_complete: projection.all_time_terminal_coverage_complete(),
-            global_all_time_coverage_fence: projection.global_all_time_coverage_fence,
-            account_all_time_coverage_fence: projection.account_all_time_coverage_fence,
-            all_time_terminal_sequence_watermark: projection.all_time_terminal_sequence_watermark(),
-            all_time_persisted_live_terminal_invoke_ids: projection
-                .all_time_persisted_live_terminal_invoke_ids
-                .clone(),
-            all_time_account_terminal_sequence_watermarks: projection
-                .all_time_account_terminal_sequence_watermarks
-                .clone(),
-            all_time_account_persisted_live_terminal_invoke_ids: projection
-                .all_time_account_persisted_live_terminal_invoke_ids
-                .clone(),
-            historical_live_coverage: projection.historical_live_coverage.clone(),
-            coverage_overlay: projection.coverage_overlay.clone(),
-            unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
-            unavailable_exact_live_account_ranges: projection
-                .unavailable_exact_live_account_ranges
-                .clone(),
-            unavailable_unmaterialized_archive_ranges: projection
-                .unavailable_unmaterialized_archive_ranges
-                .clone(),
-            unavailable_boundary_archive_ranges: projection
-                .unavailable_boundary_archive_ranges
-                .clone(),
-            unavailable_unmaterialized_archive_current_ranges: projection
-                .unavailable_unmaterialized_archive_current_ranges
-                .clone(),
-            unavailable_unmaterialized_archive_account_ranges: projection
-                .unavailable_unmaterialized_archive_account_ranges
-                .clone(),
-            unavailable_boundary_archive_account_ranges: projection
-                .unavailable_boundary_archive_account_ranges
-                .clone(),
-            unavailable_unmaterialized_archive_account_current_ranges: projection
-                .unavailable_unmaterialized_archive_account_current_ranges
-                .clone(),
-            persisted_live_terminal_invoke_ids: projection
-                .persisted_live_terminal_invoke_ids
-                .clone(),
-        });
+    let base_projection = state.subscription_hub.summary_projection().await;
+    let expected_projection_revision = base_projection
+        .as_ref()
+        .map(|projection| projection.revision())
+        .unwrap_or_default();
+    let previous_all_time = base_projection.map(|projection| PreviousSummaryProjectionAllTime {
+        all_time_by_account: projection.all_time_by_account.clone(),
+        all_time_refreshed_at: projection.all_time_refreshed_at,
+        all_time_manifest_admission_blocked_at: projection.all_time_manifest_admission_blocked_at,
+        all_time_account_manifest_admission_blocked_at: projection
+            .all_time_account_manifest_admission_blocked_at,
+        all_time_account_refreshed_at: projection.all_time_account_refreshed_at.clone(),
+        archive_account_ids_by_file: projection.archive_account_ids_by_file.clone(),
+        archive_coverage_ranges_by_file: projection.archive_coverage_ranges_by_file.clone(),
+        global_all_time_eligible: projection.freshness.global_all_time_eligible,
+        account_all_time_eligible: projection.freshness.account_all_time_eligible.clone(),
+        all_time_terminal_coverage_complete: projection.all_time_terminal_coverage_complete(),
+        global_all_time_coverage_fence: projection.global_all_time_coverage_fence,
+        account_all_time_coverage_fence: projection.account_all_time_coverage_fence,
+        all_time_terminal_sequence_watermark: projection.all_time_terminal_sequence_watermark(),
+        all_time_persisted_live_terminal_invoke_ids: projection
+            .all_time_persisted_live_terminal_invoke_ids
+            .clone(),
+        all_time_account_terminal_sequence_watermarks: projection
+            .all_time_account_terminal_sequence_watermarks
+            .clone(),
+        all_time_account_persisted_live_terminal_invoke_ids: projection
+            .all_time_account_persisted_live_terminal_invoke_ids
+            .clone(),
+        historical_live_coverage: projection.historical_live_coverage.clone(),
+        coverage_overlay: projection.coverage_overlay.clone(),
+        unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
+        unavailable_exact_live_account_ranges: projection
+            .unavailable_exact_live_account_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_ranges: projection
+            .unavailable_unmaterialized_archive_ranges
+            .clone(),
+        unavailable_boundary_archive_ranges: projection.unavailable_boundary_archive_ranges.clone(),
+        unavailable_unmaterialized_archive_current_ranges: projection
+            .unavailable_unmaterialized_archive_current_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_account_ranges: projection
+            .unavailable_unmaterialized_archive_account_ranges
+            .clone(),
+        unavailable_boundary_archive_account_ranges: projection
+            .unavailable_boundary_archive_account_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_account_current_ranges: projection
+            .unavailable_unmaterialized_archive_account_current_ranges
+            .clone(),
+        persisted_live_terminal_invoke_ids: projection.persisted_live_terminal_invoke_ids.clone(),
+    });
+    // Keep the publication CAS tied to the immutable base captured above. A slower generic
+    // builder must not publish after a coverage overlay or another rolling refresh has swapped
+    // the hub projection, even if it allocates a newer numeric revision at the end of the build.
     // The runtime read model advances this watermark only after SQLite ACKs every preceding
     // terminal in order. Capture it before the durable projection queries so a later successful
     // revision can prove that an overflowed Summary SSE overlay is no longer missing data.
@@ -11903,10 +11902,17 @@ async fn refresh_summary_snapshots_with_deadline(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build snapshot generation fence accepted"
     );
-    state
+    if !state
         .subscription_hub
-        .store_summary_projection(projection)
-        .await;
+        .store_summary_projection_if_revision(projection, expected_projection_revision)
+        .await
+    {
+        debug!(
+            ?mode,
+            "summary projection build discarded because its immutable base was replaced"
+        );
+        return Ok(());
+    }
     debug!(
         ?mode,
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -12194,6 +12200,26 @@ struct SummaryProjectionAllTimeArchiveScanPaths {
 async fn load_summary_projection_all_time_archive_scan_paths(
     pool: &Pool<Sqlite>,
 ) -> Result<SummaryProjectionAllTimeArchiveScanPaths> {
+    // Every downstream legacy fallback is keyed by file path. If a path has multiple completed
+    // manifest identities, selecting the latest row could attach the wrong proof or snapshot to
+    // an older archive. Refuse the ambiguous authority and leave the affected all-time scope
+    // unavailable until recovery can establish an identity-bound V2 proof.
+    if sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         GROUP BY file_path HAVING COUNT(*) > 1 ORDER BY file_path LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection archive identity ambiguity check failed")?
+    .is_some()
+    {
+        return Err(anyhow!(
+            "summary projection archive identity is ambiguous for a completed path"
+        ));
+    }
     // These are precisely the completed archive paths that the two generic all-time
     // aggregators may inflate: the global pass handles missing invocation replay, and the
     // account pass additionally handles unmaterialized archives missing account replay.
@@ -15904,7 +15930,10 @@ fn summary_projection_all_time_manifest_scope_coverage(
     if summary_projection_exact_range_fits_bucket_budget(range).is_err() {
         return Ok((false, false));
     }
-    let mut global_covered = replay_coverage.overall;
+    // Global totals include usage/cost dimensions. An invocation replay marker alone cannot
+    // prove the complete StatsResponse, so keep the archive unavailable until its usage replay
+    // (or a verified V2 replacement) is present as well.
+    let mut global_covered = replay_coverage.overall && replay_coverage.usage_breakdown;
     let mut accounts_covered = replay_coverage.account_stats && account_manifest_complete;
     let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
     let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);

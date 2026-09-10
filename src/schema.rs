@@ -3979,6 +3979,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .context("failed to add summary source compaction retained cursor")?;
     }
+    // Older proofs stored the retained boundary only in proof_json. Backfill the typed column
+    // before durable-tail recovery reads it; otherwise an upgraded process could treat a
+    // compacted prefix as a complete journal and advance past an unproven gap.
+    sqlx::query(
+        "UPDATE summary_source_change_compaction_proof \
+         SET retained_after_cursor = CAST(json_extract(proof_json, '$.retainedAfterCursor') AS INTEGER) \
+         WHERE retained_after_cursor = 0 \
+           AND json_valid(proof_json) \
+           AND COALESCE(json_extract(proof_json, '$.retainedAfterCursor'), 0) > 0",
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill summary source compaction retained cursor")?;
 
     sqlx::query(
         r#"
@@ -5688,7 +5701,15 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         } else {
             "DELETE"
         };
-        let checkpoint_reset = if name == "proof_delete" {
+        let checkpoint_reset = if matches!(
+            name,
+            "archive_update"
+                | "archive_delete"
+                | "replay_update"
+                | "replay_delete"
+                | "proof_update"
+                | "proof_delete"
+        ) {
             "UPDATE summary_all_time_projection_checkpoint SET \
                global_manifest_next_id = 0, account_manifest_next_id = 0, \
                global_manifest_complete = 0, account_manifest_complete = 0, \
