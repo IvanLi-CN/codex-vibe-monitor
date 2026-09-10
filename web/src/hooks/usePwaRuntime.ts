@@ -254,7 +254,7 @@ export function usePwaRuntime(): PwaRuntimeState {
     installPromptAvailable: installPrompt != null,
     installSupported: installMode !== "unsupported",
     shouldAutoOpenInstallDialog:
-      (installMode === "prompt" || installMode === "manual-ios") &&
+      ((installMode === "prompt" && installPrompt != null) || installMode === "manual-ios") &&
       Date.now() >= installDeferredUntil,
     isOffline,
     shellReady,

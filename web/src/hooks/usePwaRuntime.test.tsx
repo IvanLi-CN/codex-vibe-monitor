@@ -193,6 +193,7 @@ describe("usePwaRuntime", () => {
     expect(host?.querySelector('[data-testid="install-prompt-available"]')?.textContent).toBe(
       "false",
     );
+    expect(host?.querySelector('[data-testid="auto-install"]')?.textContent).toBe("false");
   });
 
   it("exposes manual iOS Safari guidance when no native install prompt is available", async () => {
