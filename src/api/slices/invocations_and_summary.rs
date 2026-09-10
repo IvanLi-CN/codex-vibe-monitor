@@ -14600,7 +14600,10 @@ async fn publish_summary_all_time_projection_checkpoint(
             anyhow!("summary all-time checkpoint requires a published rolling projection")
         })?;
     let mut next = Arc::unwrap_or_clone(projection);
-    let published_at = Instant::now();
+    // Freshness starts when the fully reduced projection is ready to swap, not when a potentially
+    // long-running checkpoint reduction begins. Under SQLite contention the reduction can exceed
+    // the serving freshness budget while still producing a current exact snapshot.
+    let reduction_started_at = Instant::now();
     let mut account_ids = HashSet::new();
 
     let hourly_rollup_usage = if checkpoint.global_ready() || checkpoint.account_ready() {
@@ -14803,7 +14806,7 @@ async fn publish_summary_all_time_projection_checkpoint(
         response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
         response.in_progress_phase_counts = Some(in_progress.phase_counts);
         next.all_time_by_account.insert(None, response);
-        next.all_time_refreshed_at = Some(published_at);
+        next.all_time_refreshed_at = Some(reduction_started_at);
         next.freshness.global_all_time_eligible = true;
         next.global_all_time_coverage_fence = Some(generation_fence.coverage_fence());
         next.all_time_terminal_coverage_complete = true;
@@ -14985,7 +14988,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             response.in_progress_phase_counts = Some(in_progress.phase_counts);
             next.all_time_by_account.insert(Some(account_id), response);
             next.all_time_account_refreshed_at
-                .insert(account_id, published_at);
+                .insert(account_id, reduction_started_at);
             next.freshness.account_all_time_eligible.insert(account_id);
             next.all_time_account_terminal_sequence_watermarks.insert(
                 account_id,
@@ -15014,7 +15017,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             response.in_progress_phase_counts = Some(in_progress.phase_counts);
             next.all_time_by_account.insert(Some(account_id), response);
             next.all_time_account_refreshed_at
-                .insert(account_id, published_at);
+                .insert(account_id, reduction_started_at);
             next.freshness.account_all_time_eligible.insert(account_id);
         }
         next.all_time_account_ids_with_projection_data
@@ -15026,9 +15029,22 @@ async fn publish_summary_all_time_projection_checkpoint(
         // An account scope without a complete manifest/rollup proof is not an empty account;
         // retain a local unavailable marker so unknown or affected account selections fail closed
         // while the independent global projection remains exact.
-        next.all_time_account_manifest_admission_blocked_at = Some(published_at);
+        next.all_time_account_manifest_admission_blocked_at = Some(reduction_started_at);
     }
 
+    // Only a projection that passes the final fence check is published. Record freshness at this
+    // boundary so the serving budget measures the immutable snapshot's actual publication time.
+    let published_at = Instant::now();
+    if checkpoint.global_ready() {
+        next.all_time_refreshed_at = Some(published_at);
+    }
+    if checkpoint.account_ready() {
+        for refreshed_at in next.all_time_account_refreshed_at.values_mut() {
+            *refreshed_at = published_at;
+        }
+    } else if checkpoint.account_unavailable != 0 || checkpoint.account_manifest_complete == 0 {
+        next.all_time_account_manifest_admission_blocked_at = Some(published_at);
+    }
     next.all_time_oldest_account_refreshed_at =
         next.all_time_account_refreshed_at.values().copied().min();
     next.revision = state
