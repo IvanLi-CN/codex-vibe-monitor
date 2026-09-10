@@ -10405,7 +10405,9 @@ async fn load_summary_projection_snapshot_records(
         sqlx::query_as::<_, (i64, String, i64, Option<String>, Option<String>)>(
             "SELECT id, sha256, row_count, coverage_start_at, coverage_end_at \
              FROM archive_batches WHERE dataset = 'codex_invocations' \
-             AND status = 'completed' AND file_path = ?1 ORDER BY id DESC LIMIT 1",
+             AND status = 'completed' \
+             AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             AND file_path = ?1 ORDER BY id DESC LIMIT 1",
         )
         .bind(archive_file_path)
         .fetch_optional(pool)
@@ -11556,19 +11558,23 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
                 .await;
         }
     }
-    let compaction_boundary = sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(retained_after_cursor) FROM summary_source_change_compaction_proof \
-         WHERE retained_after_cursor > ?1 AND first_cursor <= ?2",
+    let compaction_boundary = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_source_change_compaction_proof \
+         WHERE first_cursor <= ?1 \
+           AND (retained_after_cursor > ?2 OR retained_after_cursor <= 0 \
+                OR NOT json_valid(proof_json) \
+                OR json_type(json_extract(proof_json, '$.retainedAfterCursor')) NOT IN ('integer', 'real') \
+                OR CAST(json_extract(proof_json, '$.retainedAfterCursor') AS INTEGER) <> retained_after_cursor))",
     )
-    .bind(i64::try_from(after_cursor).context("source compaction cursor overflow")?)
     .bind(
         i64::try_from(after_cursor.saturating_add(1))
             .context("source compaction boundary overflow")?,
     )
+    .bind(i64::try_from(after_cursor).context("source compaction cursor overflow")?)
     .fetch_one(&state.pool)
     .await
     .context("load summary source compaction proof")?;
-    if compaction_boundary.is_some() {
+    if compaction_boundary != 0 {
         state
             .subscription_hub
             .record_summary_source_change_gap(after_cursor.saturating_add(1))
@@ -12209,7 +12215,9 @@ async fn load_summary_projection_all_time_archive_scan_paths(
          WHERE dataset = 'codex_invocations' \
            AND status = 'completed' \
            AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
-         GROUP BY file_path HAVING COUNT(*) > 1 ORDER BY file_path LIMIT 1",
+         GROUP BY file_path \
+         HAVING COUNT(DISTINCT COALESCE(NULLIF(TRIM(sha256), ''), '<missing>')) > 1 \
+         ORDER BY file_path LIMIT 1",
     )
     .fetch_optional(pool)
     .await
@@ -12225,7 +12233,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
     // account pass additionally handles unmaterialized archives missing account replay.
     let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
         "SELECT batches.file_path, \
-                (NOT EXISTS ( \
+                MAX(NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?1 \
                       AND replay.dataset = 'codex_invocations' \
@@ -12256,7 +12264,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                         ) \
                     ) \
                 )) AS needs_global_archive_scan, \
-                (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
+                MAX(batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?2 \
                       AND replay.dataset = 'codex_invocations' \
@@ -12265,7 +12273,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                       AND TRIM(batches.sha256) <> '' \
                       AND replay.archive_sha256 = batches.sha256 \
                 )) AS needs_account_archive_scan, \
-                batches.historical_rollups_materialized_at IS NULL AS is_unmaterialized \
+                MAX(batches.historical_rollups_materialized_at IS NULL) AS is_unmaterialized \
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
          AND batches.status = 'completed' \
@@ -12298,7 +12306,8 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                          AND replay.archive_sha256 = batches.sha256 \
                    )) \
                )) \
-         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC \
+         GROUP BY batches.file_path \
+         ORDER BY MIN(batches.month_key) ASC, MIN(batches.created_at) ASC, MIN(batches.id) ASC \
          LIMIT ?4",
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
@@ -12403,6 +12412,7 @@ async fn load_summary_projection_archive_manifest_refreshed_paths(
             FROM archive_batches
             WHERE dataset = 'codex_invocations'
               AND status = 'completed'
+              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
               AND upstream_activity_manifest_refreshed_at IS NOT NULL
               AND file_path IN (
             "#,
@@ -12440,6 +12450,7 @@ async fn load_summary_projection_archive_replay_coverage(
                ON batches.dataset = replay.dataset \
               AND batches.file_path = replay.file_path \
               AND batches.status = 'completed' \
+              AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
               AND batches.sha256 IS NOT NULL \
               AND TRIM(batches.sha256) <> '' \
               AND batches.sha256 = replay.archive_sha256 \
@@ -12653,7 +12664,7 @@ async fn summary_all_time_coverage_page_is_exact(
                     // Summary's overall replay marker is the exact compact invocation proof
                     // produced by the bounded repair path, even before the broader historical
                     // rollup materialization flag is finalized.
-                    replay.overall,
+                    replay.overall && replay.usage_breakdown,
                     archive.has_materialized_historical_rollups()
                         && account_ids.is_some()
                         && page
@@ -12678,7 +12689,9 @@ async fn summary_archive_snapshot_path_has_proof(
 ) -> Result<bool> {
     let Some((archive_batch_id, manifest_sha256)) = sqlx::query_as::<_, (i64, String)>(
         "SELECT id, sha256 FROM archive_batches
-         WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path = ?1
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND file_path = ?1
          ORDER BY id DESC LIMIT 1",
     )
     .bind(file_path)
@@ -13035,6 +13048,11 @@ async fn reset_summary_all_time_projection_checkpoint(
         .execute(&mut *transaction)
         .await
         .context("summary all-time projection account checkpoint reset failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_usage_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection usage checkpoint reset failed")?;
     sqlx::query(
         "INSERT INTO summary_all_time_projection_checkpoint \
          (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
@@ -13051,7 +13069,9 @@ async fn reset_summary_all_time_projection_checkpoint(
            global_manifest_next_id = 0, account_manifest_next_id = 0, \
            global_manifest_complete = 0, account_manifest_complete = 0, \
            global_rollup_next_rowid = 0, account_rollup_next_rowid = 0, \
-           global_rollup_complete = 0, account_rollup_complete = 0, account_unavailable = 0, \
+           usage_rollup_next_rowid = 0, global_rollup_complete = 0, account_rollup_complete = 0, \
+           usage_rollup_complete = 0, account_unavailable = 0, global_usage_unavailable = 0, \
+           account_usage_unavailable = 0, global_non_success_tokens = 0, \
            global_total_count = 0, global_success_count = 0, global_failure_count = 0, \
            global_total_tokens = 0, global_total_cost = 0, global_non_success_cost = 0, \
            updated_at = datetime('now')",
@@ -13093,6 +13113,11 @@ async fn reset_summary_all_time_projection_account_scope(
         .execute(&mut *transaction)
         .await
         .context("summary all-time account checkpoint reset failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_usage_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time account usage checkpoint reset failed")?;
     // The global checkpoint contains no account-rollup data. Preserve its committed manifest
     // and aggregate progress when only an account-scoped source changes.
     sqlx::query(
@@ -13100,7 +13125,9 @@ async fn reset_summary_all_time_projection_account_scope(
            account_coverage_revision = ?1, account_manifest_next_id = 0, \
            account_manifest_complete = 0, account_rollup_next_rowid = 0, \
            account_rollup_complete = 0, account_unavailable = 0, \
-           account_usage_unavailable = 0, updated_at = datetime('now') \
+           usage_rollup_next_rowid = 0, usage_rollup_complete = 0, \
+           global_usage_unavailable = 0, account_usage_unavailable = 0, \
+           global_non_success_tokens = 0, updated_at = datetime('now') \
          WHERE scope = ?2",
     )
     .bind(generation_fence.account_coverage_revision)
@@ -14742,6 +14769,15 @@ async fn publish_summary_all_time_projection_checkpoint(
     // checkpoint read and finalization. Use the latest immutable coverage fence for the
     // reduction; the checkpoint's live cursors remain the lower bounds for bounded tail reads.
     let observed_generation_fence = load_summary_projection_generation_fence(state).await?;
+    // Finalization must reduce against one live watermark snapshot. The checkpoint may have
+    // been created earlier, but publishing its old live fence after a newer terminal would let
+    // the persisted-live set hide a row that was never included in the totals.
+    generation_fence.live_high_watermark_id = observed_generation_fence.live_high_watermark_id;
+    generation_fence.rollup_live_cursor = observed_generation_fence.rollup_live_cursor;
+    generation_fence.account_rollup_live_cursor =
+        observed_generation_fence.account_rollup_live_cursor;
+    generation_fence.durable_terminal_sequence_watermark =
+        observed_generation_fence.durable_terminal_sequence_watermark;
     generation_fence.completed_manifest_high_watermark_id = observed_generation_fence
         .completed_manifest_high_watermark_id
         .or(generation_fence.completed_manifest_high_watermark_id);
@@ -14790,10 +14826,10 @@ async fn publish_summary_all_time_projection_checkpoint(
         HashMap::new()
     };
     let mut snapshot_totals = if next.coverage_overlay.as_ref().is_some_and(|overlay| {
+        // The overlay contains only verified archive contributions. Live-tail freshness is
+        // fenced separately by the bounded query below, so a newer terminal must not force a
+        // full V2 archive scan merely because the overlay was built at an older live cursor.
         overlay.coverage_fence == generation_fence.coverage_fence()
-            && overlay
-                .live_tail_cursor
-                .terminal_sources_match(generation_fence.live_tail_cursor())
     }) {
         // The overlay is already the verified, immutable reduction of every V2 proof at this
         // fence. Reusing it keeps all-time publication bounded after recovery; rescanning every
@@ -15240,7 +15276,11 @@ async fn publish_summary_all_time_projection_checkpoint(
     next.all_time_oldest_account_refreshed_at =
         next.all_time_account_refreshed_at.values().copied().min();
     let current_generation_fence = load_summary_projection_generation_fence(state).await?;
-    if !current_generation_fence.coverage_sources_match(generation_fence) {
+    if !current_generation_fence.coverage_sources_match(generation_fence)
+        || !current_generation_fence
+            .live_tail_cursor()
+            .terminal_sources_match(generation_fence.live_tail_cursor())
+    {
         return Err(SummaryProjectionAllTimeGenerationChanged.into());
     }
     // Keep the projection fence current for rolling freshness checks. The all-time terminal
@@ -35946,6 +35986,40 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_all_time_rejects_conflicting_completed_manifest_identity_for_one_path() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for (id, month_key, sha256) in [
+            (1_i64, "2026-08", "summary-conflicting-sha-a"),
+            (2_i64, "2026-09", "summary-conflicting-sha-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_batches
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+                 VALUES (?1, 'codex_invocations', ?2, '/archive/shared.sqlite.gz', ?3, 1, 'completed', 'unknown')",
+            )
+            .bind(id)
+            .bind(month_key)
+            .bind(sha256)
+            .execute(&pool)
+            .await
+            .expect("insert conflicting completed manifest");
+        }
+
+        let error = match load_summary_projection_all_time_archive_scan_paths(&pool).await {
+            Ok(_) => panic!("conflicting archive identities must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("archive identity is ambiguous"));
+    }
+
+    #[tokio::test]
     async fn summary_recent_proof_identity_requires_bounded_manifest_coverage() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -37452,7 +37526,7 @@ mod request_compression_query_tests {
 
         state.pool.close().await;
         let Json(current) = fetch_summary(
-            State(state),
+            State(state.clone()),
             Query(SummaryQuery {
                 window: Some("current".to_string()),
                 limit: Some(50),
@@ -37464,6 +37538,20 @@ mod request_compression_query_tests {
         .expect("current must remain exact and memory-only after all-time cancellation");
         assert_eq!(current.total_count, 2);
         assert_eq!(current.total_tokens, 40);
+
+        let Json(all) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("all-time finalization must include the concurrent terminal exactly once");
+        assert_eq!(all.total_count, 2);
+        assert_eq!(all.total_tokens, 40);
     }
 
     #[tokio::test]
