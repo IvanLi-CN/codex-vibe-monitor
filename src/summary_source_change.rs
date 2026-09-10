@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite, SqliteConnection};
@@ -361,19 +362,6 @@ async fn summary_archive_snapshot_has_proof_tx(
     {
         reject_proof!("proof_budget");
     }
-    let row = sqlx::query(
-        "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
-         FROM summary_archive_snapshot \
-         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
-    )
-    .bind(archive_batch_id)
-    .bind(manifest_sha256)
-        .fetch_all(&mut *connection)
-    .await
-    .context("check summary archive snapshot proof")?;
-    if row.is_empty() {
-        reject_proof!("no_snapshot_pages");
-    }
     let manifest_start = manifest_start.and_then(|value| parse_snapshot_coverage_at(&value));
     let manifest_end = manifest_end.and_then(|value| parse_snapshot_coverage_at(&value));
     let mut first_page_start = None;
@@ -383,8 +371,22 @@ async fn summary_archive_snapshot_has_proof_tx(
     let mut total_rows = 0_i64;
     let mut seen_ids = std::collections::HashSet::new();
     let mut seen_invoke_ids = std::collections::HashSet::<String>::new();
-    for (expected_page, row) in row.into_iter().enumerate() {
-        if row.get::<i64, _>("page_index") != i64::try_from(expected_page).unwrap_or(-1) {
+    let mut validated_pages = 0_i64;
+    let mut rows = sqlx::query(
+        "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
+         FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch(&mut *connection);
+    while let Some(row) = rows
+        .try_next()
+        .await
+        .context("check summary archive snapshot proof")?
+    {
+        let expected_page = validated_pages;
+        if row.get::<i64, _>("page_index") != expected_page {
             reject_proof!("page_order");
         }
         if row.get::<i64, _>("format_version") != SUMMARY_ARCHIVE_SNAPSHOT_V2 {
@@ -442,6 +444,10 @@ async fn summary_archive_snapshot_has_proof_tx(
         }) {
             reject_proof!("record_order_identity_or_coverage");
         }
+        validated_pages = validated_pages.saturating_add(1);
+    }
+    if validated_pages == 0 {
+        reject_proof!("no_snapshot_pages");
     }
     if total_rows != manifest_row_count
         || manifest_start.is_some_and(|start| first_page_start != Some(start))

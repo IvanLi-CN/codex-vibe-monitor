@@ -4,13 +4,18 @@ set -euo pipefail
 source_path="${SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE:?SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE must be under /srv/codex}"
 runner="${SUMMARY_TESTBOX_RUNNER:-/Users/ivan/.codex/skills/shared-testbox-runner/scripts/run-testbox.sh}"
 testbox="${TESTBOX:-codex-testbox}"
-image="${SUMMARY_TESTBOX_IMAGE:-ghcr.io/ivanli-cn/codex-vibe-monitor:backend-test-7d185d46e5f685101b1c37385211840b67800f32}"
+candidate_sha="${SUMMARY_TESTBOX_COMMIT_SHA:-$(git rev-parse HEAD)}"
+image="${SUMMARY_TESTBOX_IMAGE:-ghcr.io/ivanli-cn/codex-vibe-monitor:backend-test-${candidate_sha}}"
 repo_root="$(git rev-parse --show-toplevel)"
 
 case "$source_path" in
   /srv/codex/*) ;;
   *) printf 'project-reason: production copy must be under /srv/codex\n' >&2; exit 64 ;;
 esac
+[[ "$source_path" =~ ^/srv/codex/[A-Za-z0-9._/-]+$ ]] || {
+  printf 'project-reason: production copy path contains unsupported shell characters\n' >&2
+  exit 64
+}
 [[ "$source_path" != *..* ]] || {
   printf 'project-reason: production copy path contains a parent traversal\n' >&2
   exit 64
@@ -56,11 +61,6 @@ runner_log="$(mktemp "${TMPDIR:-/tmp}/summary-production-run.XXXXXX")"
 runner_pid=""
 run_id=""
 scratch_path=""
-validation_command="${SUMMARY_PRODUCTION_VALIDATION_COMMAND:-}"
-validation_command_export=""
-if [[ -n "$validation_command" ]]; then
-  printf -v validation_command_export '%q' "$validation_command"
-fi
 cleanup_runner() {
   if [[ -n "$runner_pid" ]] && kill -0 "$runner_pid" 2>/dev/null; then
     kill -TERM "$runner_pid" 2>/dev/null || true
@@ -89,9 +89,6 @@ for environment_name in \
   printf -v escaped_environment_value '%q' "$environment_value"
   container_command+=" export ${environment_name}=${escaped_environment_value};"
 done
-if [[ -n "$validation_command_export" ]]; then
-  container_command+=" export SUMMARY_PRODUCTION_VALIDATION_COMMAND=${validation_command_export};"
-fi
 container_command+=' bash /workspace/scripts/validate-summary-production-fixture.sh'
 
 "$runner" container \

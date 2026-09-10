@@ -23,16 +23,17 @@ expect_failure 64 env \
   SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/srv/codex/example \
   SUMMARY_TESTBOX_RUNNER=/definitely/missing/runner \
   "$repo_root/scripts/run-summary-production-copy-testbox.sh"
-grep -Fq 'validation_command="${SUMMARY_PRODUCTION_VALIDATION_COMMAND:-}"' "$runner_script"
-grep -Fq "printf -v validation_command_export '%q' \"\$validation_command\"" "$runner_script"
-grep -Fq 'export SUMMARY_PRODUCTION_VALIDATION_COMMAND=${validation_command_export};' "$runner_script"
-grep -Fq 'summary-production-(sqlite|health|window|bootstrap|overlay|recovery(-telemetry)?|validation)' "$runner_script"
+if grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' "$runner_script" \
+  || grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' \
+    "$repo_root/scripts/validate-summary-production-fixture.sh"; then
+  printf 'validation command overrides are not allowed in the production-copy gate\n' >&2
+  exit 1
+fi
+grep -Eq 'summary-production-(sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS' "$runner_script"
 grep -Fq 'recent_ready_deadline_secs="${SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS:-30}"' \
-  "$repo_root/scripts/validate-summary-production-fixture.sh"
-grep -Fq 'bash -c "$SUMMARY_PRODUCTION_VALIDATION_COMMAND"' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 grep -Fq 'database_path="$copy_path/codex_vibe_monitor.db"' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
@@ -52,11 +53,6 @@ grep -Fq 'summary-production-recovery-telemetry=' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 grep -Fq 'ansi_pattern = re.compile' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
-if grep -Fq 'bash -lc "$SUMMARY_PRODUCTION_VALIDATION_COMMAND"' \
-  "$repo_root/scripts/validate-summary-production-fixture.sh"; then
-  printf 'custom validation must preserve the test image toolchain PATH\n' >&2
-  exit 1
-fi
 expect_failure 1 env -u SUMMARY_PRODUCTION_COPY \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 

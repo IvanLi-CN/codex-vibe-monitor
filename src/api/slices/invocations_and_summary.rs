@@ -11974,11 +11974,6 @@ async fn load_summary_projection_archive_row_counts(
                 .await
                 .context("summary projection archive row-count hydration failed")?,
         );
-        if counts.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-            return Err(anyhow!(
-                "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
-            ));
-        }
     }
     Ok(counts)
 }
@@ -14116,15 +14111,16 @@ async fn publish_summary_coverage_overlay(
 }
 
 fn summary_coverage_overlay_requires_full_reduction(
-    force_full_coverage_reduction: bool,
+    _force_full_coverage_reduction: bool,
     has_previous_overlay: bool,
     has_revoked_proof: bool,
-    coverage_fence_changed: bool,
+    _coverage_fence_changed: bool,
 ) -> bool {
-    force_full_coverage_reduction
-        || !has_previous_overlay
-        || has_revoked_proof
-        || coverage_fence_changed
+    // Once an overlay exists, a completed recovery turn can add only the newly verified
+    // manifests. Re-scanning every retained V2 page on each coverage-fence revision defeats the
+    // bounded supervisor. A full reduction is required only for the first publication or after
+    // proof revocation; the final no-pending pass refreshes gap metadata separately.
+    !has_previous_overlay || has_revoked_proof
 }
 
 async fn publish_summary_coverage_overlay_once(
@@ -14198,7 +14194,7 @@ async fn publish_summary_coverage_overlay_once(
             .as_ref()
             .is_some_and(|overlay| overlay.coverage_fence != durable_fence.coverage_fence()),
     );
-    if full_reduction {
+    if full_reduction || force_full_coverage_reduction {
         // A full proof pass is the point at which stale Bootstrap gap ranges can be discarded.
         // Rebuild the durable unproven set from the current manifest/proof state instead of
         // subtracting hourly buckets from the old range vector.  The latter leaves an archive
@@ -15125,9 +15121,11 @@ async fn summary_projection_overflowed_boundary_manifest_coverage(
            AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
            AND batches.id <= ?1 \
            AND (batches.coverage_start_at IS NULL OR batches.coverage_end_at IS NULL) \
-         ORDER BY batches.month_key",
+         ORDER BY batches.month_key \
+         LIMIT ?2",
     )
     .bind(high_watermark_id)
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection overflowed boundary manifest coverage hydration failed")?;
@@ -16392,7 +16390,12 @@ async fn build_summary_projection_once(
             // refreshed.
             let recent_exact_start = end - SUMMARY_PROJECTION_MIN_EXACT_HORIZON;
             for range in &mut global_unproven {
-                range.end = range.end.min(recent_exact_start);
+                if range.end <= recent_exact_start {
+                    range.start = recent_exact_start;
+                    range.end = recent_exact_start;
+                } else {
+                    range.start = range.start.max(recent_exact_start);
+                }
             }
             global_unproven.retain(|range| range.start < range.end);
             paged_boundary_manifest_unknown_coverage_ranges.extend(global_unproven);

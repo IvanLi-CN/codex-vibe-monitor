@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import gzip
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -62,6 +63,12 @@ def source_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         "model",
         "response_model",
         "upstream_account_id",
+        "payload",
+        "cost_input",
+        "cost_cache_write",
+        "cost_cache_read",
+        "cost_output",
+        "cost_reasoning",
     ]
     selected = sorted(required) + [column for column in optional if column in columns]
     return [
@@ -140,20 +147,24 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
         }
         batches = (
             connection.execute(
-                "SELECT id, file_path, status FROM archive_batches "
+                "SELECT id, file_path, status, sha256 FROM archive_batches "
                 "WHERE dataset = 'codex_invocations' AND status = 'completed'"
             ).fetchall()
             if "archive_batches" in tables
             else []
         )
+        proof_batches: set[tuple[int, str]] = set()
         if "summary_archive_snapshot" in tables and "summary_archive_snapshot_v2_proof" in tables:
             proofs = connection.execute(
-                "SELECT archive_batch_id, manifest_sha256, page_count, row_count "
+                "SELECT archive_batch_id, manifest_sha256, page_count, row_count, "
+                "coverage_start, coverage_end, semantic_sha256 "
                 "FROM summary_archive_snapshot_v2_proof"
             ).fetchall()
-            for batch_id, manifest_sha, page_count, row_count in proofs:
+            for batch_id, manifest_sha, page_count, row_count, proof_start, proof_end, semantic_sha in proofs:
                 pages = connection.execute(
-                    "SELECT page_index, row_count, payload FROM summary_archive_snapshot "
+                    "SELECT page_index, row_count, payload, coverage_start, coverage_end, "
+                    "snapshot_sha256, payload_bytes, format_version "
+                    "FROM summary_archive_snapshot "
                     "WHERE archive_batch_id = ? AND manifest_sha256 = ? AND format_version = 2 "
                     "ORDER BY page_index",
                     (batch_id, manifest_sha),
@@ -162,11 +173,49 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
                     raise RuntimeError(
                         f"V2 final proof page metadata is incomplete for archive batch {batch_id}"
                     )
-                for page_index, _page_row_count, payload in pages:
-                    if int(page_index) < 0:
-                        raise RuntimeError("V2 final proof contains an invalid page index")
-                    rows.extend(decode_v2_payload(payload))
-        for _batch_id, stored_path, _status in batches:
+                semantic = hashlib.sha256()
+                previous_end: dt.datetime | None = None
+                previous_key: tuple[dt.datetime, int] | None = None
+                seen_ids: set[int] = set()
+                seen_invokes: set[str] = set()
+                for expected_page, page in enumerate(pages):
+                    page_index, page_row_count, payload, coverage_start, coverage_end, snapshot_sha, payload_bytes, format_version = page
+                    if int(page_index) != expected_page or int(format_version) != 2:
+                        raise RuntimeError("V2 final proof page order or format is invalid")
+                    if int(payload_bytes) != len(payload) or hashlib.sha256(payload).hexdigest() != snapshot_sha:
+                        raise RuntimeError("V2 final proof page integrity is invalid")
+                    start = parse_time(str(coverage_start))
+                    end = parse_time(str(coverage_end))
+                    if start > end or (previous_end is not None and start < previous_end):
+                        raise RuntimeError("V2 final proof page coverage is invalid")
+                    semantic.update(int(page_index).to_bytes(8, "little", signed=True))
+                    semantic.update(str(snapshot_sha).encode())
+                    semantic.update(int(page_row_count).to_bytes(8, "little", signed=True))
+                    semantic.update(str(coverage_start).encode())
+                    semantic.update(str(coverage_end).encode())
+                    decoded = decode_v2_payload(payload)
+                    if len(decoded) != int(page_row_count):
+                        raise RuntimeError("V2 final proof payload row count is invalid")
+                    for record in decoded:
+                        occurred = parse_time(str(record["occurred_at"]))
+                        key = (occurred, int(record.get("id") or 0))
+                        if previous_key is not None and key < previous_key:
+                            raise RuntimeError("V2 final proof record order is invalid")
+                        if int(record.get("id") or 0) in seen_ids or str(record.get("invoke_id")) in seen_invokes:
+                            raise RuntimeError("V2 final proof contains duplicate identity")
+                        if occurred < start or occurred > end:
+                            raise RuntimeError("V2 final proof record coverage is invalid")
+                        seen_ids.add(int(record.get("id") or 0))
+                        seen_invokes.add(str(record.get("invoke_id")))
+                        previous_key = key
+                    previous_end = end
+                    rows.extend(decoded)
+                if str(proof_start) != str(pages[0][3]) or str(proof_end) != str(pages[-1][4]) or semantic.hexdigest() != str(semantic_sha):
+                    raise RuntimeError("V2 final proof semantic coverage is invalid")
+                proof_batches.add((int(batch_id), str(manifest_sha)))
+        for _batch_id, stored_path, _status, stored_sha in batches:
+            if (int(_batch_id), str(stored_sha)) in proof_batches:
+                continue
             parts = Path(stored_path).parts
             try:
                 archive_index = max(index for index, part in enumerate(parts) if part == "archives")
@@ -195,7 +244,7 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
             row.get("occurred_at"),
         )
         previous = deduplicated.get(identity)
-        if previous is not None and canonical_row(previous) != canonical_row(row):
+        if previous is not None and not canonical_rows_equal(previous, row):
             raise RuntimeError(f"conflicting authoritative rows for {identity!r}")
         deduplicated[identity] = row
     return list(deduplicated.values())
@@ -223,15 +272,74 @@ def canonical_row(row: dict[str, Any]) -> tuple[Any, ...]:
         "failure_kind",
         "failure_class",
         "is_actionable",
+        "cost_input",
+        "cost_cache_write",
+        "cost_cache_read",
+        "cost_output",
+        "cost_reasoning",
     )
     return tuple(row.get(field) for field in fields)
 
 
-def is_success(row: dict[str, Any]) -> bool:
+def canonical_rows_equal(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if canonical_row(left) != canonical_row(right):
+        return False
+    # V2 intentionally omits raw payload text. When both authorities retain payload, compare
+    # the payload markers that affect failure classification; an absent V2 payload is not itself
+    # a disagreement.
+    for key in ("failureKind", "downstreamErrorMessage"):
+        left_value = payload_text(left, key)
+        right_value = payload_text(right, key)
+        if left_value and right_value and left_value != right_value:
+            return False
+    return True
+
+
+def payload_text(row: dict[str, Any], key: str) -> str:
+    payload = row.get("payload")
+    if not payload:
+        return ""
+    try:
+        value = json.loads(payload) if isinstance(payload, str) else payload
+    except (TypeError, json.JSONDecodeError):
+        return ""
+    candidate = value.get(key) if isinstance(value, dict) else None
+    return str(candidate or "").strip().lower()
+
+
+def resolved_failure_class(row: dict[str, Any]) -> str:
     status = str(row.get("status") or "").strip().lower()
-    return status in SUCCESS_STATUSES or (
-        status == "http_200" and not str(row.get("error_message") or "").strip()
-    )
+    error = str(row.get("error_message") or "").strip().lower()
+    failure_kind = payload_text(row, "failureKind") or str(row.get("failure_kind") or "").strip().lower()
+    explicit = str(row.get("failure_class") or "").strip().lower()
+    if explicit in {"service_failure", "client_failure", "client_abort"}:
+        return explicit
+    downstream = payload_text(row, "downstreamErrorMessage")
+    if status in {"success", "completed"} and not error and not downstream and not failure_kind:
+        return "none"
+    if status == "warning_success" and not error and failure_kind == "downstream_closed":
+        return "none"
+    if status in {"running", "pending"} and not error:
+        return "none"
+    if not status and not error and not downstream and not failure_kind:
+        return "none"
+    if failure_kind == "downstream_closed" or error.startswith("[downstream_closed]") or "downstream closed while streaming upstream response" in error or "downstream closed while streaming upstream response" in downstream:
+        return "client_abort"
+    if status == "http_429" or failure_kind == "upstream_http_429":
+        return "service_failure"
+    if failure_kind in {"request_body_stream_error_client_closed", "invalid_api_key", "api_key_not_found", "api_key_missing"} or status.startswith("http_4") and status != "http_429":
+        return "client_failure"
+    if failure_kind in {"failed_contact_upstream", "upstream_response_failed", "upstream_stream_error", "request_body_read_timeout", "upstream_handshake_timeout"} or status.startswith("http_5"):
+        return "service_failure"
+    if status in SUCCESS_STATUSES:
+        return "none"
+    if status == "http_200" and not error and not downstream and not failure_kind:
+        return "none"
+    return "service_failure"
+
+
+def is_success(row: dict[str, Any]) -> bool:
+    return resolved_failure_class(row) == "none" and str(row.get("status") or "").strip().lower() not in {"running", "pending"}
 
 
 def is_terminal_failure(row: dict[str, Any]) -> bool:
@@ -275,8 +383,9 @@ def expected(rows: list[dict[str, Any]], window: str, now: dt.datetime) -> dict[
         "totalTokens": total_tokens,
         "totalCost": total_cost,
         "nonSuccessCost": non_success_cost,
-        "usageBreakdown": usage_breakdown(selected),
     }
+    if window != "current":
+        result["usageBreakdown"] = usage_breakdown(selected)
     if window in {"1d", "7d", "30d", "today"}:
         result["nonSuccessTokens"] = sum(
             int(row.get("total_tokens") or 0) for row in selected if is_terminal_failure(row)
@@ -300,8 +409,8 @@ def usage_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
         totals["cacheWriteTokens"] += cache_write
         totals["cacheReadTokens"] += cache_read
         totals["outputTokens"] += output
-        model = str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
-        reasoning = str(row["reasoning_effort"]).strip() if row.get("reasoning_effort") else None
+        model = payload_text(row, "responseModel") or str(row.get("response_model") or row.get("model") or "unknown").strip() or "unknown"
+        reasoning = payload_text(row, "reasoningEffort") or (str(row["reasoning_effort"]).strip().lower() if row.get("reasoning_effort") else None)
         group = model_groups.setdefault(
             (model, reasoning),
             {"model": model, "reasoningEffort": reasoning, "cacheWriteTokens": 0, "cacheReadTokens": 0, "outputTokens": 0, "costs": None},

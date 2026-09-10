@@ -55,12 +55,12 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         "application readiness reached"
     );
 
-    // Reserve the next bounded database-recovery turn before the runtime starts its generic
-    // startup workers. Otherwise a long hourly-rollup bootstrap can claim the sole background
-    // slot in the short scheduling gap before Summary has published its first projection.
-    let summary_startup_priority =
-        crate::db_pressure::global_db_pressure_gate().reserve_priority_background();
     tokio::spawn(async move {
+        // Spawn the independent system-status worker before taking the Summary priority
+        // reservation. A busy database gate must never delay the readiness-side status cache.
+        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state.clone()));
+        let summary_startup_priority =
+            crate::db_pressure::global_db_pressure_gate().reserve_priority_background();
         let summary_state = state.clone();
         let summary_handle = tokio::spawn(async move {
             let startup_priority = hydrate_summary_at_startup(
@@ -78,7 +78,6 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
                 false
             }
         });
-        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state.clone()));
         let (summary_result, system_status_result) =
             tokio::join!(summary_handle, system_status_handle);
 

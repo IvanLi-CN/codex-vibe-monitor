@@ -22,10 +22,7 @@ copy_bytes="$(du -sb -- "$copy_path" | awk '{print $1}')"
 }
 printf 'production-copy-bytes=%s\n' "$copy_bytes"
 
-if [[ -n "${SUMMARY_PRODUCTION_VALIDATION_COMMAND:-}" ]]; then
-  bash -c "$SUMMARY_PRODUCTION_VALIDATION_COMMAND"
-else
-  target_dir="${CARGO_TARGET_DIR:-/codex-scratch/target}"
+target_dir="${CARGO_TARGET_DIR:-/codex-scratch/target}"
   runtime_dir="/codex-scratch/summary-production-runtime"
   # The shared runner mounts the canonical staged copy only beneath
   # /codex-scratch. Never rely on an image-specific /srv/app layout.
@@ -438,5 +435,4 @@ PY
     recovery_diagnostics
   fi
   [[ "$all_status" == 200 ]]
-fi
 printf 'summary-production-validation=passed\n'
