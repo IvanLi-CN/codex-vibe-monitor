@@ -328,15 +328,34 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             return Ok(false);
         }};
     }
-    let Some((dataset, manifest, manifest_row_count, status, manifest_start, manifest_end)) =
-        sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>)>(
-            "SELECT dataset, sha256, row_count, status, coverage_start_at, coverage_end_at \
+    let Some((
+        dataset,
+        manifest,
+        manifest_row_count,
+        status,
+        source_kind,
+        manifest_start,
+        manifest_end,
+    )) = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT dataset, sha256, row_count, status, COALESCE(summary_source_kind, 'unknown'), \
+             coverage_start_at, coverage_end_at \
              FROM archive_batches WHERE id = ?1",
-        )
-        .bind(archive_batch_id)
-        .fetch_optional(&mut *connection)
-        .await
-        .context("load Summary Snapshot archive manifest proof")?
+    )
+    .bind(archive_batch_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .context("load Summary Snapshot archive manifest proof")?
     else {
         return Ok(false);
     };
@@ -346,6 +365,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     if dataset != "codex_invocations"
         || manifest != manifest_sha256
         || !matches!(status.as_str(), "completed" | "materializing")
+        || source_kind == "live_mirror"
         || manifest_row_count < 0
     {
         reject_proof!("manifest_identity_or_status");
@@ -389,7 +409,6 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     let mut previous_record_key = None;
     let mut total_rows = 0_i64;
     let mut seen_ids = std::collections::HashSet::new();
-    let mut seen_invoke_ids = std::collections::HashSet::new();
     let mut validated_pages = 0_i64;
     let mut rows = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
@@ -457,7 +476,6 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             }
             previous_record_key = Some(key);
             !seen_ids.insert(record.id)
-                || !seen_invoke_ids.insert(record.invoke_id.clone())
                 || occurred_at < coverage_start
                 || occurred_at > coverage_end
         }) {

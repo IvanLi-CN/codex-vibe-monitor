@@ -7864,6 +7864,66 @@ impl SummaryProjection {
         self
     }
 
+    fn revoke_stale_all_time_coverage(
+        &mut self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let coverage_fence = generation_fence.coverage_fence();
+        let revoke_global = self.freshness.global_all_time_eligible
+            && self
+                .global_all_time_coverage_fence
+                .is_none_or(|published| !published.global_sources_match(coverage_fence));
+        let revoke_account = !self.freshness.account_all_time_eligible.is_empty()
+            && self
+                .account_all_time_coverage_fence
+                .is_none_or(|published| !published.account_sources_match(coverage_fence));
+        let revoke_overlay = self
+            .coverage_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.coverage_fence != coverage_fence);
+        if !revoke_global && !revoke_account && !revoke_overlay {
+            return false;
+        }
+        if revoke_global {
+            self.all_time_by_account.remove(&None);
+            self.freshness.global_all_time_eligible = false;
+            self.all_time_refreshed_at = None;
+            self.global_all_time_coverage_fence = None;
+            self.all_time_terminal_coverage_complete = false;
+            self.all_time_terminal_sequence_watermark = 0;
+            self.all_time_persisted_live_terminal_invoke_ids.clear();
+        }
+        if revoke_account {
+            self.all_time_by_account.retain(|scope, _| scope.is_none());
+            self.freshness.account_all_time_eligible.clear();
+            self.all_time_account_refreshed_at.clear();
+            self.account_all_time_coverage_fence = None;
+            self.all_time_account_terminal_sequence_watermarks.clear();
+            self.all_time_account_persisted_live_terminal_invoke_ids
+                .clear();
+            self.all_time_oldest_account_refreshed_at = None;
+        }
+        if revoke_overlay && let Some(overlay) = self.coverage_overlay.take() {
+            self.unavailable_unmaterialized_archive_ranges.extend(
+                summary_projection_unavailable_bucket_ranges(
+                    overlay.global_coverage_buckets.into_iter().collect(),
+                ),
+            );
+            self.unavailable_unmaterialized_archive_account_ranges
+                .extend(summary_projection_unavailable_bucket_ranges(
+                    overlay.account_coverage_buckets.into_iter().collect(),
+                ));
+            self.unavailable_unmaterialized_archive_ranges = summary_projection_merge_exact_ranges(
+                std::mem::take(&mut self.unavailable_unmaterialized_archive_ranges),
+            );
+            self.unavailable_unmaterialized_archive_account_ranges =
+                summary_projection_merge_exact_ranges(std::mem::take(
+                    &mut self.unavailable_unmaterialized_archive_account_ranges,
+                ));
+        }
+        true
+    }
+
     fn rolling_refreshed_at(&self) -> Option<Instant> {
         self.freshness_lease
             .latest(self.freshness.rolling_at(self.refreshed_at))
@@ -11908,6 +11968,35 @@ async fn refresh_summary_snapshots_with_deadline(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build snapshot generation fence accepted"
     );
+    // Serialize the final fence read and immutable hub swap against coverage trigger commits.
+    // Without this short IMMEDIATE transaction, a proof/revoke can land between these two
+    // operations and leave a stale all-time response published under the old fence.
+    let mut publication_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let durable_generation_fence =
+        load_summary_projection_generation_fence_tx(state, publication_transaction.as_mut())
+            .await?;
+    if projection.generation_fence != durable_generation_fence {
+        // The read transaction may have opened before a coverage/proof commit. Never publish
+        // that stale build. Revoke the affected all-time authority on the currently published
+        // projection immediately so the memory-only handler cannot keep serving the old 200
+        // while the next bounded refresh rebuilds against the new fence.
+        if let Some(current) = state.subscription_hub.summary_projection().await {
+            let mut current = Arc::unwrap_or_clone(current);
+            let expected_revision = current.revision();
+            if current.revoke_stale_all_time_coverage(durable_generation_fence) {
+                state
+                    .subscription_hub
+                    .store_summary_projection_if_revision(current, expected_revision)
+                    .await;
+            }
+        }
+        debug!(
+            ?mode,
+            "summary projection build discarded because its durable generation fence advanced"
+        );
+        publication_transaction.rollback().await?;
+        return Ok(());
+    }
     if !state
         .subscription_hub
         .store_summary_projection_if_revision(projection, expected_projection_revision)
@@ -11917,8 +12006,10 @@ async fn refresh_summary_snapshots_with_deadline(
             ?mode,
             "summary projection build discarded because its immutable base was replaced"
         );
+        publication_transaction.commit().await?;
         return Ok(());
     }
+    publication_transaction.commit().await?;
     debug!(
         ?mode,
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -12228,6 +12319,24 @@ async fn load_summary_projection_all_time_archive_scan_paths(
             "summary projection archive identity is ambiguous for a completed path"
         ));
     }
+    if sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         GROUP BY file_path, sha256 \
+         HAVING COUNT(*) > 1 \
+         ORDER BY file_path LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection duplicate archive identity check failed")?
+    .is_some()
+    {
+        return Err(anyhow!(
+            "summary projection archive identity is duplicated for a completed path"
+        ));
+    }
     // These are precisely the completed archive paths that the two generic all-time
     // aggregators may inflate: the global pass handles missing invocation replay, and the
     // account pass additionally handles unmaterialized archives missing account replay.
@@ -12366,6 +12475,7 @@ async fn load_summary_projection_archive_manifest_accounts(
                ON activity.archive_batch_id = batches.id \
              WHERE batches.dataset = 'codex_invocations' \
                AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
                AND activity.account_id > 0 \
                AND batches.file_path IN (",
         );
@@ -12712,7 +12822,10 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     pool: &Pool<Sqlite>,
     high_watermark_id: i64,
 ) -> Result<bool> {
-    let missing_proof_count = sqlx::query_scalar::<_, i64>(
+    // Final proof creation performs the full page decode, ordering, identity and semantic
+    // validation. Page mutation triggers remove its marker, so coverage completion only needs a
+    // single bounded aggregate check here; never re-open every historical page on every pass.
+    let incomplete_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
            AND batches.status = 'completed' \
@@ -12722,13 +12835,26 @@ async fn summary_all_time_manifest_v2_coverage_complete(
                SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
                WHERE proof.archive_batch_id = batches.id \
                  AND proof.manifest_sha256 = batches.sha256 \
+                 AND proof.page_count > 0 \
+                 AND proof.page_count = ( \
+                     SELECT COUNT(*) FROM summary_archive_snapshot AS pages \
+                     WHERE pages.archive_batch_id = batches.id \
+                       AND pages.manifest_sha256 = batches.sha256 \
+                 ) \
+                 AND proof.row_count = ( \
+                     SELECT COALESCE(SUM(pages.row_count), 0) \
+                     FROM summary_archive_snapshot AS pages \
+                     WHERE pages.archive_batch_id = batches.id \
+                       AND pages.manifest_sha256 = batches.sha256 \
+                 ) \
+                 AND LENGTH(TRIM(proof.semantic_sha256)) > 0 \
            )",
     )
     .bind(high_watermark_id)
     .fetch_one(pool)
     .await
     .context("summary all-time Snapshot V2 coverage completion proof failed")?;
-    Ok(missing_proof_count == 0)
+    Ok(incomplete_count == 0)
 }
 
 async fn advance_summary_all_time_coverage_checkpoint_scope(
@@ -13436,6 +13562,65 @@ async fn load_summary_projection_generation_fence(
         coverage_revision: summary_projection_coverage_revision(&state.pool).await?,
         account_coverage_revision: summary_projection_account_coverage_revision(&state.pool)
             .await?,
+        durable_terminal_sequence_watermark,
+    })
+}
+
+async fn load_summary_projection_generation_fence_tx(
+    state: &AppState,
+    connection: &mut SqliteConnection,
+) -> Result<SummaryProjectionGenerationFence> {
+    let durable_terminal_sequence_watermark = state
+        .dashboard_activity_snapshot_cache
+        .lock()
+        .await
+        .read_model
+        .settled_terminal_sequence;
+    let live_high_watermark_id =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(&mut *connection)
+            .await
+            .context("summary projection live high-watermark transaction hydration failed")?
+            .unwrap_or_default();
+    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(connection)
+        .await
+        .context("summary projection live rollup cursor transaction hydration failed")?;
+    let account_rollup_live_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress \
+         WHERE dataset = 'invocation_account_activity_v2_repair_live_cursor'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection account rollup cursor transaction hydration failed")?;
+    let completed_manifest_high_watermark_id = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .context("summary projection completed manifest transaction hydration failed")?;
+    let coverage_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection coverage revision transaction hydration failed")?
+    .unwrap_or_default();
+    let account_coverage_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_account_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection account coverage revision transaction hydration failed")?
+    .unwrap_or_default();
+    Ok(SummaryProjectionGenerationFence {
+        live_high_watermark_id,
+        rollup_live_cursor,
+        account_rollup_live_cursor,
+        completed_manifest_high_watermark_id,
+        coverage_revision,
+        account_coverage_revision,
         durable_terminal_sequence_watermark,
     })
 }
@@ -36059,6 +36244,37 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_all_time_rejects_duplicate_completed_manifest_identity_for_one_path() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for (id, month_key) in [(1_i64, "2026-08"), (2_i64, "2026-09")] {
+            sqlx::query(
+                "INSERT INTO archive_batches
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+                 VALUES (?1, 'codex_invocations', ?2, '/archive/duplicate.sqlite.gz',
+                         'summary-duplicate-sha', 1, 'completed', 'unknown')",
+            )
+            .bind(id)
+            .bind(month_key)
+            .execute(&pool)
+            .await
+            .expect("insert duplicate completed manifest");
+        }
+
+        let error = match load_summary_projection_all_time_archive_scan_paths(&pool).await {
+            Ok(_) => panic!("duplicate archive identities must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("archive identity is duplicated"));
+    }
+
+    #[tokio::test]
     async fn summary_recent_proof_identity_requires_bounded_manifest_coverage() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -36196,7 +36412,8 @@ mod request_compression_query_tests {
                  status TEXT NOT NULL, \
                  file_path TEXT NOT NULL, \
                  sha256 TEXT, \
-                 historical_rollups_materialized_at TEXT \
+                 historical_rollups_materialized_at TEXT, \
+                 summary_source_kind TEXT NOT NULL DEFAULT 'unknown' \
              )",
         )
         .execute(&pool)
@@ -37182,6 +37399,12 @@ mod request_compression_query_tests {
             .await
             .expect("publish bootstrap projection");
 
+        let published_revision = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("published projection")
+            .revision();
         let mut stale = (*state
             .subscription_hub
             .summary_projection()
@@ -37215,7 +37438,7 @@ mod request_compression_query_tests {
             .await
             .expect("renewed projection");
         assert_eq!(
-            renewed.revision, 1,
+            renewed.revision, published_revision,
             "renewal must not rebuild or swap the snapshot"
         );
         state.pool.close().await;
@@ -37320,16 +37543,41 @@ mod request_compression_query_tests {
         .expect("baseline all-time projection is exact");
         assert_eq!(before.total_count, 1);
 
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create coverage publication interleave gate");
         sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
             .execute(&state.pool)
             .await
-            .expect("revoke historical coverage revision");
-        refresh_summary_snapshots_with_mode(
-            state.as_ref(),
-            SummaryProjectionBuildMode::RollingDelta,
-        )
-        .await
-        .expect("rolling publication keeps recent projection available");
+            .expect("advance historical coverage before build");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        );
+        let refresh_state = state.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_summary_snapshots_with_mode(
+                refresh_state.as_ref(),
+                SummaryProjectionBuildMode::RollingDelta,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
+            .await
+            .expect("rolling build reaches publication fence");
+        sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("revoke historical coverage during build");
+        interleave.resume_build();
+        tokio::time::timeout(Duration::from_secs(5), refresh)
+            .await
+            .expect("rolling build completes after coverage revision")
+            .expect("join rolling build")
+            .expect("stale rolling build is discarded after coverage revision");
+        clear_summary_projection_test_interleave();
         state.pool.close().await;
 
         let all_time = fetch_summary(
@@ -38183,7 +38431,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_all_time_v2_proof_set_short_circuits_manifest_scan() {
+    async fn summary_all_time_v2_marker_without_pages_does_not_complete_manifest_scan() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -38217,10 +38465,10 @@ mod request_compression_query_tests {
         }
 
         assert!(
-            summary_all_time_manifest_v2_coverage_complete(&pool, 2)
+            !summary_all_time_manifest_v2_coverage_complete(&pool, 2)
                 .await
-                .expect("check complete V2 proof set"),
-            "complete V2 proof identities must skip the legacy manifest walk"
+                .expect("check incomplete V2 proof set"),
+            "a marker without verified V2 pages must not complete coverage"
         );
 
         sqlx::query(

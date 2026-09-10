@@ -9402,7 +9402,7 @@ async fn all_time_summary_fails_closed_when_unreadable_replay_lacks_usage_and_ac
 }
 
 #[tokio::test]
-async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable() {
+async fn summary_refresh_revokes_all_time_when_new_archive_is_unreadable() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -9450,7 +9450,7 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
         .await
         .expect("an unreadable archive must publish unaffected rolling coverage");
 
-    let Json(response) = fetch_summary(
+    let response = fetch_summary(
         State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
@@ -9459,11 +9459,11 @@ async fn summary_refresh_keeps_nonzero_last_good_when_new_archive_is_unreadable(
             upstream_account_id: None,
         }),
     )
-    .await
-    .expect("serve the exact nonzero last-good all-time snapshot");
-    assert_eq!(response.total_count, 1);
-    assert_eq!(response.total_tokens, 17);
-    assert_eq!(response.total_cost, 1.25);
+    .await;
+    assert!(
+        matches!(response, Err(ApiError::Unavailable(_))),
+        "an unreadable newly discovered archive must revoke stale all-time authority"
+    );
 }
 
 #[tokio::test]
@@ -22767,7 +22767,7 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
     }
 
     for upstream_account_id in [None, Some(42)] {
-        let Json(response) = fetch_summary(
+        let response = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
@@ -22776,13 +22776,10 @@ async fn summary_projection_hydrates_rolling_windows_beyond_archive_manifest_adm
                 upstream_account_id,
             }),
         )
-        .await
-        .expect("serve the exact all-time snapshot without SQLite");
-        assert_eq!(response.total_count, MANIFEST_COUNT + 2);
-        assert_eq!(response.total_tokens, (MANIFEST_COUNT + 1) * 17 + 23);
-        assert_eq!(
-            response.total_cost,
-            (MANIFEST_COUNT + 1) as f64 * 1.25 + 2.5
+        .await;
+        assert!(
+            matches!(response, Err(ApiError::Unavailable(_))),
+            "deleting an authority archive must revoke the corresponding all-time snapshot"
         );
     }
 }
