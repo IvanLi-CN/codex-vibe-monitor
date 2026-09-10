@@ -8097,7 +8097,7 @@ impl SummaryProjection {
             return false;
         };
         self.current_selection_cutoff(limit)
-            .is_none_or(|cutoff| latest_coverage_end >= cutoff)
+            .is_none_or(|cutoff| latest_coverage_end > cutoff)
     }
 
     fn unavailable_archive_may_affect_global_current(&self, limit: usize) -> bool {
