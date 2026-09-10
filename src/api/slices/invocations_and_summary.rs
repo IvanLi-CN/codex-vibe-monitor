@@ -7876,6 +7876,8 @@ impl SummaryProjection {
             .generation_fence
             .live_tail_cursor()
             .terminal_sources_match(generation_fence.live_tail_cursor())
+            || self.generation_fence.completed_manifest_high_watermark_id
+                != generation_fence.completed_manifest_high_watermark_id
         {
             return false;
         }
@@ -8088,10 +8090,14 @@ impl SummaryProjection {
         if limit == 0 {
             return false;
         }
-        // Finite unrepresented archive ranges are retained in the current-local range proof and
-        // checked against this request's actual Nth-row cutoff before this method is reached.
-        // Only a malformed partition identity lacks a boundary that can be compared safely.
-        self.current_archive_has_unknown_coverage
+        if self.current_archive_has_unknown_coverage {
+            return true;
+        }
+        let Some(latest_coverage_end) = self.current_archive_latest_coverage_end else {
+            return false;
+        };
+        self.current_selection_cutoff(limit)
+            .is_none_or(|cutoff| latest_coverage_end >= cutoff)
     }
 
     fn unavailable_archive_may_affect_global_current(&self, limit: usize) -> bool {
@@ -9880,13 +9886,13 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
     pool: &Pool<Sqlite>,
     represented_archive_paths: &HashSet<String>,
     exact_horizon: ExactUtcRange,
-) -> Result<(Vec<ExactUtcRange>, bool)> {
+) -> Result<(Vec<ExactUtcRange>, Option<DateTime<Utc>>, bool)> {
     // A current selection can only ignore an archive after its complete bounded coverage has
     // been materialized into the resident candidate view. Keep the exclusion bind set small;
     // a larger fully represented set is still safe, but its SQL proof must fail closed rather
     // than exceed SQLite's parameter budget.
     if represented_archive_paths.len() > SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
-        return Ok((Vec::new(), true));
+        return Ok((Vec::new(), None, true));
     }
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT month_key, coverage_start_epoch, coverage_end_epoch \
@@ -9909,6 +9915,7 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
         query.build_query_as().fetch_all(pool).await?;
     let mut finite_ranges = Vec::new();
     let mut has_unknown_coverage = false;
+    let mut latest_coverage_end = None;
     let source_row_count = rows.len();
     let mut horizon_fallback_count = 0usize;
     for (month_key, start_epoch, end_epoch) in rows {
@@ -9931,6 +9938,7 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
             _ => None,
         };
         if let Some((start, end)) = known_range {
+            latest_coverage_end = latest_coverage_end.max(Some(end));
             let localized = ExactUtcRange {
                 start: start.max(exact_horizon.start),
                 end: end.min(exact_horizon.end),
@@ -9973,6 +9981,7 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
         if localized.start < localized.end {
             finite_ranges.push(localized);
         }
+        latest_coverage_end = latest_coverage_end.max(Some(end));
     }
     info!(
         stage = "unrepresented_current_archive_coverage_summary",
@@ -9984,6 +9993,7 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
     );
     Ok((
         summary_projection_merge_exact_ranges(finite_ranges),
+        latest_coverage_end,
         has_unknown_coverage,
     ))
 }
@@ -15227,7 +15237,18 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
                 .as_deref()
                 .and_then(crate::stats::parse_to_utc_datetime),
         ) {
-            (Some(start), Some(end)) if start <= end => ExactUtcRange { start, end },
+            (Some(start), Some(end)) if start <= end => ExactUtcRange {
+                start,
+                // A point-like legacy manifest records the inclusive endpoint in both columns.
+                // Preserve that one-second contribution as a finite unavailable range instead of
+                // silently dropping it during half-open range normalization.
+                end: if start == end {
+                    end.checked_add_signed(ChronoDuration::seconds(1))
+                        .unwrap_or(end)
+                } else {
+                    end
+                },
+            },
             _ => match (coverage_start_epoch, coverage_end_epoch) {
                 (Some(start_epoch), Some(end_epoch)) => match (
                     Utc.timestamp_opt(start_epoch, 0).single(),
@@ -16710,9 +16731,7 @@ async fn build_summary_projection_once(
         )?;
     }
     let mut paged_boundary_raw_archive_admissions = 0usize;
-    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id
-        && mode.includes_all_time()
-    {
+    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
         // Page only bounded manifest metadata while planning the finite exact buckets. The raw
         // archives themselves are opened later one at a time after live boundary records have
         // been admitted; each page retains its actual replay/materialization proof.
@@ -17005,6 +17024,11 @@ async fn build_summary_projection_once(
     // only a handful of rows.
     if historical_live_range.start < historical_live_range.end
         && rollup_live_cursor < live_high_watermark_id
+        // The current index is the higher-priority bounded prefix.  Once that prefix itself
+        // overflows, retaining older historical rows would consume the same finite admission
+        // budget while still failing to prove the requested newest-N boundary; leave the whole
+        // historical bucket as a recoverable gap instead.
+        && recent_index_complete
     {
         let remaining = summary_projection_exact_record_limit()
             .saturating_sub(records_by_invoke_id.len())
@@ -18942,15 +18966,17 @@ async fn build_summary_projection_once(
             )
         })
         .collect();
-    let (unrepresented_current_archive_ranges, current_archive_has_unknown_coverage) =
-        load_summary_projection_unrepresented_current_archive_coverage(
-            pool,
-            &current_complete_archive_paths,
-            exact_horizon,
-        )
-        .await?;
+    let (
+        unrepresented_current_archive_ranges,
+        current_archive_latest_coverage_end,
+        current_archive_has_unknown_coverage,
+    ) = load_summary_projection_unrepresented_current_archive_coverage(
+        pool,
+        &current_complete_archive_paths,
+        exact_horizon,
+    )
+    .await?;
     unavailable_unmaterialized_archive_current_ranges.extend(unrepresented_current_archive_ranges);
-    let current_archive_latest_coverage_end = None;
     let current_selection_cutoff_epoch = {
         let mut timestamps = current_records
             .iter()
@@ -24179,7 +24205,11 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
                 continue;
             };
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-            if row.id <= rollup_live_cursor && globally_covered_buckets.contains(&bucket) {
+            if row.id <= rollup_live_cursor
+                && (globally_covered_buckets.contains(&bucket)
+                    || (hourly_rollup_totals.contains_key(&(bucket, None))
+                        && hourly_rollup_usage.contains_key(&(bucket, None))))
+            {
                 global_covered_terminal_invoke_ids
                     .insert(format!("{}\0{}", row.invoke_id, row.occurred_at));
             }
