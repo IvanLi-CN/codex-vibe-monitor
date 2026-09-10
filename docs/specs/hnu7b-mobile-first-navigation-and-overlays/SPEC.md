@@ -96,9 +96,10 @@
 
 - source_type: `ui_demo`
   target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
-  source_revision: `f5c4035a`
+  source_revision: `09c935e2`
+  runtime_query: `mockPwa=prompt` for the installable header state
   sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
-  capture_scope: browser viewport
+  capture_scope: browser viewport only
 
 ### `320x568` Dashboard
 

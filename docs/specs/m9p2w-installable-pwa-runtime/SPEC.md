@@ -164,9 +164,9 @@
 
 ## Visual Evidence
 
-- Evidence source: `storybook-static` + local PWA preview/test server; no login, production account, secret, or live backend payload was used.
-- Bound source revision: working tree after the validated auto-open install prompt capture recorded on July 18, 2026.
-- Viewport: desktop `1440x1000`, mobile `393x852`.
+- Evidence source: mock-only Web Demo (`VITE_APP_RUNTIME=demo`) with `mockPwa=prompt`; no login, production account, secret, or live backend payload was used.
+- Bound source revision: `09c935e2`.
+- Viewport: desktop `1440x1000`, mobile `393x852`; capture scope is the browser viewport only.
 
 ### Application Icon Contract
 
