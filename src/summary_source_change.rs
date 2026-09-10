@@ -759,7 +759,7 @@ mod tests {
         .await
         .expect("snapshot table");
         sqlx::query(
-            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT)",
+            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT, summary_source_kind TEXT NOT NULL DEFAULT 'unknown')",
         )
         .execute(&pool)
         .await
