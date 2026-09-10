@@ -5,7 +5,8 @@
 - Canonical spec: `docs/specs/m9p2w-installable-pwa-runtime/SPEC.md`
 - Implementation summary:
   - installable-runtime PWA 仍由 `vite-plugin-pwa` `injectManifest`、manifest、service worker、install control、Safari manual guidance、prompt-style update 与 offline shell banner 组成。
-  - install control 不再在头栏暴露常驻 button；当浏览器满足安装条件时，app shell 会自动弹出 install prompt / manual guidance，并保持窄屏居中 modal 语义。
+  - app shell 在桌面主导航左侧和移动主题按钮左侧暴露 install trigger；满足安装条件且暂缓到期时自动弹出 install prompt / manual guidance，并保持窄屏居中 modal 语义。
+  - `usePwaRuntime` 以 `codex-vibe-monitor.pwa-install-deferred-until` 保存滚动 30 天暂缓；存储不可用时降级为内存状态。Chromium 拒绝原生安装同样进入暂缓，Safari/iOS 继续只展示手动指引。
   - Dashboard 概览离线数据改为应用层 IndexedDB snapshot store：五个固定 range 各保存最近一份成功快照，不把 `/api/*` 缓存职责塞进 service worker。
   - `DashboardActivityOverview` 已接入 `live` / `cached-offline` / `not-cached-yet` 三态；`working conversations` 明确保留在线依赖，并在离线重开时显示不可用语义。
   - install icon 保留透明 regular 与独立 maskable 输出；`scripts/export_brand_assets.py` 为 favicon、regular 和 maskable 资源生成内容哈希文件名，`vite.config.ts` 只消费这组五个唯一资源。既有批准的 regular/maskable artwork 像素未改变。
@@ -74,11 +75,11 @@
 - `web/src/components/ui/dialog.tsx`
   - 为共享 dialog 补充 `mobileLayout="centered"`，让需要真实 modal 语义的 UI 不再被默认底部抽屉样式带偏。
 - `web/src/features/app-shell/PwaInstallControl.tsx`
-  - 改为纯 dialog surface：移除 trigger button，由 app shell 在 `prompt` / `manual-ios` 模式下自动拉起安装提示。
+  - 保持纯 dialog surface；由 app shell 的 `PwaInstallTrigger` 在 `prompt` / `manual-ios` 模式下打开，并由运行时控制自动提示生命周期。
 - `web/src/features/app-shell/AppLayout.tsx`
-  - 头栏不再渲染 install/status button，改为按当前 PWA 安装状态自动展示一次性 prompt / guidance。
+  - 响应式头栏渲染桌面/移动 install trigger，移动语言控件改为中英直切按钮；桌面语言 listbox 保持原有键盘与外部点击关闭语义。
 - `web/src/features/app-shell/PwaInstallControl.test.tsx`
-  - 锁定自动安装提示的“无 trigger + 居中 modal + confirm action”契约，不允许回退成头栏按钮。
+  - 锁定安装对话框的居中 modal、confirm action 与手动触发兼容性；头栏 trigger 由 `AppLayout` 单独覆盖。
 - `scripts/export_brand_assets.py` 与 `web/scripts/check-pwa-assets.py`
   - 以 traced product mark 导出独立 regular、maskable 与 favicon 资源，并检查尺寸、透明度、safe circle、内容哈希文件名、manifest purpose、DOM HTML 引用、响应缓存与 SW precache/cache-first 边界。
 - `src/maintenance/hourly_rollups.rs`

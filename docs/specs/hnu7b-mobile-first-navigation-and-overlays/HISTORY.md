@@ -9,6 +9,7 @@
 - 重型详情只页面化上游账号和 Prompt Cache 会话；其他详情保留 overlay，维持桌面工作流与已有调用入口。
 - 全页证据选择已合入的 mock-only Web Demo，避免把 Storybook 画布背景误当成产品页面背景。
 - 2026-07-17 起，installable PWA / offline shell 不再是本 spec 的排除项，而是转交 `#m9p2w` 作为独立 runtime contract 维护。
+- 移动头栏新增 PWA 安装 trigger 并将语言控件收口为中英直切按钮；桌面导航和语言 listbox 的交互边界保持不变，PWA 生命周期仍由 `#m9p2w` 维护。
 
 ## References
 

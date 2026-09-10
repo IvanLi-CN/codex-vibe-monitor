@@ -630,7 +630,7 @@ test("updates a Chromium-installed PWA to V2 manifest and icons without reinstal
   }
 });
 
-test("shows an install prompt dialog without a header button and routes confirm through native prompt", async ({
+test("shows an install prompt dialog with a header entry and routes confirm through native prompt", async ({
   page,
 }) => {
   await page.evaluate(() => {
@@ -648,7 +648,7 @@ test("shows an install prompt dialog without a header button and routes confirm 
     window.dispatchEvent(installEvent);
   });
 
-  await expect(page.getByTestId("pwa-install-control")).toHaveCount(0);
+  await expect(page.getByTestId("pwa-install-trigger").first()).toBeVisible();
 
   const installDialog = page.getByTestId("pwa-install-dialog");
   await expect(installDialog).toBeVisible();
@@ -680,7 +680,7 @@ test("centers the install prompt dialog on narrow screens", async ({ page }) => 
     window.dispatchEvent(installEvent);
   });
 
-  await expect(page.getByTestId("pwa-install-control")).toHaveCount(0);
+  await expect(page.getByTestId("pwa-install-trigger").nth(1)).toBeVisible();
 
   const dialog = page.getByTestId("pwa-install-dialog");
   await expect(dialog).toBeVisible();

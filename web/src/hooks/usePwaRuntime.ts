@@ -18,15 +18,30 @@ interface PwaRuntimeVersionState {
 export interface PwaRuntimeState {
   installMode: PwaInstallMode;
   installSupported: boolean;
+  shouldAutoOpenInstallDialog: boolean;
   isOffline: boolean;
   shellReady: boolean;
   update: PwaRuntimeVersionState;
   promptInstall: () => Promise<void>;
+  deferInstallPrompt: () => void;
   applyUpdate: () => Promise<void>;
   dismissUpdate: () => void;
 }
 
 const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+export const PWA_INSTALL_DEFERRED_UNTIL_STORAGE_KEY =
+  "codex-vibe-monitor.pwa-install-deferred-until";
+export const PWA_INSTALL_DEFER_MS = 30 * 24 * 60 * 60 * 1000;
+
+function readInstallDeferredUntil(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const value = Number(window.localStorage.getItem(PWA_INSTALL_DEFERRED_UNTIL_STORAGE_KEY));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function isIosPlatform(
   nav: Navigator | undefined = typeof navigator === "undefined" ? undefined : navigator,
@@ -64,6 +79,14 @@ function resolveInstallMode(promptEvent: BeforeInstallPromptEvent | null): PwaIn
   return "unsupported";
 }
 
+function isDemoInstallPromptRequested() {
+  return (
+    import.meta.env.VITE_APP_RUNTIME === "demo" &&
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("mockPwa") === "prompt"
+  );
+}
+
 async function fetchFrontendVersion(): Promise<string | null> {
   const response = await fetch(`${import.meta.env.BASE_URL}version.json?ts=${Date.now()}`, {
     cache: "no-store",
@@ -75,7 +98,10 @@ async function fetchFrontendVersion(): Promise<string | null> {
 
 export function usePwaRuntime(): PwaRuntimeState {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [installMode, setInstallMode] = useState<PwaInstallMode>(() => resolveInstallMode(null));
+  const [installMode, setInstallMode] = useState<PwaInstallMode>(() =>
+    isDemoInstallPromptRequested() ? "prompt" : resolveInstallMode(null),
+  );
+  const [installDeferredUntil, setInstallDeferredUntil] = useState(readInstallDeferredUntil);
   const [isOffline, setIsOffline] = useState<boolean>(() =>
     typeof navigator === "undefined" ? false : !navigator.onLine,
   );
@@ -97,7 +123,7 @@ export function usePwaRuntime(): PwaRuntimeState {
     ];
 
     const refreshMode = () => {
-      setInstallMode(resolveInstallMode(installPrompt));
+      setInstallMode(isDemoInstallPromptRequested() ? "prompt" : resolveInstallMode(installPrompt));
     };
 
     const handleBeforeInstallPrompt = (event: Event) => {
@@ -173,6 +199,17 @@ export function usePwaRuntime(): PwaRuntimeState {
     };
   }, []);
 
+  const deferInstallPrompt = useCallback(() => {
+    if (installMode !== "prompt" && installMode !== "manual-ios") return;
+    const deferredUntil = Date.now() + PWA_INSTALL_DEFER_MS;
+    setInstallDeferredUntil(deferredUntil);
+    try {
+      window.localStorage.setItem(PWA_INSTALL_DEFERRED_UNTIL_STORAGE_KEY, String(deferredUntil));
+    } catch {
+      // Private browsing and disabled storage degrade to an in-memory cooldown.
+    }
+  }, [installMode]);
+
   const promptInstall = useCallback(async () => {
     if (!installPrompt) return;
     let accepted = false;
@@ -186,10 +223,11 @@ export function usePwaRuntime(): PwaRuntimeState {
       }
     } finally {
       if (!accepted) {
-        setInstallMode(resolveInstallMode(null));
+        deferInstallPrompt();
+        setInstallMode(installPrompt ? "prompt" : resolveInstallMode(null));
       }
     }
-  }, [installPrompt]);
+  }, [deferInstallPrompt, installPrompt]);
 
   const applyUpdate = useCallback(async () => {
     setUpdateVisible(false);
@@ -203,6 +241,9 @@ export function usePwaRuntime(): PwaRuntimeState {
   return {
     installMode,
     installSupported: installMode !== "unsupported",
+    shouldAutoOpenInstallDialog:
+      (installMode === "prompt" || installMode === "manual-ios") &&
+      Date.now() >= installDeferredUntil,
     isOffline,
     shellReady,
     update: {
@@ -211,6 +252,7 @@ export function usePwaRuntime(): PwaRuntimeState {
       visible: updateVisible,
     },
     promptInstall,
+    deferInstallPrompt,
     applyUpdate,
     dismissUpdate,
   };

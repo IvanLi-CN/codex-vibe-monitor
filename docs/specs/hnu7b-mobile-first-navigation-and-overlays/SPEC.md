@@ -16,6 +16,7 @@
 - 让桌面 side drawer 在紧凑视口逐项分流：账号详情和 Prompt Cache 会话页页面化，其余详情保留 overlay 但改为全高 bottom sheet。
 - 将关键页面的筛选、表格和卡片重排为窄屏优先结构，避免装饰性嵌套与正文横向溢出。
 - 用 mock-only Web Demo 作为整页视觉证据源，Storybook 负责可复用表面和交互回归。
+- 移动顶栏在主题按钮左侧提供 PWA 安装具名图标入口；语言控件为显示当前语言的中英直切按钮，点击立即切换并持久化，不渲染 listbox、菜单或下拉箭头。
 
 ### Non-goals
 
@@ -28,6 +29,7 @@
 ### In scope
 
 - `AppLayout` 的共享导航树、`AccountPoolLayout` 与 `SystemLayout` 的紧凑导航收口。
+- `AppLayout` 移动端 PWA 安装入口与语言直切控件。
 - `Dialog`、自建 Settings modal、账号池批量/路由/说明对话框和 Prompt Cache owner confirm 的 responsive sheet 规则。
 - `SharedUpstreamAccountDetailDrawer`、`PromptCacheConversationHistoryDrawer`、Dashboard invocation drawer 和 Records full-details 的响应式呈现。
 - Dashboard、Stats、Live、Records、Upstream Accounts、Groups、Maintenance Records、Settings、System Status、System Tasks 的窄屏布局与表格/列表切换。
@@ -71,6 +73,7 @@
 - Given 打开上游账号详情或 Prompt Cache 会话详情，When 使用紧凑视口，Then 表现为可返回、可用 URL 恢复状态的独立页面；桌面仍保持 drawer。
 - Given 打开 dashboard 或 records 调用详情，When 使用紧凑视口，Then 表现为全高 bottom sheet；桌面仍从侧边进入。
 - Given 使用无真实后端的完整路由，When 在 Web Demo 中切换移动视口，Then 页面和关键浮层能够用确定性 mock 数据验收。
+- Given `393x852` 移动视口，When 观察共享顶栏，Then PWA 安装入口位于主题按钮左侧，语言按钮显示当前语言并可一键切换到另一种 locale，且不出现下拉箭头或 listbox。
 
 ## 非功能性验收 / 质量门槛
 
@@ -112,6 +115,10 @@
 验证 External API Key 创建不再居中显示，而是以带安全区底部操作区的 sheet 呈现。
 
 ![Web Demo external API key bottom sheet](./assets/web-demo-external-api-key-sheet-mobile390.png)
+
+### `393x852` Header Language And PWA Controls
+
+![Web Demo mobile language direct toggle](./assets/mobile-language-direct-toggle-393.png)
 
 ### `390x844` Single-Gutter Stats Surface
 
@@ -188,7 +195,6 @@
 
 - source_type: `ui_demo`
   source_revision: `28bfddead8f0cfb40376ff89f73765658f1be042`
-  PR: include
   target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
   sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
 

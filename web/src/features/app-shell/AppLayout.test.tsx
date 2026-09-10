@@ -56,6 +56,7 @@ const hookMocks = vi.hoisted(() => ({
   usePwaRuntime: vi.fn(() => ({
     installMode: "unsupported",
     installSupported: false,
+    shouldAutoOpenInstallDialog: false,
     isOffline: false,
     shellReady: false,
     update: {
@@ -64,9 +65,14 @@ const hookMocks = vi.hoisted(() => ({
       visible: false,
     },
     promptInstall: vi.fn(),
+    deferInstallPrompt: vi.fn(),
     applyUpdate: vi.fn(),
     dismissUpdate: vi.fn(),
   })),
+}));
+
+const translationMocks = vi.hoisted(() => ({
+  setLocale: vi.fn(),
 }));
 
 vi.mock("../../lib/sse", () => ({
@@ -98,7 +104,7 @@ vi.mock("../../i18n", () => ({
   supportedLocales: ["zh", "en"],
   useTranslation: () => ({
     locale: "zh",
-    setLocale: vi.fn(),
+    setLocale: translationMocks.setLocale,
     t: (key: string, values?: Record<string, string | number>) => {
       switch (key) {
         case "app.nav.dashboard":
@@ -337,6 +343,24 @@ function render(initialEntry = "/dashboard") {
 }
 
 describe("AppLayout", () => {
+  it("switches locale directly from the mobile language button", () => {
+    translationMocks.setLocale.mockReset();
+    render("/dashboard");
+    const mobileLanguageButton = host?.querySelector(
+      '[data-testid="mobile-language-toggle"]',
+    ) as HTMLButtonElement | null;
+
+    act(() => {
+      mobileLanguageButton?.click();
+    });
+
+    expect(translationMocks.setLocale).toHaveBeenCalledWith("en");
+    expect(host?.querySelector('[data-testid="mobile-language-toggle"] ul')).toBeNull();
+    expect(
+      host?.querySelector('[data-testid="mobile-language-toggle"]')?.textContent,
+    ).not.toContain("中文");
+  });
+
   it("uses the compact hamburger menu only through the mobile breakpoint", async () => {
     const promptInstall = vi.fn();
     hookMocks.useUpdateAvailable.mockReturnValue({
@@ -361,6 +385,7 @@ describe("AppLayout", () => {
     hookMocks.usePwaRuntime.mockReturnValue({
       installMode: "prompt",
       installSupported: true,
+      shouldAutoOpenInstallDialog: true,
       isOffline: false,
       shellReady: true,
       update: {
@@ -369,6 +394,7 @@ describe("AppLayout", () => {
         visible: false,
       },
       promptInstall,
+      deferInstallPrompt: vi.fn(),
       applyUpdate: vi.fn(),
       dismissUpdate: vi.fn(),
     });
@@ -402,7 +428,11 @@ describe("AppLayout", () => {
     expect(logoMark?.className).toContain("h-10");
     expect(logoMark?.className).toContain("w-10");
     expect(logoImage).not.toBeNull();
-    expect(host?.querySelector('[data-testid="pwa-install-control"]')).toBeNull();
+    expect(host?.querySelector('[data-testid="pwa-install-trigger"]')).not.toBeNull();
+    expect(host?.querySelector('[data-testid="mobile-language-toggle"]')).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="mobile-language-toggle"]')?.getAttribute("aria-haspopup"),
+    ).toBeNull();
     expect(installDialog?.getAttribute("data-install-mode")).toBe("prompt");
     expect(installDialog?.textContent).toContain("安装 Codex Vibe Monitor");
     expect(installDialog?.textContent).toContain("稍后");
@@ -497,6 +527,7 @@ describe("AppLayout", () => {
     hookMocks.usePwaRuntime.mockReturnValue({
       installMode: "installed",
       installSupported: true,
+      shouldAutoOpenInstallDialog: false,
       isOffline: true,
       shellReady: true,
       update: {
@@ -505,6 +536,7 @@ describe("AppLayout", () => {
         visible: true,
       },
       promptInstall: vi.fn(),
+      deferInstallPrompt: vi.fn(),
       applyUpdate: vi.fn(),
       dismissUpdate: vi.fn(),
     });
