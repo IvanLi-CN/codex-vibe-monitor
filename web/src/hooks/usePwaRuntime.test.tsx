@@ -65,6 +65,7 @@ function Harness() {
   return (
     <div>
       <span data-testid="install-mode">{runtime.installMode}</span>
+      <span data-testid="install-prompt-available">{String(runtime.installPromptAvailable)}</span>
       <span data-testid="install-supported">{String(runtime.installSupported)}</span>
       <span data-testid="auto-install">{String(runtime.shouldAutoOpenInstallDialog)}</span>
       <span data-testid="is-offline">{String(runtime.isOffline)}</span>
@@ -189,6 +190,9 @@ describe("usePwaRuntime", () => {
 
     expect(promptMock).toHaveBeenCalledTimes(1);
     expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("prompt");
+    expect(host?.querySelector('[data-testid="install-prompt-available"]')?.textContent).toBe(
+      "false",
+    );
   });
 
   it("exposes manual iOS Safari guidance when no native install prompt is available", async () => {
