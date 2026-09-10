@@ -520,15 +520,6 @@ where
     };
 
     if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
-        let v2_page_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot \
-             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND format_version = 2)",
-        )
-        .bind(archive_batch_id)
-        .bind(expected_sha256)
-        .fetch_one(tx.as_mut())
-        .await?
-            != 0;
         let proof_exists = sqlx::query_scalar::<_, i64>(
             "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
@@ -538,7 +529,17 @@ where
         .fetch_one(tx.as_mut())
         .await?
             != 0;
-        if v2_page_exists && !proof_exists {
+        // Re-validate the complete V2 proof under the same writer transaction that stages raw
+        // deletion. This closes the race where a recovery pass deletes or rewrites pages after
+        // the outer cleanup precheck but before finalization.
+        if !proof_exists
+            || !summary_archive_snapshot_has_proof_tx(
+                tx.as_mut(),
+                archive_batch_id,
+                expected_sha256,
+            )
+            .await?
+        {
             tx.rollback().await?;
             return Ok(false);
         }

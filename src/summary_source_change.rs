@@ -340,9 +340,12 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     else {
         return Ok(false);
     };
+    // Retention validates and records the proof while the archive row is still staged. The
+    // surrounding transaction promotes it to completed only after replay markers are written;
+    // an error rolls both the proof and staged source back together.
     if dataset != "codex_invocations"
         || manifest != manifest_sha256
-        || status != "completed"
+        || !matches!(status.as_str(), "completed" | "materializing")
         || manifest_row_count < 0
     {
         reject_proof!("manifest_identity_or_status");
@@ -362,8 +365,20 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     {
         reject_proof!("proof_budget");
     }
-    let manifest_start = manifest_start.and_then(|value| parse_snapshot_coverage_at(&value));
-    let manifest_end = manifest_end.and_then(|value| parse_snapshot_coverage_at(&value));
+    let manifest_start = match manifest_start {
+        Some(value) => Some(
+            parse_snapshot_coverage_at(&value)
+                .ok_or_else(|| anyhow::anyhow!("invalid manifest coverage start"))?,
+        ),
+        None => None,
+    };
+    let manifest_end = match manifest_end {
+        Some(value) => Some(
+            parse_snapshot_coverage_at(&value)
+                .ok_or_else(|| anyhow::anyhow!("invalid manifest coverage end"))?,
+        ),
+        None => None,
+    };
     let mut first_page_start = None;
     let mut last_page_end = None;
     let mut previous_page_end = None;

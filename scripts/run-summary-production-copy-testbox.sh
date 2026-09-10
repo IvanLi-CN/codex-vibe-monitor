@@ -24,7 +24,7 @@ esac
   printf 'project-reason: shared-testbox runner is unavailable\n' >&2
   exit 64
 }
-source_meta="$(ssh -o BatchMode=yes "$testbox" bash -s -- "$source_path" <<'REMOTE'
+source_meta="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$testbox" bash -s -- "$source_path" <<'REMOTE'
 set -euo pipefail
 source_path="$1"
 [[ -e "$source_path" && ! -L "$source_path" ]] || exit 10
@@ -122,7 +122,7 @@ done
 }
 
 for ((attempt = 0; attempt < stage_wait_secs; attempt += 1)); do
-  scratch_path="$(ssh -o BatchMode=yes "$testbox" bash -s -- "$(id -un)" "$run_id" <<'REMOTE'
+  scratch_path="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$testbox" bash -s -- "$(id -un)" "$run_id" <<'REMOTE'
 set -euo pipefail
 workspace_root="/srv/codex/workspaces/$1"
 run_id="$2"

@@ -7605,7 +7605,14 @@ pub(crate) struct SummaryLiveTailCursor {
 impl SummaryLiveTailCursor {
     fn terminal_sources_match(self, other: Self) -> bool {
         self.live_high_watermark_id == other.live_high_watermark_id
+            && self.rollup_live_cursor == other.rollup_live_cursor
+            && self.account_rollup_live_cursor == other.account_rollup_live_cursor
             && self.durable_terminal_sequence_watermark == other.durable_terminal_sequence_watermark
+    }
+
+    fn rollup_sources_match(self, other: Self) -> bool {
+        self.rollup_live_cursor == other.rollup_live_cursor
+            && self.account_rollup_live_cursor == other.account_rollup_live_cursor
     }
 }
 
@@ -7906,11 +7913,27 @@ impl SummaryProjection {
         if !self
             .generation_fence
             .coverage_sources_match(generation_fence)
+            || !self
+                .generation_fence
+                .live_tail_cursor()
+                .rollup_sources_match(generation_fence.live_tail_cursor())
         {
             return false;
         }
         self.freshness_lease.renew();
         true
+    }
+
+    pub(crate) fn coverage_sources_match(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        self.generation_fence
+            .coverage_sources_match(generation_fence)
+            && self
+                .generation_fence
+                .live_tail_cursor()
+                .rollup_sources_match(generation_fence.live_tail_cursor())
     }
 
     pub(crate) fn renew_freshness_from_delta_journal(&self) {
@@ -10016,14 +10039,16 @@ async fn load_summary_projection_current_archive_admission(
     // Current is ordered by recency, not archive creation order. Admit the newest bounded
     // manifest prefix so a large backlog of old materialized batches cannot hide a current
     // candidate that must be hydrated off-request.
-    sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
+    let rows = sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
         "SELECT file_path, month_key, coverage_start_at, coverage_end_at, \
          historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
          FROM archive_batches \
          WHERE dataset = ?1 AND status = ?2 \
            AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
-           AND (coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL OR coverage_end_epoch >= ?3) \
-         ORDER BY coverage_end_epoch DESC, id DESC \
+           AND (COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER)) IS NULL \
+                OR COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) IS NULL \
+                OR COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) >= ?3) \
+         ORDER BY COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) DESC, id DESC \
          LIMIT ?4",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
@@ -10032,7 +10057,8 @@ async fn load_summary_projection_current_archive_admission(
     .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES.saturating_add(1)) as i64)
     .fetch_all(pool)
     .await
-    .map_err(Into::into)
+    .map_err(anyhow::Error::from)?;
+    Ok(rows)
 }
 
 fn summary_projection_exact_bucket_ranges(buckets: &HashSet<i64>) -> Vec<ExactUtcRange> {
@@ -11671,9 +11697,12 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     }
     if matches!(mode, SummaryProjectionBuildMode::RollingDelta) {
         let started = Instant::now();
+        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
         if state
             .subscription_hub
-            .renew_summary_projection_freshness_from_delta_journal()
+            .renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+                durable_generation_fence,
+            )
             .await
         {
             let (entry_count, gap_count) =
@@ -11703,7 +11732,9 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
         if restored
             && state
                 .subscription_hub
-                .renew_summary_projection_freshness_from_delta_journal()
+                .renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+                    load_summary_projection_generation_fence(state).await?,
+                )
                 .await
         {
             let (entry_count, gap_count) =
@@ -14114,16 +14145,12 @@ fn summary_coverage_overlay_requires_full_reduction(
     force_full_coverage_reduction: bool,
     has_previous_overlay: bool,
     has_revoked_proof: bool,
-    coverage_fence_changed: bool,
 ) -> bool {
     // Once an overlay exists, a completed recovery turn can add only the newly verified
     // manifests. Re-scanning every retained V2 page on each coverage-fence revision defeats the
     // bounded supervisor. A full reduction is required only for the first publication or after
     // proof revocation; the final no-pending pass refreshes gap metadata separately.
-    force_full_coverage_reduction
-        || !has_previous_overlay
-        || has_revoked_proof
-        || coverage_fence_changed
+    force_full_coverage_reduction || !has_previous_overlay || has_revoked_proof
 }
 
 async fn publish_summary_coverage_overlay_once(
@@ -14193,9 +14220,6 @@ async fn publish_summary_coverage_overlay_once(
         force_full_coverage_reduction,
         previous_overlay.is_some(),
         !revoked_proof_identities.is_empty(),
-        previous_overlay
-            .as_ref()
-            .is_some_and(|overlay| overlay.coverage_fence != durable_fence.coverage_fence()),
     );
     if full_reduction || force_full_coverage_reduction {
         // A full proof pass is the point at which stale Bootstrap gap ranges can be discarded.
@@ -14755,6 +14779,17 @@ async fn publish_summary_all_time_projection_checkpoint(
                             .contains(&timestamp.format("%Y-%m").to_string())
                     })
         });
+        // Legacy materialized manifests can carry only a local-month marker rather than exact
+        // UTC bounds. In that case the compact rollup is the only safe baseline for the shared
+        // bucket; keep it and add the independently proven sibling contribution instead of
+        // subtracting the whole bucket as if the Snapshot replaced it.
+        if snapshot_totals.materialized_buckets.is_empty()
+            && !snapshot_totals
+                .materialized_months_without_coverage
+                .is_empty()
+        {
+            exact_replacement_buckets.clear();
+        }
         for record in next.records.iter().chain(next.current_records.iter()) {
             if summary_projection_all_time_uses_global_exact_record(
                 record,
@@ -14880,6 +14915,13 @@ async fn publish_summary_all_time_projection_checkpoint(
                             .contains(&timestamp.format("%Y-%m").to_string())
                     })
         });
+        if snapshot_totals.materialized_buckets.is_empty()
+            && !snapshot_totals
+                .materialized_months_without_coverage
+                .is_empty()
+        {
+            account_replacement_buckets.clear();
+        }
         for record in next.records.iter().chain(next.current_records.iter()) {
             if summary_projection_all_time_uses_account_exact_record(
                 record,
@@ -15249,102 +15291,91 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
 
     if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
         // An overflow can be caused by old manifests that are already represented by compact
-        // replay. Bound the fail-closed proof to the recent exact horizon instead of letting
-        // the min/max span of an ancient backlog poison independent 1d/rolling selections.
-        let (min_start_epoch, max_end_epoch) = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
-            "SELECT MIN(COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER))), \
-                    MAX(COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER))) \
-             FROM archive_batches AS batches \
-             WHERE batches.dataset = 'codex_invocations' \
-               AND batches.status = 'completed' \
-               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
-               AND batches.id <= ?1 \
-               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
-               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
-               AND NOT EXISTS ( \
-                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
-                   WHERE proof.archive_batch_id = batches.id \
-                     AND batches.sha256 IS NOT NULL \
-                     AND TRIM(batches.sha256) <> '' \
-                     AND proof.manifest_sha256 = batches.sha256 \
-               )",
-        )
-        .bind(high_watermark_id)
-        .bind(exact_horizon.start.timestamp())
-        .bind(exact_horizon.end.timestamp())
-        .fetch_one(pool)
-        .await
-        .context("summary projection overflowed boundary range bounds failed")?;
-        let bounded_range = match (min_start_epoch, max_end_epoch) {
-            (Some(start_epoch), Some(end_epoch)) => {
-                match (
-                    Utc.timestamp_opt(start_epoch, 0).single(),
-                    Utc.timestamp_opt(end_epoch, 0).single(),
-                ) {
-                    (Some(start), Some(end)) => Some(ExactUtcRange {
-                        start: start.max(exact_horizon.start),
-                        end: end
-                            .checked_add_signed(ChronoDuration::seconds(1))
-                            .unwrap_or(end)
-                            .min(exact_horizon.end),
-                    }),
-                    _ => None,
-                }
+        // replay. Evaluate each manifest's own buckets instead of taking a min/max span across
+        // the backlog; sparse historical partitions must not poison recent selections.
+        let paths = rows
+            .iter()
+            .map(|(_, file_path, _, _, _, _, _, _)| file_path.clone())
+            .collect::<Vec<_>>();
+        let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+        let mut global = Vec::new();
+        let mut account = Vec::new();
+        for (
+            _month_key,
+            file_path,
+            coverage_start_epoch,
+            coverage_end_epoch,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            upstream_activity_manifest_refreshed_at,
+        ) in &rows
+        {
+            let (Some(start_epoch), Some(end_epoch)) = (
+                coverage_start_epoch.or_else(|| {
+                    coverage_start_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .map(|value| value.timestamp())
+                }),
+                coverage_end_epoch.or_else(|| {
+                    coverage_end_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .map(|value| value.timestamp())
+                }),
+            ) else {
+                global.push(exact_horizon);
+                account.push(exact_horizon);
+                continue;
+            };
+            let (Some(start), Some(end)) = (
+                Utc.timestamp_opt(start_epoch, 0).single(),
+                Utc.timestamp_opt(end_epoch, 0).single(),
+            ) else {
+                continue;
+            };
+            let localized = ExactUtcRange {
+                start: start.max(exact_horizon.start),
+                end: end
+                    .checked_add_signed(ChronoDuration::seconds(1))
+                    .unwrap_or(end)
+                    .min(exact_horizon.end),
+            };
+            if localized.start >= localized.end {
+                continue;
             }
-            _ => None,
-        }
-        .filter(|range| range.start < range.end);
-        let fallback_range = bounded_range;
-        let global_gap = if let Some(range) = fallback_range {
-            let replay_gap = sqlx::query_scalar::<_, i64>(
-                "SELECT EXISTS(SELECT 1 FROM archive_batches AS batches \
-                 WHERE batches.dataset = 'codex_invocations' AND batches.status = 'completed' \
-                   AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
-                   AND batches.id <= ?1 \
-                   AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
-                   AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
-                   AND NOT EXISTS (SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
-                                   WHERE proof.archive_batch_id = batches.id AND proof.manifest_sha256 = batches.sha256) \
-                   AND (batches.historical_rollups_materialized_at IS NULL \
-                        OR NOT EXISTS (SELECT 1 FROM hourly_rollup_archive_replay AS replay \
-                                       WHERE replay.dataset = batches.dataset AND replay.file_path = batches.file_path \
-                                         AND replay.archive_sha256 = batches.sha256 AND replay.target = ?4) \
-                        OR NOT EXISTS (SELECT 1 FROM hourly_rollup_archive_replay AS replay \
-                                       WHERE replay.dataset = batches.dataset AND replay.file_path = batches.file_path \
-                                         AND replay.archive_sha256 = batches.sha256 AND replay.target = ?5)))",
-            )
-            .bind(high_watermark_id)
-            .bind(exact_horizon.start.timestamp())
-            .bind(exact_horizon.end.timestamp())
-            .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
-            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-            .fetch_one(pool)
-            .await
-            .context("summary projection overflowed recent replay proof failed")?
-                != 0;
-            let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
-            let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
-            let rollup_gap = if let (Some(totals), Some(usage)) = (rollup_totals, rollup_usage) {
-                let mut missing = false;
+            let replay = replay_coverage.get(file_path).copied().unwrap_or_default();
+            let mut global_gap = historical_rollups_materialized_at.is_none()
+                || !replay.overall
+                || !replay.usage_breakdown;
+            if let (Some(totals), Some(usage)) = (rollup_totals, rollup_usage) {
+                let mut bucket = align_bucket_epoch(localized.start.timestamp(), 3_600, 0);
+                let last_bucket =
+                    align_bucket_epoch(localized.end.timestamp().saturating_sub(1), 3_600, 0);
                 while bucket <= last_bucket {
-                    missing |= !totals.contains_key(&(bucket, None))
-                        || !usage.contains_key(&(bucket, None));
+                    if !totals.contains_key(&(bucket, None)) || !usage.contains_key(&(bucket, None))
+                    {
+                        global_gap = true;
+                        break;
+                    }
                     bucket = bucket.saturating_add(3_600);
                 }
-                missing
             } else {
-                true
-            };
-            replay_gap || rollup_gap
-        } else {
-            false
-        };
-        let global = global_gap
-            .then_some(fallback_range)
-            .flatten()
-            .into_iter()
-            .collect();
-        let account = fallback_range.into_iter().collect();
+                global_gap = true;
+            }
+            if global_gap {
+                global.push(localized);
+            }
+            if upstream_activity_manifest_refreshed_at.is_none()
+                || !replay.account_stats
+                || !replay.usage_breakdown
+            {
+                account.push(localized);
+            }
+        }
+        let global = summary_projection_merge_exact_ranges(global);
+        let account = summary_projection_merge_exact_ranges(account);
         info!(
             stage = "overflowed_boundary_unproven_range_budget",
             source_row_count = rows.len(),
@@ -16069,6 +16100,16 @@ async fn build_summary_projection_once(
     } else {
         Vec::new()
     };
+    let current_archive_admission_paths = current_archive_admission
+        .iter()
+        .map(|archive| archive.file_path().to_string())
+        .collect::<Vec<_>>();
+    let current_archive_account_manifest_refreshed_paths =
+        load_summary_projection_archive_manifest_refreshed_paths(
+            pool,
+            &current_archive_admission_paths,
+        )
+        .await?;
     let current_archive_admission_exceeded =
         current_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES;
     let mut current_source_unavailable = false;
@@ -16437,11 +16478,26 @@ async fn build_summary_projection_once(
             )
             .await?;
             let mut global_unproven = unproven.global;
-            if !current_archive_admission.is_empty() {
-                // The bounded recent archive admission is hydrated below. Its raw source is
-                // therefore still an exact owner for recent global selections; do not let the
-                // older overflow summary shadow that independently admitted source.
-                global_unproven.clear();
+            if !current_archive_admission_exceeded {
+                // A bounded recent archive prefix is hydrated below. Remove only the exact
+                // hourly buckets it owns from the coarse overflow proof; older unresolved
+                // manifests remain unavailable for their own rolling ranges.
+                let mut admitted_buckets = HashSet::new();
+                for archive in &current_archive_admission {
+                    let Some(range) =
+                        summary_projection_archive_overlap_range(archive, exact_horizon)
+                    else {
+                        continue;
+                    };
+                    let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+                    let last_bucket =
+                        align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+                    while bucket <= last_bucket {
+                        admitted_buckets.insert(bucket);
+                        bucket = bucket.saturating_add(3_600);
+                    }
+                }
+                summary_projection_remove_covered_ranges(&mut global_unproven, &admitted_buckets);
             }
             // The bounded recent archive prefix is hydrated below.  Keep older overflow gaps
             // fail-closed without letting their coarse budget fallback poison a disjoint recent
@@ -16582,6 +16638,20 @@ async fn build_summary_projection_once(
         unavailable_unmaterialized_archive_current_ranges
             .extend(paged_boundary_manifest_unknown_coverage_ranges);
     }
+    unavailable_unmaterialized_archive_account_exact_ranges.extend(
+        current_archive_admission.iter().filter_map(|archive| {
+            if current_archive_account_manifest_refreshed_paths.contains(archive.file_path()) {
+                return None;
+            }
+            summary_projection_archive_overlap_range(
+                archive,
+                ExactUtcRange {
+                    start: live_start,
+                    end,
+                },
+            )
+        }),
+    );
     unavailable_unmaterialized_archive_account_exact_ranges
         .extend(paged_boundary_manifest_unknown_account_coverage_ranges);
     let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
@@ -18775,16 +18845,11 @@ async fn build_summary_projection_once(
         )
         .await?;
         let mut global_raw_archive_recovery_succeeded = false;
-        if global_archive_scan_verified_paths.len() != all_time_archive_scan_paths.global.len() {
-            // The generic global aggregate chooses its own archive paths inside `stats`. Do not
-            // let a source which was unavailable at preflight become readable and enter that
-            // scan under a different manifest revision. When every candidate is already
-            // materialized, the compact global rollup is its exact all-time source and no raw
-            // reconciliation is necessary; otherwise retain the last-good global aggregate.
-            if all_time_archive_scan_paths.global_unmaterialized_count != 0 {
-                global_all_time_source_unavailable = true;
-            }
-        } else {
+        if all_time_archive_scan_paths.global_unmaterialized_count != 0 {
+            // Materialized archives are already represented by their compact replay/rollup
+            // proof. A corrupt sibling must not prevent the independent unmaterialized archive
+            // tail from being recovered; the bounded stats query only opens that unmaterialized
+            // subset and therefore remains safe when a materialized path is unreadable.
             let unmaterialized_archive_totals =
                 crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
                     pool,
@@ -18797,7 +18862,7 @@ async fn build_summary_projection_once(
             match unmaterialized_archive_totals {
                 Ok(totals) => {
                     require_summary_projection_archive_file_paths_sha256(
-                        &all_time_archive_scan_paths.global,
+                        &global_archive_scan_verified_paths,
                         &all_time_archive_manifest_sha256,
                     )?;
                     global_totals = global_totals.add(totals);
@@ -18816,12 +18881,18 @@ async fn build_summary_projection_once(
                     ));
                 }
             }
+        } else if global_archive_scan_verified_paths.len()
+            != all_time_archive_scan_paths.global.len()
+        {
+            // No unmaterialized tail remains. Missing materialized files are covered by the
+            // compact baseline, so they do not invalidate the exact global aggregate.
+        } else {
+            // All candidates are materialized and verified; the compact global rollup is the
+            // exact all-time source and no raw reconciliation is necessary.
         }
         if global_raw_archive_recovery_succeeded
             && global_rollup_coverage_unproven
             && all_time_archive_scan_paths.global_unmaterialized_count > 0
-            && all_time_archive_scan_paths.global.len()
-                == all_time_archive_scan_paths.global_unmaterialized_count
             && !global_non_rollup_source_blocked
             && !global_live_tail_source_blocked
         {
@@ -38065,23 +38136,23 @@ mod request_compression_query_tests {
     #[test]
     fn summary_coverage_overlay_keeps_recovery_incremental_until_final_pass() {
         assert!(
-            !summary_coverage_overlay_requires_full_reduction(false, true, false, false),
+            !summary_coverage_overlay_requires_full_reduction(false, true, false),
             "a verified page must extend an existing overlay while obligations remain"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(true, true, false, false),
+            summary_coverage_overlay_requires_full_reduction(true, true, false),
             "the no-pending final pass must rebuild from all verified proofs"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(false, true, true, false),
+            summary_coverage_overlay_requires_full_reduction(false, true, true),
             "proof revocation must rebuild from the remaining verified proofs"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(false, true, false, true),
-            "coverage fence changes must rebuild same-identity proof contributions"
+            !summary_coverage_overlay_requires_full_reduction(false, true, false),
+            "coverage fence changes extend same-identity proof contributions incrementally"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(false, false, false, false),
+            summary_coverage_overlay_requires_full_reduction(false, false, false),
             "the first overlay publication has no incremental base"
         );
     }

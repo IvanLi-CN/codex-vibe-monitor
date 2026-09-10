@@ -3644,6 +3644,40 @@ impl SubscriptionHub {
         true
     }
 
+    pub(crate) async fn renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        if !projection.coverage_sources_match(generation_fence) {
+            return false;
+        }
+        if state
+            .summary_delta_journal
+            .overflowed_through_sequence
+            .is_some()
+        {
+            return false;
+        }
+        let has_unabsorbed_delta = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .any(|delta| {
+                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+            });
+        if !has_unabsorbed_delta {
+            return false;
+        }
+        projection.renew_freshness_from_delta_journal();
+        true
+    }
+
     pub(crate) async fn acknowledge_summary_delta(&self, delta: DashboardActivityTerminalDelta) {
         let mut state = self.state.lock().await;
         let slice_high_watermark = delta.terminal_sequence;
