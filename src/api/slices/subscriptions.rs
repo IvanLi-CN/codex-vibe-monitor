@@ -3818,6 +3818,25 @@ impl SubscriptionHub {
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
+        // Projection builders run under different maintenance single-flight locks. A slower
+        // builder can therefore finish after a newer rolling or coverage publication has already
+        // assigned a higher revision. Keep the hub monotonically increasing so an older snapshot
+        // can never overwrite a newer immutable projection during that race.
+        if state
+            .summary_projection
+            .as_ref()
+            .is_some_and(|current| current.revision() > projection.revision())
+        {
+            tracing::debug!(
+                current_revision = state
+                    .summary_projection
+                    .as_ref()
+                    .map(|current| current.revision()),
+                rejected_revision = projection.revision(),
+                "discarding stale summary projection publication"
+            );
+            return;
+        }
         state.summary_delta_journal.base_cursor =
             state
                 .summary_delta_journal

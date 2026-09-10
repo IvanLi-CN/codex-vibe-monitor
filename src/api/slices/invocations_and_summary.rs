@@ -7848,6 +7848,10 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     fn rolling_refreshed_at(&self) -> Option<Instant> {
         self.freshness_lease
             .latest(self.freshness.rolling_at(self.refreshed_at))
@@ -14110,8 +14114,12 @@ fn summary_coverage_overlay_requires_full_reduction(
     force_full_coverage_reduction: bool,
     has_previous_overlay: bool,
     has_revoked_proof: bool,
+    coverage_fence_changed: bool,
 ) -> bool {
-    force_full_coverage_reduction || !has_previous_overlay || has_revoked_proof
+    force_full_coverage_reduction
+        || !has_previous_overlay
+        || has_revoked_proof
+        || coverage_fence_changed
 }
 
 async fn publish_summary_coverage_overlay_once(
@@ -14181,6 +14189,9 @@ async fn publish_summary_coverage_overlay_once(
         force_full_coverage_reduction,
         previous_overlay.is_some(),
         !revoked_proof_identities.is_empty(),
+        previous_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.coverage_fence != durable_fence.coverage_fence()),
     );
     if full_reduction {
         // A full proof pass is the point at which stale Bootstrap gap ranges can be discarded.
@@ -14343,6 +14354,7 @@ async fn publish_summary_coverage_overlay_once(
         if !latest_fence
             .live_tail_cursor()
             .terminal_sources_match(durable_fence.live_tail_cursor())
+            || !latest_fence.coverage_sources_match(durable_fence)
             || latest_projection
                 .as_ref()
                 .is_none_or(|current| current.revision != next.revision)
@@ -14524,6 +14536,7 @@ async fn publish_summary_coverage_overlay_once(
     if !latest_fence
         .live_tail_cursor()
         .terminal_sources_match(durable_fence.live_tail_cursor())
+        || !latest_fence.coverage_sources_match(durable_fence)
         || latest_projection
             .as_ref()
             .is_none_or(|current| current.revision != next.revision)
@@ -15204,14 +15217,28 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
                  AND batches.sha256 IS NOT NULL \
                  AND TRIM(batches.sha256) <> '' \
                  AND proof.manifest_sha256 = batches.sha256 \
-           )",
+           ) \
+         LIMIT ?4",
     )
     .bind(high_watermark_id)
     .bind(exact_horizon.start.timestamp())
     .bind(exact_horizon.end.timestamp())
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection overflowed boundary unproven-range hydration failed")?;
+
+    if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        info!(
+            stage = "overflowed_boundary_unproven_range_budget",
+            source_row_count = rows.len(),
+            "summary projection metadata scan exceeded its bounded archive budget; retaining the full horizon as unavailable"
+        );
+        return Ok(SummaryProjectionOverflowedBoundaryUnprovenRanges {
+            global: vec![exact_horizon],
+            account: vec![exact_horizon],
+        });
+    }
 
     let paths = rows
         .iter()
@@ -37895,19 +37922,23 @@ mod request_compression_query_tests {
     #[test]
     fn summary_coverage_overlay_keeps_recovery_incremental_until_final_pass() {
         assert!(
-            !summary_coverage_overlay_requires_full_reduction(false, true, false),
+            !summary_coverage_overlay_requires_full_reduction(false, true, false, false),
             "a verified page must extend an existing overlay while obligations remain"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(true, true, false),
+            summary_coverage_overlay_requires_full_reduction(true, true, false, false),
             "the no-pending final pass must rebuild from all verified proofs"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(false, true, true),
+            summary_coverage_overlay_requires_full_reduction(false, true, true, false),
             "proof revocation must rebuild from the remaining verified proofs"
         );
         assert!(
-            summary_coverage_overlay_requires_full_reduction(false, false, false),
+            summary_coverage_overlay_requires_full_reduction(false, true, false, true),
+            "coverage fence changes must rebuild same-identity proof contributions"
+        );
+        assert!(
+            summary_coverage_overlay_requires_full_reduction(false, false, false, false),
             "the first overlay publication has no incremental base"
         );
     }

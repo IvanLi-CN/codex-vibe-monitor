@@ -10,11 +10,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite, SqliteConnection};
+use std::io::Read;
 
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_ENTRIES: usize = 10_000;
 pub(crate) const SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const SUMMARY_SOURCE_CHANGE_DESCRIPTOR_VERSION: i64 = 1;
 pub(crate) const SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE: &str = "summary-global";
+pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS: usize = 400;
 // V1 pages remain useful as backfill input but are intentionally not accepted as an archive
 // cleanup proof. Newly written pages use V2 only after semantic records are verified.
 pub(crate) const SUMMARY_ARCHIVE_SNAPSHOT_V1: i64 = 1;
@@ -55,11 +57,24 @@ pub(crate) struct SummaryArchiveSnapshotV2Record {
 pub(crate) fn decode_summary_archive_snapshot_v2_payload(
     payload: &[u8],
 ) -> Result<Vec<SummaryArchiveSnapshotV2Record>> {
-    let decoded = zstd::stream::decode_all(payload).context("decode V2 Summary Snapshot page")?;
+    let mut decoder =
+        zstd::stream::read::Decoder::new(payload).context("open V2 Summary Snapshot decoder")?;
+    let mut decoded = Vec::new();
+    decoder
+        .by_ref()
+        .take((SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES + 1) as u64)
+        .read_to_end(&mut decoded)
+        .context("decode V2 Summary Snapshot page")?;
+    if decoded.len() > SUMMARY_SOURCE_CHANGE_JOURNAL_MAX_BYTES {
+        bail!("V2 Summary Snapshot decoded payload exceeds byte budget");
+    }
     let records = serde_json::from_slice::<Vec<SummaryArchiveSnapshotV2Record>>(&decoded)
         .context("parse V2 Summary Snapshot records")?;
     if records.is_empty() {
         bail!("V2 Summary Snapshot page cannot be empty");
+    }
+    if records.len() > SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS {
+        bail!("V2 Summary Snapshot page record budget exceeded");
     }
     if records.iter().any(|record| {
         record.invoke_id.trim().is_empty()
@@ -236,7 +251,9 @@ pub(crate) async fn store_summary_archive_snapshot_page_v2_tx(
         bail!("summary archive snapshot page is missing identity or coverage proof");
     }
     let records = decode_summary_archive_snapshot_v2_payload(&page.payload)?;
-    if records.len() != page.row_count as usize {
+    if records.len() != page.row_count as usize
+        || records.len() > SUMMARY_ARCHIVE_SNAPSHOT_MAX_RECORDS
+    {
         bail!("V2 Summary Snapshot row count does not match payload");
     }
     let coverage_start = parse_snapshot_coverage_at(&page.coverage_start)

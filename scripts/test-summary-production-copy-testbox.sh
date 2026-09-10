@@ -40,6 +40,12 @@ grep -Fq 'archive_dir="$copy_path/archives"' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 grep -Fq 'summary-production-archive-remap=verified=' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
+grep -Fq 'summary-production-exact-oracle.py' \
+  "$repo_root/scripts/validate-summary-production-fixture.sh"
+grep -Fq 'summary_validate_exact_response' \
+  "$repo_root/scripts/validate-summary-production-fixture.sh"
+grep -Fq 'summary-production-exactness=' \
+  "$repo_root/scripts/summary-production-exact-oracle.py"
 grep -Fq 'UPDATE archive_batches SET file_path = ?1 WHERE id = ?2' \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 grep -Fq 'summary-production-recovery-telemetry=' \

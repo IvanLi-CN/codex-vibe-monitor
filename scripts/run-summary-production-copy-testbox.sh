@@ -176,7 +176,7 @@ wait "$runner_pid"
 status="$?"
 set -e
 runner_pid=""
-grep -E '^(production-copy-bytes=|summary-production-(sqlite|health|startup-phases|window|bootstrap|overlay|recovery(-telemetry)?|validation)=)' "$runner_log" || true
+grep -E '^(production-copy-bytes=|summary-production-(sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=)' "$runner_log" || true
 if [[ "$status" -eq 0 ]]; then
   printf 'production-copy-bytes=%s\n' "$source_meta"
   printf 'summary-production-validation=passed\n'

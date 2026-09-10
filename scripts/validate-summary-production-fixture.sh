@@ -127,6 +127,18 @@ print("summary-production-startup-phases=" + ",".join(phases or ["none"]))
 PY
   }
 
+  summary_validate_exact_response() {
+    local response_path="$1"
+    local window="$2"
+    local now_epoch="$3"
+    python3 /workspace/scripts/summary-production-exact-oracle.py \
+      --database "$database_path" \
+      --archives "$archive_dir" \
+      --response "$response_path" \
+      --window "$window" \
+      --now "$now_epoch"
+  }
+
   [[ -f "$database_path" && ! -L "$database_path" ]] || {
     printf 'project-reason: staged production copy does not contain a canonical SQLite file\n' >&2
     exit 64
@@ -232,6 +244,7 @@ PY
 
   recent_windows=(current 1d 7d today)
   recent_statuses=()
+  recent_oracle_nows=()
   recent_ready_deadline_secs="${SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS:-30}"
   [[ "$recent_ready_deadline_secs" =~ ^[1-9][0-9]*$ ]] || {
     printf 'project-reason: recent Summary readiness deadline must be a positive integer\n' >&2
@@ -242,11 +255,14 @@ PY
     recent_ready=true
     recent_statuses=()
     recent_error_classes=()
+    recent_oracle_nows=()
     for window in "${recent_windows[@]}"; do
       response_path="$runtime_dir/summary-${window}.response"
+      oracle_now="$(date -u +%s)"
       status="$(curl -sS -o "$response_path" -w '%{http_code}' --max-time 2 \
         "http://127.0.0.1:18080/api/stats/summary?window=${window}&limit=50&timeZone=Asia%2FShanghai" || true)"
       recent_statuses+=("$status")
+      recent_oracle_nows+=("$oracle_now")
       if [[ "$status" == 200 ]]; then
         recent_error_classes+=("ok")
       else
@@ -262,6 +278,12 @@ PY
     printf 'summary-production-window=%s status=%s reason=%s elapsed_secs=%s\n' \
       "${recent_windows[$index]}" "${recent_statuses[$index]}" \
       "${recent_error_classes[$index]}" "$((SECONDS - started_at))"
+    if [[ "${recent_statuses[$index]}" == 200 ]]; then
+      summary_validate_exact_response \
+        "$runtime_dir/summary-${recent_windows[$index]}.response" \
+        "${recent_windows[$index]}" \
+        "${recent_oracle_nows[$index]}"
+    fi
   done
   if [[ "${recent_error_classes[*]}" == *projection_unhydrated* ]]; then
     printf 'summary-production-bootstrap=reason=%s stage=%s\n' \
@@ -270,6 +292,7 @@ PY
   fi
   historical_status=000
   historical_error_class=projection_unhydrated
+  historical_oracle_now=0
   historical_ready_deadline_secs="${SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS:-1800}"
   [[ "$historical_ready_deadline_secs" =~ ^[1-9][0-9]*$ ]] || {
     printf 'project-reason: historical Summary readiness deadline must be a positive integer\n' >&2
@@ -278,6 +301,7 @@ PY
   historical_deadline=$((SECONDS + historical_ready_deadline_secs))
   while :; do
     historical_response_path="$runtime_dir/summary-30d.response"
+    historical_oracle_now="$(date -u +%s)"
     historical_status="$(curl -sS -o "$historical_response_path" -w '%{http_code}' --max-time 2 \
       'http://127.0.0.1:18080/api/stats/summary?window=30d&limit=50&timeZone=Asia%2FShanghai' || true)"
     if [[ "$historical_status" == 200 ]]; then
@@ -290,6 +314,8 @@ PY
   done
   printf 'summary-production-window=30d status=%s reason=%s elapsed_secs=%s\n' \
     "$historical_status" "$historical_error_class" "$((SECONDS - started_at))"
+  [[ "$historical_status" == 200 ]] && summary_validate_exact_response \
+    "$historical_response_path" 30d "$historical_oracle_now"
   recovery_diagnostics() {
     python3 - "$log_path" "$database_path" <<'PY'
 import re
@@ -393,9 +419,12 @@ PY
   }
 
   all_status=000
+  all_response_path="$runtime_dir/summary-all.response"
+  all_oracle_now=0
   all_deadline=$((SECONDS + 1800))
   while :; do
-    all_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 \
+    all_oracle_now="$(date -u +%s)"
+    all_status="$(curl -sS -o "$all_response_path" -w '%{http_code}' --max-time 2 \
       'http://127.0.0.1:18080/api/stats/summary?window=all&limit=50&timeZone=Asia%2FShanghai' || true)"
     [[ "$all_status" == 200 ]] && break
     (( SECONDS >= all_deadline )) && break
@@ -403,6 +432,8 @@ PY
   done
   printf 'summary-production-window=all status=%s elapsed_secs=%s\n' \
     "$all_status" "$((SECONDS - started_at))"
+  [[ "$all_status" == 200 ]] && summary_validate_exact_response \
+    "$all_response_path" all "$all_oracle_now"
   if [[ "${SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS:-}" == "1" ]]; then
     recovery_diagnostics
   fi

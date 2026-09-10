@@ -518,6 +518,22 @@ where
         tx.rollback().await?;
         return Ok(false);
     };
+
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        let proof_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+        )
+        .bind(archive_batch_id)
+        .bind(expected_sha256)
+        .fetch_one(tx.as_mut())
+        .await?
+            != 0;
+        if !proof_exists {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
     let source_safe_start = match staged_source_safe_start {
         Some(value) => match NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
             Ok(value) => Some(value),
@@ -1198,6 +1214,8 @@ async fn load_summary_archive_snapshot_backfill_candidates(
 async fn promote_verified_summary_snapshot_page_sets(
     pool: &Pool<Sqlite>,
     limit: i64,
+    started_at: Instant,
+    max_elapsed: Duration,
 ) -> Result<usize> {
     let candidates = sqlx::query_as::<_, (i64, String)>(
         "SELECT snapshot.archive_batch_id, snapshot.manifest_sha256 \
@@ -1222,6 +1240,9 @@ async fn promote_verified_summary_snapshot_page_sets(
     .context("load unpromoted Summary Snapshot V2 page sets")?;
     let mut promoted = 0;
     for (archive_batch_id, manifest_sha256) in candidates {
+        if started_at.elapsed() >= max_elapsed {
+            break;
+        }
         if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
@@ -2012,6 +2033,8 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     let promoted_page_sets = promote_verified_summary_snapshot_page_sets(
         pool,
         SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
+        started_at,
+        max_elapsed,
     )
     .await?;
     let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
