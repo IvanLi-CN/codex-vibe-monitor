@@ -3966,6 +3966,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure summary_source_change_compaction_proof table existence")?;
+    // Existing installations may have the original proof table without the retained cursor;
+    // upgrade it before durable-tail recovery reads the compaction boundary.
+    let compaction_proof_columns =
+        load_sqlite_table_columns(pool, "summary_source_change_compaction_proof").await?;
+    if !compaction_proof_columns.contains("retained_after_cursor") {
+        sqlx::query(
+            "ALTER TABLE summary_source_change_compaction_proof \
+             ADD COLUMN retained_after_cursor INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add summary source compaction retained cursor")?;
+    }
 
     sqlx::query(
         r#"

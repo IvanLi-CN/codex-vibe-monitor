@@ -683,12 +683,14 @@ pub(crate) async fn compact_summary_source_change_journal(
     let proof_json = serde_json::to_string(&proof)?;
     sqlx::query(
         "INSERT INTO summary_source_change_compaction_proof \
-         (first_cursor, last_cursor, proof_kind, proof_json) VALUES (?1, ?2, ?3, ?4)",
+         (first_cursor, last_cursor, proof_kind, proof_json, retained_after_cursor) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .bind(first_cursor)
     .bind(last_cursor)
     .bind(&proof.proof_kind)
     .bind(proof_json)
+    .bind(i64::try_from(retained_after_cursor).context("retained cursor overflow")?)
     .execute(tx.as_mut())
     .await?;
     sqlx::query("DELETE FROM summary_source_change_journal WHERE cursor <= ?1 AND cursor < ?2")
@@ -719,7 +721,7 @@ mod tests {
         .await
         .expect("journal table");
         sqlx::query(
-            "CREATE TABLE summary_source_change_compaction_proof (id INTEGER PRIMARY KEY AUTOINCREMENT, first_cursor INTEGER NOT NULL, last_cursor INTEGER NOT NULL, proof_kind TEXT NOT NULL, proof_json TEXT NOT NULL)",
+            "CREATE TABLE summary_source_change_compaction_proof (id INTEGER PRIMARY KEY AUTOINCREMENT, first_cursor INTEGER NOT NULL, last_cursor INTEGER NOT NULL, proof_kind TEXT NOT NULL, proof_json TEXT NOT NULL, retained_after_cursor INTEGER NOT NULL DEFAULT 0)",
         )
         .execute(&pool)
         .await
@@ -1010,12 +1012,14 @@ async fn compact_source_change_tail_before_insert(
         });
         sqlx::query(
             "INSERT INTO summary_source_change_compaction_proof \
-             (first_cursor, last_cursor, proof_kind, proof_json) VALUES (?1, ?2, ?3, ?4)",
+             (first_cursor, last_cursor, proof_kind, proof_json, retained_after_cursor) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind(first_cursor)
         .bind(last_cursor)
         .bind("bounded_source_tail_compaction")
         .bind(proof.to_string())
+        .bind(last_cursor.saturating_add(1))
         .execute(&mut *connection)
         .await?;
     }
