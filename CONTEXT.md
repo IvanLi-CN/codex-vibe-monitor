@@ -460,13 +460,13 @@ any missing, changed, unreadable, or replaced record leaves the archive unknown.
 _Avoid_: interval-density proof, count-only classification, Summary HTTP scan
 
 **Summary Startup Recovery Gate**:
-The bounded, cancellation-aware cold-start sweep that captures one stable
-unknown-legacy-manifest high-watermark, completes exact Live Detail Mirror
-identity attempts ahead of the first Summary Projection build, and persists only
-proven classifications. An unresolved source remains unknown; it cannot block an
-independent proof or be guessed into a mirror role. Periodic Summary maintenance
-starts only after this gate has allowed an exact Projection to publish.
-_Avoid_: generic-backfill starvation, global cold-start retry loop, inferred mirror
+The cold-start boundary that prohibits raw Legacy Detail Mirror identity reads
+before the first Summary Projection build. Bootstrap retains unknown manifests
+as range-local fail-closed evidence and publishes every independently exact
+selection; the pressure-gated generic backfill starts its durable identity
+cursor only after publication. An unresolved source remains unknown; it cannot
+block an independent proof or be guessed into a mirror role.
+_Avoid_: generic-backfill starvation, blocking raw preflight, inferred mirror
 
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a

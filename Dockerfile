@@ -165,7 +165,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
-RUN mkdir -p target && chown 65534:65534 target
+# Production-copy acceptance keeps the archive paths recorded in the SQLite manifest intact.
+# The runner supplies this target as its only writable mount for each isolated run.
+RUN mkdir -p target /srv/app \
+    && ln -s /codex-scratch/production-copy /srv/app/data \
+    && chown 65534:65534 target
 
 ENV BACKEND_TEST_WORKSPACE=/tmp/codex-vibe-monitor-backend-test \
     CARGO_TARGET_DIR=/tmp/codex-vibe-monitor-backend-test/target \

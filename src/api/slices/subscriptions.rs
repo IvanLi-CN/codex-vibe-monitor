@@ -715,6 +715,10 @@ pub(crate) struct SubscriptionHub {
     // Summary projection hydration is single-flight per service instance. Keeping this with the
     // hub avoids suppressing bootstrap for an independent AppState (including test fixtures).
     summary_projection_refresh: tokio::sync::Mutex<()>,
+    // Historical coverage recovery has independent lifetime and database admission from the
+    // rolling Projection refresh. It still needs one owner so a cadence tick cannot duplicate a
+    // page already being reduced by the recovery worker.
+    summary_coverage_recovery: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -3531,6 +3535,7 @@ impl SubscriptionHub {
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
             summary_projection_refresh: tokio::sync::Mutex::new(()),
+            summary_coverage_recovery: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -3562,6 +3567,16 @@ impl SubscriptionHub {
         let guard = self.state.lock().await;
         guard.summary_projection.as_ref().is_some_and(|projection| {
             projection.renew_freshness_if_generation_matches(generation_fence)
+        })
+    }
+
+    pub(crate) async fn renew_summary_projection_freshness_if_live_tail_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let guard = self.state.lock().await;
+        guard.summary_projection.as_ref().is_some_and(|projection| {
+            projection.renew_freshness_if_live_tail_matches(generation_fence)
         })
     }
 
@@ -3787,6 +3802,12 @@ impl SubscriptionHub {
         &self,
     ) -> Result<tokio::sync::MutexGuard<'_, ()>, tokio::sync::TryLockError> {
         self.summary_projection_refresh.try_lock()
+    }
+
+    pub(crate) fn try_lock_summary_coverage_recovery(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, tokio::sync::TryLockError> {
+        self.summary_coverage_recovery.try_lock()
     }
 
     pub(crate) async fn next_summary_projection_revision(&self) -> u64 {

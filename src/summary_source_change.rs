@@ -288,6 +288,17 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     archive_batch_id: i64,
     manifest_sha256: &str,
 ) -> Result<bool> {
+    macro_rules! reject_proof {
+        ($reason:literal) => {{
+            tracing::info!(
+                stage = "summary_snapshot_v2_proof_rejected",
+                archive_batch_id,
+                reason = $reason,
+                "Summary Snapshot V2 proof rejected"
+            );
+            return Ok(false);
+        }};
+    }
     let Some((dataset, manifest, manifest_row_count, status, manifest_start, manifest_end)) =
         sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>)>(
             "SELECT dataset, sha256, row_count, status, coverage_start_at, coverage_end_at \
@@ -305,7 +316,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
         || status != "completed"
         || manifest_row_count < 0
     {
-        return Ok(false);
+        reject_proof!("manifest_identity_or_status");
     }
     let row = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
@@ -318,7 +329,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     .await
     .context("check summary archive snapshot proof")?;
     if row.is_empty() {
-        return Ok(false);
+        reject_proof!("no_snapshot_pages");
     }
     let manifest_start = manifest_start.and_then(|value| parse_snapshot_coverage_at(&value));
     let manifest_end = manifest_end.and_then(|value| parse_snapshot_coverage_at(&value));
@@ -331,10 +342,10 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
     let mut seen_invoke_ids = std::collections::HashSet::<String>::new();
     for (expected_page, row) in row.into_iter().enumerate() {
         if row.get::<i64, _>("page_index") != i64::try_from(expected_page).unwrap_or(-1) {
-            return Ok(false);
+            reject_proof!("page_order");
         }
         if row.get::<i64, _>("format_version") != SUMMARY_ARCHIVE_SNAPSHOT_V2 {
-            return Ok(false);
+            reject_proof!("format_version");
         }
         let payload = row.get::<Vec<u8>, _>("payload");
         let row_count = row.get::<i64, _>("row_count");
@@ -347,29 +358,29 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
             || row.get::<String, _>("coverage_start").trim().is_empty()
             || row.get::<String, _>("coverage_end").trim().is_empty()
         {
-            return Ok(false);
+            reject_proof!("page_integrity_or_coverage");
         }
         let Some(coverage_start) = parse_snapshot_coverage_at(row.get("coverage_start")) else {
-            return Ok(false);
+            reject_proof!("page_coverage_start_parse");
         };
         let Some(coverage_end) = parse_snapshot_coverage_at(row.get("coverage_end")) else {
-            return Ok(false);
+            reject_proof!("page_coverage_end_parse");
         };
         if coverage_start > coverage_end {
-            return Ok(false);
+            reject_proof!("page_coverage_order");
         }
         if previous_page_end.is_some_and(|previous_end| coverage_start < previous_end) {
-            return Ok(false);
+            reject_proof!("page_coverage_overlap");
         }
         first_page_start.get_or_insert(coverage_start);
         last_page_end = Some(coverage_end);
         previous_page_end = Some(coverage_end);
         let records = match decode_summary_archive_snapshot_v2_payload(&payload) {
             Ok(records) => records,
-            Err(_) => return Ok(false),
+            Err(_) => reject_proof!("payload_decode"),
         };
         if i64::try_from(records.len()).unwrap_or(-1) != row_count {
-            return Ok(false);
+            reject_proof!("payload_row_count");
         }
         total_rows = total_rows.saturating_add(row_count);
         if records.iter().any(|record| {
@@ -386,14 +397,14 @@ pub(crate) async fn summary_archive_snapshot_has_proof(
                 || occurred_at < coverage_start
                 || occurred_at > coverage_end
         }) {
-            return Ok(false);
+            reject_proof!("record_order_identity_or_coverage");
         }
     }
     if total_rows != manifest_row_count
         || manifest_start.is_some_and(|start| first_page_start != Some(start))
         || manifest_end.is_some_and(|end| last_page_end != Some(end))
     {
-        return Ok(false);
+        reject_proof!("manifest_row_count_or_coverage");
     }
     Ok(true)
 }

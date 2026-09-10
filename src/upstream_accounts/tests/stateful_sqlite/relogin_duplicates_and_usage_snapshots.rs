@@ -3693,8 +3693,8 @@ async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usa
  {
     let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     config.invocation_max_days = 1;
-    config.archive_dir = PathBuf::from(format!(
-        "target/archive-tests/window-actual-usage-{}",
+    config.archive_dir = crate::tests::test_runtime_path(&format!(
+        "archive-tests/window-actual-usage-{}",
         random_base36(8).expect("archive suffix")
     ));
     let state = test_app_state_with_config_and_parallelism(
@@ -3791,8 +3791,8 @@ async fn enrich_window_actual_usage_for_summaries_reads_materialized_archive_usa
 async fn materialize_historical_rollups_populates_upstream_account_usage_hourly_from_archive() {
     let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     config.invocation_max_days = 1;
-    config.archive_dir = PathBuf::from(format!(
-        "target/archive-tests/upstream-account-usage-hourly-{}",
+    config.archive_dir = crate::tests::test_runtime_path(&format!(
+        "archive-tests/upstream-account-usage-hourly-{}",
         random_base36(8).expect("archive suffix")
     ));
     let state = test_app_state_with_config_and_parallelism(
@@ -4309,8 +4309,8 @@ async fn get_upstream_account_window_usage_includes_archived_partial_bucket_befo
  {
     let mut config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
     config.invocation_max_days = 1;
-    config.archive_dir = PathBuf::from(format!(
-        "target/archive-tests/upstream-account-usage-boundary-{}",
+    config.archive_dir = crate::tests::test_runtime_path(&format!(
+        "archive-tests/upstream-account-usage-boundary-{}",
         random_base36(8).expect("archive suffix")
     ));
     let state = test_app_state_with_config_and_parallelism(

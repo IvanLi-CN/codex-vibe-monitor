@@ -1188,7 +1188,7 @@ async fn startup_backfill_defers_legacy_mirror_work_until_cold_summary_is_publis
 }
 
 #[tokio::test]
-async fn startup_summary_hydration_recovers_legacy_mirror_before_memory_only_publish() {
+async fn startup_summary_hydration_publishes_before_legacy_mirror_recovery() {
     let (state, temp_dir, _db_url) = file_backed_test_state_with_busy_timeout(
         "startup-summary-legacy-mirror-recovery",
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
@@ -1252,7 +1252,7 @@ async fn startup_summary_hydration_recovers_legacy_mirror_before_memory_only_pub
         );
     tokio::time::timeout(Duration::from_secs(8), hydration_handle)
         .await
-        .expect("startup mirror recovery and Summary hydration must finish")
+        .expect("Summary hydration must not wait for legacy mirror recovery")
         .expect("startup hydration coordinator should join");
 
     let source_kind: String = sqlx::query_scalar(
@@ -1262,12 +1262,12 @@ async fn startup_summary_hydration_recovers_legacy_mirror_before_memory_only_pub
     .bind(&archive_file_path)
     .fetch_one(&state.pool)
     .await
-    .expect("load recovered archive source role");
-    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR);
+    .expect("load deferred archive source role");
+    assert_eq!(source_kind, SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN);
     assert!(state.subscription_hub.summary_projection().await.is_some());
 
     state.pool.close().await;
-    let Json(summary) = fetch_summary(
+    let summary = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
             window: Some("current".to_string()),
@@ -1277,9 +1277,14 @@ async fn startup_summary_hydration_recovers_legacy_mirror_before_memory_only_pub
         }),
     )
     .await
-    .expect("serve the recovered Summary projection without SQLite or archive access");
-    assert_eq!(summary.total_count, 1);
-    assert_eq!(summary.total_tokens, 12);
+    .expect_err("an unclassified archive must remain range-local unavailable after publication");
+    let ApiError::Unavailable(summary) = summary else {
+        panic!("an unclassified archive must use the unavailable response: {summary:?}");
+    };
+    assert!(
+        format!("{summary}").contains("current source is unavailable"),
+        "the unavailable response must preserve the exact source boundary: {summary}"
+    );
 
     state.shutdown.cancel();
     let _ = fs::remove_dir_all(&temp_dir);

@@ -1627,9 +1627,8 @@ async fn run_startup_backfill_task_if_due_outcome(
         return run_startup_backfill_coverage_repair_if_due(state, gate).await;
     }
 
-    // Cold Summary startup owns the first complete legacy mirror identity sweep. Letting the
-    // generic low-priority queue enter the same proof work before a Projection exists can spend
-    // the single background permit and delay the source classification that Summary requires.
+    // Legacy-mirror identity reads can decompress large archives. Keep that raw work out of
+    // cold Bootstrap entirely; the generic durable cursor starts after a Projection publishes.
     if task == StartupBackfillTask::LegacyDetailMirrors
         && state.subscription_hub.summary_projection().await.is_none()
     {

@@ -1528,23 +1528,29 @@ fn immediate_test_pool_no_available_wait_settings() -> PoolNoAvailableWaitSettin
     }
 }
 
-fn isolate_default_test_runtime_path(path: &Path, default_root: &str, db_id: u64) -> PathBuf {
-    if path != Path::new(default_root) {
+fn isolate_default_test_runtime_path(path: &Path, default_root: &Path, db_id: u64) -> PathBuf {
+    if path != default_root {
         return path.to_path_buf();
     }
-    let isolated = Path::new(default_root).join(format!("{}-{db_id}", std::process::id()));
+    let isolated = default_root.join(format!("{}-{db_id}", std::process::id()));
     fs::create_dir_all(&isolated).expect("create isolated test runtime dir");
     isolated
 }
 
 fn isolate_stateful_test_config_runtime_paths(mut config: AppConfig, db_id: u64) -> AppConfig {
-    config.archive_dir =
-        isolate_default_test_runtime_path(&config.archive_dir, "target/archive-tests", db_id);
-    config.proxy_raw_dir =
-        isolate_default_test_runtime_path(&config.proxy_raw_dir, "target/proxy-raw-tests", db_id);
+    config.archive_dir = isolate_default_test_runtime_path(
+        &config.archive_dir,
+        &test_runtime_path("archive-tests"),
+        db_id,
+    );
+    config.proxy_raw_dir = isolate_default_test_runtime_path(
+        &config.proxy_raw_dir,
+        &test_runtime_path("proxy-raw-tests"),
+        db_id,
+    );
     config.xray_runtime_dir = isolate_default_test_runtime_path(
         &config.xray_runtime_dir,
-        "target/xray-forward-tests",
+        &test_runtime_path("xray-forward-tests"),
         db_id,
     );
     config
