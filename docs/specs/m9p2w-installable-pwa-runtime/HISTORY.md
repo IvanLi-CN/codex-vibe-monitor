@@ -16,6 +16,7 @@
 - 产品 App 的 Manifest 成为唯一安装图标元数据来源。移除 HTML 的 `rel="apple-touch-icon"` 以及对应生成、注入和测试路径，避免白底旧 fallback 与线上批准 artwork 分叉；既有 iOS/iPadOS Web Clip 不在可强制迁移范围内。
 - service worker 只缓存应用壳；manifest、版本元数据、regular/maskable 安装图标和 Apple 图标均不进入 precache 或 cache-first 路由。内容哈希图标由可重新校验的 manifest 发现并使用 immutable 响应缓存。
 - PWA 更新验收增加 V1 已安装到 V2 发布的路径：Android Chrome/WebAPK 与 Chromium Desktop 的同一安装身份在正常更新检查中取得 V2 manifest 和新图标 URL，不要求卸载或重新安装。
+- 安装入口从仅自动弹窗调整为双入口：可安装模式在头栏提供桌面文案 trigger 与移动具名图标 trigger；自动提示仍受滚动 30 天暂缓控制，暂缓期间手动入口保持可用。该调整不改变 manifest、service worker、离线快照或 waiting-update 接管语义。
 
 ## References
 

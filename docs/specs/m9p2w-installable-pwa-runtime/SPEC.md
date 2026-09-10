@@ -44,7 +44,8 @@
 - [REQ-PWA-ICONS] install icon 必须从 `scripts/export_brand_assets.py` 的 product mark 单一几何源导出：透明 regular `purpose: "any"` 保留品牌构图；不透明 `#FBFDFF` maskable 采用独立资源。maskable 的重要前景最大边为画布 58%-62%，且位于中心半径 40% 的安全圆；图源不得预烘焙系统圆角、描边、阴影或外框。现有批准的 regular/maskable artwork 像素保持不变。
 - [REQ-PWA-ICON-URLS] regular、maskable、favicon 与 shortcut 的字节变化必须同步更新 manifest 与 HTML 可见引用；安装图标不进入 service worker precache。每一代安装资源使用内容哈希文件名，manifest URL 与 HTML favicon URL 必须指向同一代文件；`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
-- 主界面头栏不得放置常驻 install/status button；当浏览器满足安装条件时，应改为自动弹出明确的 install prompt 或 manual guidance。
+- 主界面头栏在可安装模式下提供可发现的 install trigger：桌面位于主导航左侧并显示图标与文案，移动端位于主题按钮左侧并使用具名图标按钮；触发器打开同一 install prompt / manual guidance。
+- 首次满足安装条件且暂缓已到期时自动弹出提示；点击稍后、关闭、Esc 或遮罩后，以 `codex-vibe-monitor.pwa-install-deferred-until` 暂缓 30 天且保留当前原生事件供头栏 trigger 手动打开。拒绝或异常结束原生 prompt 同样写入 30 天暂缓并消费单次原生事件；头栏入口仍可打开说明，但在浏览器重新发出新的 `beforeinstallprompt` 事件前不渲染无效的原生确认按钮。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
 - 自动弹出的安装提示在窄屏上必须使用居中 modal，而不是贴底抽屉；背景页面可见但需被 overlay 明确压暗。
 
@@ -131,7 +132,7 @@
 
 - Given 桌面 Chromium 或 Android Chrome
   When 页面满足安装条件
-  Then app shell 自动显示明确 install prompt，且头栏不存在常驻 install button，并在用户确认后切换到 installed-state vocabulary。
+  Then app shell 自动显示明确 install prompt，头栏同时提供可手动打开的 install trigger，并在用户确认后切换到 installed-state vocabulary。
 
 - Given 新版本前端资源已经部署
   When 当前页面检测到 waiting service worker
@@ -163,9 +164,9 @@
 
 ## Visual Evidence
 
-- Evidence source: `storybook-static` + local PWA preview/test server; no login, production account, secret, or live backend payload was used.
-- Bound source revision: working tree after the validated auto-open install prompt capture recorded on July 18, 2026.
-- Viewport: desktop `1440x1000`, mobile `393x852`.
+- Evidence source: mock-only Web Demo (`VITE_APP_RUNTIME=demo`) with `mockPwa=prompt`; no login, production account, secret, or live backend payload was used.
+- Bound source revision: current PR head at convergence; visual capture render surface was verified at `5a052749`.
+- Viewport: desktop `1440x1000`, mobile `393x852`; capture scope is the browser viewport only.
 
 ### Application Icon Contract
 
@@ -177,6 +178,10 @@
 - state: owner-confirmed candidate freeze
 
 ### Install / Update / Shell
+
+![Desktop PWA install trigger](./assets/pwa-install-trigger-desktop.png)
+
+![Mobile PWA install trigger](./assets/pwa-install-trigger-mobile393.png)
 
 ![Auto-open install prompt centered on mobile](./assets/pwa-install-prompt-mobile.png)
 

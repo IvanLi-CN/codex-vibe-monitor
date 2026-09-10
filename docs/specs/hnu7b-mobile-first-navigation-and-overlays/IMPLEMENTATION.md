@@ -23,6 +23,7 @@
 - 所有页面级 `surface-panel` 在移动端扁平化为结构容器，保持单一 `12px` 页面 gutter；Settings 与 External API Keys 的外层 Card 同步扁平化，内部数据项保留紧凑 card。
 - 移动端移除桌面装饰背景；Dashboard Working Conversations 不再向扁平页面容器重复注入内边距。
 - App shell、账号详情、Dashboard、Settings 和 Prompt Cache 的 Storybook 移动状态已更新。
+- App shell 移动头栏已加入 PWA 安装具名图标入口；移动语言改为显示当前 locale 的彩色圆形旗帜并中英直切，桌面语言 listbox 保持不变。
 
 ## Verification
 
