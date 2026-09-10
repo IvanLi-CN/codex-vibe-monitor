@@ -459,6 +459,7 @@ export function AppLayout() {
           shellReady={pwaRuntime.shellReady}
           isOffline={pwaRuntime.isOffline}
           onPromptInstall={handleInstallPrompt}
+          canPromptInstall={pwaRuntime.installPromptAvailable}
           labels={{
             promptButton: t("app.pwa.install.promptButton"),
             laterButton: t("app.pwa.install.laterButton"),

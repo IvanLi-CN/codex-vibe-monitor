@@ -17,6 +17,7 @@ interface PwaRuntimeVersionState {
 
 export interface PwaRuntimeState {
   installMode: PwaInstallMode;
+  installPromptAvailable: boolean;
   installSupported: boolean;
   shouldAutoOpenInstallDialog: boolean;
   isOffline: boolean;
@@ -236,7 +237,7 @@ export function usePwaRuntime(): PwaRuntimeState {
       return;
     }
     deferInstallPrompt();
-    setInstallMode(resolveInstallMode(null));
+    setInstallMode("prompt");
   }, [deferInstallPrompt, installPrompt]);
 
   const applyUpdate = useCallback(async () => {
@@ -250,6 +251,7 @@ export function usePwaRuntime(): PwaRuntimeState {
 
   return {
     installMode,
+    installPromptAvailable: installPrompt != null,
     installSupported: installMode !== "unsupported",
     shouldAutoOpenInstallDialog:
       (installMode === "prompt" || installMode === "manual-ios") &&

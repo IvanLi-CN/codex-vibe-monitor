@@ -6,7 +6,7 @@
 - Implementation summary:
   - installable-runtime PWA 仍由 `vite-plugin-pwa` `injectManifest`、manifest、service worker、install control、Safari manual guidance、prompt-style update 与 offline shell banner 组成。
   - app shell 在桌面主导航左侧和移动主题按钮左侧暴露 install trigger；满足安装条件且暂缓到期时自动弹出 install prompt / manual guidance，并保持窄屏居中 modal 语义。
-  - `usePwaRuntime` 以 `codex-vibe-monitor.pwa-install-deferred-until` 保存滚动 30 天暂缓；存储不可用时降级为内存状态。Chromium 拒绝或异常结束原生安装同样进入暂缓并消费单次事件，直到新的 `beforeinstallprompt` 事件到达；Safari/iOS 继续只展示手动指引。
+  - `usePwaRuntime` 以 `codex-vibe-monitor.pwa-install-deferred-until` 保存滚动 30 天暂缓；存储不可用时降级为内存状态。Chromium 拒绝或异常结束原生安装同样进入暂缓并消费单次事件，头栏只保留说明入口，直到新的 `beforeinstallprompt` 事件到达；Safari/iOS 继续只展示手动指引。
   - Dashboard 概览离线数据改为应用层 IndexedDB snapshot store：五个固定 range 各保存最近一份成功快照，不把 `/api/*` 缓存职责塞进 service worker。
   - `DashboardActivityOverview` 已接入 `live` / `cached-offline` / `not-cached-yet` 三态；`working conversations` 明确保留在线依赖，并在离线重开时显示不可用语义。
   - install icon 保留透明 regular 与独立 maskable 输出；`scripts/export_brand_assets.py` 为 favicon、regular 和 maskable 资源生成内容哈希文件名，`vite.config.ts` 只消费这组五个唯一资源。既有批准的 regular/maskable artwork 像素未改变。

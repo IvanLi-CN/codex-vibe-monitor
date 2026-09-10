@@ -55,6 +55,7 @@ const hookMocks = vi.hoisted(() => ({
   })),
   usePwaRuntime: vi.fn(() => ({
     installMode: "unsupported",
+    installPromptAvailable: false,
     installSupported: false,
     shouldAutoOpenInstallDialog: false,
     isOffline: false,
@@ -385,6 +386,7 @@ describe("AppLayout", () => {
     });
     hookMocks.usePwaRuntime.mockReturnValue({
       installMode: "prompt",
+      installPromptAvailable: true,
       installSupported: true,
       shouldAutoOpenInstallDialog: true,
       isOffline: false,
@@ -528,6 +530,7 @@ describe("AppLayout", () => {
     });
     hookMocks.usePwaRuntime.mockReturnValue({
       installMode: "installed",
+      installPromptAvailable: false,
       installSupported: true,
       shouldAutoOpenInstallDialog: false,
       isOffline: true,
