@@ -145,7 +145,7 @@ done
 }
 
 copy_log="$(mktemp "${TMPDIR:-/tmp}/summary-production-copy.XXXXXX")"
-ssh -o BatchMode=yes "$testbox" bash -s -- "$source_path" "$scratch_path" <<'REMOTE' >"$copy_log" 2>&1 &
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "$testbox" bash -s -- "$source_path" "$scratch_path" <<'REMOTE' >"$copy_log" 2>&1 &
 set -euo pipefail
 source_path="$1"
 scratch_path="$2"

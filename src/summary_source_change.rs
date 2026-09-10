@@ -366,17 +366,21 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
         reject_proof!("proof_budget");
     }
     let manifest_start = match manifest_start {
-        Some(value) => Some(
-            parse_snapshot_coverage_at(&value)
-                .ok_or_else(|| anyhow::anyhow!("invalid manifest coverage start"))?,
-        ),
+        Some(value) => {
+            let Some(parsed) = parse_snapshot_coverage_at(&value) else {
+                reject_proof!("manifest_coverage_start_parse");
+            };
+            Some(parsed)
+        }
         None => None,
     };
     let manifest_end = match manifest_end {
-        Some(value) => Some(
-            parse_snapshot_coverage_at(&value)
-                .ok_or_else(|| anyhow::anyhow!("invalid manifest coverage end"))?,
-        ),
+        Some(value) => {
+            let Some(parsed) = parse_snapshot_coverage_at(&value) else {
+                reject_proof!("manifest_coverage_end_parse");
+            };
+            Some(parsed)
+        }
         None => None,
     };
     let mut first_page_start = None;
@@ -385,7 +389,6 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     let mut previous_record_key = None;
     let mut total_rows = 0_i64;
     let mut seen_ids = std::collections::HashSet::new();
-    let mut seen_invoke_ids = std::collections::HashSet::<String>::new();
     let mut validated_pages = 0_i64;
     let mut rows = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
@@ -453,7 +456,6 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             }
             previous_record_key = Some(key);
             !seen_ids.insert(record.id)
-                || !seen_invoke_ids.insert(record.invoke_id.clone())
                 || occurred_at < coverage_start
                 || occurred_at > coverage_end
         }) {

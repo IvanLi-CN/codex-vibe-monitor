@@ -11405,6 +11405,23 @@ async fn timeseries_daily_backed_ignores_pruned_legacy_archive_batch_files() {
     refresh_long_term_stats(&state.pool, 400)
         .await
         .expect("materialize long-term historical rollups");
+    let (archive_batch_id, archive_sha256, coverage_start, coverage_end):
+        (i64, String, String, String) = sqlx::query_as(
+            "SELECT id, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE file_path = ?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&state.pool)
+        .await
+        .expect("load archive identity for V2 cleanup proof");
+    super::insert_summary_archive_snapshot_proof(
+        &state.pool,
+        archive_batch_id,
+        &archive_sha256,
+        &coverage_start,
+        &coverage_end,
+        1,
+    )
+    .await;
     prune_legacy_archive_batches(&state.pool, &state.config, false)
         .await
         .expect("prune legacy archive files after materialization");
