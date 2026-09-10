@@ -17409,6 +17409,32 @@ async fn build_summary_projection_once(
                 "summary projection exact archive boundary exceeds bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
+        // A large materialized archive cannot fit in the bounded exact-record set. Its compact
+        // rollup still proves complete-hour totals, so preserve those totals and mark only the
+        // partial boundary segments as unavailable. Avoid opening the raw source just to hit the
+        // same resident-budget failure after reading every row.
+        if archive.has_materialized_historical_rollups()
+            && archive_row_counts
+                .get(archive.file_path())
+                .is_some_and(|count| *count > summary_projection_exact_record_limit() as i64)
+            && summary_projection_archive_is_fully_within_exact_horizon(
+                &archive,
+                ExactUtcRange {
+                    start: archive_start,
+                    end,
+                },
+            )
+        {
+            summary_projection_mark_unavailable_archive_ranges_by_requirement(
+                &mut unavailable_unmaterialized_archive_buckets,
+                &mut unavailable_boundary_archive_ranges,
+                true,
+                &exact_ranges,
+                &exact_bucket_requirements,
+            )?;
+            unavailable_unmaterialized_archive_current_ranges.push(archive_range);
+            continue;
+        }
         let manifest_sha256 = archive_manifest_sha256
             .get(archive.file_path())
             .ok_or_else(|| {
@@ -17979,6 +18005,26 @@ async fn build_summary_projection_once(
         ) else {
             continue;
         };
+        // A materialized archive whose complete coverage is inside the moving live horizon
+        // cannot fit in the bounded current resident prefix when its manifest row count already
+        // exceeds the exact-record limit. Its compact rollup remains an exact source for
+        // rolling ranges; do not spend the budget opening a raw file that must make current
+        // unavailable anyway.
+        if archive.has_materialized_historical_rollups()
+            && archive_row_counts
+                .get(archive.file_path())
+                .is_some_and(|count| *count > summary_projection_exact_record_limit() as i64)
+            && summary_projection_archive_is_fully_within_exact_horizon(
+                archive,
+                ExactUtcRange {
+                    start: live_start,
+                    end,
+                },
+            )
+        {
+            current_source_unavailable = true;
+            continue;
+        }
         let Some(manifest_sha256) = current_materialized_sha256.get(archive.file_path()) else {
             current_source_unavailable = true;
             continue;
