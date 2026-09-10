@@ -12188,6 +12188,7 @@ struct SummaryProjectionAllTimeArchiveScanPaths {
     global: Vec<String>,
     account: Vec<String>,
     global_unmaterialized_count: usize,
+    global_unmaterialized: Vec<String>,
 }
 
 async fn load_summary_projection_all_time_archive_scan_paths(
@@ -12198,7 +12199,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
     // account pass additionally handles unmaterialized archives missing account replay.
     let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
         "SELECT batches.file_path, \
-                NOT EXISTS ( \
+                (NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?1 \
                       AND replay.dataset = 'codex_invocations' \
@@ -12206,7 +12207,29 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                       AND batches.sha256 IS NOT NULL \
                       AND TRIM(batches.sha256) <> '' \
                       AND replay.archive_sha256 = batches.sha256 \
-                ) AS needs_global_archive_scan, \
+                ) OR ( \
+                    batches.historical_rollups_materialized_at IS NULL \
+                    AND ( \
+                        NOT EXISTS ( \
+                            SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                            WHERE replay.target = ?2 \
+                              AND replay.dataset = 'codex_invocations' \
+                              AND replay.file_path = batches.file_path \
+                              AND batches.sha256 IS NOT NULL \
+                              AND TRIM(batches.sha256) <> '' \
+                              AND replay.archive_sha256 = batches.sha256 \
+                        ) \
+                        OR NOT EXISTS ( \
+                            SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                            WHERE replay.target = ?3 \
+                              AND replay.dataset = 'codex_invocations' \
+                              AND replay.file_path = batches.file_path \
+                              AND batches.sha256 IS NOT NULL \
+                              AND TRIM(batches.sha256) <> '' \
+                              AND replay.archive_sha256 = batches.sha256 \
+                        ) \
+                    ) \
+                )) AS needs_global_archive_scan, \
                 (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?2 \
@@ -12221,8 +12244,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
          WHERE batches.dataset = 'codex_invocations' \
          AND batches.status = 'completed' \
          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
-         AND ( \
-               NOT EXISTS ( \
+         AND (NOT EXISTS ( \
                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                    WHERE replay.target = ?1 \
                      AND replay.dataset = 'codex_invocations' \
@@ -12230,25 +12252,32 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                      AND batches.sha256 IS NOT NULL \
                      AND TRIM(batches.sha256) <> '' \
                      AND replay.archive_sha256 = batches.sha256 \
-               ) \
-               OR ( \
+               ) OR ( \
                    batches.historical_rollups_materialized_at IS NULL \
-                   AND NOT EXISTS ( \
-                   SELECT 1 FROM hourly_rollup_archive_replay AS replay \
-                   WHERE replay.target = ?2 \
-                     AND replay.dataset = 'codex_invocations' \
-                     AND replay.file_path = batches.file_path \
-                     AND batches.sha256 IS NOT NULL \
-                     AND TRIM(batches.sha256) <> '' \
-                     AND replay.archive_sha256 = batches.sha256 \
-               ) \
-               ) \
-           ) \
+                   AND (NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?2 \
+                         AND replay.dataset = 'codex_invocations' \
+                         AND replay.file_path = batches.file_path \
+                         AND batches.sha256 IS NOT NULL \
+                         AND TRIM(batches.sha256) <> '' \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?3 \
+                         AND replay.dataset = 'codex_invocations' \
+                         AND replay.file_path = batches.file_path \
+                         AND batches.sha256 IS NOT NULL \
+                         AND TRIM(batches.sha256) <> '' \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   )) \
+               )) \
          ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC \
-         LIMIT ?3",
+         LIMIT ?4",
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
     .fetch_all(pool)
     .await
@@ -12261,12 +12290,14 @@ async fn load_summary_projection_all_time_archive_scan_paths(
     let mut global = Vec::new();
     let mut account = Vec::new();
     let mut global_unmaterialized_count = 0usize;
+    let mut global_unmaterialized = Vec::new();
     for (file_path, needs_global_archive_scan, needs_account_archive_scan, is_unmaterialized) in
         rows
     {
         if needs_global_archive_scan != 0 {
             if is_unmaterialized != 0 {
                 global_unmaterialized_count += 1;
+                global_unmaterialized.push(file_path.clone());
             }
             global.push(file_path.clone());
         }
@@ -12278,6 +12309,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
         global,
         account,
         global_unmaterialized_count,
+        global_unmaterialized,
     })
 }
 
@@ -14697,6 +14729,28 @@ async fn publish_summary_all_time_projection_checkpoint(
         .ok_or_else(|| {
             anyhow!("summary all-time checkpoint requires a published rolling projection")
         })?;
+    // An unmaterialized archive with only the global replay marker is not a complete Summary
+    // authority: account and usage dimensions may still be missing. Keep the checkpoint
+    // unpublished while its raw authority is unreadable; a later supervisor pass can retry it
+    // when the source or the remaining replay proofs become available.
+    let archive_scan_paths =
+        load_summary_projection_all_time_archive_scan_paths(&state.pool).await?;
+    if archive_scan_paths.global_unmaterialized_count > 0 {
+        let manifest_sha256 = load_summary_projection_archive_manifest_sha256(
+            &state.pool,
+            &archive_scan_paths.global_unmaterialized,
+        )
+        .await?;
+        if verify_summary_projection_archive_file_paths_sha256(
+            &archive_scan_paths.global_unmaterialized,
+            &manifest_sha256,
+        )?
+        .len()
+            < archive_scan_paths.global_unmaterialized_count
+        {
+            return Ok(());
+        }
+    }
     let mut next = Arc::unwrap_or_clone(projection);
     // Freshness starts when the fully reduced projection is ready to swap, not when a potentially
     // long-running checkpoint reduction begins. Under SQLite contention the reduction can exceed
@@ -14823,7 +14877,12 @@ async fn publish_summary_all_time_projection_checkpoint(
                     .is_none_or(|timestamp| {
                         !snapshot_totals
                             .materialized_months_without_coverage
-                            .contains(&timestamp.format("%Y-%m").to_string())
+                            .contains(
+                                &timestamp
+                                    .with_timezone(&Shanghai)
+                                    .format("%Y-%m")
+                                    .to_string(),
+                            )
                     })
         });
         // Legacy materialized manifests can carry only a local-month marker rather than exact
@@ -14952,7 +15011,12 @@ async fn publish_summary_all_time_projection_checkpoint(
                     .is_none_or(|timestamp| {
                         !snapshot_totals
                             .materialized_months_without_coverage
-                            .contains(&timestamp.format("%Y-%m").to_string())
+                            .contains(
+                                &timestamp
+                                    .with_timezone(&Shanghai)
+                                    .format("%Y-%m")
+                                    .to_string(),
+                            )
                     })
         });
         for record in next.records.iter().chain(next.current_records.iter()) {
@@ -17761,11 +17825,10 @@ async fn build_summary_projection_once(
                 .copied()
                 .unwrap_or_default(),
         );
-        // A completed Summary overall replay marker is an exact compact contribution even when
-        // the broader historical rollup materialization flag is still pending. Treat that
-        // contribution as covered for global reduction so repair does not double count raw rows.
-        let archive_rollups_are_exact =
-            archive.has_materialized_historical_rollups() || replay_coverage.overall;
+        // Replay markers for an unmaterialized archive do not replace the raw source for the
+        // account and usage dimensions. Keep the archive in the exact-record path until the
+        // historical rollup materialization proof is complete.
+        let archive_rollups_are_exact = archive.has_materialized_historical_rollups();
         let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
             Some(replay_coverage.overall),
