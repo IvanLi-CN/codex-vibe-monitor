@@ -1,18 +1,23 @@
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
-import { UpstreamAccountGroupCombobox } from "../../features/account-pool/UpstreamAccountGroupCombobox";
+import { ForwardProxyBindingSelector } from "../../features/forward-proxy/ForwardProxyBindingSelector";
 import { AppIcon } from "../../features/shared/AppIcon";
 import { useUpstreamAccountCreateViewContext } from "./UpstreamAccountCreate.controller-context";
 
 export function UpstreamAccountCreateApiKeySection() {
+  const location = useLocation();
+  const listPath = location.pathname.startsWith("/account-pool/transits")
+    ? "/account-pool/transits"
+    : "/account-pool/pool";
   const {
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyGroupName,
-    apiKeyGroupProxyState,
+    apiKeyForwardProxyCatalogState,
+    apiKeyForwardProxyNodes,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -22,15 +27,9 @@ export function UpstreamAccountCreateApiKeySection() {
     apiKeyValue,
     busyAction,
     cn,
-    formatGroupAccountCountLabel,
-    groupOptions,
-    handleApiKeyGroupCreateRequest,
     handleCreateApiKey,
-    hasGroupSettings,
-    normalizeGroupName,
-    openGroupNoteEditor,
+    setApiKeyBoundProxyKeys,
     setApiKeyDisplayName,
-    setApiKeyGroupName,
     setApiKeyLimitUnit,
     setApiKeyNote,
     setApiKeyPrimaryLimit,
@@ -58,41 +57,6 @@ export function UpstreamAccountCreateApiKeySection() {
             />
           ) : null}
         </div>
-      </label>
-      <label className="field md:col-span-2">
-        <span className="field-label">{t("accountPool.upstreamAccounts.fields.groupName")}</span>
-        <div className="flex items-center gap-2">
-          <UpstreamAccountGroupCombobox
-            name="apiKeyGroupName"
-            value={apiKeyGroupName}
-            options={groupOptions}
-            placeholder={t("accountPool.upstreamAccounts.fields.groupNamePlaceholder")}
-            searchPlaceholder={t("accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder")}
-            emptyLabel={t("accountPool.upstreamAccounts.fields.groupNameEmpty")}
-            createLabel={(value) =>
-              t("accountPool.upstreamAccounts.fields.groupNameConfigureValue", { value })
-            }
-            onCreateRequested={handleApiKeyGroupCreateRequest}
-            formatAccountCountLabel={formatGroupAccountCountLabel}
-            onValueChange={setApiKeyGroupName}
-            className="min-w-0 flex-1"
-          />
-          <Button
-            type="button"
-            size="icon"
-            variant={hasGroupSettings(apiKeyGroupName) ? "secondary" : "outline"}
-            className="shrink-0 rounded-full"
-            aria-label={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
-            title={t("accountPool.upstreamAccounts.groupNotes.actions.edit")}
-            onClick={() => openGroupNoteEditor(apiKeyGroupName)}
-            disabled={!writesEnabled || !normalizeGroupName(apiKeyGroupName)}
-          >
-            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
-          </Button>
-        </div>
-        {apiKeyGroupProxyState.error ? (
-          <p className="mt-2 text-xs text-error">{apiKeyGroupProxyState.error}</p>
-        ) : null}
       </label>
       <label className="field md:col-span-2">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.apiKey")}</span>
@@ -123,6 +87,46 @@ export function UpstreamAccountCreateApiKeySection() {
           />
         </div>
       </label>
+      <div className="field md:col-span-2">
+        <FormFieldFeedback
+          label={t("accountPool.upstreamAccounts.transitProxy.label")}
+          message={
+            apiKeyBoundProxyKeys.length === 0
+              ? t("accountPool.upstreamAccounts.transitProxy.required")
+              : null
+          }
+        />
+        <ForwardProxyBindingSelector
+          selectedKeys={apiKeyBoundProxyKeys}
+          availableProxyNodes={apiKeyForwardProxyNodes}
+          disabled={busyAction === "apiKey" || !writesEnabled}
+          catalogKind={apiKeyForwardProxyCatalogState.kind}
+          catalogFreshness={apiKeyForwardProxyCatalogState.freshness}
+          onChange={(nextKeys) => {
+            const normalized = nextKeys.map((key) => key.trim()).filter(Boolean);
+            setApiKeyBoundProxyKeys(normalized.length > 0 ? normalized : ["__direct__"]);
+          }}
+          showAutomaticNotice={false}
+          labels={{
+            loading: t("accountPool.upstreamAccounts.proxyBindings.loading"),
+            empty: t("accountPool.upstreamAccounts.proxyBindings.dialogEmpty"),
+            missing: t("accountPool.upstreamAccounts.proxyBindings.statusMissing"),
+            unavailable: t("accountPool.upstreamAccounts.proxyBindings.statusUnavailable"),
+            chartLabel: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel"),
+            chartSuccess: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess"),
+            chartFailure: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure"),
+            chartEmpty: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty"),
+            chartTotal: t("accountPool.upstreamAccounts.groupNotes.proxyBindings.chartTotal"),
+            chartAriaLabel: t(
+              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartAriaLabel",
+            ),
+            chartInteractionHint: t(
+              "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartInteractionHint",
+            ),
+            chartLocaleTag: typeof navigator === "undefined" ? "en-US" : navigator.language,
+          }}
+        />
+      </div>
       <label className="field">
         <span className="field-label">{t("accountPool.upstreamAccounts.fields.primaryLimit")}</span>
         <Input
@@ -160,9 +164,7 @@ export function UpstreamAccountCreateApiKeySection() {
       </label>
       <div className="md:col-span-2 flex flex-wrap justify-end gap-2">
         <Button asChild type="button" variant="ghost">
-          <Link to="/account-pool/upstream-accounts">
-            {t("accountPool.upstreamAccounts.actions.cancel")}
-          </Link>
+          <Link to={listPath}>{t("accountPool.upstreamAccounts.actions.cancel")}</Link>
         </Button>
         <Button
           type="button"
@@ -172,7 +174,7 @@ export function UpstreamAccountCreateApiKeySection() {
             !writesEnabled ||
             apiKeyDisplayNameConflict != null ||
             Boolean(apiKeyUpstreamBaseUrlError) ||
-            Boolean(apiKeyGroupProxyState.error)
+            apiKeyBoundProxyKeys.length === 0
           }
         >
           {busyAction === "apiKey" ? (

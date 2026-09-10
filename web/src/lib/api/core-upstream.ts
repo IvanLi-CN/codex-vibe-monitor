@@ -428,6 +428,29 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   recentActions?: UpstreamAccountActionEvent[];
   modelRoutingStates?: ModelRoutingState[];
   modelMappings?: ModelMapping[];
+  modelCatalog?: UpstreamAccountModelCatalog;
+}
+
+export type UpstreamAccountModelCatalogStatus =
+  | "never"
+  | "refreshing"
+  | "ready"
+  | "stale"
+  | "failed"
+  | string;
+
+export interface UpstreamAccountModelCatalogError {
+  code: string;
+  message: string;
+}
+
+export interface UpstreamAccountModelCatalog {
+  models: string[];
+  status: UpstreamAccountModelCatalogStatus;
+  lastAttemptedAt?: string | null;
+  lastSuccessfulAt?: string | null;
+  error?: UpstreamAccountModelCatalogError | null;
+  stale: boolean;
 }
 
 export interface ModelMapping {
@@ -535,6 +558,7 @@ export interface UpstreamAccountWindowUsageResponse {
 }
 
 export interface FetchUpstreamAccountsQuery {
+  kind?: "oauth_codex" | "api_key_codex" | string;
   groupExact?: string[];
   groupSearch?: string;
   groupUngrouped?: boolean;
@@ -549,6 +573,7 @@ export interface FetchUpstreamAccountsQuery {
 }
 
 export interface FetchUpstreamAccountActionEventsQuery {
+  kind?: "oauth_codex" | "api_key_codex" | string;
   account?: string;
   group?: string;
   proxyKey?: string;
@@ -771,20 +796,52 @@ export interface OauthMailboxStatusRequestPayload {
 export interface CreateApiKeyAccountPayload {
   displayName: string;
   email?: string;
-  groupName?: string;
-  groupBoundProxyKeys?: string[];
-  groupNodeShuntEnabled?: boolean;
-  groupSingleAccountRotationEnabled?: boolean;
   note?: string;
-  groupNote?: string;
-  concurrencyLimit?: number;
   upstreamBaseUrl?: string;
   apiKey: string;
-  isMother?: boolean;
   localPrimaryLimit?: number;
   localSecondaryLimit?: number;
   localLimitUnit?: string;
   tagIds?: number[];
+  boundProxyKeys?: string[];
+}
+
+export interface ApiKeyGroupMigrationPreflight {
+  confirmationHash: string;
+  apiKeyCount: number;
+  portableFields: string[];
+  blockedStrategies: string[];
+  canMigrate: boolean;
+}
+
+export interface ConfirmApiKeyGroupMigrationPayload {
+  confirmationHash: string;
+  disabledStrategies: string[];
+}
+
+export interface ApiKeyGroupMigrationResult {
+  migratedCount: number;
+  confirmationHash: string;
+  auditAction: string;
+}
+
+export interface ApiKeyGroupMigrationPreflight {
+  confirmationHash: string;
+  apiKeyCount: number;
+  portableFields: string[];
+  blockedStrategies: string[];
+  canMigrate: boolean;
+}
+
+export interface ConfirmApiKeyGroupMigrationPayload {
+  confirmationHash: string;
+  disabledStrategies: string[];
+}
+
+export interface ApiKeyGroupMigrationResult {
+  migratedCount: number;
+  confirmationHash: string;
+  auditAction: string;
 }
 
 export interface UpdateUpstreamAccountPayload {
@@ -1695,6 +1752,11 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     throw new Error("Request failed: invalid upstream account payload");
   }
   const historyRaw = Array.isArray(payload.history) ? payload.history : [];
+  const catalogPayload = (payload.modelCatalog ?? {}) as Record<string, unknown>;
+  const catalogModels = Array.isArray(catalogPayload.models)
+    ? catalogPayload.models.filter((value): value is string => typeof value === "string")
+    : [];
+  const catalogErrorPayload = (catalogPayload.error ?? null) as Record<string, unknown> | null;
   return {
     ...summary,
     routingStateVersion: normalizeRoutingStateVersion(payload.routingStateVersion),
@@ -1721,6 +1783,26 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
           .map(normalizeModelMapping)
           .filter((item): item is ModelMapping => item != null)
       : [],
+    modelCatalog: {
+      models: catalogModels,
+      status:
+        typeof catalogPayload.status === "string" && catalogPayload.status.trim()
+          ? catalogPayload.status
+          : "never",
+      lastAttemptedAt:
+        typeof catalogPayload.lastAttemptedAt === "string" ? catalogPayload.lastAttemptedAt : null,
+      lastSuccessfulAt:
+        typeof catalogPayload.lastSuccessfulAt === "string"
+          ? catalogPayload.lastSuccessfulAt
+          : null,
+      error:
+        catalogErrorPayload &&
+        typeof catalogErrorPayload.code === "string" &&
+        typeof catalogErrorPayload.message === "string"
+          ? { code: catalogErrorPayload.code, message: catalogErrorPayload.message }
+          : null,
+      stale: catalogPayload.stale === true,
+    },
   };
 }
 
@@ -2293,6 +2375,7 @@ export async function fetchUpstreamAccounts(
   query?: FetchUpstreamAccountsQuery,
 ): Promise<UpstreamAccountListResponse> {
   const search = new URLSearchParams();
+  if (query?.kind) search.set("kind", query.kind);
   for (const groupExact of query?.groupExact ?? []) {
     if (groupExact) search.append("groupExact", groupExact);
   }
@@ -2326,6 +2409,7 @@ export async function fetchUpstreamAccountActionEvents(
   query?: FetchUpstreamAccountActionEventsQuery,
 ): Promise<UpstreamAccountActionEventListResponse> {
   const search = new URLSearchParams();
+  if (query?.kind) search.set("kind", query.kind);
   if (query?.account) search.set("account", query.account);
   if (query?.group) search.set("group", query.group);
   if (query?.proxyKey) search.set("proxyKey", query.proxyKey);
@@ -2717,6 +2801,22 @@ export async function createApiKeyUpstreamAccount(
   return normalizeUpstreamAccountDetail(response);
 }
 
+export async function preflightApiKeyGroupMigration(): Promise<ApiKeyGroupMigrationPreflight> {
+  return fetchJson<ApiKeyGroupMigrationPreflight>(
+    "/api/pool/upstream-accounts/api-keys/migration/preflight",
+    { method: "POST" },
+  );
+}
+
+export async function confirmApiKeyGroupMigration(
+  payload: ConfirmApiKeyGroupMigrationPayload,
+): Promise<ApiKeyGroupMigrationResult> {
+  return fetchJson<ApiKeyGroupMigrationResult>(
+    "/api/pool/upstream-accounts/api-keys/migration/confirm",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
 export async function updateUpstreamAccount(
   accountId: number,
   payload: UpdateUpstreamAccountPayload,
@@ -2786,6 +2886,16 @@ export async function syncUpstreamAccount(accountId: number): Promise<UpstreamAc
   const response = await fetchJson<unknown>(`/api/pool/upstream-accounts/${accountId}/sync`, {
     method: "POST",
   });
+  return normalizeUpstreamAccountDetail(response);
+}
+
+export async function refreshUpstreamAccountModels(
+  accountId: number,
+): Promise<UpstreamAccountDetail> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/${accountId}/models/refresh`,
+    { method: "POST" },
+  );
   return normalizeUpstreamAccountDetail(response);
 }
 

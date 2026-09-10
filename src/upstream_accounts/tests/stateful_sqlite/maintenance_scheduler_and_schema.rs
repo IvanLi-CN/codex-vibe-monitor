@@ -1536,19 +1536,26 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(serde_json::json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": normalized_group_name,
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
     let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
         .expect("insert test pool api key account");
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load inserted test pool api key account id");
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(normalized_group_name)
+        .execute(&state.pool)
         .await
-        .expect("load inserted test pool api key account id")
+        .expect("restore legacy API key group fixture");
+    account_id
 }
 
 pub(crate) async fn spawn_usage_snapshot_server(
@@ -3044,6 +3051,128 @@ async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_dat
     assert_eq!(row.cache_hit_protection_enabled, Some(0));
     assert_eq!(row.cache_hit_low_rate_threshold_percent, Some(10));
     assert_eq!(row.cache_hit_overflow_mode.as_deref(), Some("queue"));
+}
+
+#[tokio::test]
+async fn ensure_upstream_accounts_schema_migrates_api_keys_to_explicit_transit_proxy_bindings() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect sqlite");
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("ensure initial schema");
+
+    let inherited_proxy_id = insert_api_key_account(&pool, "Legacy group proxy").await;
+    let direct_proxy_id = insert_api_key_account(&pool, "No legacy proxy").await;
+    let explicit_proxy_id = insert_api_key_account(&pool, "Explicit proxy override").await;
+    let oauth_id = insert_oauth_account(&pool, "OAuth group remains").await;
+    upsert_test_group_binding(&pool, "legacy-relay", vec!["legacy-edge".to_string()]).await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET group_name = CASE id
+                WHEN ?1 THEN 'legacy-relay'
+                WHEN ?2 THEN NULL
+                WHEN ?3 THEN 'legacy-relay'
+            END,
+            is_mother = CASE WHEN id = ?1 THEN 1 ELSE 0 END,
+            bound_proxy_keys_json = CASE
+                WHEN id = ?3 THEN '["account-edge"]'
+                ELSE NULL
+            END
+        WHERE id IN (?1, ?2, ?3)
+        "#,
+    )
+    .bind(inherited_proxy_id)
+    .bind(direct_proxy_id)
+    .bind(explicit_proxy_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy API Key proxy bindings");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET policy_concurrency_limit = 7, policy_upstream_429_retry_enabled = 1, policy_upstream_429_max_retries = 3 WHERE id = ?1",
+    )
+    .bind(inherited_proxy_id)
+    .execute(&pool)
+    .await
+    .expect("seed legacy transit group policy snapshot");
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("migrate legacy API Key proxy bindings");
+
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i64, Option<String>)>(
+        r#"
+        SELECT id, group_name, is_mother, bound_proxy_keys_json
+        FROM pool_upstream_accounts
+        WHERE id IN (?1, ?2, ?3)
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(inherited_proxy_id)
+    .bind(direct_proxy_id)
+    .bind(explicit_proxy_id)
+    .fetch_all(&pool)
+    .await
+    .expect("load migrated API Key accounts");
+    let bindings = rows
+        .into_iter()
+        .map(|(id, group_name, is_mother, raw)| {
+            (
+                id,
+                (
+                    group_name,
+                    is_mother,
+                    decode_group_bound_proxy_keys_json(raw.as_deref()),
+                ),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        bindings.get(&inherited_proxy_id),
+        Some(&(None, 0, vec!["legacy-edge".to_string()]))
+    );
+    assert_eq!(
+        bindings.get(&direct_proxy_id),
+        Some(&(None, 0, vec![FORWARD_PROXY_DIRECT_KEY.to_string()]))
+    );
+    assert_eq!(
+        bindings.get(&explicit_proxy_id),
+        Some(&(None, 0, vec!["account-edge".to_string()]))
+    );
+    let transit_policy: (Option<i64>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT policy_concurrency_limit, policy_upstream_429_retry_enabled, policy_upstream_429_max_retries FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(inherited_proxy_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load cleared transit policy snapshot");
+    assert_eq!(transit_policy, (None, None, None));
+    let oauth_group: Option<String> =
+        sqlx::query_scalar("SELECT group_name FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(oauth_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load untouched OAuth group");
+    assert_eq!(oauth_group.as_deref(), Some(test_required_group_name()));
+    let migration_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_events WHERE action = ?1")
+            .bind(API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION)
+            .fetch_one(&pool)
+            .await
+            .expect("count transit proxy migration events");
+    assert_eq!(migration_events, 3);
+
+    ensure_upstream_accounts_schema(&pool)
+        .await
+        .expect("rerun idempotent transit proxy migration");
+    let migration_events_after_rerun: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_events WHERE action = ?1")
+            .bind(API_KEY_TRANSIT_PROXY_MIGRATION_AUDIT_ACTION)
+            .fetch_one(&pool)
+            .await
+            .expect("count idempotent transit proxy migration events");
+    assert_eq!(migration_events_after_rerun, 3);
 }
 
 #[tokio::test]
@@ -5119,6 +5248,42 @@ async fn load_effective_routing_rule_for_account_uses_tag_layer_over_group_limit
 }
 
 #[tokio::test]
+async fn load_effective_routing_rule_for_account_ignores_group_policy_for_api_key_transit() {
+    let pool = test_pool().await;
+    let account_id = insert_api_key_account(&pool, "Transit Group Policy Guard").await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind("legacy-transit")
+        .execute(&pool)
+        .await
+        .expect("assign legacy transit group name");
+
+    let mut conn = pool.acquire().await.expect("acquire metadata conn");
+    save_group_metadata_record_conn(
+        &mut conn,
+        "legacy-transit",
+        UpstreamAccountGroupMetadata::default(),
+    )
+    .await
+    .expect("save legacy transit group metadata");
+    drop(conn);
+    sqlx::query(
+        "UPDATE pool_upstream_account_group_notes SET policy_priority_tier = 'fallback' WHERE group_name = ?1",
+    )
+    .bind("legacy-transit")
+    .execute(&pool)
+    .await
+    .expect("seed legacy transit group policy");
+
+    let rule = load_effective_routing_rule_for_account(&pool, account_id)
+        .await
+        .expect("load transit effective routing rule");
+
+    assert_eq!(rule.priority_tier, TagPriorityTier::Normal);
+    assert_eq!(rule.field_sources.priority_tier, "root");
+}
+
+#[tokio::test]
 async fn load_effective_routing_rule_for_account_reads_tag_available_models_from_db() {
     let pool = test_pool().await;
     let account_id = insert_api_key_account(&pool, "Tag Model Constraint").await;
@@ -6427,20 +6592,17 @@ async fn load_effective_routing_rules_for_accounts_request_compression_respects_
     let group_only = rules.get(&group_only_id).expect("group-only rule");
     assert_eq!(
         group_only.request_compression_algorithm,
-        RequestCompressionAlgorithm::Deflate
+        RequestCompressionAlgorithm::Gzip
     );
     assert_eq!(
         group_only.field_sources.request_compression_algorithm,
-        "group"
+        "root"
     );
     assert_eq!(
         group_only.codex_imagegen_rewrite_mode,
-        CodexImagegenRewriteMode::FillMissing
+        CodexImagegenRewriteMode::ForceAdd
     );
-    assert_eq!(
-        group_only.field_sources.codex_imagegen_rewrite_mode,
-        "group"
-    );
+    assert_eq!(group_only.field_sources.codex_imagegen_rewrite_mode, "root");
 
     let account_override = rules
         .get(&account_override_id)

@@ -54,3 +54,7 @@
 - evidence_note: verifies the new switch, checked state, and copy explaining that 429 retry is exhausted before moving only the affected conversation.
 
 ![Single-account rotation group settings dialog](./assets/single-account-rotation-dialog.png)
+
+## Domain Boundary
+
+Single-account rotation is an OAuth `oauth_codex` group policy. API-key transit accounts are never group members for this contract and cannot create, update, or bulk-assign this setting. Startup migration automatically clears legacy API-key group and mother-account state, detaches transit accounts from this non-applicable group strategy, and records the migration audit without changing OAuth group metadata. Group account counts and node-shunt candidates enforce the OAuth kind at the query boundary. Transit candidate resolution never reads this group policy, even when legacy group fields remain in a row. No owner acknowledgement is required.

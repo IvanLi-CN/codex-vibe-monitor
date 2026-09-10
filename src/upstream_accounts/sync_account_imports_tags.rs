@@ -327,13 +327,16 @@ pub(crate) async fn sync_upstream_account_by_id(
         return Ok(Some(detail));
     }
 
-    let group_metadata =
+    let group_metadata = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+        UpstreamAccountGroupMetadata::default()
+    } else {
         match resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
             .await?
         {
             PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
             PoolAccountGroupProxyRoutingReadiness::Blocked(message) => bail!(message),
-        };
+        }
+    };
     let sync_result = match row.kind.as_str() {
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => {
             if group_metadata.node_shunt_enabled {
@@ -2551,6 +2554,7 @@ pub(crate) async fn load_upstream_account_groups(
                 COUNT(*) AS account_count
             FROM pool_upstream_accounts
             WHERE deleted_at IS NULL
+              AND kind = 'oauth_codex'
               AND group_name IS NOT NULL AND TRIM(group_name) <> ''
             GROUP BY TRIM(group_name)
         ),
@@ -2716,6 +2720,10 @@ pub(crate) async fn load_upstream_account_summaries_for_query(
         "SELECT {UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS} FROM pool_upstream_accounts"
     ));
     query.push(" WHERE COALESCE(deleted_at, '') = ''");
+
+    if let Some(kind) = params.kind.as_deref() {
+        query.push(" AND kind = ").push_bind(kind);
+    }
 
     if params.group_ungrouped.unwrap_or(false) {
         query.push(" AND (NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL");
@@ -3049,6 +3057,21 @@ pub(crate) async fn apply_bulk_upstream_account_action(
     action: &str,
     group_name: Option<String>,
 ) -> Result<(), (StatusCode, String)> {
+    if action == BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP {
+        let kind = sqlx::query_scalar::<_, String>(
+            "SELECT kind FROM pool_upstream_accounts WHERE id = ?1 AND COALESCE(deleted_at, '') = ''",
+        )
+        .bind(account_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+        if kind.as_deref() == Some(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "API Key accounts cannot be assigned to groups".to_string(),
+            ));
+        }
+    }
     let payload = match action {
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE => UpdateUpstreamAccountRequest {
             display_name: None,
@@ -3140,15 +3163,20 @@ pub(crate) async fn apply_bulk_upstream_account_action(
     Ok(())
 }
 
-pub(crate) async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn has_ungrouped_upstream_accounts(
+    pool: &Pool<Sqlite>,
+    kind: Option<&str>,
+) -> Result<bool> {
     let count = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
         FROM pool_upstream_accounts
         WHERE COALESCE(deleted_at, '') = ''
+          AND (?1 IS NULL OR (kind = ?1 AND kind = 'oauth_codex'))
           AND NULLIF(TRIM(COALESCE(group_name, '')), '') IS NULL
         "#,
     )
+    .bind(kind)
     .fetch_one(pool)
     .await?;
     Ok(count > 0)
@@ -3339,6 +3367,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
     };
 
     let duplicate_info = load_duplicate_info_for_account(pool, row.id).await?;
+    let model_catalog = load_upstream_account_model_catalog(pool, row.id).await?;
     let now = Utc::now();
     let active_conversation_count =
         load_account_active_conversation_count_map(pool, &[row.id], now)
@@ -3368,6 +3397,7 @@ pub(crate) async fn load_upstream_account_detail_with_options(
             .map(build_action_event_from_row)
             .collect(),
         model_mappings: decode_model_mappings_json(row.model_mappings_json.as_deref()),
+        model_catalog,
         model_routing_states: load_model_routing_states(pool, row.id).await?,
         routing_state_version: None,
     }))
@@ -3833,10 +3863,12 @@ pub(crate) async fn load_canonicalized_upstream_account_group(
             SELECT COUNT(*)
             FROM pool_upstream_accounts
             WHERE deleted_at IS NULL
+              AND kind = ?2
               AND TRIM(COALESCE(group_name, '')) = ?1
             "#,
         )
         .bind(group_name)
+        .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .fetch_one(&state.pool)
         .await?,
         note: metadata.note.clone(),

@@ -23,7 +23,6 @@ import {
   isExistingGroup,
   markUpstreamAccountGroupUsed,
   normalizeGroupName,
-  readApiKeyLastGroupName,
   readUpstreamAccountGroupUsage,
   resolveMostRecentlyUsedGroupName,
   writeUpstreamAccountGroupUsage,
@@ -79,6 +78,7 @@ import {
   MAILBOX_REFRESH_INTERVAL_MS,
   MAILBOX_REFRESH_TICK_MS,
   mailboxInputMatchesSession,
+  normalizeBoundProxyKeys,
   normalizeDisplayNameKey,
   normalizeEnabledGroupUpstream429MaxRetries,
   normalizeGroupUpstream429MaxRetries,
@@ -105,6 +105,8 @@ type OauthEmailResolutionState = {
   verifiedEmail: string;
   chosenEmail: string;
 };
+
+const DIRECT_PROXY_KEY = "__direct__";
 
 export default function UpstreamAccountCreatePage() {
   const { t, locale } = useTranslation();
@@ -172,7 +174,11 @@ export default function UpstreamAccountCreatePage() {
   }, [draft]);
 
   const [activeTab, setActiveTab] = useState<CreateTab>(() =>
-    isRelinking ? "oauth" : parseCreateMode(location.search),
+    isRelinking
+      ? "oauth"
+      : location.pathname.startsWith("/account-pool/transits")
+        ? "apiKey"
+        : parseCreateMode(location.search),
   );
   const [oauthDisplayName, setOauthDisplayName] = useState(() => draft?.oauth?.displayName ?? "");
   const [oauthEmail, setOauthEmail] = useState(
@@ -213,7 +219,6 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyDisplayName, setApiKeyDisplayName] = useState(
     () => draft?.apiKey?.displayName ?? "",
   );
-  const [apiKeyGroupName, setApiKeyGroupName] = useState(() => draft?.apiKey?.groupName ?? "");
   const [apiKeyNote, setApiKeyNote] = useState(() => draft?.apiKey?.note ?? "");
   const [apiKeyTagIds] = useState<number[]>([]);
   const [apiKeyValue, setApiKeyValue] = useState(() => draft?.apiKey?.apiKeyValue ?? "");
@@ -229,6 +234,10 @@ export default function UpstreamAccountCreatePage() {
   const [apiKeyLimitUnit, setApiKeyLimitUnit] = useState(
     () => draft?.apiKey?.limitUnit ?? "requests",
   );
+  const [apiKeyBoundProxyKeys, setApiKeyBoundProxyKeys] = useState(() => {
+    const normalized = normalizeBoundProxyKeys(draft?.apiKey?.boundProxyKeys);
+    return normalized.length > 0 ? normalized : [DIRECT_PROXY_KEY];
+  });
   const [session, setSession] = useState<LoginSessionStatusResponse | null>(
     () => draft?.oauth?.session ?? null,
   );
@@ -284,7 +293,6 @@ export default function UpstreamAccountCreatePage() {
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
   const [groupUsage, setGroupUsage] = useState(() => readUpstreamAccountGroupUsage());
-  const initialApiKeyLastGroupNameRef = useRef(readApiKeyLastGroupName());
   const previousBatchTagIdsRef = useRef<number[] | null>(null);
   const previousCompletedSharedTagBaselineRef = useRef<string | null>(null);
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(() => initialBatchRows);
@@ -336,6 +344,10 @@ export default function UpstreamAccountCreatePage() {
     enabled: groupNoteEditor.open,
     groupName: groupNoteEditor.groupName,
   });
+  const { nodes: apiKeyForwardProxyNodes, catalogState: apiKeyForwardProxyCatalogState } =
+    useForwardProxyBindingNodes(apiKeyBoundProxyKeys, {
+      enabled: activeTab === "apiKey",
+    });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
   const oauthMailboxToneResetRef = useRef<number | null>(null);
@@ -527,31 +539,6 @@ export default function UpstreamAccountCreatePage() {
       ),
     );
   }, [batchDefaultGroupName, draft?.batchOauth?.defaultGroupName, groupOptions, groupUsage]);
-  const rememberedApiKeyGroupAppliedRef = useRef(false);
-  useEffect(() => {
-    if (rememberedApiKeyGroupAppliedRef.current) return;
-    if (draft?.apiKey?.groupName) {
-      rememberedApiKeyGroupAppliedRef.current = true;
-      return;
-    }
-    if (apiKeyGroupName.trim()) {
-      rememberedApiKeyGroupAppliedRef.current = true;
-      return;
-    }
-    const rememberedGroupName = initialApiKeyLastGroupNameRef.current;
-    if (!rememberedGroupName) {
-      rememberedApiKeyGroupAppliedRef.current = true;
-      return;
-    }
-    if (isLoading) return;
-    if (groupOptions.length === 0) return;
-    const matchingGroup = groupOptions.find(
-      (option) => normalizeGroupName(option.groupName) === rememberedGroupName,
-    );
-    rememberedApiKeyGroupAppliedRef.current = true;
-    if (!matchingGroup) return;
-    setApiKeyGroupName(rememberedGroupName);
-  }, [apiKeyGroupName, draft?.apiKey?.groupName, groupOptions, isLoading]);
   const formatGroupAccountCountLabel = useCallback(
     (count: number) => t("accountPool.upstreamAccounts.groupOptionCount", { count }),
     [t],
@@ -650,14 +637,12 @@ export default function UpstreamAccountCreatePage() {
     oauthGroupProxyState,
     importGroupProxyState,
     importSelectionLabel,
-    apiKeyGroupProxyState,
     persistDraftGroupSettings,
     openGroupNoteEditor,
     closeGroupNoteEditor,
     handleSaveGroupNote,
     handleDeleteGroupNote,
   } = useUpstreamAccountCreateGroupDrafts({
-    apiKeyGroupName,
     batchDefaultGroupName,
     batchRows,
     forwardProxyNodes,
@@ -691,7 +676,6 @@ export default function UpstreamAccountCreatePage() {
     setGroupNoteEditor,
     setGroupNoteError,
     setPersistedGroupNoteSyncDrafts,
-    setApiKeyGroupName,
     setBatchDefaultGroupName,
     setBatchRows,
     setImportGroupName,
@@ -1695,17 +1679,6 @@ export default function UpstreamAccountCreatePage() {
     [markGroupUsed, openGroupNoteEditor],
   );
 
-  const handleApiKeyGroupCreateRequest = useCallback(
-    (groupName: string) => {
-      openGroupNoteEditor(groupName, {
-        onSaved: (savedGroupName) => {
-          setApiKeyGroupName(savedGroupName);
-        },
-      });
-    },
-    [openGroupNoteEditor],
-  );
-
   const handleBatchDefaultGroupCreateRequest = useCallback(
     (groupName: string) => {
       openGroupNoteEditor(groupName, {
@@ -1761,10 +1734,6 @@ export default function UpstreamAccountCreatePage() {
     },
     [markGroupUsed],
   );
-
-  const setRememberingApiKeyGroupName = useCallback((value: string) => {
-    setApiKeyGroupName(value);
-  }, []);
 
   const {
     handleImportedOauthPasteDraftChange,
@@ -1845,9 +1814,8 @@ export default function UpstreamAccountCreatePage() {
     handleCreateApiKey,
   } = useUpstreamAccountCreateActions({
     activeOauthMailboxSession,
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
-    apiKeyGroupName,
-    apiKeyGroupProxyState,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -1962,10 +1930,11 @@ export default function UpstreamAccountCreatePage() {
     activeOauthMailboxSession,
     availableModelOptions,
     activeTab,
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
     apiKeyDisplayNameConflict,
-    apiKeyGroupName,
-    apiKeyGroupProxyState,
+    apiKeyForwardProxyCatalogState,
+    apiKeyForwardProxyNodes,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -2040,7 +2009,6 @@ export default function UpstreamAccountCreatePage() {
     handleCopySingleMailbox,
     handleCopySingleMailboxCode,
     handleCreateApiKey,
-    handleApiKeyGroupCreateRequest,
     handleGenerateOauthMailbox,
     handleGenerateOauthUrl,
     handleResolveOauthEmailChoice,
@@ -2121,8 +2089,8 @@ export default function UpstreamAccountCreatePage() {
     session,
     sessionHint,
     setActionError,
+    setApiKeyBoundProxyKeys,
     setApiKeyDisplayName,
-    setApiKeyGroupName: setRememberingApiKeyGroupName,
     setApiKeyLimitUnit,
     setApiKeyNote,
     setApiKeyPrimaryLimit,

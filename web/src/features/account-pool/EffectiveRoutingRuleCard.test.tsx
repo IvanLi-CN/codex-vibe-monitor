@@ -17,6 +17,10 @@ beforeAll(() => {
     writable: true,
     value: true,
   });
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
 });
 
 let root: Root | null = null;
@@ -112,6 +116,8 @@ const labels = {
   overrideEdit: "Edit account override",
   overrideClear: "Clear account override",
   overrideSaving: "Saving account override...",
+  overrideRetry: "Retry save",
+  overrideRevert: "Revert to saved",
   cutOutLabel: "Cut out",
   cutInLabel: "Cut in",
   requestCompressionFollow: "Follow",
@@ -161,6 +167,84 @@ function buildRule(overrides: Partial<EffectiveRoutingRule> = {}): EffectiveRout
 }
 
 describe("EffectiveRoutingRuleCard", () => {
+  it("uses open mobile rule rows while retaining desktop section surfaces", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["gpt-5.5"],
+          fieldSources: {
+            ...buildRule().fieldSources,
+            availableModels: "account",
+            concurrencyLimit: "account",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{ onChange: vi.fn() }}
+      />,
+    );
+
+    const card = document.querySelector('[data-testid="effective-routing-rule-card"]');
+    expect(card).not.toBeNull();
+
+    const sections = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid$="-section"]'),
+    );
+    const tables = Array.from(document.querySelectorAll<HTMLElement>('[data-testid$="-table"]'));
+    expect(sections).toHaveLength(4);
+    expect(tables).toHaveLength(2);
+    expect(card?.className).toContain("rounded-none border-0 bg-transparent shadow-none");
+    expect(card?.className).toContain("sm:rounded-xl sm:border");
+    expect(card?.className).toContain("sm:bg-base-100/72");
+
+    for (const section of sections) {
+      expect(section.className).toContain("border-t border-base-300/70 pt-5");
+      expect(section.className).toContain("first:border-t-0 first:pt-0");
+      expect(section.className).toContain("sm:rounded-xl sm:border");
+      expect(section.className).toContain("sm:bg-base-200/35");
+    }
+
+    for (const table of tables) {
+      expect(table.className).toContain("mt-3 overflow-visible border-0");
+      expect(table.className).toContain("sm:overflow-hidden sm:rounded-xl sm:border");
+    }
+
+    const fieldRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="effective-routing-rule-field-row"]'),
+    );
+    const timeoutRows = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid="effective-routing-rule-timeout-row"]'),
+    );
+    expect(fieldRows.length).toBeGreaterThan(0);
+    expect(timeoutRows.length).toBeGreaterThan(0);
+
+    for (const row of [...fieldRows, ...timeoutRows]) {
+      expect(row.className).toContain("grid-cols-[fit-content(40%)_minmax(0,1fr)_2.75rem]");
+      expect(row.className).toContain("py-3.5");
+      expect(row.className).toContain("sm:py-2.5");
+      expect(row.children.item(1)?.className).not.toContain("col-span-2");
+      expect(row.children.item(1)?.className).toContain("justify-end");
+    }
+
+    expect(
+      document.querySelector('button[aria-label="Edit account override: Priority"]')?.className,
+    ).toContain("col-start-3 row-start-1");
+
+    expect(
+      document.querySelector('[data-testid="effective-routing-rule-status-change-grid"]')
+        ?.className,
+    ).toContain("grid-cols-2");
+    expect(
+      document.querySelector('[data-testid="effective-routing-rule-concurrency-editor"]')
+        ?.className,
+    ).toContain("min-[769px]:min-w-[16rem]");
+
+    const modeToggle = document.querySelector('[data-testid="available-models-mode-toggle"]');
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain("min-w-0");
+    expect(modeToggle?.parentElement?.parentElement?.className).toContain(
+      "min-[769px]:min-w-[18rem]",
+    );
+  });
+
   it("shows inherited copy when no available model constraint is defined", () => {
     render(<EffectiveRoutingRuleCard rule={buildRule()} labels={labels} />);
 
@@ -329,6 +413,59 @@ describe("EffectiveRoutingRuleCard", () => {
     });
 
     expect(onChange).toHaveBeenCalledWith("allowCutIn", { allowCutIn: null });
+  });
+
+  it("keeps save recovery actions in a compact accessible status", () => {
+    const onRetry = vi.fn();
+    const onRevert = vi.fn();
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          fieldSources: {
+            ...buildRule().fieldSources,
+            allowCutIn: "account",
+          },
+        })}
+        labels={labels}
+        editablePolicy={{
+          onChange: vi.fn(),
+          errorByField: {
+            allowCutIn: "Save failed. Check the account policy and retry.",
+          },
+          onRetry,
+          onRevert,
+        }}
+      />,
+    );
+
+    const status = document.querySelector<HTMLElement>('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute("aria-live")).toBe("polite");
+    expect(status?.getAttribute("aria-atomic")).toBe("true");
+    expect(status?.parentElement?.className).toContain("tone-ink-error");
+    const message = status?.querySelector<HTMLElement>("span[title]");
+    expect(message?.className).toContain("truncate");
+    expect(message?.getAttribute("title")).toBe("Save failed. Check the account policy and retry.");
+
+    const statusRow = status?.parentElement;
+    const retryButton = statusRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry save"]',
+    );
+    const revertButton = statusRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Revert to saved"]',
+    );
+    expect(retryButton).not.toBeUndefined();
+    expect(revertButton).not.toBeUndefined();
+    expect(retryButton?.getAttribute("title")).toBe("Retry save");
+    expect(revertButton?.getAttribute("title")).toBe("Revert to saved");
+
+    act(() => {
+      retryButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      revertButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onRetry).toHaveBeenCalledWith("allowCutIn");
+    expect(onRevert).toHaveBeenCalledWith("allowCutIn");
   });
 
   it("keeps inherited timeout rows collapsed until the user expands one", () => {
@@ -577,6 +714,54 @@ describe("EffectiveRoutingRuleCard", () => {
       availableModels: ["gpt-5.4-mini"],
       availableModelsMode: "allowlist",
     });
+  });
+
+  it("merges project and account model sources while retaining an unmatched selection", () => {
+    render(
+      <EffectiveRoutingRuleCard
+        rule={buildRule({
+          availableModels: ["account-only", "missing-model"],
+          fieldSources: { ...buildRule().fieldSources, availableModels: "account" },
+        })}
+        labels={{
+          ...labels,
+          availableModelsSourceAll: "All sources",
+          availableModelsSourceProject: "Project presets",
+          availableModelsSourceAccount: "This account",
+          availableModelsUnmatched: "Selected value",
+        }}
+        editablePolicy={{
+          onChange: vi.fn(),
+          availableModelOptions: ["gpt-5.5", "shared-model"],
+          availableModelCatalog: [
+            { value: "account-only", sources: ["account"] },
+            { value: "shared-model", sources: ["account"] },
+          ],
+        }}
+      />,
+    );
+
+    const trigger = document.querySelector<HTMLButtonElement>(
+      'button[role="combobox"][aria-label="Available models"]',
+    );
+    act(() => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("Project presets");
+    expect(document.body.textContent).toContain("This account");
+    expect(document.body.textContent).toContain("Selected value");
+
+    const searchInput = document.querySelector<HTMLInputElement>("[cmdk-input]");
+    expect(searchInput).not.toBeNull();
+    const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    act(() => {
+      valueSetter?.call(searchInput, "shared-model");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.querySelector('[data-testid="available-models-source-filter-all"]')).toBeNull();
+    expect(document.querySelector("[cmdk-group-heading]")?.textContent).toContain(
+      "Project presets + This account",
+    );
   });
 
   it("renders status change reasons with their resolved source and evidence-only state", () => {

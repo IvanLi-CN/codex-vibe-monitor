@@ -110,7 +110,7 @@ vi.mock("../../i18n", () => ({
         case "app.nav.records":
           return "记录";
         case "app.nav.accountPool":
-          return "号池";
+          return "上游";
         case "app.nav.system":
           return "系统";
         case "app.brand":
@@ -413,7 +413,8 @@ describe("AppLayout", () => {
       mobileMenuButton?.click();
     });
     expect(host?.querySelector("#app-mobile-navigation")).not.toBeNull();
-    expect(host?.querySelector('a[href="/account-pool/groups"]')).not.toBeNull();
+    expect(host?.querySelector('a[href="/account-pool/transits"]')).not.toBeNull();
+    expect(host?.querySelector('a[href="/account-pool/pool"]')).not.toBeNull();
     expect(host?.querySelector('a[href="/system/tasks"]')).not.toBeNull();
 
     const installConfirmButton = document.body.querySelector(

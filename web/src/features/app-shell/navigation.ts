@@ -44,14 +44,14 @@ export const topLevelNavItems: AppNavigationGroup[] = [
     matchPrefixes: ["/account-pool"],
     items: [
       {
-        to: "/account-pool/upstream-accounts",
-        labelKey: "accountPool.nav.upstreamAccounts",
-        matchPrefixes: ["/account-pool/upstream-accounts"],
+        to: "/account-pool/transits",
+        labelKey: "accountPool.nav.transits",
+        matchPrefixes: ["/account-pool/transits"],
       },
       {
-        to: "/account-pool/groups",
-        labelKey: "accountPool.nav.groups",
-        matchPrefixes: ["/account-pool/groups"],
+        to: "/account-pool/pool",
+        labelKey: "accountPool.nav.pool",
+        matchPrefixes: ["/account-pool/pool", "/account-pool/upstream-accounts"],
       },
       {
         to: "/account-pool/maintenance-records",

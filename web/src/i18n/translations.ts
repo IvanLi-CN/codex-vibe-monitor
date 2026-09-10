@@ -10,7 +10,7 @@ const baseTranslations = {
     "app.nav.live": "Live",
     "app.nav.system": "System",
     "app.nav.records": "Records",
-    "app.nav.accountPool": "Account Pool",
+    "app.nav.accountPool": "Upstream",
     "app.nav.openMenu": "Open navigation menu",
     "app.nav.closeMenu": "Close navigation menu",
     "app.brand": "Codex Vibe Monitor",
@@ -126,7 +126,7 @@ const baseTranslations = {
     "app.footer.newVersionAvailable": "Page has a newer version",
     "app.footer.copyright": "© Codex Vibe Monitor",
     "accountPool.eyebrow": "Pool",
-    "accountPool.title": "Account Pool",
+    "accountPool.title": "Upstream",
     "accountPool.description":
       "Manage Codex upstream accounts, persistent login sessions, and normalized 5h / 7d quota snapshots.",
     "system.eyebrow": "System",
@@ -138,10 +138,21 @@ const baseTranslations = {
     "system.nav.tasks": "Tasks",
     "system.nav.settings": "Settings",
     "system.nav.proxy": "Proxy",
-    "accountPool.nav.upstreamAccounts": "Upstream Accounts",
+    "accountPool.nav.transits": "Transit",
+    "accountPool.nav.pool": "Account Pool",
     "accountPool.nav.maintenanceRecords": "Records",
     "accountPool.nav.groups": "Groups",
     "accountPool.nav.tags": "Tags",
+    "accountPool.upstreamAccounts.migration.title": "API key group migration",
+    "accountPool.upstreamAccounts.migration.description":
+      "Legacy group strategies are disabled automatically for {{count}} transit API key accounts.",
+    "accountPool.upstreamAccounts.migration.confirm": "Migrate automatically",
+    "accountPool.upstreamAccounts.migration.completed":
+      "Automatically migrated {{count}} API key accounts.",
+    "accountPool.upstreamAccounts.migration.strategies.node_shunt": "Node shunting",
+    "accountPool.upstreamAccounts.migration.strategies.single_account_rotation":
+      "Single-account rotation",
+    "accountPool.upstreamAccounts.migration.strategies.mother_account": "Mother account",
     "accountPool.groups.title": "Group overview",
     "accountPool.groups.description":
       "Review every active account group in one place, inspect shared settings, and jump straight back to the roster when needed.",
@@ -181,6 +192,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.title": "Upstream accounts",
     "accountPool.upstreamAccounts.description":
       "Add single OAuth, batch OAuth, and API key accounts, then keep their login state and quota snapshots healthy.",
+    "accountPool.upstreamAccounts.domain.transitTitle": "Transit",
+    "accountPool.upstreamAccounts.domain.transitDescription":
+      "Manage third-party relay API keys, base URLs, status, local limits, and notes.",
+    "accountPool.upstreamAccounts.domain.poolTitle": "Account pool",
+    "accountPool.upstreamAccounts.domain.poolDescription":
+      "Manage official OAuth and Session accounts, login health, groups, and quota snapshots.",
     "accountPool.upstreamAccounts.listTitle": "Account roster",
     "accountPool.upstreamAccounts.listDescription":
       "Select an account to inspect identity, quota windows, and maintenance state.",
@@ -256,7 +273,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "Quota legend",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth accounts show normalized upstream usage snapshots. API key accounts show local placeholder limits until routing metrics are wired in.",
-    "accountPool.upstreamAccounts.routing.title": "Advanced routing & sync settings",
+    "accountPool.upstreamAccounts.routing.title": "Account pool access & sync settings",
     "accountPool.upstreamAccounts.routing.description":
       "Edit the downstream pool API key and the tiered maintenance sync cadence for the account pool.",
     "accountPool.upstreamAccounts.routing.currentKey": "Current pool API key",
@@ -864,6 +881,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied": "Denied models",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsMode": "Model filter mode",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist": "Allowlist",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAll": "All sources",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceProject": "Project presets",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAccount": "This account",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefresh": "Refresh",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshing": "Refreshing...",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsLastRefreshed":
+      "Last refreshed {{value}}",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshError":
+      "The account model catalog refresh failed.",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsStale":
+      "This account catalog is older than 24 hours.",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsUnmatched": "Selected value",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist": "Denylist",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "None",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "Root default",
@@ -1275,6 +1304,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.upstreamBaseUrl": "Upstream base URL",
     "accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder":
       "Leave blank to use OPENAI_UPSTREAM_BASE_URL",
+    "accountPool.upstreamAccounts.transitProxy.label": "Outbound proxy",
+    "accountPool.upstreamAccounts.transitProxy.required":
+      "Select at least one outbound proxy. Direct is selected by default.",
+    "accountPool.upstreamAccounts.transitProxy.dialogDescription":
+      "Choose one or more explicit outbound proxies for this transit. It cannot inherit a group proxy.",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid":
       "Use an absolute http(s) URL, for example https://proxy.example.com/gateway",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment":
@@ -1452,6 +1486,10 @@ const baseTranslations = {
       "Failed to load maintenance records.",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "Reset filters",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "Account",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.type": "Type",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allTypes": "All upstream types",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.pool": "Account pool",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.transit": "Transit",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder":
       "Search account name or ID",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "Group",
@@ -1779,6 +1817,9 @@ const baseTranslations = {
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
     "settings.autoSaved": "Auto save enabled",
+    "settings.saveFailed": "Save failed: {{error}}",
+    "settings.retrySave": "Retry save",
+    "settings.revertSave": "Revert to saved",
     "settings.routing.title": "Upstream request defaults",
     "settings.routing.description":
       "Configure the global request-body compression and request path timeouts for API key upstream HTTP requests. Group and account rules can override only the algorithm.",
@@ -3248,7 +3289,7 @@ const baseTranslations = {
     "app.nav.live": "实况",
     "app.nav.system": "系统",
     "app.nav.records": "记录",
-    "app.nav.accountPool": "号池",
+    "app.nav.accountPool": "上游",
     "app.nav.openMenu": "打开导航菜单",
     "app.nav.closeMenu": "关闭导航菜单",
     "app.brand": "Codex Vibe Monitor",
@@ -3360,7 +3401,7 @@ const baseTranslations = {
     "app.footer.newVersionAvailable": "页面有新版本",
     "app.footer.copyright": "© Codex Vibe Monitor",
     "accountPool.eyebrow": "号池",
-    "accountPool.title": "号池",
+    "accountPool.title": "上游",
     "accountPool.description":
       "集中管理 Codex 上游账号、持久登录状态，以及归一化后的 5 小时 / 7 天额度快照。",
     "system.eyebrow": "系统",
@@ -3371,10 +3412,19 @@ const baseTranslations = {
     "system.nav.tasks": "任务",
     "system.nav.settings": "设置",
     "system.nav.proxy": "代理",
-    "accountPool.nav.upstreamAccounts": "上游账号",
+    "accountPool.nav.transits": "中转",
+    "accountPool.nav.pool": "号池",
     "accountPool.nav.maintenanceRecords": "维护记录",
     "accountPool.nav.groups": "分组",
     "accountPool.nav.tags": "标签",
+    "accountPool.upstreamAccounts.migration.title": "API Key 分组迁移",
+    "accountPool.upstreamAccounts.migration.description":
+      "旧分组策略会自动对 {{count}} 个中转 API Key 账号停用，并清除分组关系。",
+    "accountPool.upstreamAccounts.migration.confirm": "自动迁移",
+    "accountPool.upstreamAccounts.migration.completed": "已自动迁移 {{count}} 个 API Key 账号。",
+    "accountPool.upstreamAccounts.migration.strategies.node_shunt": "节点分流",
+    "accountPool.upstreamAccounts.migration.strategies.single_account_rotation": "单号轮换",
+    "accountPool.upstreamAccounts.migration.strategies.mother_account": "母号",
     "accountPool.groups.title": "分组总览",
     "accountPool.groups.description":
       "集中查看当前账号分组、共享设置与绑定代理，需要时再跳回账号列表继续处理。",
@@ -3413,6 +3463,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.title": "上游账号",
     "accountPool.upstreamAccounts.description":
       "新增单个 OAuth、批量 OAuth 与 API Key 账号，并持续维护登录状态和额度快照。",
+    "accountPool.upstreamAccounts.domain.transitTitle": "中转",
+    "accountPool.upstreamAccounts.domain.transitDescription":
+      "管理第三方中转站 API Key、Base URL、状态、本地额度和备注。",
+    "accountPool.upstreamAccounts.domain.poolTitle": "号池",
+    "accountPool.upstreamAccounts.domain.poolDescription":
+      "管理官方 OAuth 与 Session 账号、登录状态、分组和额度快照。",
     "accountPool.upstreamAccounts.listTitle": "账号列表",
     "accountPool.upstreamAccounts.listDescription":
       "选择一个账号，查看身份信息、额度窗口和维护状态。",
@@ -3463,7 +3519,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "额度说明",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth 账号展示上游归一化后的真实快照；API Key 账号在路由计量接入前，展示本地占位限额。",
-    "accountPool.upstreamAccounts.routing.title": "高级路由与同步设置",
+    "accountPool.upstreamAccounts.routing.title": "号池接入与同步设置",
     "accountPool.upstreamAccounts.routing.description":
       "直接编辑号池下游 API Key，以及分层维护同步频率，不再依赖环境变量。",
     "accountPool.upstreamAccounts.routing.currentKey": "当前号池 API Key",
@@ -3488,7 +3544,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.intervalHours": "{{count}} 小时",
     "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}} 分钟",
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
-    "accountPool.upstreamAccounts.routing.dialogTitle": "高级路由与同步设置",
+    "accountPool.upstreamAccounts.routing.dialogTitle": "号池接入与同步设置",
     "accountPool.upstreamAccounts.routing.dialogDescription":
       "在项目界面里直接编辑号池路由密钥和双层 maintenance 队列参数。全局请求压缩与请求链路超时已迁到系统设置。",
     "accountPool.upstreamAccounts.routing.save": "保存设置",
@@ -4054,6 +4110,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenied": "拒绝模型",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsMode": "模型过滤模式",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsAllowlist": "白名单",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAll": "全部来源",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceProject": "项目预设",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsSourceAccount": "此账号上游",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefresh": "刷新目录",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshing": "正在刷新...",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsLastRefreshed":
+      "上次成功刷新 {{value}}",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsRefreshError":
+      "账号模型目录刷新失败。",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsStale":
+      "此账号目录已超过 24 小时未更新。",
+    "accountPool.upstreamAccounts.effectiveRule.availableModelsUnmatched": "当前已选",
     "accountPool.upstreamAccounts.effectiveRule.availableModelsDenylist": "黑名单",
     "accountPool.upstreamAccounts.effectiveRule.systemDeniedModelsEmpty": "无",
     "accountPool.upstreamAccounts.effectiveRule.sourceRoot": "根默认",
@@ -4452,6 +4520,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.upstreamBaseUrl": "上游地址",
     "accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder":
       "留空则使用全局 OPENAI_UPSTREAM_BASE_URL",
+    "accountPool.upstreamAccounts.transitProxy.label": "出口代理",
+    "accountPool.upstreamAccounts.transitProxy.required":
+      "请至少选择一个出口代理；默认已选择直连。",
+    "accountPool.upstreamAccounts.transitProxy.dialogDescription":
+      "为这个中转选择一个或多个显式出口代理；中转不能继承分组代理。",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid":
       "请填写 http(s) 的绝对 URL，例如 https://proxy.example.com/gateway",
     "accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment":
@@ -4613,6 +4686,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.maintenanceEvents.loadError": "加载维护记录失败。",
     "accountPool.upstreamAccounts.maintenanceEvents.resetFilters": "重置筛选",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.account": "账号",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.type": "类型",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.allTypes": "全部上游类型",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.pool": "号池",
+    "accountPool.upstreamAccounts.maintenanceEvents.filters.transit": "中转",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.accountPlaceholder": "搜索账号名或 ID",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.group": "分组",
     "accountPool.upstreamAccounts.maintenanceEvents.filters.groupPlaceholder": "搜索分组名",
@@ -4909,6 +4986,9 @@ const baseTranslations = {
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
     "settings.autoSaved": "已启用自动保存",
+    "settings.saveFailed": "保存失败：{{error}}",
+    "settings.retrySave": "重试保存",
+    "settings.revertSave": "还原到已保存值",
     "settings.routing.title": "上游请求默认值",
     "settings.routing.description":
       "为 API Key 上游 HTTP 请求配置全局默认的请求体压缩和请求链路超时。分组和账号规则只允许覆盖算法。",

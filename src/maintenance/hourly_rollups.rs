@@ -3628,12 +3628,24 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(sync_upstream_account),
         )
         .route(
+            "/api/pool/upstream-accounts/:id/models/refresh",
+            post(refresh_upstream_account_models),
+        )
+        .route(
             "/api/pool/upstream-accounts/:id/oauth/relogin",
             post(relogin_upstream_account),
         )
         .route(
             "/api/pool/upstream-accounts/api-keys",
             post(create_api_key_account),
+        )
+        .route(
+            "/api/pool/upstream-accounts/api-keys/migration/preflight",
+            post(preflight_api_key_group_migration),
+        )
+        .route(
+            "/api/pool/upstream-accounts/api-keys/migration/confirm",
+            post(confirm_api_key_group_migration),
         )
         .route(
             "/api/pool/upstream-accounts/oauth/login-sessions",

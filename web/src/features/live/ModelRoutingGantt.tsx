@@ -1159,7 +1159,11 @@ function ModelRoutingSvgChart({
     };
     let portalTarget: HTMLDivElement | null = null;
     const container = host.querySelector<HTMLElement>(".gantt-container");
-    if (container) container.scrollLeft = previousScrollLeft;
+    if (container) {
+      container.scrollLeft = previousScrollLeft;
+      container.tabIndex = 0;
+      container.setAttribute("aria-label", "Model routing timeline");
+    }
     if (layoutSource.expandedModel && layoutSource.detailTop != null) {
       if (container) {
         portalTarget = document.createElement("div");

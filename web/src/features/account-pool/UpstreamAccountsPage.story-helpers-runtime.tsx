@@ -4,13 +4,11 @@ import type {
   ApiPoolUpstreamRequestAttempt,
   CompleteOauthLoginSessionPayload,
   CreateApiKeyAccountPayload,
-  EffectiveRoutingRule,
   ImportOauthCredentialFilePayload,
   ModelMapping,
   OauthMailboxStatus,
   StatsResponse,
   TimeseriesResponse,
-  UpdateGroupAccountRoutingRulePayload,
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
@@ -18,86 +16,13 @@ import type {
   UpdateUpstreamAccountPayload,
   UpstreamAccountListResponse,
 } from "../../lib/api";
+import { applyRoutingRulePatchToEffectiveRule } from "../../lib/routingRulePatches";
 import AccountPoolLayout from "../../pages/account-pool/AccountPoolLayout";
 import GroupsPage from "../../pages/account-pool/Groups";
 import MaintenanceRecordsPage from "../../pages/account-pool/MaintenanceRecords";
 import UpstreamAccountCreatePage from "../../pages/account-pool/UpstreamAccountCreate";
 import { resolveDisplayNameAfterEmailChange } from "../../pages/account-pool/UpstreamAccountCreate.shared";
 import UpstreamAccountsPage from "../../pages/account-pool/UpstreamAccounts";
-
-function applyRoutingRulePatchToEffectiveRule(
-  rule: EffectiveRoutingRule,
-  patch: UpdateGroupAccountRoutingRulePayload,
-): EffectiveRoutingRule {
-  const fieldSources = {
-    allowCutOut: rule.fieldSources?.allowCutOut ?? "root",
-    allowCutIn: rule.fieldSources?.allowCutIn ?? "root",
-    priorityTier: rule.fieldSources?.priorityTier ?? "root",
-    fastModeRewriteMode: rule.fieldSources?.fastModeRewriteMode ?? "root",
-    imageToolRewriteMode: rule.fieldSources?.imageToolRewriteMode ?? "root",
-    requestCompressionAlgorithm: rule.fieldSources?.requestCompressionAlgorithm ?? "root",
-    concurrencyLimit: rule.fieldSources?.concurrencyLimit ?? "root",
-    upstream429Retry: rule.fieldSources?.upstream429Retry ?? "root",
-    availableModels: rule.fieldSources?.availableModels ?? "root",
-    systemDeniedModels: rule.fieldSources?.systemDeniedModels ?? "root",
-  };
-  return {
-    ...rule,
-    ...(patch.allowCutOut == null ? {} : { allowCutOut: patch.allowCutOut }),
-    ...(patch.allowCutIn == null ? {} : { allowCutIn: patch.allowCutIn }),
-    ...(patch.priorityTier == null ? {} : { priorityTier: patch.priorityTier }),
-    ...(patch.fastModeRewriteMode == null
-      ? {}
-      : { fastModeRewriteMode: patch.fastModeRewriteMode }),
-    ...(patch.imageToolRewriteMode == null
-      ? {}
-      : { imageToolRewriteMode: patch.imageToolRewriteMode }),
-    ...(patch.requestCompressionAlgorithm == null
-      ? {}
-      : { requestCompressionAlgorithm: patch.requestCompressionAlgorithm }),
-    ...(patch.concurrencyLimit == null ? {} : { concurrencyLimit: patch.concurrencyLimit }),
-    ...(patch.upstream429RetryEnabled == null
-      ? {}
-      : { upstream429RetryEnabled: patch.upstream429RetryEnabled }),
-    ...(patch.upstream429MaxRetries == null
-      ? {}
-      : { upstream429MaxRetries: patch.upstream429MaxRetries }),
-    ...(patch.availableModels == null ? {} : { availableModels: patch.availableModels }),
-    fieldSources: {
-      ...fieldSources,
-      ...(Object.hasOwn(patch, "allowCutOut")
-        ? { allowCutOut: patch.allowCutOut == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "allowCutIn")
-        ? { allowCutIn: patch.allowCutIn == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "priorityTier")
-        ? { priorityTier: patch.priorityTier == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "fastModeRewriteMode")
-        ? { fastModeRewriteMode: patch.fastModeRewriteMode == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "imageToolRewriteMode")
-        ? { imageToolRewriteMode: patch.imageToolRewriteMode == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "requestCompressionAlgorithm")
-        ? {
-            requestCompressionAlgorithm:
-              patch.requestCompressionAlgorithm == null ? "root" : "account",
-          }
-        : {}),
-      ...(Object.hasOwn(patch, "concurrencyLimit")
-        ? { concurrencyLimit: patch.concurrencyLimit == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "upstream429RetryEnabled")
-        ? { upstream429Retry: patch.upstream429RetryEnabled == null ? "root" : "account" }
-        : {}),
-      ...(Object.hasOwn(patch, "availableModels")
-        ? { availableModels: patch.availableModels == null ? "root" : "account" }
-        : {}),
-    },
-  };
-}
 
 import {
   applyDynamicRosterLiveRefresh,
@@ -467,13 +392,17 @@ export function StorybookUpstreamAccountsMock({
           rosterItem.secondaryWindow = stripActualUsageFromRosterWindow(rosterItem.secondaryWindow);
           return rosterItem;
         });
+        const requestedKind = parsedUrl.searchParams.get("kind");
+        const scopedAccounts = requestedKind
+          ? store.accounts.filter((account) => account.kind === requestedKind)
+          : store.accounts;
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
-          groups: listGroupSummaries(store),
+          groups: requestedKind === "api_key_codex" ? [] : listGroupSummaries(store),
           forwardProxyNodes: clone(store.forwardProxyNodes),
-          hasUngroupedAccounts: store.accounts.some(
-            (account) => !normalizeGroupName(account.groupName),
-          ),
+          hasUngroupedAccounts: scopedAccounts
+            .filter((account) => account.kind === "oauth_codex")
+            .some((account) => !normalizeGroupName(account.groupName)),
           routing: clone(store.routing),
           items: pageItems,
           total,
@@ -504,6 +433,71 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(payload);
       }
 
+      if (
+        path === "/api/pool/upstream-accounts/api-keys/migration/preflight" &&
+        method === "POST"
+      ) {
+        const legacyApiKeys = store.accounts.filter(
+          (account) =>
+            account.kind === "api_key_codex" &&
+            ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+              account.isMother === true),
+        );
+        return jsonResponse({
+          confirmationHash: "storybook-migration-confirmation-hash",
+          apiKeyCount: legacyApiKeys.length,
+          portableFields: [
+            "account-level routing policy",
+            "bound proxy keys",
+            "local quota limits",
+            "note",
+          ],
+          blockedStrategies: [],
+          canMigrate: true,
+        });
+      }
+
+      if (path === "/api/pool/upstream-accounts/api-keys/migration/confirm" && method === "POST") {
+        const legacyApiKeys = store.accounts.filter(
+          (account) =>
+            account.kind === "api_key_codex" &&
+            ((typeof account.groupName === "string" && account.groupName.trim().length > 0) ||
+              account.isMother === true),
+        );
+        const legacyIds = new Set(legacyApiKeys.map((account) => account.id));
+        store.accounts = store.accounts.map((account) => {
+          if (!legacyIds.has(account.id)) return account;
+          return {
+            ...account,
+            groupName: null,
+            isMother: false,
+            boundProxyKeys:
+              account.boundProxyKeys && account.boundProxyKeys.length > 0
+                ? account.boundProxyKeys
+                : ["__direct__"],
+          };
+        });
+        for (const accountId of legacyIds) {
+          const detail = store.details[accountId];
+          if (detail) {
+            store.details[accountId] = {
+              ...detail,
+              groupName: null,
+              isMother: false,
+              boundProxyKeys:
+                detail.boundProxyKeys && detail.boundProxyKeys.length > 0
+                  ? detail.boundProxyKeys
+                  : ["__direct__"],
+            };
+          }
+        }
+        return jsonResponse({
+          migratedCount: legacyApiKeys.length,
+          confirmationHash: "storybook-migration-confirmation-hash",
+          auditAction: "api_key_transit_proxy_binding_migrated",
+        });
+      }
+
       if (path === "/api/pool/forward-proxy-binding-nodes" && method === "GET") {
         const requestedKeys = new Set(parsedUrl.searchParams.getAll("key"));
         const nodes = store.forwardProxyNodes.filter((node) => {
@@ -521,6 +515,7 @@ export function StorybookUpstreamAccountsMock({
         const groupFilter = parsedUrl.searchParams.get("group")?.trim().toLowerCase() || "";
         const proxyKeyFilter = parsedUrl.searchParams.get("proxyKey")?.trim().toLowerCase() || "";
         const resultFilter = parsedUrl.searchParams.get("result")?.trim().toLowerCase() || "";
+        const kindFilter = parsedUrl.searchParams.get("kind")?.trim() || "";
         const rawPageSize = Number(parsedUrl.searchParams.get("pageSize") || 20);
         const requestedPageSize =
           Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20;
@@ -536,6 +531,12 @@ export function StorybookUpstreamAccountsMock({
             return false;
           if (proxyKeyFilter && !proxyText.includes(proxyKeyFilter)) return false;
           if (resultFilter && (event.result ?? "").toLowerCase() !== resultFilter) return false;
+          if (kindFilter) {
+            const account = store.accounts.find(
+              (candidate) => candidate.displayName === event.accountDisplayName,
+            );
+            if (account?.kind !== kindFilter) return false;
+          }
           return true;
         });
         const total = filteredEvents.length;
@@ -973,11 +974,13 @@ export function StorybookUpstreamAccountsMock({
         const detail = createApiKeyAccount(nextId, {
           displayName: body.displayName,
           email: body.email ?? null,
-          groupName: body.groupName ?? "default",
-          isMother: body.isMother === true,
           note: body.note ?? null,
           upstreamBaseUrl: body.upstreamBaseUrl ?? null,
           maskedApiKey: maskApiKey(body.apiKey),
+          boundProxyKeys:
+            Array.isArray(body.boundProxyKeys) && body.boundProxyKeys.length > 0
+              ? body.boundProxyKeys
+              : ["__direct__"],
           localLimits: {
             primaryLimit: body.localPrimaryLimit ?? 120,
             secondaryLimit: body.localSecondaryLimit ?? 500,
@@ -985,10 +988,6 @@ export function StorybookUpstreamAccountsMock({
           },
         });
         const synced = syncLocalWindows(detail);
-        const normalizedGroupName = normalizeGroupName(synced.groupName);
-        if (normalizedGroupName && body.groupNote?.trim()) {
-          store.groupNotes[normalizedGroupName] = body.groupNote.trim();
-        }
         store.details[nextId] = synced;
         store.accounts = [toSummary(synced), ...store.accounts];
         return jsonResponse(clone(synced), 201);
@@ -1288,14 +1287,18 @@ export function StorybookUpstreamAccountsMock({
             ? Array.from(new Set(body.boundProxyKeys.map((value) => value.trim()).filter(Boolean)))
             : []
           : (detail.boundProxyKeys ?? []);
+        const effectiveBoundProxyKeys =
+          detail.kind === "api_key_codex" && nextBoundProxyKeys.length === 0
+            ? ["__direct__"]
+            : nextBoundProxyKeys;
         const updated = syncLocalWindows({
           ...detail,
           displayName:
             body.displayName ??
             resolveDisplayNameAfterEmailChange(detail.displayName, detail.email, nextEmail),
           email: nextEmail,
-          groupName: body.groupName ?? detail.groupName,
-          isMother: body.isMother ?? detail.isMother,
+          groupName: detail.kind === "api_key_codex" ? null : (body.groupName ?? detail.groupName),
+          isMother: detail.kind === "api_key_codex" ? false : (body.isMother ?? detail.isMother),
           note: body.note ?? detail.note,
           upstreamBaseUrl:
             detail.kind === "api_key_codex" && Object.hasOwn(body, "upstreamBaseUrl")
@@ -1309,7 +1312,7 @@ export function StorybookUpstreamAccountsMock({
                 ? "active"
                 : detail.status,
           maskedApiKey: body.apiKey ? maskApiKey(body.apiKey) : detail.maskedApiKey,
-          boundProxyKeys: nextBoundProxyKeys,
+          boundProxyKeys: effectiveBoundProxyKeys,
           localLimits:
             detail.kind === "api_key_codex"
               ? {

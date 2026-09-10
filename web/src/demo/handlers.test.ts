@@ -345,7 +345,12 @@ describe("demo MSW handlers", () => {
       }>;
     };
     const accounts = (await accountsResponse.json()) as {
-      items: Array<{ id: number; groupName: string | null; boundProxyKeys: string[] }>;
+      items: Array<{
+        id: number;
+        kind: string;
+        groupName: string | null;
+        boundProxyKeys: string[];
+      }>;
     };
     const events = (await eventsResponse.json()) as {
       items: Array<{
@@ -363,7 +368,11 @@ describe("demo MSW handlers", () => {
     expect(records.records).toHaveLength(50);
     expect(accounts.items).toHaveLength(15);
     expect(accounts.items.some((account) => account.groupName === "production")).toBe(true);
-    expect(accounts.items.some((account) => account.groupName === "recovery")).toBe(true);
+    expect(
+      accounts.items
+        .filter((account) => account.kind === "api_key_codex")
+        .every((account) => account.groupName === null && account.boundProxyKeys.length > 0),
+    ).toBe(true);
     expect(events.items).toHaveLength(15);
     expect(
       events.items.some(

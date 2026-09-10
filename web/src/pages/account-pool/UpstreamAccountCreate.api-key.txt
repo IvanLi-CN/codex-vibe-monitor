@@ -25,9 +25,36 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(payload).toMatchObject({
       displayName: "Gateway Key",
       apiKey: "sk-gateway",
+      boundProxyKeys: ["__direct__"],
     });
     expect(payload).not.toHaveProperty("email");
     expect(payload).not.toHaveProperty("isMother");
+  });
+
+  it("keeps the direct transit binding when the final node is toggled", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    clickButton(/^Direct/);
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ boundProxyKeys: ["__direct__"] }),
+    );
   });
 
   it("submits upstreamBaseUrl for API key accounts", async () => {
@@ -91,135 +118,13 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(createApiKeyAccount).not.toHaveBeenCalled();
   });
 
-  it("keeps the api key form on the page when configuring a new group fails", async () => {
+  it("does not render group controls or submit group metadata", async () => {
     const createApiKeyAccount = vi.fn().mockResolvedValue({
       id: 42,
       kind: "api_key_codex",
       provider: "codex",
       displayName: "Gateway Key",
-      groupName: "latam-draft",
-      isMother: false,
-      status: "active",
-      enabled: true,
-      history: [],
-    });
-    const saveGroupNote = vi
-      .fn()
-      .mockRejectedValue(
-        new Error("Request failed: 500 group metadata locked"),
-      );
-    mockUpstreamAccounts({
-      createApiKeyAccount,
-      saveGroupNote,
-      forwardProxyNodes: [
-        {
-          key: "__direct__",
-          displayName: "Direct",
-          protocolLabel: "DIRECT",
-          source: "direct",
-          penalized: false,
-          selectable: true,
-          last24h: [],
-        },
-        {
-          key: "jp-edge-01",
-          displayName: "JP Edge 01",
-          protocolLabel: "HTTP",
-          source: "inventory",
-          penalized: false,
-          selectable: true,
-          last24h: [],
-        },
-        {
-          key: [
-            "ss://2022-blake3-aes-128-gcm:",
-            "fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
-          ].join(""),
-          displayName: "Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
-          protocolLabel: "SS",
-          source: "subscription",
-          penalized: false,
-          selectable: true,
-          last24h: [],
-        },
-      ],
-    });
-    render("/account-pool/upstream-accounts/new?mode=apiKey");
-
-    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
-    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
-    setComboboxValue('input[name="apiKeyGroupName"]', "latam-draft");
-    await flushAsync();
-
-    const dialogStack = Array.from(
-      document.body.querySelectorAll('[role="dialog"]'),
-    );
-    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
-    if (!(groupSettingsDialog instanceof HTMLElement)) {
-      throw new Error("missing group settings dialog");
-    }
-    expect(groupSettingsDialog.textContent || "").toContain(
-      "Bound proxy nodes",
-    );
-    expect(groupSettingsDialog.textContent || "").toContain(
-      "Upstream 429 retry",
-    );
-    expect(groupSettingsDialog.textContent || "").toContain("Direct");
-    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
-    expect(groupSettingsDialog.textContent || "").toContain("SS");
-    expect(groupSettingsDialog.textContent || "").not.toContain("ss://");
-
-    const groupNoteField = groupSettingsDialog.querySelector("textarea");
-    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
-      throw new Error("missing group note textarea");
-    }
-    setFieldValue(groupNoteField, "LATAM draft note");
-
-    const proxyOption = Array.from(
-      groupSettingsDialog.querySelectorAll("button"),
-    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
-    if (!(proxyOption instanceof HTMLButtonElement)) {
-      throw new Error("missing proxy binding option");
-    }
-    act(() => {
-      proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    const saveDialogButton = Array.from(
-      groupSettingsDialog.querySelectorAll("button"),
-    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
-    if (!(saveDialogButton instanceof HTMLButtonElement)) {
-      throw new Error("missing group settings save button");
-    }
-    act(() => {
-      saveDialogButton.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-    await flushAsync();
-    expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
-      note: "LATAM draft note",
-      boundProxyKeys: ["jp-edge-01"],
-      concurrencyLimit: 0,
-      nodeShuntEnabled: false,
-      singleAccountRotationEnabled: false,
-      upstream429RetryEnabled: false,
-      upstream429MaxRetries: 0,
-    });
-    expect(groupSettingsDialog.textContent || "").toContain(
-      "Request failed: 500 group metadata locked",
-    );
-    expect(createApiKeyAccount).not.toHaveBeenCalled();
-    expect(navigateMock).not.toHaveBeenCalled();
-  });
-
-  it("stores the API Key group only after successful account creation", async () => {
-    const createApiKeyAccount = vi.fn().mockResolvedValue({
-      id: 42,
-      kind: "api_key_codex",
-      provider: "codex",
-      displayName: "Gateway Key",
-      groupName: "alpha",
+      groupName: null,
       isMother: false,
       status: "active",
       enabled: true,
@@ -230,30 +135,23 @@ describe("UpstreamAccountCreatePage api key", () => {
 
     setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
     setInputValue('input[name="apiKeyValue"]', "sk-gateway");
-    setComboboxValue('input[name="apiKeyGroupName"]', "alpha");
-    await flushAsync();
-
-    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
-      UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
-      expect.any(String),
-    );
+    expect(document.body.querySelector('input[name="apiKeyGroupName"]')).toBeNull();
 
     clickButton(/Create API Key account/i);
     await flushAsync();
 
     expect(createApiKeyAccount).toHaveBeenCalledWith(
       expect.objectContaining({
-        groupName: "alpha",
         apiKey: "sk-gateway",
       }),
     );
-    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
       UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
-      JSON.stringify({ groupName: "alpha" }),
+      expect.any(String),
     );
   });
 
-  it("does not store the API Key group when account creation fails", async () => {
+  it("keeps API Key creation failures on the transit form", async () => {
     const createApiKeyAccount = vi
       .fn()
       .mockRejectedValue(new Error("Request failed: 500 upstream rejected"));
@@ -262,13 +160,11 @@ describe("UpstreamAccountCreatePage api key", () => {
 
     setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
     setInputValue('input[name="apiKeyValue"]', "sk-gateway");
-    setComboboxValue('input[name="apiKeyGroupName"]', "beta");
-    await flushAsync();
-
     clickButton(/Create API Key account/i);
     await flushAsync();
 
     expect(createApiKeyAccount).toHaveBeenCalled();
+    expect(document.body.textContent || "").toContain("upstream rejected");
     expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
       UPSTREAM_ACCOUNT_CREATE_API_KEY_LAST_GROUP_STORAGE_KEY,
       expect.any(String),

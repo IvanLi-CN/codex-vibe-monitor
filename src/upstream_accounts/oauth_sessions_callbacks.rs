@@ -1408,40 +1408,67 @@ pub(crate) async fn create_api_key_account_inner(
     state: Arc<AppState>,
     payload: CreateApiKeyAccountRequest,
 ) -> Result<UpstreamAccountDetail, (StatusCode, String)> {
+    if payload.group_name.is_some()
+        || payload.group_bound_proxy_keys.is_some()
+        || payload.group_node_shunt_enabled.is_some()
+        || payload.group_single_account_rotation_enabled.is_some()
+        || payload.group_note.is_some()
+        || payload.concurrency_limit.is_some()
+        || payload.is_mother == Some(true)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "API Key accounts cannot use groups, group policies, or mother-account routing"
+                .to_string(),
+        ));
+    }
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
     let display_name = normalize_required_display_name(&payload.display_name)?;
     validate_local_limits(payload.local_primary_limit, payload.local_secondary_limit)?;
     let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
     let email = normalize_optional_email(payload.email, "email")?;
     reject_manual_tag_ids(&payload.tag_ids)?;
-    let group_name = Some(normalize_upstream_account_group_name(payload.group_name));
+    let group_name: Option<String> = None;
     let note = normalize_optional_text(payload.note);
-    let has_group_note = payload.group_note.is_some();
-    let group_note = normalize_optional_text(payload.group_note);
-    let group_concurrency_limit =
-        normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
-        group_note.clone(),
-        has_group_note,
-        payload.group_bound_proxy_keys.clone(),
-        payload.group_bound_proxy_keys.is_some(),
-        group_concurrency_limit,
-        payload.concurrency_limit.is_some(),
-        payload.group_node_shunt_enabled,
-        payload.group_node_shunt_enabled.is_some(),
-        payload.group_single_account_rotation_enabled,
-        payload.group_single_account_rotation_enabled.is_some(),
+        None, false, None, false, 0, false, None, false, None, false,
     );
-    validate_group_note_target(group_name.as_deref(), has_group_note)?;
-    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
-        state.as_ref(),
-        group_name.clone(),
-        payload.group_bound_proxy_keys,
-        payload.group_node_shunt_enabled,
-    )
-    .await?;
-    let target_group_name = Some(resolved_group_binding.group_name.clone());
-    let is_mother = payload.is_mother.unwrap_or(false);
+    let target_group_name: Option<String> = None;
+    let is_mother = false;
+    let bound_proxy_keys = match payload.bound_proxy_keys {
+        OptionalField::Missing => vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+        OptionalField::Null => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "API Key accounts require at least one bound proxy node".to_string(),
+            ));
+        }
+        OptionalField::Value(values) => {
+            let normalized = normalize_bound_proxy_keys(values);
+            if normalized.is_empty() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "API Key accounts require at least one bound proxy node".to_string(),
+                ));
+            }
+            let canonical = canonicalize_forward_proxy_bound_keys(state.as_ref(), &normalized)
+                .await
+                .map_err(internal_error_tuple)?;
+            let has_selectable = {
+                let manager = state.forward_proxy.lock().await;
+                manager.has_selectable_bound_proxy_keys(&canonical)
+            };
+            if !has_selectable {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "API Key accounts require at least one available proxy node".to_string(),
+                ));
+            }
+            canonical
+        }
+    };
+    let bound_proxy_keys_json =
+        encode_group_bound_proxy_keys_json(&bound_proxy_keys).map_err(internal_error_tuple)?;
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
     let masked_api_key = mask_api_key(&api_key);
@@ -1464,12 +1491,13 @@ pub(crate) async fn create_api_key_account_inner(
             kind, provider, display_name, group_name, is_mother, note, status, enabled, email, verified_email,
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key, encrypted_credentials, token_expires_at,
             last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url, created_at, updated_at
+            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
+            bound_proxy_keys_json, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, NULL,
             NULL, NULL, NULL, NULL, ?9, ?10, NULL,
             NULL, NULL, NULL, NULL, NULL,
-            ?11, ?12, ?13, ?14, ?15, ?15
+            ?11, ?12, ?13, ?14, ?15, ?16, ?16
         ) RETURNING id
         "#,
     )
@@ -1487,6 +1515,7 @@ pub(crate) async fn create_api_key_account_inner(
     .bind(payload.local_secondary_limit)
     .bind(limit_unit)
     .bind(upstream_base_url)
+    .bind(bound_proxy_keys_json)
     .bind(&now_iso)
     .fetch_one(&mut *tx)
     .await
@@ -1507,11 +1536,13 @@ pub(crate) async fn create_api_key_account_inner(
         inserted_id
     };
 
-    let detail = state
-        .upstream_accounts
-        .account_ops
-        .run_post_create_sync(state.clone(), inserted_id)
-        .await;
+    // API-key relays are account-scoped and do not participate in OAuth maintenance sync.
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), inserted_id)
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))
+        .and_then(|detail| {
+            detail.ok_or_else(|| anyhow::anyhow!("created API Key account was not found"))
+        });
     let routing_scope = if requested_group_metadata_changes.was_requested() {
         None
     } else {
@@ -1680,8 +1711,24 @@ pub(crate) async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let is_api_key_account = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
+    if is_api_key_account
+        && (payload.group_name.is_some()
+            || payload.group_bound_proxy_keys.is_some()
+            || payload.group_node_shunt_enabled.is_some()
+            || payload.group_single_account_rotation_enabled.is_some()
+            || payload.group_note.is_some()
+            || payload.concurrency_limit.is_some()
+            || payload.is_mother == Some(true))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "API Key accounts cannot use groups, group policies, or mother-account routing"
+                .to_string(),
+        ));
+    }
     let was_fresh_routable = is_account_selectable_for_fresh_assignment(&row, false, Utc::now());
-    let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+    let clear_hard_failure_after_update = is_api_key_account
         && account_update_requests_manual_recovery(&payload)
         && route_failure_kind_requires_manual_api_key_recovery(
             row.last_route_failure_kind.as_deref(),
@@ -1789,16 +1836,21 @@ pub(crate) async fn update_upstream_account_inner(
         row.email.as_deref(),
     )
     .unwrap_or(previous_display_name);
-    if let Some(group_name) = payload.group_name.clone() {
-        row.group_name = Some(normalize_upstream_account_group_name(Some(group_name)));
-    }
-    if row.group_name.is_none() {
-        row.group_name = Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string());
+    if is_api_key_account {
+        row.group_name = None;
+        row.is_mother = 0;
+    } else {
+        if let Some(group_name) = payload.group_name.clone() {
+            row.group_name = Some(normalize_upstream_account_group_name(Some(group_name)));
+        }
+        if row.group_name.is_none() {
+            row.group_name = Some(DEFAULT_UPSTREAM_ACCOUNT_GROUP_NAME.to_string());
+        }
     }
     if let Some(note) = payload.note {
         row.note = normalize_optional_text(Some(note));
     }
-    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    if is_api_key_account {
         match payload.upstream_base_url {
             OptionalField::Missing => {}
             OptionalField::Null => {
@@ -1816,7 +1868,7 @@ pub(crate) async fn update_upstream_account_inner(
         row.is_mother = if is_mother { 1 } else { 0 };
     }
 
-    if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
+    if is_api_key_account {
         if let Some(api_key) = payload.api_key {
             let api_key = normalize_required_secret(&api_key, "apiKey")?;
             row.masked_api_key = Some(mask_api_key(&api_key));
@@ -1839,11 +1891,14 @@ pub(crate) async fn update_upstream_account_inner(
         }
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
-    validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
-    let resolved_group_binding = if payload.group_name.is_some()
-        || payload.group_bound_proxy_keys.is_some()
-        || payload.group_node_shunt_enabled.is_some()
-        || payload.group_single_account_rotation_enabled.is_some()
+    if !is_api_key_account {
+        validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
+    }
+    let resolved_group_binding = if !is_api_key_account
+        && (payload.group_name.is_some()
+            || payload.group_bound_proxy_keys.is_some()
+            || payload.group_node_shunt_enabled.is_some()
+            || payload.group_single_account_rotation_enabled.is_some())
     {
         Some(
             resolve_required_group_proxy_binding_for_write(
@@ -1861,11 +1916,32 @@ pub(crate) async fn update_upstream_account_inner(
         row.group_name = Some(resolved_group_binding.group_name.clone());
     }
     let next_bound_proxy_keys_json = match payload.bound_proxy_keys {
+        OptionalField::Missing if is_api_key_account => {
+            let existing = decode_group_bound_proxy_keys_json(row.bound_proxy_keys_json.as_deref());
+            let effective = if existing.is_empty() {
+                vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+            } else {
+                existing
+            };
+            Some(encode_group_bound_proxy_keys_json(&effective).map_err(internal_error_tuple)?)
+        }
         OptionalField::Missing => row.bound_proxy_keys_json.clone(),
+        OptionalField::Null if is_api_key_account => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "API Key accounts require at least one bound proxy node".to_string(),
+            ));
+        }
         OptionalField::Null => None,
         OptionalField::Value(values) => {
             let normalized = normalize_bound_proxy_keys(values);
             if normalized.is_empty() {
+                if is_api_key_account {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "API Key accounts require at least one bound proxy node".to_string(),
+                    ));
+                }
                 None
             } else {
                 let canonical = canonicalize_forward_proxy_bound_keys(state, &normalized)
@@ -1878,8 +1954,12 @@ pub(crate) async fn update_upstream_account_inner(
                 if !has_selectable {
                     return Err((
                         StatusCode::BAD_REQUEST,
-                        "select at least one available proxy node or clear account proxy bindings"
-                            .to_string(),
+                        if is_api_key_account {
+                            "API Key accounts require at least one available proxy node".to_string()
+                        } else {
+                            "select at least one available proxy node or clear account proxy bindings"
+                                .to_string()
+                        },
                     ));
                 }
                 Some(encode_group_bound_proxy_keys_json(&canonical).map_err(internal_error_tuple)?)
@@ -2402,22 +2482,23 @@ pub(crate) async fn update_upstream_account_inner(
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;
-    apply_mother_assignment(&mut tx, id, row.group_name.as_deref(), row.is_mother != 0)
-        .await
-        .map_err(internal_error_tuple)?;
-
-    save_group_metadata_after_account_write(
-        tx.as_mut(),
-        row.group_name.as_deref(),
-        &requested_group_metadata_changes,
-        previous_group_name == row.group_name,
-    )
-    .await
-    .map_err(internal_error_tuple)?;
-    if previous_group_name != row.group_name {
-        cleanup_orphaned_group_metadata(tx.as_mut(), previous_group_name.as_deref())
+    if !is_api_key_account {
+        apply_mother_assignment(&mut tx, id, row.group_name.as_deref(), row.is_mother != 0)
             .await
             .map_err(internal_error_tuple)?;
+        save_group_metadata_after_account_write(
+            tx.as_mut(),
+            row.group_name.as_deref(),
+            &requested_group_metadata_changes,
+            previous_group_name == row.group_name,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
+        if previous_group_name != row.group_name {
+            cleanup_orphaned_group_metadata(tx.as_mut(), previous_group_name.as_deref())
+                .await
+                .map_err(internal_error_tuple)?;
+        }
     }
     tx.commit().await.map_err(internal_error_tuple)?;
     if clear_hard_failure_after_update {

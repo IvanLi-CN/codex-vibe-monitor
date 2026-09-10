@@ -2276,9 +2276,6 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": normalized_group_name,
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
-        "isMother": is_mother,
         "upstreamBaseUrl": upstream_base_url,
     }))
     .expect("deserialize api key account request");
@@ -2287,11 +2284,60 @@ pub(crate) async fn insert_test_pool_api_key_account_with_options(
             .await
             .expect("insert test pool upstream account");
     let _ = detail;
-    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
-        .bind(display_name)
-        .fetch_one(&state.pool)
+    let account_id = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind(display_name)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load inserted test pool upstream account id");
+    restore_test_legacy_api_key_group(
+        &state.pool,
+        account_id,
+        normalized_group_name,
+        is_mother.unwrap_or(false),
+    )
+    .await;
+    account_id
+}
+
+pub(crate) async fn restore_test_legacy_api_key_group(
+    pool: &SqlitePool,
+    account_id: i64,
+    group_name: &str,
+    is_mother: bool,
+) {
+    ensure_test_group_binding(pool, group_name, None).await;
+    if is_mother {
+        sqlx::query(
+            "UPDATE pool_upstream_accounts SET is_mother = 0 WHERE group_name = ?1 AND id != ?2",
+        )
+        .bind(group_name)
+        .bind(account_id)
+        .execute(pool)
         .await
-        .expect("load inserted test pool upstream account id")
+        .expect("clear existing legacy api-key mother account");
+    }
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2, is_mother = ?3 WHERE id = ?1")
+        .bind(account_id)
+        .bind(group_name)
+        .bind(if is_mother { 1 } else { 0 })
+        .execute(pool)
+        .await
+        .expect("restore legacy api-key group state");
+}
+
+pub(crate) async fn set_test_account_group_name(
+    pool: &SqlitePool,
+    account_id: i64,
+    group_name: Option<&str>,
+) {
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(account_id)
+        .bind(group_name)
+        .execute(pool)
+        .await
+        .expect("set test account group name");
 }
 
 pub(crate) async fn create_test_fast_mode_tag(
@@ -2330,8 +2376,6 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
 ) -> i64 {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": upstream_base_url,
         "apiKey": api_key,
     }))
@@ -2345,6 +2389,8 @@ pub(crate) async fn create_test_tagged_pool_api_key_account(
             .fetch_one(&state.pool)
             .await
             .expect("load tagged pool account id");
+    restore_test_legacy_api_key_group(&state.pool, account_id, test_required_group_name(), false)
+        .await;
     if !tag_ids.is_empty() {
         let now_iso = format_utc_iso(Utc::now());
         for tag_id in tag_ids {
@@ -2817,42 +2863,13 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let alpha_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Alpha",
-        "upstream-alpha",
-        Some("prod"),
-        Some(false),
-        None,
-    )
-    .await;
-    let beta_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Beta",
-        "upstream-beta",
-        Some("production"),
-        Some(false),
-        None,
-    )
-    .await;
-    let gamma_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Gamma",
-        "upstream-gamma",
-        None,
-        Some(false),
-        None,
-    )
-    .await;
-    let delta_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Delta",
-        "upstream-delta",
-        Some("Prod"),
-        Some(false),
-        None,
-    )
-    .await;
+    let alpha_id = insert_test_pool_oauth_account(&state, "Alpha", "upstream-alpha").await;
+    set_test_account_group_name(&state.pool, alpha_id, Some("prod")).await;
+    let beta_id = insert_test_pool_oauth_account(&state, "Beta", "upstream-beta").await;
+    set_test_account_group_name(&state.pool, beta_id, Some("production")).await;
+    let gamma_id = insert_test_pool_oauth_account(&state, "Gamma", "upstream-gamma").await;
+    let delta_id = insert_test_pool_oauth_account(&state, "Delta", "upstream-delta").await;
+    set_test_account_group_name(&state.pool, delta_id, Some("Prod")).await;
     sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
         .bind(gamma_id)
         .execute(&state.pool)
@@ -2915,6 +2932,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: Some("oauth_codex".to_string()),
             group_exact: Vec::new(),
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
@@ -2947,6 +2965,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(exact_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: Some("oauth_codex".to_string()),
             group_exact: vec!["Prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -2975,6 +2994,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(multi_group_filtered) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: Some("oauth_codex".to_string()),
             group_exact: vec!["Prod".to_string(), "prod".to_string()],
             group_search: None,
             group_ungrouped: None,
@@ -3003,6 +3023,7 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: Some("oauth_codex".to_string()),
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3035,15 +3056,9 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Legacy Blank Group",
-        "upstream-legacy-blank-group",
-        None,
-        Some(false),
-        None,
-    )
-    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Legacy Blank Group", "oauth-legacy-blank-group")
+            .await;
     sqlx::query("UPDATE pool_upstream_accounts SET group_name = '   ' WHERE id = ?1")
         .bind(account_id)
         .execute(&state.pool)
@@ -3068,6 +3083,7 @@ async fn upstream_account_schema_normalizes_blank_group_names_to_default_group()
     let Json(ungrouped_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: Some(true),
@@ -3140,6 +3156,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3177,6 +3194,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(disabled_only) = list_upstream_accounts(
         State(state.clone()),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3228,6 +3246,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3338,6 +3357,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3566,6 +3586,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let Json(response) = list_upstream_accounts(
         State(state),
         Query(ListUpstreamAccountsQuery {
+            kind: None,
             group_exact: Vec::new(),
             group_search: None,
             group_ungrouped: None,
@@ -3946,8 +3967,6 @@ async fn create_api_key_account_persists_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Gateway Key",
         "apiKey": "sk-gateway",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "https://proxy.example.com/gateway",
     }))
     .expect("deserialize api key account request");
@@ -3970,6 +3989,120 @@ async fn create_api_key_account_persists_upstream_base_url() {
     .await
     .expect("load stored upstream base url");
     assert_eq!(stored.as_deref(), Some("https://proxy.example.com/gateway"));
+
+    let bound_proxy_keys: Option<String> = sqlx::query_scalar(
+        "SELECT bound_proxy_keys_json FROM pool_upstream_accounts WHERE display_name = ?1",
+    )
+    .bind("Gateway Key")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stored default transit proxy binding");
+    assert_eq!(
+        decode_group_bound_proxy_keys_json(bound_proxy_keys.as_deref()),
+        vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn create_api_key_account_rejects_empty_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "No Transit Proxy",
+        "apiKey": "sk-no-transit-proxy",
+        "boundProxyKeys": [],
+    }))
+    .expect("deserialize empty transit proxy request");
+
+    let err = create_api_key_account(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("empty transit proxy bindings must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn create_api_key_account_rejects_null_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": "Null Transit Proxy",
+        "apiKey": "sk-null-transit-proxy",
+        "boundProxyKeys": null,
+    }))
+    .expect("deserialize null transit proxy request");
+
+    let err = create_api_key_account(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("null transit proxy bindings must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn update_api_key_account_rejects_empty_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Existing Transit", "sk-existing-transit").await;
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "boundProxyKeys": [],
+    }))
+    .expect("deserialize empty transit proxy update");
+
+    let err = update_upstream_account(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+        Json(payload),
+    )
+    .await
+    .expect_err("empty transit proxy bindings must be rejected on update");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
+}
+
+#[tokio::test]
+async fn update_api_key_account_rejects_null_transit_proxy_bindings() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Null Transit Update", "sk-null-update").await;
+    let payload: UpdateUpstreamAccountRequest = serde_json::from_value(json!({
+        "boundProxyKeys": null,
+    }))
+    .expect("deserialize null transit proxy update");
+
+    let err = update_upstream_account(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path(account_id),
+        Json(payload),
+    )
+    .await
+    .expect_err("null transit proxy bindings must be rejected on update");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "API Key accounts require at least one bound proxy node"
+    );
 }
 
 #[tokio::test]
@@ -4285,8 +4418,6 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Broken Key",
         "apiKey": "sk-broken",
-        "groupName": test_required_group_name(),
-        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "not-a-url",
     }))
     .expect("deserialize api key account request");

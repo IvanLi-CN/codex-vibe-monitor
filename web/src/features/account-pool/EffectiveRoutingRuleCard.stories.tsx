@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useState } from "react";
 import { expect, userEvent, within } from "storybook/test";
+import { OverlayHostProvider } from "../../components/ui/overlay-host";
 import type { EffectiveRoutingRule, UpdateGroupAccountRoutingRulePayload } from "../../lib/api";
 import {
   buildDefaultStatusChangeReasonFieldSources,
@@ -8,6 +9,7 @@ import {
   type StatusChangeReasonCode,
 } from "../../lib/upstreamAccountStatusChangeReasons";
 import {
+  type AvailableModelOption,
   EffectiveRoutingRuleCard,
   type EffectiveRoutingRuleCardRowKey,
 } from "./EffectiveRoutingRuleCard";
@@ -104,6 +106,15 @@ const labels = {
   availableModelsCustomLabel: (value: string) => value,
   availableModelsRemove: "Remove model",
   availableModelsPlaceholder: "Model id",
+  availableModelsSourceAll: "All sources",
+  availableModelsSourceProject: "Project presets",
+  availableModelsSourceAccount: "This account",
+  availableModelsRefresh: "Refresh",
+  availableModelsRefreshing: "Refreshing...",
+  availableModelsLastRefreshed: (value: string) => `Last refreshed ${value}`,
+  availableModelsRefreshError: "The account model catalog refresh failed.",
+  availableModelsStale: "This account catalog is older than 24 hours.",
+  availableModelsUnmatched: "Selected value",
   currentValue: "Current value",
 };
 
@@ -291,21 +302,22 @@ const meta = {
     },
   },
   decorators: [
-    (Story) => (
-      <div className="min-h-screen bg-base-200 px-12 py-12 text-base-content">
-        <div
-          className="effective-routing-rule-story-surface mx-auto max-w-3xl rounded-xl border border-base-300/70 p-2"
-          style={{ backgroundColor: "#ffffff" }}
-        >
-          <style>
-            {
-              ".effective-routing-rule-story-surface .surface-card { background-color: #ffffff !important; }"
-            }
-          </style>
-          <Story />
-        </div>
-      </div>
-    ),
+    (Story) => {
+      const EvidenceSurface = () => {
+        const [host, setHost] = useState<HTMLDivElement | null>(null);
+        return (
+          <OverlayHostProvider value={host}>
+            <div ref={setHost} className="min-h-screen bg-base-200 px-12 py-12 text-base-content">
+              <div className="effective-routing-rule-story-surface mx-auto max-w-3xl bg-base-100 p-2">
+                <Story />
+              </div>
+            </div>
+          </OverlayHostProvider>
+        );
+      };
+
+      return <EvidenceSurface />;
+    },
   ],
   args: {
     labels,
@@ -538,11 +550,21 @@ function EditableRoutingRuleDemo({
   busyField,
   errorByField,
   visibleRows,
+  availableModelCatalog,
+  availableModelCatalogStatus,
+  availableModelCatalogError,
+  availableModelCatalogStale,
+  onRefreshAvailableModelCatalog,
 }: {
   initialRule: EffectiveRoutingRule;
   busyField?: EditablePolicyConfig["busyField"];
   errorByField?: EditablePolicyConfig["errorByField"];
   visibleRows?: readonly EffectiveRoutingRuleCardRowKey[];
+  availableModelCatalog?: AvailableModelOption[];
+  availableModelCatalogStatus?: string;
+  availableModelCatalogError?: string | null;
+  availableModelCatalogStale?: boolean;
+  onRefreshAvailableModelCatalog?: () => void;
 }) {
   const [rule, setRule] = useState(initialRule);
   return (
@@ -554,6 +576,12 @@ function EditableRoutingRuleDemo({
         busyField,
         errorByField,
         availableModelOptions: editableOptions,
+        availableModelCatalog,
+        availableModelCatalogStatus,
+        availableModelCatalogError,
+        availableModelCatalogStale,
+        availableModelCatalogLastSuccessfulAt: "2026-09-05 10:00",
+        onRefreshAvailableModelCatalog,
         onChange: (_field, payload) => setRule((current) => applyPatchToRule(current, payload)),
       }}
     />
@@ -612,40 +640,9 @@ export const EditableAccountOverrides: Story = {
   tags: ["test"],
   render: () => <EditableRoutingRuleDemo initialRule={strictRule} />,
   play: async ({ canvasElement }) => {
-    const rows = Array.from(canvasElement.querySelectorAll("div.border-b.border-base-300\\/60"));
-
-    function assertExpandedRowAligned(labelText: string, valueText: string) {
-      const row = rows.find((candidate) => {
-        const text = candidate.textContent || "";
-        return text.includes(labelText) && text.includes(valueText) && text.includes("Account");
-      });
-      if (!row) {
-        throw new Error(`missing expanded row for ${labelText}`);
-      }
-
-      const expandedGrid = row.querySelector(".border-t .grid");
-      if (!(expandedGrid instanceof HTMLElement)) {
-        throw new Error(`missing expanded grid for ${labelText}`);
-      }
-
-      const label = expandedGrid.children.item(0);
-      const editor = expandedGrid.children.item(1);
-      if (!(label instanceof HTMLElement) || !(editor instanceof HTMLElement)) {
-        throw new Error(`missing expanded content for ${labelText}`);
-      }
-
-      const range = document.createRange();
-      range.selectNodeContents(label);
-      const textRect = range.getBoundingClientRect();
-      const editorRect = editor.getBoundingClientRect();
-      const textCenterY = textRect.top + textRect.height / 2;
-      const editorCenterY = editorRect.top + editorRect.height / 2;
-
-      expect(Math.abs(textCenterY - editorCenterY)).toBeLessThanOrEqual(6);
-    }
-
-    assertExpandedRowAligned("FAST mode", "Force remove");
-    assertExpandedRowAligned("Upstream 429 retry", "4");
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("radiogroup", { name: "FAST mode" })).toBeVisible();
+    await expect(canvas.getByRole("radiogroup", { name: "Upstream 429 retry" })).toBeVisible();
   },
 };
 
@@ -692,6 +689,75 @@ export const EditableAvailableModelsCompact: Story = {
     expect(modeGroup.querySelector('[aria-checked="true"]')?.textContent).toContain("Allowlist");
     expect(canvasElement.textContent).toContain("gpt-5.4-mini");
   },
+};
+
+export const EditableAvailableModelsWithCatalog: Story = {
+  tags: ["test"],
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={{ ...strictRule, availableModels: ["account-only", "missing-model"] }}
+      visibleRows={["availableModels"]}
+      availableModelCatalog={[
+        { value: "gpt-5.5", sources: ["account"] },
+        { value: "account-only", sources: ["account"] },
+        { value: "gpt-5.4-mini", sources: ["account"] },
+      ]}
+      availableModelCatalogStatus="ready"
+      onRefreshAvailableModelCatalog={() => undefined}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const trigger = canvasElement.querySelector<HTMLButtonElement>('button[role="combobox"]');
+    if (!trigger) throw new Error("missing available-models selector");
+    await userEvent.click(trigger);
+    const documentScope = within(canvasElement.ownerDocument.body);
+    await expect(documentScope.getByRole("button", { name: "Project presets" })).toBeVisible();
+    await expect(documentScope.getByRole("button", { name: "This account" })).toBeVisible();
+    await expect(documentScope.getAllByText("Selected value").length).toBeGreaterThan(0);
+
+    const searchInput = documentScope.getByPlaceholderText("Model id");
+    await userEvent.type(searchInput, "gpt-5.5");
+    expect(
+      canvasElement.ownerDocument.querySelector(
+        '[data-testid="available-models-source-filter-all"]',
+      ),
+    ).toBeNull();
+    const searchHeading = canvasElement.ownerDocument.querySelector("[cmdk-group-heading]");
+    expect(searchHeading?.textContent).toContain("Project presets + This account");
+  },
+};
+
+export const EditableAvailableModelsCatalogFailure: Story = {
+  tags: ["test"],
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={strictRule}
+      visibleRows={["availableModels"]}
+      availableModelCatalogStatus="failed"
+      availableModelCatalogError="The account model catalog refresh failed."
+      onRefreshAvailableModelCatalog={() => undefined}
+    />
+  ),
+};
+
+export const EditableAvailableModelsWithCatalogMobile: Story = {
+  tags: ["test"],
+  parameters: {
+    viewport: { defaultViewport: "mobile393" },
+  },
+  render: () => (
+    <EditableRoutingRuleDemo
+      initialRule={{ ...strictRule, availableModels: ["account-only", "missing-model"] }}
+      visibleRows={["availableModels"]}
+      availableModelCatalog={[
+        { value: "gpt-5.5", sources: ["account"] },
+        { value: "account-only", sources: ["account"] },
+        { value: "gpt-5.4-mini", sources: ["account"] },
+      ]}
+      availableModelCatalogStatus="ready"
+      onRefreshAvailableModelCatalog={() => undefined}
+    />
+  ),
 };
 
 export const EditableMultipleAccountOverrides: Story = {

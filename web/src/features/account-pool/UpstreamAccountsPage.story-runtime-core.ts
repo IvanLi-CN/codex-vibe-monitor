@@ -1424,7 +1424,7 @@ function withDerivedStatusFields<T extends UpstreamAccountDetail>(detail: T): T 
 export function listGroupSummaries(store: StoryStore) {
   const names = new Set<string>();
   const accountCounts = new Map<string, number>();
-  for (const account of store.accounts) {
+  for (const account of store.accounts.filter((candidate) => candidate.kind === "oauth_codex")) {
     const groupName = normalizeGroupName(account.groupName);
     if (groupName) {
       names.add(groupName);
@@ -1488,6 +1488,7 @@ export function listTagSummaries(store: StoryStore): TagSummary[] {
 }
 
 export function filterAccountsForQuery(store: StoryStore, url: URL) {
+  const kind = url.searchParams.get("kind");
   const groupExact = url.searchParams
     .getAll("groupExact")
     .map((value) => value.trim())
@@ -1512,6 +1513,7 @@ export function filterAccountsForQuery(store: StoryStore, url: URL) {
     .filter((value) => value.length > 0);
 
   return store.accounts.filter((account) => {
+    if (kind && account.kind !== kind) return false;
     const normalizedGroup = normalizeGroupName(account.groupName) ?? "";
     const normalizedGroupLower = normalizedGroup.toLowerCase();
     const derivedHealthStatus = storyHealthStatus(account);
@@ -1622,7 +1624,7 @@ export function createApiKeyAccount(
     kind: "api_key_codex",
     provider: "codex",
     displayName: "Team key - staging",
-    groupName: "staging",
+    groupName: null,
     isMother: false,
     status: "active",
     displayStatus: "active",
@@ -1681,6 +1683,7 @@ export function createApiKeyAccount(
       secondaryLimit,
       limitUnit,
     },
+    boundProxyKeys: ["__direct__"],
     tags: [],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
     upstreamBaseUrl: "https://proxy.example.com/gateway",
@@ -1736,6 +1739,12 @@ export function createApiKeyAccount(
   return withDerivedStatusFields({
     ...detail,
     ...overrides,
+    groupName: null,
+    isMother: false,
+    boundProxyKeys:
+      overrides?.boundProxyKeys && overrides.boundProxyKeys.length > 0
+        ? overrides.boundProxyKeys
+        : ["__direct__"],
     history: overrides?.history ?? detail.history,
     recentActions: overrides?.recentActions ?? detail.recentActions,
   });

@@ -2690,86 +2690,27 @@ async fn update_upstream_account_group_preserves_available_models_when_mode_chan
 }
 
 #[tokio::test]
-async fn create_api_key_account_persists_node_shunt_for_existing_multi_account_group() {
-    let (base_url, server) = spawn_usage_snapshot_server(
-        StatusCode::OK,
-        json!({
-            "planType": "team",
-            "rateLimit": {
-                "primaryWindow": {
-                    "usedPercent": 12,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1771322400
-                }
-            }
-        }),
-    )
-    .await;
-    let state = test_app_state_with_usage_base(&base_url).await;
-    let secondary_proxy_key = {
-        let mut manager = state.forward_proxy.lock().await;
-        let settings = ForwardProxySettings {
-            proxy_urls: vec!["http://127.0.0.1:18080".to_string()],
-            ..Default::default()
-        };
-        manager.apply_settings(settings);
-        manager
-            .binding_nodes()
-            .into_iter()
-            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
-            .map(|node| node.key)
-            .expect("secondary proxy binding key")
-    };
-    let existing_account_id = insert_api_key_account(&state.pool, "Existing Shared Group").await;
-    set_test_account_group_name(&state.pool, existing_account_id, Some("shared-write-group")).await;
-
-    let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
-    save_group_metadata_record_conn(
-        &mut conn,
-        "shared-write-group",
-        UpstreamAccountGroupMetadata {
-            note: None,
-            bound_proxy_keys: vec![
-                FORWARD_PROXY_DIRECT_KEY.to_string(),
-                secondary_proxy_key.clone(),
-            ],
-            node_shunt_enabled: false,
-            single_account_rotation_enabled: false,
-            upstream_429_retry_enabled: false,
-            upstream_429_max_retries: 0,
-            concurrency_limit: 0,
-        },
-    )
-    .await
-    .expect("save shared group metadata");
-    drop(conn);
-
+async fn create_api_key_account_rejects_group_fields() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
-        "displayName": "Created Shared Group Account",
-        "apiKey": "sk-created-shared-group",
-        "groupName": "shared-write-group",
-        "groupBoundProxyKeys": [
-            FORWARD_PROXY_DIRECT_KEY,
-            secondary_proxy_key
-        ],
-        "groupNodeShuntEnabled": true
+        "displayName": "Rejected Group Account",
+        "apiKey": "sk-rejected-group",
+        "groupName": "legacy-group"
     }))
     .expect("deserialize api key create request");
-    let Json(detail) =
-        create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
-            .await
-            .expect("create api key account in existing group");
-
-    assert_eq!(
-        detail.summary.group_name.as_deref(),
-        Some("shared-write-group")
-    );
-    let metadata = load_group_metadata(&state.pool, Some("shared-write-group"))
+    let err = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
         .await
-        .expect("load shared group metadata");
-    assert!(metadata.node_shunt_enabled);
-
-    server.abort();
+        .expect_err("API key group fields must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pool_upstream_accounts WHERE display_name = 'Rejected Group Account'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("count rejected account"),
+        0
+    );
 }
 
 #[tokio::test]
@@ -2812,8 +2753,8 @@ async fn create_api_key_account_reports_conflict_when_post_create_sync_lacks_nod
         .await
         .expect_err("create api key account should fail without a node slot");
 
-    assert_eq!(err.0, StatusCode::CONFLICT);
-    assert_eq!(err.1, group_node_shunt_unassigned_error_message());
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("cannot use groups"));
 }
 
 #[tokio::test]
@@ -2844,7 +2785,7 @@ async fn update_upstream_account_persists_node_shunt_for_existing_multi_account_
     .expect("save shared update group metadata");
     drop(conn);
 
-    let Json(detail) = update_upstream_account(
+    let err = update_upstream_account(
         State(state.clone()),
         HeaderMap::new(),
         AxumPath(account_id),
@@ -2872,16 +2813,75 @@ async fn update_upstream_account_persists_node_shunt_for_existing_multi_account_
         }),
     )
     .await
-    .expect("update shared group account");
-
-    assert_eq!(
-        detail.summary.group_name.as_deref(),
-        Some("shared-update-group")
-    );
+    .expect_err("API key group policy updates must be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
     let metadata = load_group_metadata(&state.pool, Some("shared-update-group"))
         .await
         .expect("load shared update group metadata");
-    assert!(metadata.node_shunt_enabled);
+    assert!(!metadata.node_shunt_enabled);
+}
+
+#[tokio::test]
+async fn api_key_group_migration_is_idempotent_and_preserves_oauth_groups() {
+    let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+    let api_key_id = insert_api_key_account(&state.pool, "Legacy Relay Group").await;
+    set_test_account_group_name(&state.pool, api_key_id, Some("legacy-relay-group")).await;
+    sqlx::query("UPDATE pool_upstream_accounts SET is_mother = 1 WHERE id = ?1")
+        .bind(api_key_id)
+        .execute(&state.pool)
+        .await
+        .expect("mark legacy API key mother");
+    let oauth_id = insert_oauth_account(&state.pool, "Official OAuth Member").await;
+    set_test_account_group_name(&state.pool, oauth_id, Some("legacy-relay-group")).await;
+
+    let Json(preflight) = preflight_api_key_group_migration(State(state.clone()))
+        .await
+        .expect("preflight migration");
+    assert_eq!(preflight.api_key_count, 1);
+    assert!(preflight.blocked_strategies.is_empty());
+    assert!(preflight.can_migrate);
+
+    let Json(migrated) = confirm_api_key_group_migration(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ConfirmApiKeyGroupMigrationRequest {
+            confirmation_hash: "stale".to_string(),
+            disabled_strategies: Vec::new(),
+        }),
+    )
+    .await
+    .expect("migration automatically disables obsolete group strategies");
+    assert_eq!(migrated.migrated_count, 1);
+    let api_key_state = sqlx::query_as::<_, (Option<String>, i64)>(
+        "SELECT group_name, is_mother FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(api_key_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load migrated API key");
+    assert_eq!(api_key_state, (None, 0));
+    let oauth_group = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT group_name FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(oauth_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load OAuth group");
+    assert_eq!(oauth_group.as_deref(), Some("legacy-relay-group"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pool_upstream_account_events WHERE account_id = ?1 AND action = 'api_key_transit_proxy_binding_migrated'",
+        )
+        .bind(api_key_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("count migration audit"),
+        1
+    );
+    let Json(post_migration_preflight) = preflight_api_key_group_migration(State(state.clone()))
+        .await
+        .expect("preflight after migration");
+    assert_eq!(post_migration_preflight.api_key_count, 0);
 }
 
 #[tokio::test]

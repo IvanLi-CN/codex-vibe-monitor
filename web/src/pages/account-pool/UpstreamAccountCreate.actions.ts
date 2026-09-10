@@ -1,7 +1,6 @@
 // biome-ignore-all lint/correctness/useExhaustiveDependencies: action callbacks intentionally use current refs for pending OAuth state
 import { useCallback } from "react";
 import type { LoginSessionStatusResponse, UpstreamAccountDetail } from "../../lib/api";
-import { writeApiKeyLastGroupName } from "../../lib/upstreamAccountGroups";
 import type { UpstreamAccountCreateControllerContext } from "./UpstreamAccountCreate.controller-context";
 import {
   type BatchOauthRow,
@@ -14,9 +13,8 @@ import {
 export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateControllerContext) {
   const {
     activeOauthMailboxSession,
+    apiKeyBoundProxyKeys,
     apiKeyDisplayName,
-    apiKeyGroupName,
-    apiKeyGroupProxyState,
     apiKeyLimitUnit,
     apiKeyNote,
     apiKeyPrimaryLimit,
@@ -1287,8 +1285,8 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
 
   const handleCreateApiKey = async () => {
     if (apiKeyUpstreamBaseUrlError) return;
-    if (apiKeyGroupProxyState.error) {
-      setActionError(apiKeyGroupProxyState.error);
+    if (apiKeyBoundProxyKeys.length === 0) {
+      setActionError(t("accountPool.upstreamAccounts.transitProxy.required"));
       return;
     }
     setActionError(null);
@@ -1296,24 +1294,17 @@ export function useUpstreamAccountCreateActions(ctx: UpstreamAccountCreateContro
     try {
       const response = await createApiKeyAccount({
         displayName: apiKeyDisplayName.trim(),
-        groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
-        groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
-        groupNodeShuntEnabled: apiKeyGroupProxyState.nodeShuntEnabled,
-        groupSingleAccountRotationEnabled:
-          resolveGroupSingleAccountRotationEnabledForName(apiKeyGroupName),
         note: apiKeyNote.trim() || undefined,
-        groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
-        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
         apiKey: apiKeyValue.trim(),
         upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         localPrimaryLimit: normalizeNumberInput(apiKeyPrimaryLimit),
         localSecondaryLimit: normalizeNumberInput(apiKeySecondaryLimit),
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
+        boundProxyKeys: apiKeyBoundProxyKeys,
       });
-      writeApiKeyLastGroupName(apiKeyGroupProxyState.normalizedGroupName);
       notifyMotherChange(response);
-      navigate("/account-pool/upstream-accounts", {
+      navigate("/account-pool/transits", {
         state: {
           selectedAccountId: response.id,
           openDetail: true,

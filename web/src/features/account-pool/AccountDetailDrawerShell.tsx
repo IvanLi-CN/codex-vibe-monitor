@@ -14,6 +14,7 @@ interface AccountDetailDrawerShellProps {
   children: ReactNode;
   presentation?: "overlay" | "page";
   closeDisabled?: boolean;
+  showCloseButton?: boolean;
   autoFocusCloseButton?: boolean;
   onPortalContainerChange?: (node: HTMLElement | null) => void;
   onBodyElementChange?: (node: HTMLDivElement | null) => void;
@@ -30,6 +31,7 @@ export function AccountDetailDrawerShell({
   children,
   presentation = "overlay",
   closeDisabled = false,
+  showCloseButton = true,
   autoFocusCloseButton = true,
   onPortalContainerChange,
   onBodyElementChange,
@@ -91,6 +93,7 @@ export function AccountDetailDrawerShell({
     }
 
     if (
+      !showCloseButton ||
       !autoFocusCloseButton ||
       hasAutofocusedForOpenRef.current ||
       typeof window === "undefined"
@@ -106,32 +109,38 @@ export function AccountDetailDrawerShell({
     return () => {
       window.clearTimeout(focusTimer);
     };
-  }, [autoFocusCloseButton, open]);
+  }, [autoFocusCloseButton, open, showCloseButton]);
 
   if (!open) return null;
 
+  const horizontalPadding =
+    presentation === "page" ? "px-1 desktop:px-6" : "px-4 sm:px-5 desktop:px-6";
+
   const shellBody = (
     <OverlayHostProvider value={sectionElement ?? undefined}>
-      <div className="drawer-header px-4 py-4 sm:px-5 desktop:px-6 desktop:py-4">
+      <div className={cn("drawer-header py-4 desktop:py-4", horizontalPadding)}>
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">{header}</div>
-          <Button
-            ref={closeButtonRef}
-            type="button"
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-            disabled={closeDisabled}
-          >
-            <AppIcon name="close" className="h-5 w-5" aria-hidden />
-            <span className="sr-only">{closeLabel}</span>
-          </Button>
+          {showCloseButton ? (
+            <Button
+              ref={closeButtonRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onClose}
+              disabled={closeDisabled}
+            >
+              <AppIcon name="close" className="h-5 w-5" aria-hidden />
+              <span className="sr-only">{closeLabel}</span>
+            </Button>
+          ) : null}
         </div>
       </div>
       <div
         ref={handleBodyRef}
         className={cn(
-          "drawer-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-5 sm:py-5 desktop:px-6 desktop:py-6",
+          "drawer-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-4 sm:py-5 desktop:py-6",
+          horizontalPadding,
           bodyClassName,
         )}
       >

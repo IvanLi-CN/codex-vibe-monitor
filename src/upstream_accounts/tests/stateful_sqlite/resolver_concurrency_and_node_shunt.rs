@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::insert_test_pool_oauth_account;
 use serde_json::json;
 
 #[tokio::test]
@@ -421,22 +422,19 @@ async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_ac
 #[tokio::test]
 async fn node_shunt_assignments_prefer_primary_priority_before_fallback() {
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
-    let fallback_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Node Shunt Fallback",
-        "sk-node-shunt-fallback",
+    let fallback_account_id =
+        insert_test_pool_oauth_account(&state, "Node Shunt Fallback", "oauth-node-shunt-fallback")
+            .await;
+    let primary_account_id =
+        insert_test_pool_oauth_account(&state, "Node Shunt Primary", "oauth-node-shunt-primary")
+            .await;
+    set_test_account_group_name(
+        &state.pool,
+        fallback_account_id,
         Some("node-shunt-priority"),
-        Some("https://node-shunt-fallback.example.com/backend-api/codex"),
     )
     .await;
-    let primary_account_id = insert_test_pool_api_key_account_with_options(
-        &state,
-        "Node Shunt Primary",
-        "sk-node-shunt-primary",
-        Some("node-shunt-priority"),
-        Some("https://node-shunt-primary.example.com/backend-api/codex"),
-    )
-    .await;
+    set_test_account_group_name(&state.pool, primary_account_id, Some("node-shunt-priority")).await;
 
     let mut fallback_rule = test_tag_routing_rule();
     fallback_rule.priority_tier = TagPriorityTier::Fallback;

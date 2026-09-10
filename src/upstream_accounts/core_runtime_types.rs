@@ -1136,6 +1136,7 @@ pub(crate) struct ListForwardProxyBindingNodesQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountActionEventsQuery {
+    pub(crate) kind: Option<String>,
     pub(crate) account: Option<String>,
     pub(crate) group: Option<String>,
     pub(crate) proxy_key: Option<String>,
@@ -1147,6 +1148,7 @@ pub(crate) struct ListUpstreamAccountActionEventsQuery {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListUpstreamAccountsQuery {
+    pub(crate) kind: Option<String>,
     #[serde(default)]
     pub(crate) group_exact: Vec<String>,
     pub(crate) group_search: Option<String>,
@@ -1971,9 +1973,28 @@ pub(crate) struct UpstreamAccountDetail {
     pub(crate) history: Vec<UpstreamAccountHistoryPoint>,
     pub(crate) recent_actions: Vec<UpstreamAccountActionEvent>,
     pub(crate) model_mappings: Vec<ModelMapping>,
+    pub(crate) model_catalog: UpstreamAccountModelCatalog,
     pub(crate) model_routing_states: Vec<ModelRoutingState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) routing_state_version: Option<RoutingStateVersion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountModelCatalog {
+    pub(crate) models: Vec<String>,
+    pub(crate) status: String,
+    pub(crate) last_attempted_at: Option<String>,
+    pub(crate) last_successful_at: Option<String>,
+    pub(crate) error: Option<UpstreamAccountModelCatalogError>,
+    pub(crate) stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountModelCatalogError {
+    pub(crate) code: String,
+    pub(crate) message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2604,6 +2625,8 @@ pub(crate) struct CreateApiKeyAccountRequest {
     pub(crate) note: Option<String>,
     pub(crate) group_note: Option<String>,
     pub(crate) concurrency_limit: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    pub(crate) bound_proxy_keys: OptionalField<Vec<String>>,
     pub(crate) upstream_base_url: Option<String>,
     pub(crate) api_key: String,
     pub(crate) is_mother: Option<bool>,
@@ -2612,6 +2635,32 @@ pub(crate) struct CreateApiKeyAccountRequest {
     pub(crate) local_limit_unit: Option<String>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfirmApiKeyGroupMigrationRequest {
+    pub(crate) confirmation_hash: String,
+    #[serde(default)]
+    pub(crate) disabled_strategies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiKeyGroupMigrationPreflightResponse {
+    pub(crate) confirmation_hash: String,
+    pub(crate) api_key_count: usize,
+    pub(crate) portable_fields: Vec<String>,
+    pub(crate) blocked_strategies: Vec<String>,
+    pub(crate) can_migrate: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiKeyGroupMigrationResponse {
+    pub(crate) migrated_count: usize,
+    pub(crate) confirmation_hash: String,
+    pub(crate) audit_action: String,
 }
 
 #[derive(Debug, Deserialize)]
