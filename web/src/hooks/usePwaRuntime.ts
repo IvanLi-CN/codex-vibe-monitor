@@ -98,6 +98,7 @@ async function fetchFrontendVersion(): Promise<string | null> {
 
 export function usePwaRuntime(): PwaRuntimeState {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const installPromptRef = useRef<BeforeInstallPromptEvent | null>(null);
   const [installMode, setInstallMode] = useState<PwaInstallMode>(() =>
     isDemoInstallPromptRequested() ? "prompt" : resolveInstallMode(null),
   );
@@ -123,16 +124,21 @@ export function usePwaRuntime(): PwaRuntimeState {
     ];
 
     const refreshMode = () => {
-      setInstallMode(isDemoInstallPromptRequested() ? "prompt" : resolveInstallMode(installPrompt));
+      setInstallMode(
+        isDemoInstallPromptRequested() ? "prompt" : resolveInstallMode(installPromptRef.current),
+      );
     };
 
     const handleBeforeInstallPrompt = (event: Event) => {
       event.preventDefault();
-      setInstallPrompt(event as BeforeInstallPromptEvent);
+      const promptEvent = event as BeforeInstallPromptEvent;
+      installPromptRef.current = promptEvent;
+      setInstallPrompt(promptEvent);
       setInstallMode("prompt");
     };
 
     const handleAppInstalled = () => {
+      installPromptRef.current = null;
       setInstallPrompt(null);
       setInstallMode("installed");
     };
@@ -160,7 +166,7 @@ export function usePwaRuntime(): PwaRuntimeState {
         query.removeEventListener("change", refreshMode);
       }
     };
-  }, [installPrompt]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return undefined;
@@ -211,22 +217,26 @@ export function usePwaRuntime(): PwaRuntimeState {
   }, [installMode]);
 
   const promptInstall = useCallback(async () => {
-    if (!installPrompt) return;
+    const currentPrompt = installPrompt;
+    if (!currentPrompt) return;
     let accepted = false;
-    await installPrompt.prompt();
     try {
-      const choice = await installPrompt.userChoice;
+      await currentPrompt.prompt();
+      const choice = await currentPrompt.userChoice;
       if (choice.outcome === "accepted") {
         accepted = true;
-        setInstallPrompt(null);
-        setInstallMode("installed");
       }
-    } finally {
-      if (!accepted) {
-        deferInstallPrompt();
-        setInstallMode(installPrompt ? "prompt" : resolveInstallMode(null));
-      }
+    } catch {
+      accepted = false;
     }
+    installPromptRef.current = null;
+    setInstallPrompt(null);
+    if (accepted) {
+      setInstallMode("installed");
+      return;
+    }
+    deferInstallPrompt();
+    setInstallMode("prompt");
   }, [deferInstallPrompt, installPrompt]);
 
   const applyUpdate = useCallback(async () => {

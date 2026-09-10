@@ -415,6 +415,7 @@ export function AppLayout() {
       ? pwaRuntime.installMode
       : null;
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
+  const suppressInstallDeferRef = useRef(false);
   useEffect(() => {
     if (pwaRuntime.shouldAutoOpenInstallDialog && installDialogMode) {
       setInstallDialogOpen(true);
@@ -426,9 +427,10 @@ export function AppLayout() {
         setInstallDialogOpen(true);
         return;
       }
-      if (installDialogMode) {
+      if (installDialogMode && !suppressInstallDeferRef.current) {
         pwaRuntime.deferInstallPrompt();
       }
+      suppressInstallDeferRef.current = false;
       setInstallDialogOpen(false);
     },
     [installDialogMode, pwaRuntime.deferInstallPrompt],
@@ -437,8 +439,12 @@ export function AppLayout() {
     setInstallDialogOpen(true);
   }, []);
   const handleInstallPrompt = useCallback(async () => {
-    await pwaRuntime.promptInstall();
-    setInstallDialogOpen(false);
+    suppressInstallDeferRef.current = true;
+    try {
+      await pwaRuntime.promptInstall();
+    } finally {
+      setInstallDialogOpen(false);
+    }
   }, [pwaRuntime.promptInstall]);
   const showVersionUpdateBanner = pwaRuntime.update.visible || update.visible;
   const stackedStatusBannerTopClass = showVersionUpdateBanner ? "top-[146px]" : "top-[78px]";

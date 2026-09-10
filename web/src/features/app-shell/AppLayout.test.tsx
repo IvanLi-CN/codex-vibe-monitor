@@ -363,6 +363,7 @@ describe("AppLayout", () => {
 
   it("uses the compact hamburger menu only through the mobile breakpoint", async () => {
     const promptInstall = vi.fn();
+    const deferInstallPrompt = vi.fn();
     hookMocks.useUpdateAvailable.mockReturnValue({
       currentVersion: null,
       availableVersion: null,
@@ -394,7 +395,7 @@ describe("AppLayout", () => {
         visible: false,
       },
       promptInstall,
-      deferInstallPrompt: vi.fn(),
+      deferInstallPrompt,
       applyUpdate: vi.fn(),
       dismissUpdate: vi.fn(),
     });
@@ -455,6 +456,7 @@ describe("AppLayout", () => {
       await Promise.resolve();
     });
     expect(promptInstall).toHaveBeenCalledTimes(1);
+    expect(deferInstallPrompt).not.toHaveBeenCalled();
   });
 
   it("keeps the header logo mark active across bursty updates until the recent-activity window expires", async () => {
