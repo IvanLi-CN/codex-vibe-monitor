@@ -165,7 +165,7 @@
 ## Visual Evidence
 
 - Evidence source: mock-only Web Demo (`VITE_APP_RUNTIME=demo`) with `mockPwa=prompt`; no login, production account, secret, or live backend payload was used.
-- Bound source revision: `09c935e2`.
+- Bound source revision: `4c3ce5b4`.
 - Viewport: desktop `1440x1000`, mobile `393x852`; capture scope is the browser viewport only.
 
 ### Application Icon Contract
