@@ -96,7 +96,8 @@
 
 - source_type: `ui_demo`
   target_program: mock-only Web Demo (`VITE_APP_RUNTIME=demo`)
-  source_revision: `4c3ce5b4`
+  source_revision: current PR head at convergence
+  capture_revision: `5a052749`
   runtime_query: `mockPwa=prompt` for the installable header state
   sensitive_exclusion: demo fixtures only; no production account, secret, or backend request
   capture_scope: browser viewport only
