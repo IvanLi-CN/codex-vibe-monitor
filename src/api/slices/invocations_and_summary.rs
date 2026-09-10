@@ -16286,8 +16286,8 @@ async fn build_summary_projection_once(
         global_all_time_eligible: previous_global_all_time_eligible,
         account_all_time_eligible: previous_account_all_time_eligible,
         all_time_terminal_coverage_complete: previous_all_time_terminal_coverage_complete,
-        global_all_time_coverage_fence: previous_global_all_time_coverage_fence,
-        account_all_time_coverage_fence: previous_account_all_time_coverage_fence,
+        global_all_time_coverage_fence: mut previous_global_all_time_coverage_fence,
+        account_all_time_coverage_fence: mut previous_account_all_time_coverage_fence,
         all_time_terminal_sequence_watermark: previous_all_time_terminal_sequence_watermark,
         all_time_persisted_live_terminal_invoke_ids:
             previous_all_time_persisted_live_terminal_invoke_ids,
@@ -19377,7 +19377,7 @@ async fn build_summary_projection_once(
         }
     }
     let refreshed_at = Some(Instant::now());
-    let freshness = SummaryProjectionFreshness {
+    let mut freshness = SummaryProjectionFreshness {
         global_all_time_eligible: if all_time_was_fully_rebuilt {
             if global_all_time_source_unavailable {
                 previous_global_all_time_eligible && all_time_by_account.contains_key(&None)
@@ -19389,7 +19389,7 @@ async fn build_summary_projection_once(
         },
         account_all_time_eligible: if all_time_was_fully_rebuilt {
             if account_all_time_unavailable {
-                previous_account_all_time_eligible
+                previous_account_all_time_eligible.clone()
             } else {
                 all_time_by_account
                     .keys()
@@ -19397,11 +19397,9 @@ async fn build_summary_projection_once(
                     .collect()
             }
         } else {
-            previous_account_all_time_eligible
+            previous_account_all_time_eligible.clone()
         },
     };
-    let all_time_oldest_account_refreshed_at =
-        all_time_account_refreshed_at.values().copied().min();
     let persisted_live_record_has_unavailable_global_rolling_coverage =
         |record: &SummaryProjectionRecord| {
             unavailable_exact_live_buckets.contains(&align_bucket_epoch(
@@ -19443,7 +19441,7 @@ async fn build_summary_projection_once(
         .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
         .collect::<HashSet<_>>();
     persisted_live_terminal_invoke_ids.extend(historical_global_covered_terminal_invoke_ids);
-    let all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
+    let mut all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
         // Global all-time responses have an independent durable source contract. An account
         // manifest gap must not make an otherwise exact global aggregate replay every terminal
         // delta or exhaust the shared all-time overlay budget.
@@ -19451,13 +19449,13 @@ async fn build_summary_projection_once(
     } else {
         previous_all_time_terminal_coverage_complete
     };
-    let all_time_terminal_sequence_watermark = summary_projection_all_time_sequence_watermark(
+    let mut all_time_terminal_sequence_watermark = summary_projection_all_time_sequence_watermark(
         all_time_was_fully_rebuilt,
         all_time_terminal_coverage_complete,
         durable_terminal_sequence_watermark,
         previous_all_time_terminal_sequence_watermark,
     );
-    let all_time_persisted_live_terminal_invoke_ids =
+    let mut all_time_persisted_live_terminal_invoke_ids =
         if all_time_was_fully_rebuilt && all_time_terminal_coverage_complete {
             records
                 .iter()
@@ -19472,8 +19470,8 @@ async fn build_summary_projection_once(
             previous_all_time_persisted_live_terminal_invoke_ids
         };
     let (
-        all_time_account_terminal_sequence_watermarks,
-        all_time_account_persisted_live_terminal_invoke_ids,
+        mut all_time_account_terminal_sequence_watermarks,
+        mut all_time_account_persisted_live_terminal_invoke_ids,
     ) = if all_time_was_fully_rebuilt && !account_all_time_unavailable {
         let account_watermarks = rebuilt_all_time_account_ids
             .iter()
@@ -19596,6 +19594,52 @@ async fn build_summary_projection_once(
         account_coverage_revision: summary_projection_account_coverage_revision(pool).await?,
         durable_terminal_sequence_watermark,
     };
+    let current_coverage_fence = generation_fence.coverage_fence();
+    let mut published_all_time_refreshed_at =
+        if all_time_was_fully_rebuilt && !global_all_time_source_unavailable {
+            all_time_completed_at
+        } else {
+            previous_all_time_refreshed_at
+        };
+    // A rolling publication may retain an exact all-time aggregate only while the durable
+    // coverage authority that produced it is unchanged.  When a manifest/replay/proof change
+    // revokes that authority, clear the retained scope before publishing the new projection;
+    // otherwise the memory-only handler could serve the old aggregate as a false 200 while
+    // recovery is still pending.
+    let revoke_global_all_time = previous_global_all_time_eligible
+        && previous_global_all_time_coverage_fence
+            .is_none_or(|published| !published.global_sources_match(current_coverage_fence))
+        && (!all_time_was_fully_rebuilt
+            || global_all_time_source_unavailable
+            || !all_time_by_account.contains_key(&None));
+    if revoke_global_all_time {
+        all_time_by_account.remove(&None);
+        freshness.global_all_time_eligible = false;
+        published_all_time_refreshed_at = None;
+        previous_global_all_time_coverage_fence = None;
+        all_time_terminal_coverage_complete = false;
+        all_time_terminal_sequence_watermark = 0;
+        all_time_persisted_live_terminal_invoke_ids.clear();
+    }
+    let revoke_account_all_time = !previous_account_all_time_eligible.is_empty()
+        && previous_account_all_time_coverage_fence
+            .is_none_or(|published| !published.account_sources_match(current_coverage_fence))
+        && (!all_time_was_fully_rebuilt
+            || account_all_time_unavailable
+            || freshness.account_all_time_eligible.is_empty());
+    if revoke_account_all_time {
+        all_time_by_account.retain(|scope, _| scope.is_none());
+        freshness.account_all_time_eligible.clear();
+        all_time_account_refreshed_at.clear();
+        previous_account_all_time_coverage_fence = None;
+        all_time_account_terminal_sequence_watermarks.clear();
+        all_time_account_persisted_live_terminal_invoke_ids.clear();
+    }
+    let all_time_oldest_account_refreshed_at = if revoke_account_all_time {
+        None
+    } else {
+        all_time_account_refreshed_at.values().copied().min()
+    };
     let coverage_overlay = previous_coverage_overlay.filter(|overlay| {
         // A coverage revision change revokes the old proof set.  Retaining its normalized
         // contribution across that fence would make a replacement or terminal-gap update look
@@ -19610,14 +19654,14 @@ async fn build_summary_projection_once(
         global_all_time_coverage_fence: if all_time_was_fully_rebuilt
             && freshness.global_all_time_eligible
         {
-            Some(generation_fence.coverage_fence())
+            Some(current_coverage_fence)
         } else {
             previous_global_all_time_coverage_fence
         },
         account_all_time_coverage_fence: if all_time_was_fully_rebuilt
             && !account_all_time_unavailable
         {
-            Some(generation_fence.coverage_fence())
+            Some(current_coverage_fence)
         } else {
             previous_account_all_time_coverage_fence
         },
@@ -19641,12 +19685,7 @@ async fn build_summary_projection_once(
         historical_live_coverage,
         coverage_overlay,
         all_time_by_account,
-        all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
-        {
-            all_time_completed_at
-        } else {
-            previous_all_time_refreshed_at
-        },
+        all_time_refreshed_at: published_all_time_refreshed_at,
         all_time_manifest_admission_blocked_at: if all_time_was_fully_rebuilt {
             all_time_archive_admission_exceeded.then(Instant::now)
         } else {
@@ -37245,6 +37284,85 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_coverage_change_revokes_stale_all_time_without_blocking_recent() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-coverage-revoke-all', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed summary projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish exact bootstrap projection");
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish exact all-time projection");
+        let Json(before) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("baseline all-time projection is exact");
+        assert_eq!(before.total_count, 1);
+
+        sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("revoke historical coverage revision");
+        refresh_summary_snapshots_with_mode(
+            state.as_ref(),
+            SummaryProjectionBuildMode::RollingDelta,
+        )
+        .await
+        .expect("rolling publication keeps recent projection available");
+        state.pool.close().await;
+
+        let all_time = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(all_time, Err(ApiError::Unavailable(_))),
+            "coverage revocation must not serve the old all-time aggregate"
+        );
+
+        let Json(current) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("unrelated recent selection remains exact");
+        assert_eq!(current.total_count, 1);
+        assert_eq!(current.total_tokens, 17);
+    }
+
+    #[tokio::test]
     async fn summary_projection_generation_fence_rejects_changed_live_source() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -41247,37 +41365,12 @@ mod request_compression_query_tests {
         .expect("remove global replay marker identity");
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("identityless replay refresh preserves exact global all-time last-good");
+            .expect("identityless replay refresh publishes a bounded recent projection");
         refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
             .await
-            .expect("reconcile identityless replay while retaining global all-time last-good");
+            .expect("reconcile identityless replay while revoking global all-time authority");
 
-        let Json(last_good) = fetch_summary(
-            State(state.clone()),
-            Query(SummaryQuery {
-                window: Some("all".to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect("fresh exact global last-good survives an incomplete refresh");
-        assert_eq!(last_good.total_count, 3);
-        assert_eq!(last_good.total_tokens, 91);
-
-        let mut projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("refresh stores the global all-time last-good projection");
-        Arc::make_mut(&mut projection).all_time_refreshed_at =
-            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
-        state
-            .subscription_hub
-            .store_summary_projection(Arc::unwrap_or_clone(projection))
-            .await;
-        let expired_global = fetch_summary(
+        let missing_global = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
@@ -41287,7 +41380,7 @@ mod request_compression_query_tests {
             }),
         )
         .await;
-        assert!(matches!(expired_global, Err(ApiError::Unavailable(_))));
+        assert!(matches!(missing_global, Err(ApiError::Unavailable(_))));
 
         let Json(account) = fetch_summary(
             State(state.clone()),

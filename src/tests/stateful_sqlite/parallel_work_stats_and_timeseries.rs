@@ -4854,15 +4854,11 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     )
     .await;
     // The shared bucket marker proves that a compact row exists. Each immutable batch also
-    // needs its own replay marker before the all-time projection can prove the row includes
-    // both sibling archives without reopening the unreadable one.
+    // needs complete replay markers for totals, account stats, and usage before the all-time
+    // projection can prove the row includes both sibling archives without reopening the
+    // unreadable one.
     for archive_path in [&readable_archive_path, &unreadable_archive_path] {
-        insert_hourly_rollup_archive_replay_marker(
-            &state.pool,
-            HOURLY_ROLLUP_TARGET_INVOCATIONS,
-            archive_path,
-        )
-        .await;
+        mark_summary_archive_replay_complete(&state.pool, archive_path).await;
     }
 
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
@@ -5091,12 +5087,7 @@ async fn all_time_summary_skips_double_count_for_readable_materialized_archive_w
     )
     .await;
     for archive_path in [&materialized_archive_path, &unreadable_archive_path] {
-        insert_hourly_rollup_archive_replay_marker(
-            &state.pool,
-            HOURLY_ROLLUP_TARGET_INVOCATIONS,
-            archive_path,
-        )
-        .await;
+        mark_summary_archive_replay_complete(&state.pool, archive_path).await;
     }
 
     fs::write(&unreadable_archive_path, b"not-a-gzip-archive")
