@@ -4452,6 +4452,14 @@ async fn summary_projection_replaces_rollup_for_point_materialized_archive_witho
 #[tokio::test]
 async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archive_exceeds_admission()
  {
+    with_summary_projection_test_exact_record_limit(10_000, async {
+        summary_projection_keeps_rollup_ranges_when_materialized_current_archive_exceeds_admission_with_limit().await;
+    })
+    .await;
+}
+
+async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archive_exceeds_admission_with_limit()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -4494,12 +4502,12 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
     let archive_middle = format_naive(archive_middle_row_at.with_timezone(&Shanghai).naive_local());
     sqlx::query(
         "WITH RECURSIVE rows(id) AS ( \
-            SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 50001 \
+            SELECT 1 UNION ALL SELECT id + 1 FROM rows WHERE id < 10001 \
          ) \
          INSERT INTO codex_invocations \
          (id, invoke_id, occurred_at, source, status, total_tokens, cost, detail_level, payload, raw_response, created_at) \
          SELECT id, 'summary-current-materialized-over-admission-' || id, \
-                CASE WHEN id = 1 THEN ?1 WHEN id = 50001 THEN ?2 ELSE ?3 END, \
+                CASE WHEN id = 1 THEN ?1 WHEN id = 10001 THEN ?2 ELSE ?3 END, \
                 'proxy', 'success', 1, 0.01, 'full', '{}', '', ?3 \
          FROM rows",
     )
@@ -4518,7 +4526,7 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
         "INSERT INTO archive_batches \
          (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at, \
           historical_rollups_materialized_at, created_at) \
-         VALUES ('codex_invocations', ?1, ?2, ?3, 50001, 'completed', ?4, ?5, datetime('now'), datetime('now'))",
+         VALUES ('codex_invocations', ?1, ?2, ?3, 10001, 'completed', ?4, ?5, datetime('now'), datetime('now'))",
     )
     .bind(archive_start[..7].to_string())
     .bind(archive_path.to_string_lossy().to_string())
@@ -4531,7 +4539,7 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
     sqlx::query(
         "INSERT INTO invocation_rollup_hourly \
          (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, non_success_cost) \
-         VALUES (?1, 'proxy', 50001, 50001, 0, 50001, 500.01, 0)",
+         VALUES (?1, 'proxy', 10001, 10001, 0, 10001, 100.01, 0)",
     )
     .bind(archive_hour.timestamp())
     .execute(&state.pool)
@@ -4541,7 +4549,7 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
         "INSERT INTO upstream_account_usage_breakdown_hourly \
          (bucket_start_epoch, source, upstream_account_key, normalized_model, normalized_reasoning_effort, \
           request_count, output_tokens, cost_unknown, has_cost) \
-         VALUES (?1, 'proxy', '-1', '', '', 50001, 50001, 500.01, 1)",
+         VALUES (?1, 'proxy', '-1', '', '', 10001, 10001, 100.01, 1)",
     )
     .bind(archive_hour.timestamp())
     .execute(&state.pool)
@@ -4569,9 +4577,9 @@ async fn summary_projection_keeps_rollup_ranges_when_materialized_current_archiv
         )
         .await
         .expect("serve {window} from the rollup-backed memory projection");
-        assert_eq!(response.total_count, 50_001, "{window} count");
-        assert_eq!(response.total_tokens, 50_001, "{window} tokens");
-        assert_f64_close(response.total_cost, 500.01);
+        assert_eq!(response.total_count, 10_001, "{window} count");
+        assert_eq!(response.total_tokens, 10_001, "{window} tokens");
+        assert_f64_close(response.total_cost, 100.01);
     }
     assert!(matches!(
         fetch_summary(
