@@ -236,7 +236,7 @@ export function usePwaRuntime(): PwaRuntimeState {
       return;
     }
     deferInstallPrompt();
-    setInstallMode("prompt");
+    setInstallMode(resolveInstallMode(null));
   }, [deferInstallPrompt, installPrompt]);
 
   const applyUpdate = useCallback(async () => {

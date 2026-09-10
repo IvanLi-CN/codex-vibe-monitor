@@ -45,7 +45,7 @@
 - [REQ-PWA-ICON-URLS] regular、maskable、favicon 与 shortcut 的字节变化必须同步更新 manifest 与 HTML 可见引用；安装图标不进入 service worker precache。每一代安装资源使用内容哈希文件名，manifest URL 与 HTML favicon URL 必须指向同一代文件；`any` 与 `maskable` 不得复用字节或合并为 `purpose: "any maskable"`。
 - 安装入口必须走浏览器原生合同：Chromium Desktop / Android Chrome 使用 `beforeinstallprompt`；Safari / iOS 仅提供 manual Add to Home Screen guidance，不伪装 native prompt。
 - 主界面头栏在可安装模式下提供可发现的 install trigger：桌面位于主导航左侧并显示图标与文案，移动端位于主题按钮左侧并使用具名图标按钮；触发器打开同一 install prompt / manual guidance。
-- 首次满足安装条件且暂缓已到期时自动弹出提示；点击稍后、关闭、Esc、遮罩或拒绝原生安装后，以 `codex-vibe-monitor.pwa-install-deferred-until` 暂缓 30 天。暂缓期间头栏 trigger 仍可手动打开。
+- 首次满足安装条件且暂缓已到期时自动弹出提示；点击稍后、关闭、Esc 或遮罩后，以 `codex-vibe-monitor.pwa-install-deferred-until` 暂缓 30 天且保留当前原生事件供头栏 trigger 手动打开。拒绝或异常结束原生 prompt 同样写入 30 天暂缓，但会消费单次原生事件并隐藏入口，直到浏览器重新发出新的 `beforeinstallprompt` 事件。
 - 已安装状态必须切到 installed vocabulary，不再继续显示“可安装”语义。
 - 自动弹出的安装提示在窄屏上必须使用居中 modal，而不是贴底抽屉；背景页面可见但需被 overlay 明确压暗。
 

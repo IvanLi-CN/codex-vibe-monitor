@@ -188,7 +188,7 @@ describe("usePwaRuntime", () => {
     });
 
     expect(promptMock).toHaveBeenCalledTimes(1);
-    expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("prompt");
+    expect(host?.querySelector('[data-testid="install-mode"]')?.textContent).toBe("unsupported");
   });
 
   it("exposes manual iOS Safari guidance when no native install prompt is available", async () => {
