@@ -14051,8 +14051,8 @@ async fn summary_v2_exact_coverage_buckets(
     // Do this as one range lookup, rather than one EXISTS query per candidate hour. A long
     // recovery can legitimately hold the 4096-bucket proof budget; per-bucket queries made an
     // otherwise bounded overlay publication dominate V2 recovery throughput.
-    let unresolved_ranges = sqlx::query_as::<_, (Option<String>, Option<String>)>(
-        "SELECT batches.coverage_start_at, batches.coverage_end_at \
+    let unresolved_ranges = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT batches.month_key, batches.coverage_start_at, batches.coverage_end_at \
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
            AND batches.status = 'completed' \
@@ -14076,13 +14076,22 @@ async fn summary_v2_exact_coverage_buckets(
     .context("summary V2 exact coverage obligation range lookup failed")?;
 
     let mut exact_buckets = candidate_buckets.iter().copied().collect::<BTreeSet<_>>();
-    for (coverage_start, coverage_end) in unresolved_ranges {
+    for (month_key, coverage_start, coverage_end) in unresolved_ranges {
         let (Some(coverage_start), Some(coverage_end)) = (coverage_start, coverage_end) else {
-            // A legacy manifest without finite bounds cannot be assigned to a subset of the
-            // candidate hours. Keep every candidate bucket unavailable until its V2 proof or
-            // compact coverage authority is established.
-            exact_buckets.clear();
-            break;
+            let Ok(month_buckets) =
+                crate::stats::archive_bucket_start_epochs_from_bounds(Some(&month_key), None, None)
+            else {
+                exact_buckets.clear();
+                break;
+            };
+            let overlapping = month_buckets
+                .into_iter()
+                .filter(|bucket| exact_buckets.contains(bucket))
+                .collect::<Vec<_>>();
+            for bucket in overlapping {
+                exact_buckets.remove(&bucket);
+            }
+            continue;
         };
         let Some(start) = parse_to_utc_datetime(&coverage_start) else {
             exact_buckets.clear();
@@ -15323,8 +15332,9 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
             .map(|(_, file_path, _, _, _, _, _, _)| file_path.clone())
             .collect::<Vec<_>>();
         let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
-        let mut global = vec![exact_horizon];
-        let mut account = vec![exact_horizon];
+        let mut global = Vec::new();
+        let mut account = Vec::new();
+        let mut broad_fail_closed = false;
         for (
             _month_key,
             file_path,
@@ -15352,6 +15362,7 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
             ) else {
                 global.push(exact_horizon);
                 account.push(exact_horizon);
+                broad_fail_closed = true;
                 continue;
             };
             let (Some(start), Some(end)) = (
@@ -15391,6 +15402,7 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
             }
             if global_gap {
                 global.push(localized);
+                broad_fail_closed = true;
             }
             if upstream_activity_manifest_refreshed_at.is_none()
                 || !replay.account_stats
@@ -15400,7 +15412,86 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
             }
         }
         let global = summary_projection_merge_exact_ranges(global);
-        let account = summary_projection_merge_exact_ranges(account);
+        let mut account = summary_projection_merge_exact_ranges(account);
+        let (unproven_manifest_exists, unproven_account_manifest_exists) =
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT \
+             EXISTS(SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.id <= ?1 \
+               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+                   WHERE proof.archive_batch_id = batches.id \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND proof.manifest_sha256 = batches.sha256 \
+               ) \
+               AND ( \
+                   batches.historical_rollups_materialized_at IS NULL \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?4 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?5 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+               )), \
+             EXISTS(SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.id <= ?1 \
+               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+                   WHERE proof.archive_batch_id = batches.id \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND proof.manifest_sha256 = batches.sha256 \
+               ) \
+               AND ( \
+                   batches.upstream_activity_manifest_refreshed_at IS NULL \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?6 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?5 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+               ))",
+            )
+            .bind(high_watermark_id)
+            .bind(exact_horizon.start.timestamp())
+            .bind(exact_horizon.end.timestamp())
+            .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+            .fetch_one(pool)
+            .await
+            .context("summary projection overflowed boundary unproven aggregate lookup failed")?;
+        let broad_fail_closed = broad_fail_closed || unproven_manifest_exists != 0;
+        if unproven_account_manifest_exists != 0 {
+            account.push(exact_horizon);
+        }
         info!(
             stage = "overflowed_boundary_unproven_range_budget",
             source_row_count = rows.len(),
@@ -15409,7 +15500,7 @@ async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
         return Ok(SummaryProjectionOverflowedBoundaryUnprovenRanges {
             global,
             account,
-            broad_fail_closed: true,
+            broad_fail_closed,
         });
     }
 
