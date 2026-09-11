@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+path_has_parent_component() {
+  local value="$1"
+  local -a components
+  local component
+  IFS=/ read -r -a components <<<"$value"
+  for component in "${components[@]}"; do
+    if [[ "$component" == .. || "$component" == . ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 source_path="${SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE:?SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE must be under /srv/codex}"
 runner="${SUMMARY_TESTBOX_RUNNER:-/Users/ivan/.codex/skills/shared-testbox-runner/scripts/run-testbox.sh}"
 testbox="${TESTBOX:-codex-testbox}"
@@ -16,7 +29,7 @@ esac
   printf 'project-reason: production copy path contains unsupported shell characters\n' >&2
   exit 64
 }
-[[ "$source_path" != *..* ]] || {
+! path_has_parent_component "$source_path" || {
   printf 'project-reason: production copy path contains a parent traversal\n' >&2
   exit 64
 }
@@ -87,7 +100,7 @@ for environment_name in \
   [[ -n "$environment_value" ]] || continue
   case "$environment_name" in
     CARGO_HOME|CARGO_TARGET_DIR)
-      if [[ "$environment_value" != /* || "$environment_value" == *..* ]]; then
+      if [[ "$environment_value" != /* ]] || path_has_parent_component "$environment_value"; then
         printf 'project-reason: %s must be an absolute path without parent traversal\n' "$environment_name" >&2
         exit 64
       fi
@@ -170,11 +183,15 @@ scratch_path="$2"
 partial="$scratch_path/.production-copy.partial.$$"
 trap 'rm -rf -- "$partial"' EXIT
 if [[ -d "$source_path" ]]; then
+  [[ "$(readlink -f -- "$source_path")" == "$source_path" ]] || exit 23
   mkdir "$partial"
   cp -a -- "$source_path"/. "$partial"/
-else
+elif [[ -f "$source_path" ]]; then
+  [[ "$(readlink -f -- "$source_path")" == "$source_path" ]] || exit 23
   mkdir "$partial"
   cp -a -- "$source_path" "$partial/codex_vibe_monitor.db"
+else
+  exit 24
 fi
 if find -P "$partial" \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
   exit 22

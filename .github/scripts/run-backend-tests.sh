@@ -95,7 +95,15 @@ fi
 
 path_has_parent_component() {
   local value="$1"
-  [[ "$value" == *..* || "$value" == */./* || "$value" == */. || "$value" == . ]]
+  local -a components
+  local component
+  IFS=/ read -r -a components <<<"$value"
+  for component in "${components[@]}"; do
+    if [[ "$component" == .. || "$component" == . ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 path_is_within() {
@@ -134,6 +142,9 @@ canonical_dir_path() {
   }
   local suffix="${raw_path#"$probe"}"
   local canonical_path="${canonical_probe%/}${suffix}"
+  while [[ "$canonical_path" != "/" && "$canonical_path" == */ ]]; do
+    canonical_path="${canonical_path%/}"
+  done
   if [[ "$canonical_path" == / ]]; then
     echo "::error::$variable_name must resolve to a non-root directory." >&2
     exit 64

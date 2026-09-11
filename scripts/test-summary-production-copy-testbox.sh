@@ -51,6 +51,7 @@ grep -Fq 'repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"' "$valida
 grep -Fq 'runtime_dir_input=' "$validator_script"
 grep -Fq 'canonical_dir_path()' "$validator_script"
 grep -Fq 'trap cleanup_runtime EXIT' "$validator_script"
+grep -Fq 'source_snapshot_root=' "$validator_script"
 if grep -Eq '/workspace|/codex-scratch|/srv/app/data' "$validator_script"; then
   printf 'production-copy validator must not depend on runner-private paths\n' >&2
   exit 1
@@ -80,6 +81,13 @@ expect_failure 64 env \
   CARGO_TARGET_DIR="$tmp_dir/target" \
   "$validator_script"
 [[ ! -e "$copy_dir/cargo-home" ]]
+expect_failure 64 env \
+  SUMMARY_PRODUCTION_COPY="$copy_dir" \
+  TMPDIR="$repo_root" \
+  "$validator_script"
+expect_failure 64 env \
+  SUMMARY_PRODUCTION_COPY="$repo_root" \
+  "$validator_script"
 expect_failure 1 env -u SUMMARY_PRODUCTION_COPY \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
 

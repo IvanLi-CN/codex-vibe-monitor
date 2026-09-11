@@ -19,6 +19,7 @@ grep -q 'target: backend-test' "$compose_file"
 grep -q 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"
 grep -q 'CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216' "$dockerfile"
 grep -q 'rustup component add clippy rustfmt' "$dockerfile"
+grep -q 'libsqlite3-dev zstd python3' "$dockerfile"
 grep -q 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest' "$dockerfile"
 grep -q '^COPY scripts/search-raw ./scripts/search-raw$' "$dockerfile"
 grep -q '^RUN mkdir -p target \\$' "$dockerfile"
@@ -107,6 +108,14 @@ grep -q 'backend_test_network_mode=online' <<<"$default_output"
 grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
 grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
 [[ -d "$default_workspace/cargo-home" && -d "$default_workspace/target" ]]
+
+valid_dot_workspace="$tmp_root/cache..v2"
+dot_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$valid_dot_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight 2>&1)"
+grep -q 'backend_test_cache_mode=ephemeral' <<<"$dot_output"
 
 : >"$contract_record"
 external_output="$(env -u CARGO_NET_OFFLINE \

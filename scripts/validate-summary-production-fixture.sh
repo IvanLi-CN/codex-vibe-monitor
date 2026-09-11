@@ -2,8 +2,23 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_snapshot_root="$(cd "$repo_root" && pwd -P)"
+
+path_has_parent_component() {
+  local value="$1"
+  local -a components
+  local component
+  IFS=/ read -r -a components <<<"$value"
+  for component in "${components[@]}"; do
+    if [[ "$component" == .. || "$component" == . ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 copy_path="${SUMMARY_PRODUCTION_COPY:?SUMMARY_PRODUCTION_COPY is required}"
-[[ "$copy_path" == /* && "$copy_path" != *..* ]] || {
+[[ "$copy_path" == /* ]] && ! path_has_parent_component "$copy_path" || {
   printf 'project-reason: staged production copy must be a normalized absolute path\n' >&2
   exit 64
 }
@@ -32,11 +47,6 @@ copy_kib="$(du -sk "$copy_path" | awk '{print $1}')"
 }
 copy_bytes=$((copy_kib * 1024))
 printf 'production-copy-bytes=%s\n' "$copy_bytes"
-
-path_has_parent_component() {
-  local value="$1"
-  [[ "$value" == *..* || "$value" == */./* || "$value" == */. || "$value" == . ]]
-}
 
 path_is_within() {
   local candidate="$1"
@@ -74,6 +84,9 @@ canonical_dir_path() {
   }
   local suffix="${raw_path#"$probe"}"
   local canonical_path="${canonical_probe%/}${suffix}"
+  while [[ "$canonical_path" != "/" && "$canonical_path" == */ ]]; do
+    canonical_path="${canonical_path%/}"
+  done
   if [[ "$canonical_path" == / ]]; then
     printf 'project-reason: %s must resolve to a non-root directory\n' "$variable_name" >&2
     exit 64
@@ -121,6 +134,10 @@ if path_overlaps "$runtime_dir" "$copy_path"; then
   printf 'project-reason: production copy and runtime workspace must be separate\n' >&2
   exit 64
 fi
+if path_overlaps "$copy_path" "$source_snapshot_root"; then
+  printf 'project-reason: staged production copy must be separate from the source snapshot\n' >&2
+  exit 64
+fi
 
 cargo_home_input="${CARGO_HOME:-}"
 target_dir_input="${CARGO_TARGET_DIR:-}"
@@ -141,7 +158,9 @@ fi
 if { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$runtime_dir"; } \
   || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$runtime_dir"; } \
   || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$copy_path"; } \
-  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$copy_path"; }; then
+  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$copy_path"; } \
+  || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$source_snapshot_root"; } \
+  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$source_snapshot_root"; }; then
   printf 'project-reason: external Cargo directories must be separate from fixture and runtime workspaces\n' >&2
   exit 64
 fi
@@ -195,39 +214,58 @@ printf 'summary-production-network-mode=%s\n' "$offline_mode"
   }
 
   summary_bootstrap_stage() {
-    local stage
-    local selected="none"
-    for stage in \
-      rollup_load \
-      live_exact_admission \
-      current_index_admission \
-      boundary_manifest_admission \
-      archive_account_discovery \
-      boundary_manifest_page_planning \
-      historical_live_coverage \
-      boundary_archive_hydration \
-      paged_boundary_archive_hydration \
-      current_archive_admission \
-      runtime_overlay \
-      projection_materialization; do
-      if grep -Fq "stage=\"${stage}\"" "$log_path" \
-        || grep -Fq "stage=${stage}" "$log_path"; then
-        selected="$stage"
-      fi
-    done
-    printf '%s' "$selected"
+    python3 - "$log_path" <<'PY'
+import re
+import sys
+
+known_stages = {
+    "rollup_load",
+    "live_exact_admission",
+    "current_index_admission",
+    "boundary_manifest_admission",
+    "archive_account_discovery",
+    "boundary_manifest_page_planning",
+    "historical_live_coverage",
+    "boundary_archive_hydration",
+    "paged_boundary_archive_hydration",
+    "current_archive_admission",
+    "runtime_overlay",
+    "projection_materialization",
+}
+stage_pattern = re.compile(r"stage=\"?([a-z0-9_]+)\"?")
+selected = "none"
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as log:
+        for line in log:
+            for match in stage_pattern.finditer(line):
+                if match.group(1) in known_stages:
+                    selected = match.group(1)
+except OSError:
+    pass
+print(selected, end="")
+PY
   }
 
   summary_bootstrap_failure_class() {
-    if grep -Fq 'summary projection build exceeded' "$log_path"; then
-      printf 'deadline_exceeded'
-    elif grep -Fq 'summary projection startup hydration deferred because a refresh is already in flight' "$log_path"; then
-      printf 'refresh_coalesced'
-    elif grep -Fq 'summary projection startup hydration failed' "$log_path"; then
-      printf 'build_failed'
-    else
-      printf 'no_failure_log'
-    fi
+    python3 - "$log_path" <<'PY'
+import sys
+
+failure_markers = (
+    ("summary projection build exceeded", "deadline_exceeded"),
+    ("summary projection startup hydration deferred because a refresh is already in flight", "refresh_coalesced"),
+    ("summary projection startup hydration failed", "build_failed"),
+)
+selected = "no_failure_log"
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as log:
+        for line in log:
+            for marker, label in failure_markers:
+                if marker in line:
+                    selected = label
+except OSError:
+    pass
+print(selected, end="")
+PY
   }
 
   summary_startup_phase_diagnostics() {
