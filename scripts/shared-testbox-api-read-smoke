@@ -74,7 +74,7 @@ if git -C "$REPO_ROOT" ls-files -s | awk '$1 == "160000" { found=1 } END { exit 
   exit 64
 fi
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-RUN_ID="$(date +%Y%m%d_%H%M%S)_api_read_${GIT_SHA}"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_api_read_${GIT_SHA}_$$"
 WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
 REMOTE_AGENT="/srv/codex/agents/${AGENT_ID}"
 REMOTE_WORKSPACE="${REMOTE_AGENT}/workspace"
@@ -109,6 +109,7 @@ workspace="$2"
 run_dir="$3"
 base=/srv/codex/agents
 agent_dir="$base/$agent_id"
+run_parent="$agent_dir/runs"
 [[ -d "$base" && ! -L "$base" ]]
 if [[ -e "$agent_dir" || -L "$agent_dir" ]]; then
   [[ -d "$agent_dir" && ! -L "$agent_dir" ]]
@@ -123,7 +124,17 @@ else
 fi
 [[ "$(readlink -f -- "$workspace")" == "$workspace" ]]
 find "$workspace" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-mkdir -p -- "$run_dir"
+if [[ -e "$run_parent" || -L "$run_parent" ]]; then
+  [[ -d "$run_parent" && ! -L "$run_parent" ]]
+else
+  mkdir -- "$run_parent"
+fi
+[[ "$(readlink -f -- "$run_parent")" == "$run_parent" ]]
+case "$run_dir" in
+  "$run_parent"/*) ;;
+  *) exit 64 ;;
+esac
+mkdir -- "$run_dir"
 [[ -d "$run_dir" && ! -L "$run_dir" ]]
 REMOTE
 rsync -az --from0 --files-from=- \
@@ -165,6 +176,11 @@ cleanup_remote() {
   docker rm -f "$APP_CONTAINER" >/dev/null 2>&1 || true
   rm -f "$SMOKE_SCRIPT"
   if [ "$CLEANUP" = "1" ]; then
+    run_parent="$(dirname "$REMOTE_RUN")"
+    if [ -L "$run_parent" ] || [ "$(readlink -f -- "$run_parent")" != "$run_parent" ]; then
+      echo "refusing cleanup outside Agent Directory: $run_parent" >&2
+      cleanup_status=1
+    fi
     if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
       if [ -d "$REMOTE_RUN/data" ]; then
         docker run --rm --cap-drop=all --entrypoint /bin/chmod \
@@ -173,7 +189,7 @@ cleanup_remote() {
           -R a+rwX "/runs/$RUN_ID/data" >/dev/null 2>&1 || true
       fi
     fi
-    if ! rm -rf "$REMOTE_RUN"; then
+    if [ "$cleanup_status" -eq 0 ] && ! rm -rf "$REMOTE_RUN"; then
       cleanup_status=1
     fi
     if [ -e "$REMOTE_RUN" ]; then

@@ -42,6 +42,9 @@ for smoke_script in \
   "$repo_root/scripts/shared-testbox-proxy-parallel-smoke"; do
   grep -Fq '/srv/codex/agents/' "$smoke_script"
   grep -Fq 'CODEX_THREAD_ID' "$smoke_script"
+  grep -Fq '_$$"' "$smoke_script"
+  grep -Fq 'run_parent="$agent_dir/runs"' "$smoke_script"
+  grep -Fq 'readlink -f -- "$run_parent"' "$smoke_script"
   if grep -Eq '/srv/codex/workspaces|REMOTE_BASE=' "$smoke_script"; then
     echo 'shared-testbox smoke scripts must use the Agent Directory contract' >&2
     exit 1

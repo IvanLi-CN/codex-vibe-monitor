@@ -55,6 +55,8 @@ if grep -Eq '/srv/codex/workspaces|/Users/ivan/.codex/skills/shared-testbox-runn
 fi
 grep -Fq 'CODEX_THREAD_ID' "$runner_script"
 grep -Fq '/srv/codex/agents/' "$runner_script"
+grep -Fq 'run_parent="$agent_dir/runs"' "$runner_script"
+grep -Fq 'readlink -f -- "$run_parent"' "$runner_script"
 grep -Fq 'docker_args=(' "$runner_script"
 grep -Fq 'testbox-sync-worktree' "$runner_script" && {
   printf 'project adapter must not require the helper transport layer\n' >&2

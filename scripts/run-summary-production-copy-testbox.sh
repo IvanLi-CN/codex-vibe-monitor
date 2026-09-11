@@ -177,12 +177,15 @@ agent_id="$1"
 run_path="$2"
 base=/srv/codex/agents
 agent_dir="$base/$agent_id"
+run_parent="$agent_dir/runs"
 [[ "$agent_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 [[ -d "$base" && ! -L "$base" ]]
 [[ -d "$agent_dir" && ! -L "$agent_dir" ]]
 [[ "$(readlink -f -- "$agent_dir")" == "$agent_dir" ]]
+[[ -d "$run_parent" && ! -L "$run_parent" ]]
+[[ "$(readlink -f -- "$run_parent")" == "$run_parent" ]]
 case "$run_path" in
-  "$agent_dir"/runs/summary_production_*) rm -rf -- "$run_path" ;;
+  "$run_parent"/summary_production_*) rm -rf -- "$run_path" ;;
 esac
 REMOTE
   rm -f "$runner_log"
@@ -206,10 +209,21 @@ workspace_path="$2"
 run_path="$3"
 base=/srv/codex/agents
 agent_dir="$base/$agent_id"
+run_parent="$agent_dir/runs"
 [[ "$agent_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
 [[ -d "$base" && ! -L "$base" ]]
 [[ -d "$agent_dir" && ! -L "$agent_dir" ]]
 [[ "$(readlink -f -- "$agent_dir")" == "$agent_dir" ]]
+if [[ -e "$run_parent" || -L "$run_parent" ]]; then
+  [[ -d "$run_parent" && ! -L "$run_parent" ]]
+else
+  mkdir -- "$run_parent"
+fi
+[[ "$(readlink -f -- "$run_parent")" == "$run_parent" ]]
+case "$run_path" in
+  "$run_parent"/*) ;;
+  *) exit 64 ;;
+esac
 if [[ -e "$workspace_path" || -L "$workspace_path" ]]; then
   [[ -d "$workspace_path" && ! -L "$workspace_path" ]]
 else
