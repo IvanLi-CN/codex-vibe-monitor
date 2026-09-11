@@ -27,6 +27,7 @@ pub(crate) fn global_db_pressure_gate() -> &'static DbPressureGate {
 #[derive(Debug)]
 pub(crate) struct DbPressureGate {
     background_slots: Arc<Semaphore>,
+    priority_waiters: Arc<AtomicU64>,
     pressure_cooldown: Duration,
     pressure_until_epoch_ms: AtomicU64,
     pressure_events: AtomicU64,
@@ -66,6 +67,34 @@ pub(crate) struct DbBackgroundPermit {
     eligibility: Option<Arc<DbPressureEligibility>>,
 }
 
+#[derive(Debug)]
+struct DbBackgroundPriorityWaiter {
+    priority_waiters: Arc<AtomicU64>,
+}
+
+impl DbBackgroundPriorityWaiter {
+    fn register(priority_waiters: Arc<AtomicU64>) -> Self {
+        priority_waiters.fetch_add(1, Ordering::AcqRel);
+        Self { priority_waiters }
+    }
+}
+
+impl Drop for DbBackgroundPriorityWaiter {
+    fn drop(&mut self) {
+        self.priority_waiters.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Reserves the next background admission for a bounded critical recovery turn.
+///
+/// The reservation is intentionally held before the recovery worker is scheduled: a long
+/// best-effort task must not win the only slot merely because it happened to start during the
+/// short gap between HTTP readiness and the worker's first poll.
+#[derive(Debug)]
+pub(crate) struct DbBackgroundPriorityReservation {
+    _waiter: Option<DbBackgroundPriorityWaiter>,
+}
+
 impl Drop for DbBackgroundPermit {
     fn drop(&mut self) {
         self._permit.take();
@@ -95,6 +124,7 @@ impl DbPressureGate {
     pub(crate) fn new(background_slots: usize, pressure_cooldown: Duration) -> Self {
         Self {
             background_slots: Arc::new(Semaphore::new(background_slots.max(1))),
+            priority_waiters: Arc::new(AtomicU64::new(0)),
             pressure_cooldown,
             pressure_until_epoch_ms: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
@@ -166,6 +196,10 @@ impl DbPressureGate {
                 remaining_ms: pressure_until_ms.saturating_sub(now_ms),
             });
         }
+        if self.priority_waiters.load(Ordering::Acquire) > 0 {
+            self.background_skips.fetch_add(1, Ordering::Relaxed);
+            return Err(DbPressureDenyReason::BackgroundBusy);
+        }
 
         let permit = self
             .background_slots
@@ -207,6 +241,10 @@ impl DbPressureGate {
                     remaining_ms: pressure_until_ms.saturating_sub(now_ms),
                 });
             }
+            if self.priority_waiters.load(Ordering::Acquire) > 0 {
+                self.background_skips.fetch_add(1, Ordering::Relaxed);
+                return Err(DbPressureDenyReason::BackgroundBusy);
+            }
 
             if let Ok(permit) = self.background_slots.clone().try_acquire_owned() {
                 return Ok(DbBackgroundPermit {
@@ -224,6 +262,96 @@ impl DbPressureGate {
             let remaining = max_wait.saturating_sub(elapsed);
             tokio::time::sleep(remaining.min(BACKGROUND_BUSY_WAIT_POLL)).await;
         }
+    }
+
+    /// Waits for a bounded turn in the semaphore's FIFO queue. While queued, new best-effort
+    /// background work cannot overtake the recovery worker at the next permit release.
+    pub(crate) async fn begin_priority_background_with_queue_wait(
+        &self,
+        _task: &'static str,
+        max_wait: Duration,
+    ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
+        let reservation = self.reserve_priority_background();
+        self.begin_reserved_priority_background(reservation, max_wait)
+            .await
+    }
+
+    /// Prevents new best-effort background work from overtaking a recovery worker before that
+    /// worker begins waiting for the sole database slot.
+    pub(crate) fn reserve_priority_background(&self) -> DbBackgroundPriorityReservation {
+        #[cfg(test)]
+        if self.bypass_for_test_global {
+            return DbBackgroundPriorityReservation { _waiter: None };
+        }
+
+        DbBackgroundPriorityReservation {
+            _waiter: Some(DbBackgroundPriorityWaiter::register(
+                self.priority_waiters.clone(),
+            )),
+        }
+    }
+
+    /// Consumes a pre-registered reservation and waits for the next eligible background slot.
+    /// The reservation remains held through the wait and is released only after the permit has
+    /// been acquired (or the operation has been rejected), so best-effort work cannot overtake
+    /// this recovery turn.
+    pub(crate) async fn begin_reserved_priority_background(
+        &self,
+        reservation: DbBackgroundPriorityReservation,
+        max_wait: Duration,
+    ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
+        #[cfg(test)]
+        if self.bypass_for_test_global {
+            drop(reservation);
+            return Ok(DbBackgroundPermit {
+                _permit: None,
+                started_at: Instant::now(),
+                eligibility: None,
+            });
+        }
+
+        let started_at = Instant::now();
+        let now_ms = current_epoch_ms();
+        let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        if pressure_until_ms > now_ms {
+            drop(reservation);
+            self.background_skips.fetch_add(1, Ordering::Relaxed);
+            return Err(DbPressureDenyReason::PressureCooldown {
+                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
+            });
+        }
+
+        let permit =
+            match tokio::time::timeout(max_wait, self.background_slots.clone().acquire_owned())
+                .await
+            {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) | Err(_) => {
+                    drop(reservation);
+                    self.background_skips.fetch_add(1, Ordering::Relaxed);
+                    return Err(DbPressureDenyReason::BackgroundBusy);
+                }
+            };
+
+        drop(reservation);
+
+        // A pressure event can occur while this task is queued. Do not begin progress after a
+        // cooldown has started; dropping the permit wakes the next eligible worker.
+        let now_ms = current_epoch_ms();
+        let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
+        if pressure_until_ms > now_ms {
+            drop(permit);
+            self.background_skips.fetch_add(1, Ordering::Relaxed);
+            return Err(DbPressureDenyReason::PressureCooldown {
+                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
+            });
+        }
+
+        Ok(DbBackgroundPermit {
+            _permit: Some(permit),
+            started_at,
+            eligibility: Some(self.eligibility.clone()),
+        })
     }
 
     pub(crate) fn record_error(&self, task: &'static str, err: &Error) -> bool {
@@ -400,6 +528,97 @@ mod tests {
             .await
             .expect("waiter task should not panic")
             .expect("second background permit");
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn gate_queue_wait_claims_the_next_released_background_slot() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let first = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+        let waiter_gate = gate.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_gate
+                .begin_priority_background_with_queue_wait("recovery", Duration::from_secs(1))
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiter.is_finished(),
+            "queued recovery must wait while another background page owns the slot"
+        );
+
+        drop(first);
+        let recovery = waiter
+            .await
+            .expect("queued recovery task should not panic")
+            .expect("queued recovery should receive the released slot");
+        assert_eq!(
+            gate.try_begin_background("best_effort").unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy,
+            "a newly arriving best-effort task must not overtake queued recovery"
+        );
+        drop(recovery);
+    }
+
+    #[tokio::test]
+    async fn priority_reservation_blocks_best_effort_before_recovery_waits() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let first = gate
+            .try_begin_background("first")
+            .expect("first background permit");
+        let reservation = gate.reserve_priority_background();
+
+        assert_eq!(
+            gate.try_begin_background("best_effort").unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy,
+            "a startup reservation must fence best-effort admission before its worker polls"
+        );
+
+        let recovery_gate = gate.clone();
+        let recovery = tokio::spawn(async move {
+            recovery_gate
+                .begin_reserved_priority_background(reservation, Duration::from_secs(1))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !recovery.is_finished(),
+            "the reserved recovery must wait only for the already-running page"
+        );
+
+        drop(first);
+        let permit = recovery
+            .await
+            .expect("recovery task should not panic")
+            .expect("reserved recovery should receive the released slot");
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn chained_priority_reservations_keep_generic_work_between_recovery_pages_out() {
+        let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
+        let first_reservation = gate.reserve_priority_background();
+        let first = gate
+            .begin_reserved_priority_background(first_reservation, Duration::from_secs(1))
+            .await
+            .expect("first recovery page admission");
+
+        // The next reservation is created while the first page still owns the slot. Once that
+        // page commits and releases, a generic worker must not fill the inter-page gap.
+        let next_reservation = gate.reserve_priority_background();
+        drop(first);
+        assert_eq!(
+            gate.try_begin_background("best_effort").unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy,
+            "a queued recovery continuation must own the next admission"
+        );
+        let second = gate
+            .begin_reserved_priority_background(next_reservation, Duration::from_secs(1))
+            .await
+            .expect("chained recovery page admission");
         drop(second);
     }
 

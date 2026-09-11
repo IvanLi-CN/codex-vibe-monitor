@@ -518,6 +518,32 @@ where
         tx.rollback().await?;
         return Ok(false);
     };
+
+    if dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+        let proof_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot_v2_proof \
+             WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2)",
+        )
+        .bind(archive_batch_id)
+        .bind(expected_sha256)
+        .fetch_one(tx.as_mut())
+        .await?
+            != 0;
+        // Re-validate the complete V2 proof under the same writer transaction that stages raw
+        // deletion. This closes the race where a recovery pass deletes or rewrites pages after
+        // the outer cleanup precheck but before finalization.
+        if !proof_exists
+            || !summary_archive_snapshot_has_proof_tx(
+                tx.as_mut(),
+                archive_batch_id,
+                expected_sha256,
+            )
+            .await?
+        {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+    }
     let source_safe_start = match staged_source_safe_start {
         Some(value) => match NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
             Ok(value) => Some(value),
@@ -585,15 +611,15 @@ where
         )
         .await?;
     }
-    if !delete_archive_batch_metadata_tx(
+    let metadata_deleted = delete_archive_batch_metadata_tx(
         tx.as_mut(),
         archive_batch_id,
         dataset,
         file_path,
         expected_sha256,
     )
-    .await?
-    {
+    .await?;
+    if !metadata_deleted {
         tx.rollback().await?;
         return Ok(false);
     }
@@ -727,8 +753,12 @@ pub(crate) async fn cleanup_expired_archive_batches(
     for candidate in candidates {
         if candidate.cleanup_state == ARCHIVE_CLEANUP_STATE_DELETE_PENDING {
             if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-                && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
-                    .await?
+                && !summary_archive_snapshot_cleanup_gate_satisfied(
+                    pool,
+                    candidate.id,
+                    &candidate.sha256,
+                )
+                .await?
             {
                 // A pending deletion from an older process is still subject to the durable
                 // Summary Snapshot gate.  Without a matching proof, retaining the manifest is
@@ -776,8 +806,12 @@ pub(crate) async fn cleanup_expired_archive_batches(
             continue;
         }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-            && !summary_archive_snapshot_has_final_proof(pool, candidate.id, &candidate.sha256)
-                .await?
+            && !summary_archive_snapshot_cleanup_gate_satisfied(
+                pool,
+                candidate.id,
+                &candidate.sha256,
+            )
+            .await?
         {
             // Source cleanup is allowed only after a normalized Snapshot page and its manifest
             // identity have committed. Legacy archives are picked up by the background
@@ -898,7 +932,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
         } else {
             None
         };
-        if stage_archive_batch_deletion(
+        let staged = stage_archive_batch_deletion(
             pool,
             candidate.id,
             &candidate.dataset,
@@ -906,7 +940,8 @@ pub(crate) async fn cleanup_expired_archive_batches(
             &candidate.sha256,
             integrity_source_safe_start,
         )
-        .await?
+        .await?;
+        if staged
             && finalize_archive_batch_file_deletion(
                 pool,
                 candidate.id,
@@ -921,6 +956,29 @@ pub(crate) async fn cleanup_expired_archive_batches(
     }
 
     Ok(deleted)
+}
+
+async fn summary_archive_snapshot_cleanup_gate_satisfied(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<bool> {
+    let v2_page_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 AND format_version = 2)",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !v2_page_exists {
+        // A legacy archive without even an intermediate V2 page is still the only raw
+        // authority.  Do not let retention cleanup race the recovery supervisor; raw deletion
+        // is admitted only after a final V2 proof exists.
+        return Ok(false);
+    }
+    summary_archive_snapshot_has_final_proof(pool, archive_batch_id, manifest_sha256).await
 }
 
 #[derive(Debug, FromRow)]
@@ -963,7 +1021,7 @@ impl HistoricalRollupStartupCandidateRow {
 }
 
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE: &str = "summary-global";
-const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT: i64 = 8;
+const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT: i64 = 64;
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_RETRY_SECS: i64 = 3_600;
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION: i64 = 2;
 const SUMMARY_ARCHIVE_SNAPSHOT_HASH_STATE_VERSION: i64 = 1;
@@ -984,6 +1042,9 @@ impl SummaryArchiveSnapshotBackfillDisposition {
         match disposition {
             "complete" => Self::Complete,
             "in_progress" => Self::InProgress,
+            // A bounded page has already committed its cursor or hash state. It must be
+            // eligible on the next supervisor turn, not delayed like a source failure.
+            "deferred" if failure_kind == "budget" => Self::InProgress,
             "deferred" => Self::Deferred,
             "unavailable"
                 if matches!(
@@ -1038,6 +1099,7 @@ struct SummaryArchiveSnapshotBackfillProgress {
 pub(crate) struct SummaryArchiveSnapshotBackfillWindowResult {
     pub(crate) next_cursor_id: i64,
     pub(crate) candidate_count: usize,
+    pub(crate) recent_candidate_count: usize,
     pub(crate) scanned_archive_batches: usize,
     pub(crate) materialized_archive_batches: usize,
     pub(crate) unavailable_archive_batches: usize,
@@ -1046,6 +1108,27 @@ pub(crate) struct SummaryArchiveSnapshotBackfillWindowResult {
     pub(crate) pending_obligation_count: usize,
     pub(crate) terminal_gap_count: usize,
     pub(crate) verified_proof_count: usize,
+}
+
+fn summary_archive_snapshot_candidate_intersects_current_30d(
+    candidate: &HistoricalRollupStartupCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(coverage_end) = candidate
+        .coverage_end_at
+        .as_deref()
+        .and_then(crate::stats::parse_to_utc_datetime)
+    else {
+        return false;
+    };
+    if coverage_end < now - ChronoDuration::days(30) {
+        return false;
+    }
+    candidate
+        .coverage_start_at
+        .as_deref()
+        .and_then(crate::stats::parse_to_utc_datetime)
+        .is_none_or(|coverage_start| coverage_start <= now)
 }
 
 async fn load_summary_archive_snapshot_backfill_checkpoint(
@@ -1164,6 +1247,73 @@ async fn load_summary_archive_snapshot_backfill_candidates(
     .fetch_all(pool)
     .await
     .context("failed to load Summary Snapshot V2 backfill candidates")
+}
+
+/// A prior attempt may have committed every V2 page and then failed before promoting the final
+/// proof marker.  The typed terminal outcome must not hide such a verifiable page set forever:
+/// promotion is a metadata-only check, while malformed pages remain quarantined by the existing
+/// terminal-gap rules.
+async fn promote_verified_summary_snapshot_page_sets(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+    started_at: Instant,
+    max_elapsed: Duration,
+) -> Result<usize> {
+    let candidates = sqlx::query_as::<_, (i64, String)>(
+        "SELECT snapshot.archive_batch_id, snapshot.manifest_sha256 \
+         FROM summary_archive_snapshot AS snapshot \
+         LEFT JOIN summary_archive_snapshot_v2_proof AS proof \
+           ON proof.archive_batch_id = snapshot.archive_batch_id \
+          AND proof.manifest_sha256 = snapshot.manifest_sha256 \
+         LEFT JOIN summary_archive_snapshot_backfill_outcome AS outcome \
+           ON outcome.archive_batch_id = snapshot.archive_batch_id \
+          AND outcome.manifest_sha256 = snapshot.manifest_sha256 \
+         WHERE snapshot.format_version = ?1 \
+           AND proof.archive_batch_id IS NULL \
+           AND (outcome.archive_batch_id IS NULL OR outcome.disposition <> 'complete') \
+         GROUP BY snapshot.archive_batch_id, snapshot.manifest_sha256 \
+         ORDER BY snapshot.archive_batch_id ASC \
+         LIMIT ?2",
+    )
+    .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+    .bind(limit.max(1))
+    .fetch_all(pool)
+    .await
+    .context("load unpromoted Summary Snapshot V2 page sets")?;
+    let mut promoted = 0;
+    for (archive_batch_id, manifest_sha256) in candidates {
+        if started_at.elapsed() >= max_elapsed {
+            break;
+        }
+        if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
+            .await?
+        {
+            sqlx::query(
+                "INSERT INTO summary_archive_snapshot_backfill_outcome \
+                 (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
+                  next_page_index, next_row_id, cursor_version, retry_attempt) \
+                 VALUES (?1, ?2, 'complete', '', datetime('now'), 0, 0, ?3, 0) \
+                 ON CONFLICT(archive_batch_id, manifest_sha256) DO UPDATE SET \
+                   disposition = 'complete', failure_kind = '', next_probe_at = datetime('now'), \
+                   updated_at = datetime('now')",
+            )
+            .bind(archive_batch_id)
+            .bind(&manifest_sha256)
+            .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION)
+            .execute(pool)
+            .await
+            .context("record promoted Summary Snapshot V2 outcome")?;
+            promoted += 1;
+        }
+    }
+    if promoted > 0 {
+        tracing::info!(
+            stage = "summary_snapshot_v2_proof_promoted",
+            promoted,
+            "promoted verified Summary Snapshot V2 page sets before backfill selection"
+        );
+    }
+    Ok(promoted)
 }
 
 async fn load_summary_archive_snapshot_backfill_due_candidates(
@@ -1922,6 +2072,13 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     max_elapsed: Duration,
 ) -> Result<SummaryArchiveSnapshotBackfillWindowResult> {
     let started_at = Instant::now();
+    let promoted_page_sets = promote_verified_summary_snapshot_page_sets(
+        pool,
+        SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
+        started_at,
+        max_elapsed,
+    )
+    .await?;
     let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
         load_summary_archive_snapshot_backfill_checkpoint(pool).await?;
     let observed_high_watermark = sqlx::query_scalar::<_, i64>(
@@ -1962,14 +2119,32 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         }
     }
     let candidate_count = candidates.len();
+    let recent_candidate_count = candidates
+        .iter()
+        .filter(|candidate| {
+            summary_archive_snapshot_candidate_intersects_current_30d(candidate, Utc::now())
+        })
+        .count();
+    // Obligations are identity-bound to a manifest SHA.  A replacement archive deliberately
+    // leaves the old identity available for audit, but it must not keep the supervisor alive
+    // after candidate selection has moved to the replacement SHA.
     let obligation_counts = sqlx::query_as::<_, (String, i64)>(
-        "SELECT state, COUNT(*) FROM summary_coverage_obligation GROUP BY state",
+        "SELECT obligation.state, COUNT(*)
+         FROM summary_coverage_obligation AS obligation
+         INNER JOIN archive_batches AS batches
+           ON batches.id = obligation.archive_batch_id
+          AND batches.sha256 = obligation.manifest_sha256
+         GROUP BY obligation.state",
     )
     .fetch_all(pool)
     .await?;
+    // Terminal gaps are durable fail-closed proofs, not work that should keep the
+    // supervisor spinning.  They remain visible through `terminal_gap_count` and
+    // availability overlays, but only unresolved/retryable obligations reserve another
+    // recovery turn.
     let pending_obligation_count = obligation_counts
         .iter()
-        .filter(|(state, _)| state != "resolved")
+        .filter(|(state, _)| state != "resolved" && state != "terminal_gap")
         .map(|(_, count)| usize::try_from((*count).max(0)).unwrap_or(usize::MAX))
         .sum();
     let terminal_gap_count = obligation_counts
@@ -1985,10 +2160,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     let mut result = SummaryArchiveSnapshotBackfillWindowResult {
         next_cursor_id: cursor_id,
         candidate_count,
+        recent_candidate_count,
         wrapped,
         pending_obligation_count,
         terminal_gap_count,
         verified_proof_count,
+        materialized_archive_batches: promoted_page_sets,
         ..SummaryArchiveSnapshotBackfillWindowResult::default()
     };
     for candidate in candidates {
@@ -2012,17 +2189,7 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         .await
         {
             Ok(outcome) => outcome,
-            Err(error) => {
-                let outcome = classify_summary_archive_snapshot_backfill_error(&error);
-                if outcome.starts_with("deferred:") {
-                    outcome
-                } else {
-                    // A corrupt or semantically invalid page is scoped to this manifest. Keep
-                    // the cursor moving so an independent candidate can still be recovered, but
-                    // preserve the last verified page cursor for retryable source failures.
-                    outcome
-                }
-            }
+            Err(error) => classify_summary_archive_snapshot_backfill_error(&error),
         };
         if let Some((disposition, failure_kind)) = outcome.split_once(':') {
             if disposition == "deferred" {
@@ -3872,6 +4039,11 @@ mod tests {
             .await
             .expect("deferred outcome"),
             ("deferred".to_string(), "budget".to_string())
+        );
+        assert_eq!(
+            SummaryArchiveSnapshotBackfillDisposition::from_storage("deferred", "budget"),
+            SummaryArchiveSnapshotBackfillDisposition::InProgress,
+            "a committed budget boundary must resume on the next supervisor turn"
         );
     }
 

@@ -715,6 +715,10 @@ pub(crate) struct SubscriptionHub {
     // Summary projection hydration is single-flight per service instance. Keeping this with the
     // hub avoids suppressing bootstrap for an independent AppState (including test fixtures).
     summary_projection_refresh: tokio::sync::Mutex<()>,
+    // Historical coverage recovery has independent lifetime and database admission from the
+    // rolling Projection refresh. It still needs one owner so a cadence tick cannot duplicate a
+    // page already being reduced by the recovery worker.
+    summary_coverage_recovery: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -3531,6 +3535,7 @@ impl SubscriptionHub {
         Self {
             state: Mutex::new(SubscriptionHubState::default()),
             summary_projection_refresh: tokio::sync::Mutex::new(()),
+            summary_coverage_recovery: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -3562,6 +3567,16 @@ impl SubscriptionHub {
         let guard = self.state.lock().await;
         guard.summary_projection.as_ref().is_some_and(|projection| {
             projection.renew_freshness_if_generation_matches(generation_fence)
+        })
+    }
+
+    pub(crate) async fn renew_summary_projection_freshness_if_live_tail_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let guard = self.state.lock().await;
+        guard.summary_projection.as_ref().is_some_and(|projection| {
+            projection.renew_freshness_if_live_tail_matches(generation_fence)
         })
     }
 
@@ -3606,6 +3621,40 @@ impl SubscriptionHub {
         let Some(projection) = state.summary_projection.as_ref() else {
             return false;
         };
+        if state
+            .summary_delta_journal
+            .overflowed_through_sequence
+            .is_some()
+        {
+            return false;
+        }
+        let has_unabsorbed_delta = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| &entry.delta)
+            .chain(state.summary_delta_journal.replayed_entries.iter())
+            .any(|delta| {
+                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
+            });
+        if !has_unabsorbed_delta {
+            return false;
+        }
+        projection.renew_freshness_from_delta_journal();
+        true
+    }
+
+    pub(crate) async fn renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        if !projection.coverage_sources_match(generation_fence) {
+            return false;
+        }
         if state
             .summary_delta_journal
             .overflowed_through_sequence
@@ -3789,6 +3838,12 @@ impl SubscriptionHub {
         self.summary_projection_refresh.try_lock()
     }
 
+    pub(crate) fn try_lock_summary_coverage_recovery(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, tokio::sync::TryLockError> {
+        self.summary_coverage_recovery.try_lock()
+    }
+
     pub(crate) async fn next_summary_projection_revision(&self) -> u64 {
         let mut state = self.state.lock().await;
         state.summary_projection_revision = state.summary_projection_revision.saturating_add(1);
@@ -3797,6 +3852,60 @@ impl SubscriptionHub {
 
     pub(crate) async fn store_summary_projection(&self, projection: SummaryProjection) {
         let mut state = self.state.lock().await;
+        Self::store_summary_projection_locked(&mut state, projection);
+    }
+
+    /// Publish a projection only if it is still based on the hub revision observed by the
+    /// caller.  The revision check, allocation, and swap happen under one state lock so a slow
+    /// coverage reducer cannot publish an older clone after a concurrent rolling refresh.
+    pub(crate) async fn store_summary_projection_if_revision(
+        &self,
+        mut projection: SummaryProjection,
+        expected_revision: u64,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let current_revision = state
+            .summary_projection
+            .as_ref()
+            .map(|current| current.revision())
+            .unwrap_or_default();
+        if current_revision != expected_revision {
+            tracing::debug!(
+                current_revision,
+                expected_revision,
+                "discarding summary projection based on an older hub revision"
+            );
+            return false;
+        }
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        projection = projection.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, projection)
+    }
+
+    fn store_summary_projection_locked(
+        state: &mut SubscriptionHubState,
+        projection: SummaryProjection,
+    ) -> bool {
+        // Projection builders run under different maintenance single-flight locks. A slower
+        // builder can therefore finish after a newer rolling or coverage publication has already
+        // assigned a higher revision. Keep the hub monotonically increasing so an older snapshot
+        // can never overwrite a newer immutable projection during that race.
+        if state
+            .summary_projection
+            .as_ref()
+            .is_some_and(|current| current.revision() > projection.revision())
+        {
+            tracing::debug!(
+                current_revision = state
+                    .summary_projection
+                    .as_ref()
+                    .map(|current| current.revision()),
+                rejected_revision = projection.revision(),
+                "discarding stale summary projection publication"
+            );
+            return false;
+        }
         state.summary_delta_journal.base_cursor =
             state
                 .summary_delta_journal
@@ -3903,6 +4012,7 @@ impl SubscriptionHub {
                 .is_none_or(|row_id| !projection.contains_persisted_live_terminal_by_row_id(row_id))
         });
         state.summary_projection = Some(Arc::new(projection));
+        true
     }
 
     async fn summary_projection_terminal_overlay(
@@ -11710,16 +11820,14 @@ impl SubscriptionTopic {
                         gaps,
                     )) = projection_with_overlay
                     {
-                        if !matches!(summary_window, SummaryWindow::All)
-                            && crate::summary_delta_gap_affects_selection(
-                                projection.as_ref(),
-                                &gaps,
-                                &pending_terminal_deltas,
-                                &summary_window,
-                                reporting_tz,
-                                *upstream_account_id,
-                            )
-                        {
+                        if crate::summary_delta_gap_affects_selection(
+                            projection.as_ref(),
+                            &gaps,
+                            &pending_terminal_deltas,
+                            &summary_window,
+                            reporting_tz,
+                            *upstream_account_id,
+                        ) {
                             return Err(ApiError::unavailable(anyhow!(
                                 "summary delta journal has an unproven change for the requested selection"
                             )));

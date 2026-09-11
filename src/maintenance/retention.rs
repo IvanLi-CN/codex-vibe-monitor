@@ -3352,6 +3352,15 @@ pub(crate) async fn archive_old_invocations(
             // The page is written as part of the authoritative archive transaction.  Mark the
             // V2 proof in that same transaction so cleanup can never observe a page without its
             // semantic authority.
+            if !summary_archive_snapshot_has_proof_tx(
+                tx.as_mut(),
+                snapshot_archive_batch_id,
+                &archive_outcome.sha256,
+            )
+            .await?
+            {
+                bail!("retention Summary Snapshot V2 semantic proof validation failed");
+            }
             store_summary_archive_snapshot_v2_final_proof_tx(
                 tx.as_mut(),
                 snapshot_archive_batch_id,

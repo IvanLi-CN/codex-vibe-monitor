@@ -170,8 +170,9 @@ finalization and Snapshot V2 backfill are independent workers; neither can
 short-circuit the other. It never calls the generic Projection builder for
 unfinished history; recent exact selections remain published while an
 unproven historical scope is selection-local unavailable. A newly verified V2
-proof is published through a bounded metadata-only RollingDelta even without a
-request owner, while an unchanged ready checkpoint is not finalized again.
+proof is published through a generation-fenced immutable Coverage Publication
+Overlay without a request owner, while an unchanged ready checkpoint is not
+finalized again.
 _Avoid_: startup full rebuild, request-time archive recovery, partial history
 
 **Summary Coverage Due Queue**:
@@ -213,6 +214,39 @@ intersecting coverage boundary; all requires complete historical proof and a
 continuous live tail. A missing proof affects only selections whose required
 source intersects it.
 _Avoid_: global readiness flag, stale last-good renewal, partial aggregate
+
+**Required Historical Coverage**:
+The public historical selections that must be Exact-Ready at release
+acceptance. For 30d, every intersecting Coverage Obligation requires a matching
+V2 final proof. For all, the whole historical domain requires complete final
+proof and the live tail must be continuous through the release watermark. A
+terminal gap without an exact authority is a release blocker, never an accepted
+permanent 503 or a reason to publish an approximate response.
+_Avoid_: forward-only exception, tolerated historical outage, fabricated 200
+
+**Authoritative Coverage Recovery**:
+The non-request recovery path that resolves a Coverage Obligation only by
+verifying an existing raw archive against its manifest and committing the V2
+final proof atomically. If neither a valid V2 proof nor a readable authoritative
+raw source exists, recovery records a bounded terminal gap and release
+acceptance fails; it never reconstructs values from incomplete rollups or
+requires a manual repair path.
+_Avoid_: synthesized history, outcome-as-proof, operational-only correctness
+
+**Production-Copy Acceptance**:
+The isolated validation of a full, authorized production data copy on the shared
+testbox. It proves the current archive identities, V2 proof state, cursor
+recovery, and supported Summary selections before a stable release proceeds.
+The copy and its raw output remain outside Git; repository evidence contains
+only test code and non-sensitive pass/fail conclusions.
+_Avoid_: synthetic-only release proof, committed production data, request-time repair
+
+**Coverage Publication Overlay**:
+The generation-fenced immutable Projection update produced from an already
+verified V2 final proof. It replaces only the affected coverage and availability
+state after proving the published base and live-tail cursor still match; it does
+not start a generic RollingDelta build or perform request-time I/O.
+_Avoid_: deadline-bound generic rebuild, stale fence swap, handler fallback
 
 **Legacy Summary Coverage Recovery**:
 The low-priority supervisor that seek-pages completed legacy invocation archives
@@ -426,13 +460,13 @@ any missing, changed, unreadable, or replaced record leaves the archive unknown.
 _Avoid_: interval-density proof, count-only classification, Summary HTTP scan
 
 **Summary Startup Recovery Gate**:
-The bounded, cancellation-aware cold-start sweep that captures one stable
-unknown-legacy-manifest high-watermark, completes exact Live Detail Mirror
-identity attempts ahead of the first Summary Projection build, and persists only
-proven classifications. An unresolved source remains unknown; it cannot block an
-independent proof or be guessed into a mirror role. Periodic Summary maintenance
-starts only after this gate has allowed an exact Projection to publish.
-_Avoid_: generic-backfill starvation, global cold-start retry loop, inferred mirror
+The cold-start boundary that prohibits raw Legacy Detail Mirror identity reads
+before the first Summary Projection build. Bootstrap retains unknown manifests
+as range-local fail-closed evidence and publishes every independently exact
+selection; the pressure-gated generic backfill starts its durable identity
+cursor only after publication. An unresolved source remains unknown; it cannot
+block an independent proof or be guessed into a mirror role.
+_Avoid_: generic-backfill starvation, blocking raw preflight, inferred mirror
 
 **Last-Good Snapshot**:
 The most recent exact read-model value that remains internally retained while a

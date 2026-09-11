@@ -149,7 +149,7 @@ ARG CARGO_NEXTEST_VERSION=0.9.138
 ARG CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev \
+    && apt-get install -y --no-install-recommends ca-certificates curl pkg-config libsqlite3-dev zstd \
     && rm -rf /var/lib/apt/lists/* \
     && rustup component add clippy \
     && curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
@@ -165,7 +165,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
-RUN mkdir -p target && chown 65534:65534 target
+# Production-copy acceptance keeps the archive paths recorded in the SQLite manifest intact.
+# The runner supplies this target as its only writable mount for each isolated run.
+RUN mkdir -p target /srv/app \
+    && ln -s /codex-scratch/production-copy /srv/app/data \
+    && chown 65534:65534 target
 
 ENV BACKEND_TEST_WORKSPACE=/tmp/codex-vibe-monitor-backend-test \
     CARGO_TARGET_DIR=/tmp/codex-vibe-monitor-backend-test/target \

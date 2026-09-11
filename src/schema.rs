@@ -12,6 +12,10 @@ const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
     "invocation_rollup_hourly_token_components_v1";
 const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
 const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
+const SCHEMA_REFRESH_MIGRATIONS_TABLE: &str = "schema_refresh_migrations";
+const PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
+    "prompt_cache_expression_indexes_v1";
+const INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME: &str = "invocation_live_projection_v1";
 const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
         consumer TEXT PRIMARY KEY,
@@ -48,6 +52,111 @@ pub(crate) fn ensure_schema_lock(pool: &Pool<Sqlite>) -> std::sync::Arc<tokio::s
     let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     registry.insert(key, std::sync::Arc::downgrade(&lock));
     lock
+}
+
+async fn ensure_schema_refresh_migrations_table(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {SCHEMA_REFRESH_MIGRATIONS_TABLE} (\
+            migration_name TEXT PRIMARY KEY,\
+            completed_at TEXT NOT NULL DEFAULT (datetime('now'))\
+        )"
+    ))
+    .execute(pool)
+    .await
+    .context("failed to ensure schema refresh migration marker table")?;
+    Ok(())
+}
+
+async fn schema_refresh_completed(pool: &Pool<Sqlite>, migration_name: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {SCHEMA_REFRESH_MIGRATIONS_TABLE} WHERE migration_name = ?1)"
+    ))
+    .bind(migration_name)
+    .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn schema_refresh_completed_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    migration_name: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(&format!(
+        "SELECT EXISTS(SELECT 1 FROM {SCHEMA_REFRESH_MIGRATIONS_TABLE} WHERE migration_name = ?1)"
+    ))
+    .bind(migration_name)
+    .fetch_one(tx.as_mut())
+    .await?
+        != 0)
+}
+
+async fn record_schema_refresh_completion(pool: &Pool<Sqlite>, migration_name: &str) -> Result<()> {
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {SCHEMA_REFRESH_MIGRATIONS_TABLE} (migration_name) VALUES (?1)"
+    ))
+    .bind(migration_name)
+    .execute(pool)
+    .await
+    .with_context(|| format!("failed to record schema refresh completion for {migration_name}"))?;
+    Ok(())
+}
+
+async fn record_schema_refresh_completion_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    migration_name: &str,
+) -> Result<()> {
+    sqlx::query(&format!(
+        "INSERT OR IGNORE INTO {SCHEMA_REFRESH_MIGRATIONS_TABLE} (migration_name) VALUES (?1)"
+    ))
+    .bind(migration_name)
+    .execute(tx.as_mut())
+    .await
+    .with_context(|| format!("failed to record schema refresh completion for {migration_name}"))?;
+    Ok(())
+}
+
+async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
+    sqlite_schema_object_exists(pool, "table", table_name).await
+}
+
+async fn sqlite_schema_object_exists(
+    pool: &Pool<Sqlite>,
+    object_type: &str,
+    object_name: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2)",
+    )
+    .bind(object_type)
+    .bind(object_name)
+    .fetch_one(pool)
+    .await?
+        != 0)
+}
+
+async fn invocation_live_projection_objects_exist(
+    pool: &Pool<Sqlite>,
+    invocation_in_progress_live_exists: bool,
+    prompt_cache_working_set_live_exists: bool,
+) -> Result<bool> {
+    if !invocation_in_progress_live_exists || !prompt_cache_working_set_live_exists {
+        return Ok(false);
+    }
+
+    for trigger_name in [
+        "trg_codex_invocations_live_insert",
+        "trg_codex_invocations_live_update",
+        "trg_codex_invocations_live_delete",
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
+    ] {
+        if !sqlite_schema_object_exists(pool, "trigger", trigger_name).await? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 async fn ensure_nullable_real_column(
@@ -408,6 +517,86 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
     tx.commit()
         .await
         .context("failed to commit invocation_in_progress_live trigger rebuild")?;
+
+    Ok(())
+}
+
+async fn rebuild_prompt_cache_working_set_live_triggers(pool: &Pool<Sqlite>) -> Result<()> {
+    let prompt_cache_insert_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_insert
+        AFTER INSERT ON codex_invocations
+        BEGIN
+            {refresh_sql};
+        END
+        "#,
+        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+        ),
+    );
+    let prompt_cache_update_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
+        AFTER UPDATE ON codex_invocations
+        BEGIN
+            {refresh_old_sql};
+            {refresh_new_sql};
+        END
+        "#,
+        refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+        ),
+        refresh_new_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+        ),
+    );
+    let prompt_cache_delete_trigger_sql = format!(
+        r#"
+        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
+        AFTER DELETE ON codex_invocations
+        BEGIN
+            {refresh_sql};
+        END
+        "#,
+        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
+            &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+        ),
+    );
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin prompt cache working set trigger refresh")?;
+    for trigger_name in [
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(tx.as_mut())
+            .await
+            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    }
+    sqlx::query(&prompt_cache_insert_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
+        )?;
+    sqlx::query(&prompt_cache_update_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
+        )?;
+    sqlx::query(&prompt_cache_delete_trigger_sql)
+        .execute(tx.as_mut())
+        .await
+        .context(
+            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete",
+        )?;
+    tx.commit()
+        .await
+        .context("failed to commit prompt cache working set trigger refresh")?;
 
     Ok(())
 }
@@ -1298,6 +1487,116 @@ async fn ensure_invocation_raw_codec_backfill(pool: &Pool<Sqlite>) -> Result<()>
     Ok(())
 }
 
+async fn prompt_cache_expression_indexes_exist(pool: &Pool<Sqlite>) -> Result<bool> {
+    for index_name in [
+        "idx_codex_invocations_prompt_cache_key_occurred_at",
+        "idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+    ] {
+        if !sqlite_schema_object_exists(pool, "index", index_name).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<()> {
+    let create_key_index_sql = r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
+            occurred_at
+        )
+        "#;
+    let create_key_filter_index_sql = r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
+        ON codex_invocations (
+            (LOWER(TRIM(COALESCE(
+                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
+                ''
+            )))),
+            occurred_at
+        )
+        "#;
+
+    if schema_refresh_completed(pool, PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME).await? {
+        sqlx::query(create_key_index_sql)
+            .execute(pool)
+            .await
+            .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+        sqlx::query(create_key_filter_index_sql)
+            .execute(pool)
+            .await
+            .context(
+                "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+            )?;
+        return Ok(());
+    }
+    if prompt_cache_expression_indexes_exist(pool).await? {
+        record_schema_refresh_completion(
+            pool,
+            PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin prompt cache expression index refresh")?;
+    if schema_refresh_completed_in_transaction(
+        &mut tx,
+        PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+    )
+    .await?
+    {
+        tx.commit()
+            .await
+            .context("failed to commit prompt cache expression index refresh marker check")?;
+        sqlx::query(create_key_index_sql)
+            .execute(pool)
+            .await
+            .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+        sqlx::query(create_key_filter_index_sql)
+            .execute(pool)
+            .await
+            .context(
+                "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+            )?;
+        return Ok(());
+    }
+
+    for index_name in [
+        "idx_codex_invocations_prompt_cache_key_occurred_at",
+        "idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+    ] {
+        sqlx::query(&format!("DROP INDEX IF EXISTS {index_name}"))
+            .execute(tx.as_mut())
+            .await
+            .with_context(|| format!("failed to drop stale {index_name}"))?;
+    }
+    sqlx::query(create_key_index_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
+    sqlx::query(create_key_filter_index_sql)
+        .execute(tx.as_mut())
+        .await
+        .context(
+            "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+        )?;
+    record_schema_refresh_completion_in_transaction(
+        &mut tx,
+        PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .context("failed to commit prompt cache expression index refresh")?;
+
+    Ok(())
+}
+
 async fn legacy_raw_blob_link_seed_completed(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<bool> {
@@ -1414,6 +1713,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await
         .context("failed to ensure timeseries_minute_projection_v2 recovery table existence")?;
+    ensure_schema_refresh_migrations_table(pool).await?;
 
     let create_sql = codex_invocations_create_sql("codex_invocations");
     sqlx::query(&create_sql)
@@ -1526,31 +1826,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_failure_class_occurred_at")?;
 
-    let mut prompt_cache_key_index_tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("failed to begin prompt cache key index refresh")?;
-    sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_occurred_at")
-        .execute(prompt_cache_key_index_tx.as_mut())
-        .await
-        .context("failed to drop stale idx_codex_invocations_prompt_cache_key_occurred_at")?;
-
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at
-        ON codex_invocations (
-            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
-            occurred_at
-        )
-        "#,
-    )
-    .execute(prompt_cache_key_index_tx.as_mut())
-    .await
-    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at")?;
-    prompt_cache_key_index_tx
-        .commit()
-        .await
-        .context("failed to commit prompt cache key index refresh")?;
+    ensure_prompt_cache_expression_indexes(pool).await?;
 
     sqlx::query(
         r#"
@@ -1717,37 +1993,6 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure index idx_codex_invocations_requester_ip_filter_occurred_at")?;
 
-    let mut prompt_cache_key_filter_index_tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("failed to begin prompt cache key filter index refresh")?;
-    sqlx::query("DROP INDEX IF EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at")
-        .execute(prompt_cache_key_filter_index_tx.as_mut())
-        .await
-        .context(
-            "failed to drop stale idx_codex_invocations_prompt_cache_key_filter_occurred_at",
-        )?;
-
-    sqlx::query(
-        r#"
-        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_filter_occurred_at
-        ON codex_invocations (
-            (LOWER(TRIM(COALESCE(
-                CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.promptCacheKey') AS TEXT) END,
-                ''
-            )))),
-            occurred_at
-        )
-        "#,
-    )
-    .execute(prompt_cache_key_filter_index_tx.as_mut())
-    .await
-    .context("failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at")?;
-    prompt_cache_key_filter_index_tx
-        .commit()
-        .await
-        .context("failed to commit prompt cache key filter index refresh")?;
-
     sqlx::query(
         r#"
         CREATE INDEX IF NOT EXISTS idx_codex_invocations_proxy_filter_occurred_at
@@ -1802,6 +2047,11 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_proxy_usage_backfill_pending")?;
+
+    let invocation_in_progress_live_existed =
+        sqlite_table_exists(pool, "invocation_in_progress_live").await?;
+    let prompt_cache_working_set_live_existed =
+        sqlite_table_exists(pool, "prompt_cache_working_set_live").await?;
 
     sqlx::query(
         r#"
@@ -1893,93 +2143,37 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure idx_prompt_cache_working_set_live_proxy_sort_anchor")?;
 
-    rebuild_invocation_in_progress_live_triggers(pool)
-        .await
-        .context("failed to rebuild invocation_in_progress_live triggers at startup")?;
-
-    let prompt_cache_insert_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_insert
-        AFTER INSERT ON codex_invocations
-        BEGIN
-            {refresh_sql};
-        END
-        "#,
-        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("NEW")
-        ),
-    );
-    let prompt_cache_update_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
-        AFTER UPDATE ON codex_invocations
-        BEGIN
-            {refresh_old_sql};
-            {refresh_new_sql};
-        END
-        "#,
-        refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("OLD")
-        ),
-        refresh_new_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("NEW")
-        ),
-    );
-    let prompt_cache_delete_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
-        AFTER DELETE ON codex_invocations
-        BEGIN
-            {refresh_sql};
-        END
-        "#,
-        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("OLD")
-        ),
-    );
-    let mut prompt_cache_trigger_tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("failed to begin prompt cache working set trigger refresh")?;
-    for trigger_name in [
-        "trg_codex_invocations_prompt_cache_working_set_insert",
-        "trg_codex_invocations_prompt_cache_working_set_update",
-        "trg_codex_invocations_prompt_cache_working_set_delete",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(prompt_cache_trigger_tx.as_mut())
-            .await
-            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
+    let live_projection_objects_existed = invocation_live_projection_objects_exist(
+        pool,
+        invocation_in_progress_live_existed,
+        prompt_cache_working_set_live_existed,
+    )
+    .await?;
+    let mut live_projection_refresh_completed =
+        schema_refresh_completed(pool, INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME).await?;
+    if !live_projection_refresh_completed && live_projection_objects_existed {
+        record_schema_refresh_completion(pool, INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME)
+            .await?;
+        live_projection_refresh_completed = true;
     }
-    sqlx::query(&prompt_cache_insert_trigger_sql)
-        .execute(prompt_cache_trigger_tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
-        )?;
-    sqlx::query(&prompt_cache_update_trigger_sql)
-        .execute(prompt_cache_trigger_tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
-        )?;
-    sqlx::query(&prompt_cache_delete_trigger_sql)
-        .execute(prompt_cache_trigger_tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete",
-        )?;
-    prompt_cache_trigger_tx
-        .commit()
-        .await
-        .context("failed to commit prompt cache working set trigger refresh")?;
-
-    rebuild_invocation_in_progress_live_table(pool)
-        .await
-        .context("failed to rebuild invocation_in_progress_live table at startup")?;
-    rebuild_prompt_cache_working_set_live_table(pool)
-        .await
-        .context("failed to rebuild prompt_cache_working_set_live table at startup")?;
+    let refresh_live_projection =
+        !live_projection_refresh_completed || !live_projection_objects_existed;
+    if refresh_live_projection {
+        rebuild_invocation_in_progress_live_triggers(pool)
+            .await
+            .context("failed to rebuild invocation_in_progress_live triggers")?;
+        rebuild_prompt_cache_working_set_live_triggers(pool)
+            .await
+            .context("failed to rebuild prompt cache working set triggers")?;
+        rebuild_invocation_in_progress_live_table(pool)
+            .await
+            .context("failed to rebuild invocation_in_progress_live table")?;
+        rebuild_prompt_cache_working_set_live_table(pool)
+            .await
+            .context("failed to rebuild prompt_cache_working_set_live table")?;
+        record_schema_refresh_completion(pool, INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME)
+            .await?;
+    }
 
     sqlx::query(
         r#"
@@ -3772,6 +3966,32 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure summary_source_change_compaction_proof table existence")?;
+    // Existing installations may have the original proof table without the retained cursor;
+    // upgrade it before durable-tail recovery reads the compaction boundary.
+    let compaction_proof_columns =
+        load_sqlite_table_columns(pool, "summary_source_change_compaction_proof").await?;
+    if !compaction_proof_columns.contains("retained_after_cursor") {
+        sqlx::query(
+            "ALTER TABLE summary_source_change_compaction_proof \
+             ADD COLUMN retained_after_cursor INTEGER NOT NULL DEFAULT 0",
+        )
+        .execute(pool)
+        .await
+        .context("failed to add summary source compaction retained cursor")?;
+    }
+    // Older proofs stored the retained boundary only in proof_json. Backfill the typed column
+    // before durable-tail recovery reads it; otherwise an upgraded process could treat a
+    // compacted prefix as a complete journal and advance past an unproven gap.
+    sqlx::query(
+        "UPDATE summary_source_change_compaction_proof \
+         SET retained_after_cursor = CAST(json_extract(proof_json, '$.retainedAfterCursor') AS INTEGER) \
+         WHERE retained_after_cursor = 0 \
+           AND json_valid(proof_json) \
+           AND COALESCE(json_extract(proof_json, '$.retainedAfterCursor'), 0) > 0",
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill summary source compaction retained cursor")?;
 
     sqlx::query(
         r#"
@@ -5423,9 +5643,15 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         "trg_summary_coverage_revision_snapshot_insert",
         "trg_summary_coverage_revision_snapshot_update",
         "trg_summary_coverage_revision_snapshot_delete",
+        "trg_summary_coverage_revision_proof_insert",
+        "trg_summary_coverage_revision_proof_update",
+        "trg_summary_coverage_revision_proof_delete",
         "trg_summary_account_coverage_revision_snapshot_insert",
         "trg_summary_account_coverage_revision_snapshot_update",
         "trg_summary_account_coverage_revision_snapshot_delete",
+        "trg_summary_account_coverage_revision_proof_insert",
+        "trg_summary_account_coverage_revision_proof_update",
+        "trg_summary_account_coverage_revision_proof_delete",
     ] {
         sqlx::query(&format!("DROP TRIGGER IF EXISTS {name}"))
             .execute(pool)
@@ -5475,10 +5701,27 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
         } else {
             "DELETE"
         };
+        let checkpoint_reset = if matches!(
+            name,
+            "archive_update"
+                | "archive_delete"
+                | "replay_update"
+                | "replay_delete"
+                | "proof_update"
+                | "proof_delete"
+        ) {
+            "UPDATE summary_all_time_projection_checkpoint SET \
+               global_manifest_next_id = 0, account_manifest_next_id = 0, \
+               global_manifest_complete = 0, account_manifest_complete = 0, \
+               updated_at = datetime('now') WHERE scope = 'all';"
+        } else {
+            ""
+        };
         let trigger = format!(
             "CREATE TRIGGER IF NOT EXISTS trg_summary_coverage_revision_{name} \
              AFTER {event} ON {table} {predicate} BEGIN \
                UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1; \
+               {checkpoint_reset} \
              END",
         );
         sqlx::query(&trigger).execute(pool).await.with_context(|| {
@@ -5541,7 +5784,19 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "OLD.sha256",
             "NEW.id",
             "NEW.sha256",
-            "WHEN OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations'",
+            "WHEN (OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations') \
+                  AND (OLD.id IS NOT NEW.id OR OLD.sha256 IS NOT NEW.sha256 \
+                    OR OLD.dataset IS NOT NEW.dataset OR OLD.status IS NOT NEW.status \
+                    OR OLD.month_key IS NOT NEW.month_key OR OLD.day_key IS NOT NEW.day_key \
+                    OR OLD.part_key IS NOT NEW.part_key OR OLD.file_path IS NOT NEW.file_path \
+                    OR OLD.layout IS NOT NEW.layout OR OLD.codec IS NOT NEW.codec \
+                    OR OLD.writer_version IS NOT NEW.writer_version \
+                    OR OLD.summary_source_kind IS NOT NEW.summary_source_kind \
+                    OR OLD.row_count IS NOT NEW.row_count \
+                    OR OLD.coverage_start_at IS NOT NEW.coverage_start_at \
+                    OR OLD.coverage_end_at IS NOT NEW.coverage_end_at \
+                    OR OLD.coverage_start_epoch IS NOT NEW.coverage_start_epoch \
+                    OR OLD.coverage_end_epoch IS NOT NEW.coverage_end_epoch)",
         ),
         (
             "delete",
@@ -5553,6 +5808,14 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "WHEN OLD.dataset = 'codex_invocations'",
         ),
     ] {
+        if name == "update" {
+            sqlx::query(
+                "DROP TRIGGER IF EXISTS trg_summary_archive_manifest_invalidates_proof_update",
+            )
+            .execute(pool)
+            .await
+            .context("failed to replace Summary manifest proof invalidation trigger")?;
+        }
         let trigger = format!(
             "CREATE TRIGGER IF NOT EXISTS trg_summary_archive_manifest_invalidates_proof_{name} \
              AFTER {event} ON archive_batches {predicate} BEGIN \

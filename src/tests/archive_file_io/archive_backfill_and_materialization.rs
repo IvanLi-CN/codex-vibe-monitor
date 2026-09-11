@@ -58,6 +58,9 @@ async fn insert_summary_archive_snapshot_proof(
         .await
         .expect("store Summary Snapshot proof");
     tx.commit().await.expect("commit Summary Snapshot proof");
+    ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, manifest_sha256)
+        .await
+        .expect("commit Summary Snapshot final proof");
 }
 
 #[tokio::test]
@@ -2323,6 +2326,23 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
     .execute(&pool)
     .await
     .expect("mark archive replay complete for long-term stats");
+    let (archive_batch_id, archive_sha256, coverage_start, coverage_end):
+        (i64, String, String, String) = sqlx::query_as(
+            "SELECT id, sha256, coverage_start_at, coverage_end_at FROM archive_batches WHERE file_path = ?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("load archive identity for V2 cleanup proof");
+    insert_summary_archive_snapshot_proof(
+        &pool,
+        archive_batch_id,
+        &archive_sha256,
+        &coverage_start,
+        &coverage_end,
+        1,
+    )
+    .await;
 
     let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
         .await

@@ -7144,6 +7144,17 @@ pub(crate) const SUMMARY_SNAPSHOT_MAX_KEYS: usize = 48;
 // Owner checks are memory-only. Polling at this cadence gives the runtime refresh a bounded
 // scheduling phase without performing SQLite/archive work while no consumer owns Summary.
 const SUMMARY_SNAPSHOT_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_QUEUE_WAIT: Duration = Duration::from_secs(30);
+const SUMMARY_HISTORICAL_COVERAGE_RECOVERY_CONTINUATION_QUEUE_WAIT: Duration =
+    Duration::from_secs(1);
+// A V2 page first becomes durable authority. Publishing that authority is intentionally less
+// frequent than page commits: replacing the immutable read model copies its bounded resident
+// preview, so publishing every page turns long historical recovery into copy-bound work.
+const SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES: usize = 16;
+// Keep each low-priority recovery turn long enough to amortize archive open/hash/decode setup
+// across several bounded pages. The per-page 64 MiB/400-ID limits and pressure permit remain
+// unchanged; this is a scheduler batch budget, not an HTTP or rolling freshness deadline.
+const SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET: Duration = Duration::from_secs(30);
 const SUMMARY_SNAPSHOT_EVENT_DEBOUNCE: Duration = Duration::from_millis(250);
 // Allow for hub coordination after a due tick. Hub state mutex holders never await durable I/O,
 // but this explicit budget keeps that short handoff out of the freshness critical path.
@@ -7448,6 +7459,71 @@ struct SummaryProjectionHistoricalLiveCoverage {
     reconciliation_required: bool,
 }
 
+/// A verified historical contribution which can be atomically attached to an existing
+/// projection without rerunning live admission.  The overlay retains only normalized totals;
+/// raw archive payloads and preview rows remain outside the serving read model.
+#[derive(Debug, Clone)]
+struct SummaryCoverageOverlay {
+    coverage_fence: SummaryCoverageFence,
+    live_tail_cursor: SummaryLiveTailCursor,
+    // This is the durable identity set represented by the normalized maps below. Keeping it
+    // with the immutable overlay lets recovery reduce only newly verified V2 pages instead of
+    // rereading every historical manifest on each publication turn.
+    proof_identities: HashSet<SummaryArchiveSnapshotProofIdentity>,
+    recent_proof_identities: HashSet<SummaryArchiveSnapshotProofIdentity>,
+    global_coverage_buckets: HashSet<i64>,
+    account_coverage_buckets: HashSet<i64>,
+    // Materialized archives retain their durable rollup as the aggregate baseline. Keep this
+    // distinction alongside V2 coverage so an unmaterialized sibling in the same hour does not
+    // cause finalization to subtract the materialized rollup before adding only the sibling.
+    materialized_coverage_buckets: HashSet<i64>,
+    // Legacy manifests without explicit coverage bounds can only prove materialization at the
+    // month granularity. Preserve that proof so mixed archive siblings do not replace a whole
+    // month of compact rollups merely because one sibling contributes V2 rows.
+    materialized_coverage_months: HashSet<String>,
+    global_by_bucket: HashMap<i64, StatsTotals>,
+    account_by_bucket: HashMap<(i64, i64), StatsTotals>,
+    global_usage_by_bucket: HashMap<i64, UsageBreakdownResponse>,
+    account_usage_by_bucket: HashMap<(i64, i64), UsageBreakdownResponse>,
+    global_non_success_tokens_by_bucket: HashMap<i64, i64>,
+    account_non_success_tokens_by_bucket: HashMap<(i64, i64), i64>,
+    // Boundary rows are retained only for ranges that still need partial-hour exactness. Full
+    // hours continue to use compact totals so a large archive never enters the resident record
+    // budget merely because its V2 proof was published.
+    boundary_records: Vec<SummaryProjectionRecord>,
+}
+
+impl Default for SummaryCoverageOverlay {
+    fn default() -> Self {
+        Self {
+            coverage_fence: SummaryCoverageFence {
+                completed_manifest_high_watermark_id: None,
+                coverage_revision: 0,
+                account_coverage_revision: 0,
+            },
+            live_tail_cursor: SummaryLiveTailCursor {
+                live_high_watermark_id: 0,
+                rollup_live_cursor: 0,
+                account_rollup_live_cursor: None,
+                durable_terminal_sequence_watermark: 0,
+            },
+            proof_identities: HashSet::new(),
+            recent_proof_identities: HashSet::new(),
+            global_coverage_buckets: HashSet::new(),
+            account_coverage_buckets: HashSet::new(),
+            materialized_coverage_buckets: HashSet::new(),
+            materialized_coverage_months: HashSet::new(),
+            global_by_bucket: HashMap::new(),
+            account_by_bucket: HashMap::new(),
+            global_usage_by_bucket: HashMap::new(),
+            account_usage_by_bucket: HashMap::new(),
+            global_non_success_tokens_by_bucket: HashMap::new(),
+            account_non_success_tokens_by_bucket: HashMap::new(),
+            boundary_records: Vec::new(),
+        }
+    }
+}
+
 // A projection can be renewed only when each durable source boundary remains unchanged.  This
 // is deliberately smaller than the projection itself: it lets the maintenance loop keep an
 // already-proven immutable response alive without cloning its resident preview rows.
@@ -7526,6 +7602,20 @@ pub(crate) struct SummaryLiveTailCursor {
     pub(crate) durable_terminal_sequence_watermark: u64,
 }
 
+impl SummaryLiveTailCursor {
+    fn terminal_sources_match(self, other: Self) -> bool {
+        self.live_high_watermark_id == other.live_high_watermark_id
+            && self.rollup_live_cursor == other.rollup_live_cursor
+            && self.account_rollup_live_cursor == other.account_rollup_live_cursor
+            && self.durable_terminal_sequence_watermark == other.durable_terminal_sequence_watermark
+    }
+
+    fn rollup_sources_match(self, other: Self) -> bool {
+        self.rollup_live_cursor == other.rollup_live_cursor
+            && self.account_rollup_live_cursor == other.account_rollup_live_cursor
+    }
+}
+
 impl SummaryProjectionGenerationFence {
     // Live terminal progress is represented by the bounded in-memory/durable tail overlay.
     // Historical checkpoint validity therefore depends only on immutable coverage inputs; a
@@ -7542,6 +7632,19 @@ impl SummaryProjectionGenerationFence {
     fn account_coverage_sources_match(self, other: Self) -> bool {
         self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
             && self.account_coverage_revision == other.account_coverage_revision
+    }
+
+    // A verified Snapshot V2 proof advances coverage revision as forward progress. Proof
+    // deletion resets the checkpoint cursor at the schema trigger, so a larger revision must not
+    // discard an already committed seek cursor here.
+    fn global_coverage_checkpoint_compatible(self, other: Self) -> bool {
+        self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
+            && other.coverage_revision >= self.coverage_revision
+    }
+
+    fn account_coverage_checkpoint_compatible(self, other: Self) -> bool {
+        self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
+            && other.account_coverage_revision >= self.account_coverage_revision
     }
 
     pub(crate) fn coverage_fence(self) -> SummaryCoverageFence {
@@ -7645,6 +7748,10 @@ pub(crate) struct SummaryProjection {
     // Historical live coverage is verified during Bootstrap or a dedicated background pass.
     // Rolling rebuilds reuse its unchanged proof and localize only newly unproven buckets.
     historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
+    // Verified V2 archive contributions are attached independently from the live-tail rebuild.
+    // Keeping the overlay in the projection lets subsequent rolling refreshes retain a proof
+    // published by the historical supervisor.
+    coverage_overlay: Option<SummaryCoverageOverlay>,
     // These indexes are constructed once off-request.  They retain only the largest legal
     // current-window result for the global view and each account, so a hot `current` read never
     // sorts or allocates in proportion to retained history.
@@ -7748,6 +7855,75 @@ pub(crate) struct SummaryProjection {
 }
 
 impl SummaryProjection {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn with_revision(mut self, revision: u64) -> Self {
+        self.revision = revision;
+        self
+    }
+
+    fn revoke_stale_all_time_coverage(
+        &mut self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let coverage_fence = generation_fence.coverage_fence();
+        let revoke_global = self.freshness.global_all_time_eligible
+            && self
+                .global_all_time_coverage_fence
+                .is_none_or(|published| !published.global_sources_match(coverage_fence));
+        let revoke_account = !self.freshness.account_all_time_eligible.is_empty()
+            && self
+                .account_all_time_coverage_fence
+                .is_none_or(|published| !published.account_sources_match(coverage_fence));
+        let revoke_overlay = self
+            .coverage_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.coverage_fence != coverage_fence);
+        if !revoke_global && !revoke_account && !revoke_overlay {
+            return false;
+        }
+        if revoke_global {
+            self.all_time_by_account.remove(&None);
+            self.freshness.global_all_time_eligible = false;
+            self.all_time_refreshed_at = None;
+            self.global_all_time_coverage_fence = None;
+            self.all_time_terminal_coverage_complete = false;
+            self.all_time_terminal_sequence_watermark = 0;
+            self.all_time_persisted_live_terminal_invoke_ids.clear();
+        }
+        if revoke_account {
+            self.all_time_by_account.retain(|scope, _| scope.is_none());
+            self.freshness.account_all_time_eligible.clear();
+            self.all_time_account_refreshed_at.clear();
+            self.account_all_time_coverage_fence = None;
+            self.all_time_account_terminal_sequence_watermarks.clear();
+            self.all_time_account_persisted_live_terminal_invoke_ids
+                .clear();
+            self.all_time_oldest_account_refreshed_at = None;
+        }
+        if revoke_overlay && let Some(overlay) = self.coverage_overlay.take() {
+            self.unavailable_unmaterialized_archive_ranges.extend(
+                summary_projection_unavailable_bucket_ranges(
+                    overlay.global_coverage_buckets.into_iter().collect(),
+                ),
+            );
+            self.unavailable_unmaterialized_archive_account_ranges
+                .extend(summary_projection_unavailable_bucket_ranges(
+                    overlay.account_coverage_buckets.into_iter().collect(),
+                ));
+            self.unavailable_unmaterialized_archive_ranges = summary_projection_merge_exact_ranges(
+                std::mem::take(&mut self.unavailable_unmaterialized_archive_ranges),
+            );
+            self.unavailable_unmaterialized_archive_account_ranges =
+                summary_projection_merge_exact_ranges(std::mem::take(
+                    &mut self.unavailable_unmaterialized_archive_account_ranges,
+                ));
+        }
+        true
+    }
+
     fn rolling_refreshed_at(&self) -> Option<Instant> {
         self.freshness_lease
             .latest(self.freshness.rolling_at(self.refreshed_at))
@@ -7764,6 +7940,29 @@ impl SummaryProjection {
         true
     }
 
+    // Historical coverage revisions revoke the prior immutable overlay until a replacement is
+    // published. Even when the live tail is unchanged, do not renew a lease over stale history;
+    // the caller must perform the bounded replacement or leave the affected selection unavailable.
+    pub(crate) fn renew_freshness_if_live_tail_matches(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        if !self
+            .generation_fence
+            .live_tail_cursor()
+            .terminal_sources_match(generation_fence.live_tail_cursor())
+            || self.generation_fence.completed_manifest_high_watermark_id
+                != generation_fence.completed_manifest_high_watermark_id
+            || self.generation_fence.coverage_revision != generation_fence.coverage_revision
+            || self.generation_fence.account_coverage_revision
+                != generation_fence.account_coverage_revision
+        {
+            return false;
+        }
+        self.freshness_lease.renew();
+        true
+    }
+
     // All-time reconciliation owns historical coverage only. A newly committed terminal
     // advances the live tail cursor and must be served by the bounded overlay without cancelling
     // an otherwise valid archive/rollup recovery page.
@@ -7774,11 +7973,27 @@ impl SummaryProjection {
         if !self
             .generation_fence
             .coverage_sources_match(generation_fence)
+            || !self
+                .generation_fence
+                .live_tail_cursor()
+                .rollup_sources_match(generation_fence.live_tail_cursor())
         {
             return false;
         }
         self.freshness_lease.renew();
         true
+    }
+
+    pub(crate) fn coverage_sources_match(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        self.generation_fence
+            .coverage_sources_match(generation_fence)
+            && self
+                .generation_fence
+                .live_tail_cursor()
+                .rollup_sources_match(generation_fence.live_tail_cursor())
     }
 
     pub(crate) fn renew_freshness_from_delta_journal(&self) {
@@ -7976,7 +8191,7 @@ impl SummaryProjection {
             return false;
         };
         self.current_selection_cutoff(limit)
-            .is_none_or(|cutoff| latest_coverage_end >= cutoff)
+            .is_none_or(|cutoff| latest_coverage_end > cutoff)
     }
 
     fn unavailable_archive_may_affect_global_current(&self, limit: usize) -> bool {
@@ -8218,9 +8433,15 @@ impl SummaryProjection {
                 .is_some_and(|limit| self.unavailable_archive_may_affect_global_current(limit)),
         };
         if unavailable_archive_range_affects_query {
-            return Err(ApiError::unavailable(anyhow!(
+            let message = if range.is_none() {
+                // `current` is a newest-N selection rather than a temporal interval. Preserve
+                // its established boundary in the unavailable reason when an unmaterialized
+                // archive can still reach the requested cutoff.
+                "summary projection current source is unavailable"
+            } else {
                 "summary projection archive source is unavailable for the requested range"
-            )));
+            };
+            return Err(ApiError::unavailable(anyhow!("{message}")));
         }
         let unavailable_account_archive_range_affects_query =
             upstream_account_id.is_some_and(|account_id| match range {
@@ -8390,6 +8611,18 @@ impl SummaryProjection {
                 bucket >= start && bucket < end
             })
         };
+        // A verified V2 overlay owns archive rows for its covered bucket. Do not retain the same
+        // archive rows in the bounded candidate selection, otherwise range totals would add the
+        // normalized page contribution and the resident archive records twice. Materialized
+        // replacement buckets remain resident because their exact-row path supersedes the rollup.
+        let exact_total_rollup_buckets = match upstream_account_id {
+            None => &self.exact_global_total_rollup_buckets,
+            Some(_) => &self.exact_account_total_rollup_buckets,
+        };
+        let exact_usage_rollup_buckets = match upstream_account_id {
+            None => &self.exact_global_usage_rollup_buckets,
+            Some(_) => &self.exact_account_usage_rollup_buckets,
+        };
         let selected = candidate_indexes
             .iter()
             .copied()
@@ -8407,6 +8640,26 @@ impl SummaryProjection {
             .filter(|record| {
                 if !is_full_rollup_bucket(record) {
                     return true;
+                }
+                if record.is_archive_record
+                    && let Some(overlay) = &self.coverage_overlay
+                {
+                    let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+                    let overlay_owns_bucket = match upstream_account_id {
+                        None => {
+                            overlay.global_coverage_buckets.contains(&bucket)
+                                && overlay.global_by_bucket.contains_key(&bucket)
+                        }
+                        Some(account_id) => {
+                            overlay.account_coverage_buckets.contains(&bucket)
+                                && overlay
+                                    .account_by_bucket
+                                    .contains_key(&(bucket, account_id))
+                        }
+                    };
+                    if overlay_owns_bucket && !exact_total_rollup_buckets.contains(&bucket) {
+                        return false;
+                    }
                 }
                 if record.is_persisted_live_record {
                     let scope_covered = match upstream_account_id {
@@ -8441,6 +8694,26 @@ impl SummaryProjection {
                 if !is_full_rollup_bucket(record) {
                     return true;
                 }
+                if record.is_archive_record
+                    && let Some(overlay) = &self.coverage_overlay
+                {
+                    let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+                    let overlay_owns_bucket = match upstream_account_id {
+                        None => {
+                            overlay.global_coverage_buckets.contains(&bucket)
+                                && overlay.global_usage_by_bucket.contains_key(&bucket)
+                        }
+                        Some(account_id) => {
+                            overlay.account_coverage_buckets.contains(&bucket)
+                                && overlay
+                                    .account_usage_by_bucket
+                                    .contains_key(&(bucket, account_id))
+                        }
+                    };
+                    if overlay_owns_bucket && !exact_usage_rollup_buckets.contains(&bucket) {
+                        return false;
+                    }
+                }
                 if record.is_persisted_live_record {
                     let scope_covered = match upstream_account_id {
                         None => record.usage_global_rollup_covered,
@@ -8460,19 +8733,6 @@ impl SummaryProjection {
                 !usage_rollup_covered
             })
             .collect::<Vec<_>>();
-
-        // A materialized archive with an incomplete replay marker uses the scoped exact bucket
-        // set prepared during hydration. It contains the archive and every co-located persisted
-        // live contribution, so add either that exact source or the compact aggregate, never a
-        // partial mixture.
-        let exact_total_rollup_buckets = match upstream_account_id {
-            None => &self.exact_global_total_rollup_buckets,
-            Some(_) => &self.exact_account_total_rollup_buckets,
-        };
-        let exact_usage_rollup_buckets = match upstream_account_id {
-            None => &self.exact_global_usage_rollup_buckets,
-            Some(_) => &self.exact_account_usage_rollup_buckets,
-        };
 
         let mut totals = StatsTotals::default();
         let mut usage_breakdown = UsageBreakdownAccumulator::default();
@@ -8534,6 +8794,91 @@ impl SummaryProjection {
                     && !exact_usage_rollup_buckets.contains(bucket)
                 {
                     usage_breakdown.merge_response(usage);
+                }
+            }
+            // Verified V2 pages are compact historical contributions for buckets which are not
+            // represented by the resident rollup. Merge them only for complete buckets; a
+            // partial boundary still requires the existing exact-row proof and remains local
+            // unavailable when that proof is absent.
+            if let Some(overlay) = &self.coverage_overlay {
+                match upstream_account_id {
+                    None => {
+                        for (bucket, bucket_totals) in &overlay.global_by_bucket {
+                            if *bucket >= start
+                                && *bucket < end
+                                && overlay.global_coverage_buckets.contains(bucket)
+                                && !exact_total_rollup_buckets.contains(bucket)
+                            {
+                                totals = totals.add(*bucket_totals);
+                                non_success_tokens += overlay
+                                    .global_non_success_tokens_by_bucket
+                                    .get(bucket)
+                                    .copied()
+                                    .unwrap_or_default();
+                            }
+                        }
+                        for (bucket, usage) in &overlay.global_usage_by_bucket {
+                            if *bucket >= start
+                                && *bucket < end
+                                && overlay.global_coverage_buckets.contains(bucket)
+                                && !exact_usage_rollup_buckets.contains(bucket)
+                            {
+                                usage_breakdown.merge_response(usage);
+                            }
+                        }
+                    }
+                    Some(account_id) => {
+                        for ((bucket, candidate_account), bucket_totals) in
+                            &overlay.account_by_bucket
+                        {
+                            if *candidate_account == account_id
+                                && *bucket >= start
+                                && *bucket < end
+                                && overlay.account_coverage_buckets.contains(bucket)
+                                && !exact_total_rollup_buckets.contains(bucket)
+                            {
+                                totals = totals.add(*bucket_totals);
+                                non_success_tokens += overlay
+                                    .account_non_success_tokens_by_bucket
+                                    .get(&(*bucket, account_id))
+                                    .copied()
+                                    .unwrap_or_default();
+                            }
+                        }
+                        for ((bucket, candidate_account), usage) in &overlay.account_usage_by_bucket
+                        {
+                            if *candidate_account == account_id
+                                && *bucket >= start
+                                && *bucket < end
+                                && overlay.account_coverage_buckets.contains(bucket)
+                                && !exact_usage_rollup_buckets.contains(bucket)
+                            {
+                                usage_breakdown.merge_response(usage);
+                            }
+                        }
+                    }
+                }
+            }
+            // V2 Snapshot rows are the exact source for a partial boundary.  They are kept
+            // separate from the compact bucket totals so a 30d/calendar range beginning inside
+            // an hour does not silently include the whole hour or undercount it.
+            if let (Some(overlay), Some((range_start, range_end))) = (&self.coverage_overlay, range)
+            {
+                for record in &overlay.boundary_records {
+                    if !is_full_rollup_bucket(record)
+                        && record.occurred_at >= range_start
+                        && record.occurred_at < range_end
+                        && upstream_account_id.is_none_or(|account_id| {
+                            record.row.upstream_account_id == Some(account_id)
+                        })
+                    {
+                        let record_totals = summary_projection_record_totals(record);
+                        totals = totals.add(record_totals);
+                        usage_breakdown.add_row(&record.row);
+                        if record_totals.failure_count > 0 {
+                            non_success_tokens += record.row.total_tokens.max(0);
+                        }
+                    }
                 }
             }
         }
@@ -9634,17 +9979,17 @@ fn summary_projection_merge_exact_ranges(mut ranges: Vec<ExactUtcRange>) -> Vec<
 async fn load_summary_projection_unrepresented_current_archive_coverage(
     pool: &Pool<Sqlite>,
     represented_archive_paths: &HashSet<String>,
-) -> Result<(Option<DateTime<Utc>>, bool)> {
+    exact_horizon: ExactUtcRange,
+) -> Result<(Vec<ExactUtcRange>, Option<DateTime<Utc>>, bool)> {
     // A current selection can only ignore an archive after its complete bounded coverage has
     // been materialized into the resident candidate view. Keep the exclusion bind set small;
     // a larger fully represented set is still safe, but its SQL proof must fail closed rather
     // than exceed SQLite's parameter budget.
     if represented_archive_paths.len() > SUMMARY_PROJECTION_ARCHIVE_MANIFEST_QUERY_CHUNK_SIZE {
-        return Ok((None, true));
+        return Ok((Vec::new(), None, true));
     }
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT MAX(coverage_end_epoch), \
-         MAX(CASE WHEN coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL THEN 1 ELSE 0 END) \
+        "SELECT month_key, coverage_start_epoch, coverage_end_epoch \
          FROM archive_batches WHERE dataset = ",
     );
     query
@@ -9660,10 +10005,91 @@ async fn load_summary_projection_unrepresented_current_archive_coverage(
         }
         separated.push_unseparated(")");
     }
-    let (latest_epoch, has_unknown): (Option<i64>, Option<i64>) =
-        query.build_query_as().fetch_one(pool).await?;
-    let latest_coverage_end = latest_epoch.and_then(|epoch| Utc.timestamp_opt(epoch, 0).single());
-    Ok((latest_coverage_end, has_unknown.unwrap_or_default() != 0))
+    let rows: Vec<(String, Option<i64>, Option<i64>)> =
+        query.build_query_as().fetch_all(pool).await?;
+    let mut finite_ranges = Vec::new();
+    let mut has_unknown_coverage = false;
+    let mut latest_coverage_end = None;
+    let source_row_count = rows.len();
+    let mut horizon_fallback_count = 0usize;
+    for (month_key, start_epoch, end_epoch) in rows {
+        let known_range = match (start_epoch, end_epoch) {
+            (Some(start_epoch), Some(end_epoch)) => {
+                let start = Utc.timestamp_opt(start_epoch, 0).single();
+                let end = Utc.timestamp_opt(end_epoch, 0).single();
+                match (start, end) {
+                    (Some(start), Some(end)) if start <= end => Some((
+                        start,
+                        end.checked_add_signed(ChronoDuration::seconds(1))
+                            .unwrap_or(end),
+                    )),
+                    _ => {
+                        horizon_fallback_count = horizon_fallback_count.saturating_add(1);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some((start, end)) = known_range {
+            latest_coverage_end = latest_coverage_end.max(Some(end));
+            let localized = ExactUtcRange {
+                start: start.max(exact_horizon.start),
+                end: end.min(exact_horizon.end),
+            };
+            if localized.start < localized.end {
+                finite_ranges.push(localized);
+            }
+            continue;
+        }
+
+        // A parseable month key gives a finite conservative range that the request path can
+        // compare with its actual Nth current row. A malformed identity remains broad
+        // fail-closed because no temporal boundary can be proven.
+        let Some(buckets) =
+            crate::stats::archive_bucket_start_epochs_from_bounds(Some(&month_key), None, None)
+                .ok()
+                .filter(|buckets| !buckets.is_empty())
+        else {
+            has_unknown_coverage = true;
+            continue;
+        };
+        let start_epoch = *buckets.iter().min().expect("non-empty archive buckets");
+        let end_epoch = buckets
+            .iter()
+            .max()
+            .copied()
+            .unwrap_or(start_epoch)
+            .saturating_add(3_600);
+        let (Some(start), Some(end)) = (
+            Utc.timestamp_opt(start_epoch, 0).single(),
+            Utc.timestamp_opt(end_epoch, 0).single(),
+        ) else {
+            has_unknown_coverage = true;
+            continue;
+        };
+        let localized = ExactUtcRange {
+            start: start.max(exact_horizon.start),
+            end: end.min(exact_horizon.end),
+        };
+        if localized.start < localized.end {
+            finite_ranges.push(localized);
+        }
+        latest_coverage_end = latest_coverage_end.max(Some(end));
+    }
+    info!(
+        stage = "unrepresented_current_archive_coverage_summary",
+        source_row_count,
+        range_count = finite_ranges.len(),
+        horizon_fallback_count,
+        has_unknown_coverage,
+        "summary projection unrepresented current archive coverage summarized"
+    );
+    Ok((
+        summary_projection_merge_exact_ranges(finite_ranges),
+        latest_coverage_end,
+        has_unknown_coverage,
+    ))
 }
 
 async fn load_summary_projection_current_archive_admission(
@@ -9673,14 +10099,16 @@ async fn load_summary_projection_current_archive_admission(
     // Current is ordered by recency, not archive creation order. Admit the newest bounded
     // manifest prefix so a large backlog of old materialized batches cannot hide a current
     // candidate that must be hydrated off-request.
-    sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
+    let rows = sqlx::query_as::<_, crate::stats::ArchiveBatchPathRow>(
         "SELECT file_path, month_key, coverage_start_at, coverage_end_at, \
          historical_rollups_materialized_at, NULL AS needs_overall, NULL AS needs_failures \
          FROM archive_batches \
          WHERE dataset = ?1 AND status = ?2 \
            AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
-           AND (coverage_start_epoch IS NULL OR coverage_end_epoch IS NULL OR coverage_end_epoch >= ?3) \
-         ORDER BY coverage_end_epoch DESC, id DESC \
+           AND (COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER)) IS NULL \
+                OR COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) IS NULL \
+                OR COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) >= ?3) \
+         ORDER BY COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)) DESC, id DESC \
          LIMIT ?4",
     )
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
@@ -9689,7 +10117,8 @@ async fn load_summary_projection_current_archive_admission(
     .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES.saturating_add(1)) as i64)
     .fetch_all(pool)
     .await
-    .map_err(Into::into)
+    .map_err(anyhow::Error::from)?;
+    Ok(rows)
 }
 
 fn summary_projection_exact_bucket_ranges(buckets: &HashSet<i64>) -> Vec<ExactUtcRange> {
@@ -10036,7 +10465,9 @@ async fn load_summary_projection_snapshot_records(
         sqlx::query_as::<_, (i64, String, i64, Option<String>, Option<String>)>(
             "SELECT id, sha256, row_count, coverage_start_at, coverage_end_at \
              FROM archive_batches WHERE dataset = 'codex_invocations' \
-             AND status = 'completed' AND file_path = ?1 ORDER BY id DESC LIMIT 1",
+             AND status = 'completed' \
+             AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             AND file_path = ?1 ORDER BY id DESC LIMIT 1",
         )
         .bind(archive_file_path)
         .fetch_optional(pool)
@@ -10369,7 +10800,8 @@ async fn merge_summary_projection_archive_records_with_coverage(
         // boundary may still be a complete hour for an all-time or differently aligned request,
         // so a missing marker must retain the exact source for every scope rather than trusting
         // the compact bucket there.
-        let global_rollup_covered = archive_has_materialized_rollups
+        let global_rollup_covered = (archive_has_materialized_rollups
+            || overall_rollup_archive_replayed.is_some_and(|replayed| replayed))
             && hourly_rollup_totals.contains_key(&(bucket, None))
             && overall_rollup_archive_replayed.is_none_or(|replayed| replayed);
         let account_rollup_covered = archive_has_materialized_rollups
@@ -10602,8 +11034,15 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
         // Rolling deadline used only after an immutable projection exists.
         hydrate_summary_snapshots(state).await?;
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
-        refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
-            .await?;
+        // Coverage revisions are reconciled by the historical supervisor and published through
+        // its immutable overlay. If the live terminal tail did not move, keep recent selections
+        // fresh without entering the archive-sized RollingDelta builder.
+        let live_tail_renewed =
+            renew_summary_projection_freshness_if_live_tail_matches(state).await?;
+        if !live_tail_renewed {
+            refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
+                .await?;
+        }
     }
     let historical_live_recovery_required = state
         .subscription_hub
@@ -10698,15 +11137,67 @@ async fn summary_all_time_checkpoint_publication_required(
 
 impl SummaryCoverageRecoverySupervisor {
     pub(crate) async fn run(state: &AppState) -> Result<()> {
+        Self::run_with_priority_reservation(state, None).await
+    }
+
+    pub(crate) async fn run_with_startup_priority_reservation(
+        state: &AppState,
+        reservation: crate::db_pressure::DbBackgroundPriorityReservation,
+    ) -> Result<()> {
+        Self::run_with_priority_reservation(state, Some(reservation)).await
+    }
+
+    async fn run_with_priority_reservation(
+        state: &AppState,
+        reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+    ) -> Result<()> {
+        let Ok(_singleflight) = state.subscription_hub.try_lock_summary_coverage_recovery() else {
+            return Ok(());
+        };
+        Self::run_with_priority_reservation_locked(state, reservation).await
+    }
+
+    async fn run_with_priority_reservation_locked(
+        state: &AppState,
+        mut reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+    ) -> Result<()> {
+        let drain_startup_coverage = reservation.is_some();
+        let mut unpublished_startup_pages = 0usize;
         let recovery = async {
-            for attempt in 0..2 {
-                match Self::run_once(state).await {
+            let mut retried_generation = false;
+            loop {
+                // The first turn must publish an already-proven recent range so 30d can become
+                // exact independently.  After that, keep publication batch-bound: checking the
+                // recent proof set alone is not enough because every newly verified page changes
+                // the durable identity set, and cloning the immutable resident overlay for each
+                // page can consume the entire historical recovery deadline.
+                let publish_overlay = !drain_startup_coverage
+                    || unpublished_startup_pages == 0
+                    || (unpublished_startup_pages > 0
+                        && unpublished_startup_pages.is_multiple_of(
+                            SUMMARY_HISTORICAL_COVERAGE_OVERLAY_PUBLICATION_PAGE_BATCHES,
+                        ));
+                match Self::run_once(
+                    state,
+                    reservation.take(),
+                    drain_startup_coverage,
+                    publish_overlay,
+                )
+                .await
+                {
+                    Ok(Some(next_reservation)) => {
+                        reservation = Some(next_reservation);
+                        unpublished_startup_pages = unpublished_startup_pages.saturating_add(1);
+                        tokio::task::yield_now().await;
+                    }
+                    Ok(None) => return Ok(()),
                     Err(error)
                         if error
                             .downcast_ref::<SummaryProjectionAllTimeGenerationChanged>()
                             .is_some()
-                            && attempt == 0 =>
+                            && !retried_generation =>
                     {
+                        retried_generation = true;
                         // V2 proof publication advances the coverage fence. Refresh only the
                         // bounded RollingDelta metadata before retrying finalization; never
                         // fall back to the generic AllTime builder.
@@ -10718,10 +11209,9 @@ impl SummaryCoverageRecoverySupervisor {
                         )
                         .await?;
                     }
-                    result => return result,
+                    Err(error) => return Err(error),
                 }
             }
-            Ok(())
         };
         tokio::pin!(recovery);
         // Do not renew the lease on the interval's immediate first tick.  A just-published
@@ -10743,12 +11233,36 @@ impl SummaryCoverageRecoverySupervisor {
         }
     }
 
-    async fn run_once(state: &AppState) -> Result<()> {
+    async fn run_once(
+        state: &AppState,
+        reservation: Option<crate::db_pressure::DbBackgroundPriorityReservation>,
+        _drain_startup_coverage: bool,
+        publish_overlay: bool,
+    ) -> Result<Option<crate::db_pressure::DbBackgroundPriorityReservation>> {
         // Admission deliberately precedes every checkpoint, manifest, and archive operation.
         // Pressure is scheduler-only: a denied pass neither reads nor writes recovery progress.
-        let _pressure_permit = match crate::db_pressure::global_db_pressure_gate()
-            .try_begin_background("summary_historical_coverage_recovery")
-        {
+        let pressure_gate = crate::db_pressure::global_db_pressure_gate();
+        let queue_wait = if reservation.is_some() {
+            SUMMARY_HISTORICAL_COVERAGE_RECOVERY_CONTINUATION_QUEUE_WAIT
+        } else {
+            SUMMARY_HISTORICAL_COVERAGE_RECOVERY_QUEUE_WAIT
+        };
+        let admission = match reservation {
+            Some(reservation) => {
+                pressure_gate
+                    .begin_reserved_priority_background(reservation, queue_wait)
+                    .await
+            }
+            None => {
+                pressure_gate
+                    .begin_priority_background_with_queue_wait(
+                        "summary_historical_coverage_recovery",
+                        queue_wait,
+                    )
+                    .await
+            }
+        };
+        let _pressure_permit = match admission {
             Ok(permit) => permit,
             Err(reason) => {
                 debug!(
@@ -10756,10 +11270,120 @@ impl SummaryCoverageRecoverySupervisor {
                     reason = %reason,
                     "summary historical coverage recovery deferred before durable progress access"
                 );
-                return Ok(());
+                return Ok(None);
             }
         };
         let started_at = Instant::now();
+        // Required 30-day authority takes priority over all-time aggregation. Each V2 turn is
+        // page- and time-bounded, and committed cursor/hash progress is immediately eligible
+        // for the next turn. Do not let a broad all-time checkpoint consume the only recovery
+        // permit while a recent selection still lacks its authority.
+        let priority_backfill = backfill_summary_archive_snapshots_v2_window(
+            &state.pool,
+            SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
+        )
+        .await?;
+        info!(
+            stage = "historical_coverage_snapshot_backfill",
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            candidate_count = priority_backfill.candidate_count,
+            recent_candidate_count = priority_backfill.recent_candidate_count,
+            scanned_archive_batches = priority_backfill.scanned_archive_batches,
+            materialized_archive_batches = priority_backfill.materialized_archive_batches,
+            unavailable_archive_batches = priority_backfill.unavailable_archive_batches,
+            pending_obligation_count = priority_backfill.pending_obligation_count,
+            terminal_gap_count = priority_backfill.terminal_gap_count,
+            verified_proof_count = priority_backfill.verified_proof_count,
+            hit_budget = priority_backfill.hit_budget,
+            "summary historical coverage recovery page completed"
+        );
+        // `candidate_count` includes the all-time backlog. Recent candidates control the first
+        // overlay publication, but the durable obligation count controls all-time finalization:
+        // no historical checkpoint may run until every archive contribution is proven or has a
+        // persisted terminal gap.
+        let priority_backfill_pending = priority_backfill.recent_candidate_count > 0;
+        let recent_overlay_needed = !priority_backfill_pending
+            && summary_projection_recent_coverage_needs_overlay(state).await;
+        // A final proof is durable before it is published. During startup, batch immutable
+        // overlay swaps so a long recovery does not repeatedly clone the resident Projection.
+        // The final no-pending turn below always publishes, preserving exact-or-unavailable.
+        if publish_overlay
+            && (recent_overlay_needed
+                || (priority_backfill.pending_obligation_count == 0 && priority_backfill_pending))
+        {
+            let publication_started_at = Instant::now();
+            // Full reduction is reserved for the final no-pending pass. While the broad
+            // historical queue is still draining, newly verified pages must extend the existing
+            // overlay incrementally; rescanning every V2 proof here can consume the entire
+            // all-time readiness budget.
+            match publish_summary_coverage_overlay(
+                state,
+                priority_backfill.pending_obligation_count == 0,
+            )
+            .await
+            {
+                Ok(true) => info!(
+                    stage = "historical_coverage_overlay_publication",
+                    elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                    "summary historical coverage proof published through immutable overlay"
+                ),
+                Ok(false) => debug!(
+                    stage = "historical_coverage_overlay_deferred",
+                    elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                    "summary historical coverage overlay had no publishable contribution"
+                ),
+                Err(error)
+                    if error
+                        .to_string()
+                        .contains("summary V2 boundary record budget exceeded") =>
+                {
+                    debug!(
+                        stage = "historical_coverage_overlay_deferred",
+                        reason = "boundary_record_budget",
+                        elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                        "summary historical coverage overlay deferred until final proof reduction"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if priority_backfill.pending_obligation_count > 0 {
+            // Historical obligations always outrank generic all-time aggregation. This is
+            // intentionally independent of the startup flag: an `all` HTTP request may arrive
+            // after bootstrap, but it must not claim the recovery slot and starve the V2 page
+            // queue. Keep the supervisor's bounded loop alive while obligations remain so the
+            // 30-second cadence does not turn a finite recovery set into an hour-long drain.
+            // The database-pressure permit is still released at this boundary, so every source
+            // page stays bounded and pressure refusal can stop the loop safely.
+            return Ok(Some(pressure_gate.reserve_priority_background()));
+        }
+        // A completed global checkpoint is independently exact. Do not make its first
+        // publication wait for the account-scope manifest/rollup pass below: large account
+        // rosters can legitimately take more than the bounded finalization turn while the
+        // global `all` response is already proven. The publication function performs its own
+        // live/coverage fence check before the immutable swap.
+        if let Some(global_checkpoint) =
+            load_summary_all_time_projection_checkpoint(&state.pool).await?
+            && global_checkpoint.global_ready()
+            && summary_all_time_checkpoint_publication_required(state, &global_checkpoint).await?
+        {
+            let publication_started_at = Instant::now();
+            match tokio::time::timeout(
+                SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
+                publish_summary_all_time_projection_checkpoint(state, global_checkpoint),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    warn!(
+                        stage = "historical_coverage_global_projection_publish_deferred",
+                        elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                        "summary global all-time projection publication exceeded its bounded turn"
+                    );
+                }
+            }
+        }
         let checkpoint = tokio::time::timeout(
             SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE,
             advance_summary_all_time_projection_checkpoint(state),
@@ -10804,13 +11428,14 @@ impl SummaryCoverageRecoverySupervisor {
 
         let backfill = backfill_summary_archive_snapshots_v2_window(
             &state.pool,
-            SUMMARY_PROJECTION_ALL_TIME_FINALIZATION_DEADLINE.min(Duration::from_secs(2)),
+            SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
         )
         .await?;
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,
             candidate_count = backfill.candidate_count,
+            recent_candidate_count = backfill.recent_candidate_count,
             scanned_archive_batches = backfill.scanned_archive_batches,
             materialized_archive_batches = backfill.materialized_archive_batches,
             unavailable_archive_batches = backfill.unavailable_archive_batches,
@@ -10850,53 +11475,88 @@ impl SummaryCoverageRecoverySupervisor {
             }
         }
 
-        // Snapshot V2 proof changes are durable coverage inputs, but the backfill worker does
-        // not own the immutable rolling Projection. Finalize an already-complete checkpoint
-        // before attempting the bounded rolling metadata refresh: the finalizer can atomically
-        // publish the new coverage fence without re-admitting the current source at all. If a
-        // still-needed 4-second refresh is resource-deferred, keep the prior selection-local
-        // availability state and retry from durable progress on the next supervisor pass.
-        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
-        let coverage_publication_required = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .is_none_or(|projection| {
-                !projection
-                    .generation_fence
-                    .coverage_sources_match(durable_generation_fence)
-            });
-        if coverage_publication_required {
+        // V2 proof changes are published as a compact immutable overlay. This avoids re-running
+        // live admission after every historical page and keeps the 4-second RollingDelta budget
+        // reserved for actual terminal tail changes.
+        if backfill.pending_obligation_count == 0 {
             let publication_started_at = Instant::now();
-            match refresh_summary_snapshots_with_deadline(
-                state,
-                SummaryProjectionBuildMode::RollingDelta,
-                Some(SUMMARY_PROJECTION_BUILD_DEADLINE),
-                true,
-            )
-            .await
-            {
-                Ok(()) => info!(
-                    stage = "historical_coverage_recent_publication",
+            match publish_summary_coverage_overlay(state, false).await {
+                Ok(true) => info!(
+                    stage = "historical_coverage_overlay_publication",
                     elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
-                    "summary historical coverage proof published to recent projection"
+                    "summary historical coverage proof published through immutable overlay"
+                ),
+                Ok(false) => debug!(
+                    stage = "historical_coverage_overlay_deferred",
+                    elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                    "summary historical coverage overlay had no publishable contribution"
                 ),
                 Err(error)
                     if error
                         .to_string()
-                        .contains("summary projection build exceeded") =>
+                        .contains("summary V2 boundary record budget exceeded") =>
                 {
-                    warn!(
-                        error = ?error,
-                        stage = "historical_coverage_recent_publication_deferred",
-                        "summary historical coverage retained prior fail-closed availability after bounded rolling refresh"
+                    debug!(
+                        stage = "historical_coverage_overlay_deferred",
+                        reason = "boundary_record_budget",
+                        elapsed_ms = publication_started_at.elapsed().as_millis() as u64,
+                        "summary historical coverage overlay deferred until final proof reduction"
                     );
                 }
                 Err(error) => return Err(error),
             }
         }
-        Ok(())
+        Ok(None)
     }
+}
+
+async fn summary_projection_recent_coverage_needs_overlay(state: &AppState) -> bool {
+    let Some(projection) = state.subscription_hub.summary_projection().await else {
+        return true;
+    };
+    let Some(overlay) = projection.coverage_overlay.as_ref() else {
+        return true;
+    };
+    let end = Utc::now();
+    let start = end - ChronoDuration::days(30);
+    let recent_proof_identities =
+        load_summary_v2_archive_proof_identities_in_range(&state.pool, start, end)
+            .await
+            .unwrap_or_default();
+    overlay.recent_proof_identities != recent_proof_identities
+}
+
+/// Runs the durable historical supervisor independently from rolling Projection maintenance.
+/// It retains priority only while the startup's finite durable obligation set is being recovered;
+/// afterwards periodic turns are best-effort and cannot delay current/rolling refresh.
+pub(crate) fn spawn_summary_coverage_recovery_maintenance(
+    state: Arc<AppState>,
+    startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
+) {
+    tokio::spawn(async move {
+        if let Err(error) =
+            SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+                state.as_ref(),
+                startup_priority,
+            )
+            .await
+        {
+            warn!(error = ?error, "initial summary historical coverage recovery deferred");
+        }
+
+        let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
+        cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = state.shutdown.cancelled() => return,
+                _ = cadence.tick() => {
+                    if let Err(error) = SummaryCoverageRecoverySupervisor::run(state.as_ref()).await {
+                        warn!(error = ?error, "summary historical coverage recovery deferred");
+                    }
+                }
+            }
+        }
+    });
 }
 
 async fn renew_summary_projection_freshness_if_generation_matches(
@@ -10909,6 +11569,20 @@ async fn renew_summary_projection_freshness_if_generation_matches(
         .await;
     if renewed {
         debug!("summary projection freshness renewed for unchanged durable generation");
+    }
+    Ok(renewed)
+}
+
+async fn renew_summary_projection_freshness_if_live_tail_matches(state: &AppState) -> Result<bool> {
+    let generation_fence = load_summary_projection_generation_fence(state).await?;
+    let renewed = state
+        .subscription_hub
+        .renew_summary_projection_freshness_if_live_tail_matches(generation_fence)
+        .await;
+    if renewed {
+        debug!(
+            "summary projection freshness renewed for unchanged live tail during coverage recovery"
+        );
     }
     Ok(renewed)
 }
@@ -10944,6 +11618,33 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
                 .await;
         }
     }
+    let compaction_boundary = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM summary_source_change_compaction_proof \
+         WHERE first_cursor <= ?1 \
+           AND (retained_after_cursor > ?2 OR retained_after_cursor <= 0 \
+                OR NOT json_valid(proof_json) \
+                OR json_type(json_extract(proof_json, '$.retainedAfterCursor')) NOT IN ('integer', 'real') \
+                OR CAST(json_extract(proof_json, '$.retainedAfterCursor') AS INTEGER) <> retained_after_cursor))",
+    )
+    .bind(
+        i64::try_from(after_cursor.saturating_add(1))
+            .context("source compaction boundary overflow")?,
+    )
+    .bind(i64::try_from(after_cursor).context("source compaction cursor overflow")?)
+    .fetch_one(&state.pool)
+    .await
+    .context("load summary source compaction proof")?;
+    if compaction_boundary != 0 {
+        state
+            .subscription_hub
+            .record_summary_source_change_gap(after_cursor.saturating_add(1))
+            .await;
+        state
+            .subscription_hub
+            .mark_summary_projection_historical_recovery_required()
+            .await;
+        return Ok(false);
+    }
     let tail = load_summary_source_change_tail(
         &state.pool,
         after_cursor,
@@ -10953,11 +11654,6 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
     let Some(last_cursor) = tail.last().map(|record| record.cursor) else {
         return Ok(false);
     };
-    state
-        .subscription_hub
-        .advance_summary_source_change_cursor(last_cursor)
-        .await;
-
     let ids = tail
         .iter()
         .flat_map(|record| record.descriptor.entries.iter().map(|entry| entry.row_id))
@@ -11017,6 +11713,10 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
         }
     }
     if complete {
+        state
+            .subscription_hub
+            .advance_summary_source_change_cursor(last_cursor)
+            .await;
         store_summary_source_change_checkpoint(
             &state.pool,
             SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
@@ -11086,9 +11786,12 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
     }
     if matches!(mode, SummaryProjectionBuildMode::RollingDelta) {
         let started = Instant::now();
+        let durable_generation_fence = load_summary_projection_generation_fence(state).await?;
         if state
             .subscription_hub
-            .renew_summary_projection_freshness_from_delta_journal()
+            .renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+                durable_generation_fence,
+            )
             .await
         {
             let (entry_count, gap_count) =
@@ -11103,6 +11806,14 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             );
             return Ok(());
         }
+        if renew_summary_projection_freshness_if_live_tail_matches(state).await? {
+            debug!(
+                ?mode,
+                stage = "coverage_revision_renewal",
+                "summary projection rolling freshness renewed without historical rebuild"
+            );
+            return Ok(());
+        }
         let mut restored = restore_summary_source_change_tail(state).await?;
         if !restored {
             restored = restore_legacy_summary_source_tail(state).await?;
@@ -11110,7 +11821,9 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
         if restored
             && state
                 .subscription_hub
-                .renew_summary_projection_freshness_from_delta_journal()
+                .renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
+                    load_summary_projection_generation_fence(state).await?,
+                )
                 .await
         {
             let (entry_count, gap_count) =
@@ -11124,11 +11837,11 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             );
             return Ok(());
         }
-        // A fence change may belong only to archive or rollup coverage. Rebuild the bounded
-        // RollingDelta projection so its metadata-only admission can publish a localized gap
-        // for the affected range; it still never performs paged raw archive hydration. A
-        // no-op here would leave the old projection falsely fresh after an archive replay proof
-        // changed underneath it.
+        // A coverage fence change must pass through the bounded RollingDelta builder. Advancing
+        // the fence in place would make an unproven archive range look fresh and could return a
+        // zero-valued 30d response before the supervisor has attached a V2 proof overlay. The
+        // builder performs metadata-only admission for RollingDelta and publishes the affected
+        // range as unavailable without opening paged historical sources.
         return refresh_summary_snapshots_with_deadline(
             state,
             SummaryProjectionBuildMode::RollingDelta,
@@ -11166,44 +11879,62 @@ async fn refresh_summary_snapshots_with_deadline(
             "summary projection startup hydration deferred because a refresh is already in flight"
         ));
     };
-    let previous_all_time = state
-        .subscription_hub
-        .summary_projection()
-        .await
-        .map(|projection| PreviousSummaryProjectionAllTime {
-            all_time_by_account: projection.all_time_by_account.clone(),
-            all_time_refreshed_at: projection.all_time_refreshed_at,
-            all_time_manifest_admission_blocked_at: projection
-                .all_time_manifest_admission_blocked_at,
-            all_time_account_manifest_admission_blocked_at: projection
-                .all_time_account_manifest_admission_blocked_at,
-            all_time_account_refreshed_at: projection.all_time_account_refreshed_at.clone(),
-            archive_account_ids_by_file: projection.archive_account_ids_by_file.clone(),
-            archive_coverage_ranges_by_file: projection.archive_coverage_ranges_by_file.clone(),
-            global_all_time_eligible: projection.freshness.global_all_time_eligible,
-            account_all_time_eligible: projection.freshness.account_all_time_eligible.clone(),
-            all_time_terminal_coverage_complete: projection.all_time_terminal_coverage_complete(),
-            global_all_time_coverage_fence: projection.global_all_time_coverage_fence,
-            account_all_time_coverage_fence: projection.account_all_time_coverage_fence,
-            all_time_terminal_sequence_watermark: projection.all_time_terminal_sequence_watermark(),
-            all_time_persisted_live_terminal_invoke_ids: projection
-                .all_time_persisted_live_terminal_invoke_ids
-                .clone(),
-            all_time_account_terminal_sequence_watermarks: projection
-                .all_time_account_terminal_sequence_watermarks
-                .clone(),
-            all_time_account_persisted_live_terminal_invoke_ids: projection
-                .all_time_account_persisted_live_terminal_invoke_ids
-                .clone(),
-            historical_live_coverage: projection.historical_live_coverage.clone(),
-            unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
-            unavailable_exact_live_account_ranges: projection
-                .unavailable_exact_live_account_ranges
-                .clone(),
-            persisted_live_terminal_invoke_ids: projection
-                .persisted_live_terminal_invoke_ids
-                .clone(),
-        });
+    let base_projection = state.subscription_hub.summary_projection().await;
+    let expected_projection_revision = base_projection
+        .as_ref()
+        .map(|projection| projection.revision())
+        .unwrap_or_default();
+    let previous_all_time = base_projection.map(|projection| PreviousSummaryProjectionAllTime {
+        all_time_by_account: projection.all_time_by_account.clone(),
+        all_time_refreshed_at: projection.all_time_refreshed_at,
+        all_time_manifest_admission_blocked_at: projection.all_time_manifest_admission_blocked_at,
+        all_time_account_manifest_admission_blocked_at: projection
+            .all_time_account_manifest_admission_blocked_at,
+        all_time_account_refreshed_at: projection.all_time_account_refreshed_at.clone(),
+        archive_account_ids_by_file: projection.archive_account_ids_by_file.clone(),
+        archive_coverage_ranges_by_file: projection.archive_coverage_ranges_by_file.clone(),
+        global_all_time_eligible: projection.freshness.global_all_time_eligible,
+        account_all_time_eligible: projection.freshness.account_all_time_eligible.clone(),
+        all_time_terminal_coverage_complete: projection.all_time_terminal_coverage_complete(),
+        global_all_time_coverage_fence: projection.global_all_time_coverage_fence,
+        account_all_time_coverage_fence: projection.account_all_time_coverage_fence,
+        all_time_terminal_sequence_watermark: projection.all_time_terminal_sequence_watermark(),
+        all_time_persisted_live_terminal_invoke_ids: projection
+            .all_time_persisted_live_terminal_invoke_ids
+            .clone(),
+        all_time_account_terminal_sequence_watermarks: projection
+            .all_time_account_terminal_sequence_watermarks
+            .clone(),
+        all_time_account_persisted_live_terminal_invoke_ids: projection
+            .all_time_account_persisted_live_terminal_invoke_ids
+            .clone(),
+        historical_live_coverage: projection.historical_live_coverage.clone(),
+        coverage_overlay: projection.coverage_overlay.clone(),
+        unavailable_exact_live_ranges: projection.unavailable_exact_live_ranges.clone(),
+        unavailable_exact_live_account_ranges: projection
+            .unavailable_exact_live_account_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_ranges: projection
+            .unavailable_unmaterialized_archive_ranges
+            .clone(),
+        unavailable_boundary_archive_ranges: projection.unavailable_boundary_archive_ranges.clone(),
+        unavailable_unmaterialized_archive_current_ranges: projection
+            .unavailable_unmaterialized_archive_current_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_account_ranges: projection
+            .unavailable_unmaterialized_archive_account_ranges
+            .clone(),
+        unavailable_boundary_archive_account_ranges: projection
+            .unavailable_boundary_archive_account_ranges
+            .clone(),
+        unavailable_unmaterialized_archive_account_current_ranges: projection
+            .unavailable_unmaterialized_archive_account_current_ranges
+            .clone(),
+        persisted_live_terminal_invoke_ids: projection.persisted_live_terminal_invoke_ids.clone(),
+    });
+    // Keep the publication CAS tied to the immutable base captured above. A slower generic
+    // builder must not publish after a coverage overlay or another rolling refresh has swapped
+    // the hub projection, even if it allocates a newer numeric revision at the end of the build.
     // The runtime read model advances this watermark only after SQLite ACKs every preceding
     // terminal in order. Capture it before the durable projection queries so a later successful
     // revision can prove that an overflowed Summary SSE overlay is no longer missing data.
@@ -11237,10 +11968,48 @@ async fn refresh_summary_snapshots_with_deadline(
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
         "summary projection build snapshot generation fence accepted"
     );
-    state
+    // Serialize the final fence read and immutable hub swap against coverage trigger commits.
+    // Without this short IMMEDIATE transaction, a proof/revoke can land between these two
+    // operations and leave a stale all-time response published under the old fence.
+    let mut publication_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let durable_generation_fence =
+        load_summary_projection_generation_fence_tx(state, publication_transaction.as_mut())
+            .await?;
+    if projection.generation_fence != durable_generation_fence {
+        // The read transaction may have opened before a coverage/proof commit. Never publish
+        // that stale build. Revoke the affected all-time authority on the currently published
+        // projection immediately so the memory-only handler cannot keep serving the old 200
+        // while the next bounded refresh rebuilds against the new fence.
+        if let Some(current) = state.subscription_hub.summary_projection().await {
+            let mut current = Arc::unwrap_or_clone(current);
+            let expected_revision = current.revision();
+            if current.revoke_stale_all_time_coverage(durable_generation_fence) {
+                state
+                    .subscription_hub
+                    .store_summary_projection_if_revision(current, expected_revision)
+                    .await;
+            }
+        }
+        debug!(
+            ?mode,
+            "summary projection build discarded because its durable generation fence advanced"
+        );
+        publication_transaction.rollback().await?;
+        return Ok(());
+    }
+    if !state
         .subscription_hub
-        .store_summary_projection(projection)
-        .await;
+        .store_summary_projection_if_revision(projection, expected_projection_revision)
+        .await
+    {
+        debug!(
+            ?mode,
+            "summary projection build discarded because its immutable base was replaced"
+        );
+        publication_transaction.commit().await?;
+        return Ok(());
+    }
+    publication_transaction.commit().await?;
     debug!(
         ?mode,
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,
@@ -11364,11 +12133,6 @@ async fn load_summary_projection_archive_row_counts(
                 .await
                 .context("summary projection archive row-count hydration failed")?,
         );
-        if counts.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
-            return Err(anyhow!(
-                "summary projection archive batch cardinality exceeded bounded budget ({SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES})"
-            ));
-        }
     }
     Ok(counts)
 }
@@ -11527,17 +12291,58 @@ struct SummaryProjectionAllTimeArchiveScanPaths {
     global: Vec<String>,
     account: Vec<String>,
     global_unmaterialized_count: usize,
+    global_unmaterialized: Vec<String>,
 }
 
 async fn load_summary_projection_all_time_archive_scan_paths(
     pool: &Pool<Sqlite>,
 ) -> Result<SummaryProjectionAllTimeArchiveScanPaths> {
+    // Every downstream legacy fallback is keyed by file path. If a path has multiple completed
+    // manifest identities, selecting the latest row could attach the wrong proof or snapshot to
+    // an older archive. Refuse the ambiguous authority and leave the affected all-time scope
+    // unavailable until recovery can establish an identity-bound V2 proof.
+    if sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         GROUP BY file_path \
+         HAVING COUNT(DISTINCT COALESCE(NULLIF(TRIM(sha256), ''), '<missing>')) > 1 \
+         ORDER BY file_path LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection archive identity ambiguity check failed")?
+    .is_some()
+    {
+        return Err(anyhow!(
+            "summary projection archive identity is ambiguous for a completed path"
+        ));
+    }
+    if sqlx::query_scalar::<_, String>(
+        "SELECT file_path FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         GROUP BY file_path, sha256 \
+         HAVING COUNT(*) > 1 \
+         ORDER BY file_path LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .context("summary projection duplicate archive identity check failed")?
+    .is_some()
+    {
+        return Err(anyhow!(
+            "summary projection archive identity is duplicated for a completed path"
+        ));
+    }
     // These are precisely the completed archive paths that the two generic all-time
     // aggregators may inflate: the global pass handles missing invocation replay, and the
     // account pass additionally handles unmaterialized archives missing account replay.
     let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
         "SELECT batches.file_path, \
-                NOT EXISTS ( \
+                MAX(NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?1 \
                       AND replay.dataset = 'codex_invocations' \
@@ -11545,8 +12350,30 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                       AND batches.sha256 IS NOT NULL \
                       AND TRIM(batches.sha256) <> '' \
                       AND replay.archive_sha256 = batches.sha256 \
-                ) AS needs_global_archive_scan, \
-                (batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
+                ) OR ( \
+                    batches.historical_rollups_materialized_at IS NULL \
+                    AND ( \
+                        NOT EXISTS ( \
+                            SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                            WHERE replay.target = ?2 \
+                              AND replay.dataset = 'codex_invocations' \
+                              AND replay.file_path = batches.file_path \
+                              AND batches.sha256 IS NOT NULL \
+                              AND TRIM(batches.sha256) <> '' \
+                              AND replay.archive_sha256 = batches.sha256 \
+                        ) \
+                        OR NOT EXISTS ( \
+                            SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                            WHERE replay.target = ?3 \
+                              AND replay.dataset = 'codex_invocations' \
+                              AND replay.file_path = batches.file_path \
+                              AND batches.sha256 IS NOT NULL \
+                              AND TRIM(batches.sha256) <> '' \
+                              AND replay.archive_sha256 = batches.sha256 \
+                        ) \
+                    ) \
+                )) AS needs_global_archive_scan, \
+                MAX(batches.historical_rollups_materialized_at IS NULL AND NOT EXISTS ( \
                     SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                     WHERE replay.target = ?2 \
                       AND replay.dataset = 'codex_invocations' \
@@ -11555,13 +12382,12 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                       AND TRIM(batches.sha256) <> '' \
                       AND replay.archive_sha256 = batches.sha256 \
                 )) AS needs_account_archive_scan, \
-                batches.historical_rollups_materialized_at IS NULL AS is_unmaterialized \
+                MAX(batches.historical_rollups_materialized_at IS NULL) AS is_unmaterialized \
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
          AND batches.status = 'completed' \
          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
-         AND ( \
-               NOT EXISTS ( \
+         AND (NOT EXISTS ( \
                    SELECT 1 FROM hourly_rollup_archive_replay AS replay \
                    WHERE replay.target = ?1 \
                      AND replay.dataset = 'codex_invocations' \
@@ -11569,25 +12395,33 @@ async fn load_summary_projection_all_time_archive_scan_paths(
                      AND batches.sha256 IS NOT NULL \
                      AND TRIM(batches.sha256) <> '' \
                      AND replay.archive_sha256 = batches.sha256 \
-               ) \
-               OR ( \
+               ) OR ( \
                    batches.historical_rollups_materialized_at IS NULL \
-                   AND NOT EXISTS ( \
-                   SELECT 1 FROM hourly_rollup_archive_replay AS replay \
-                   WHERE replay.target = ?2 \
-                     AND replay.dataset = 'codex_invocations' \
-                     AND replay.file_path = batches.file_path \
-                     AND batches.sha256 IS NOT NULL \
-                     AND TRIM(batches.sha256) <> '' \
-                     AND replay.archive_sha256 = batches.sha256 \
-               ) \
-               ) \
-           ) \
-         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC \
-         LIMIT ?3",
+                   AND (NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?2 \
+                         AND replay.dataset = 'codex_invocations' \
+                         AND replay.file_path = batches.file_path \
+                         AND batches.sha256 IS NOT NULL \
+                         AND TRIM(batches.sha256) <> '' \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?3 \
+                         AND replay.dataset = 'codex_invocations' \
+                         AND replay.file_path = batches.file_path \
+                         AND batches.sha256 IS NOT NULL \
+                         AND TRIM(batches.sha256) <> '' \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   )) \
+               )) \
+         GROUP BY batches.file_path \
+         ORDER BY MIN(batches.month_key) ASC, MIN(batches.created_at) ASC, MIN(batches.id) ASC \
+         LIMIT ?4",
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
     .fetch_all(pool)
     .await
@@ -11600,12 +12434,14 @@ async fn load_summary_projection_all_time_archive_scan_paths(
     let mut global = Vec::new();
     let mut account = Vec::new();
     let mut global_unmaterialized_count = 0usize;
+    let mut global_unmaterialized = Vec::new();
     for (file_path, needs_global_archive_scan, needs_account_archive_scan, is_unmaterialized) in
         rows
     {
         if needs_global_archive_scan != 0 {
             if is_unmaterialized != 0 {
                 global_unmaterialized_count += 1;
+                global_unmaterialized.push(file_path.clone());
             }
             global.push(file_path.clone());
         }
@@ -11617,6 +12453,7 @@ async fn load_summary_projection_all_time_archive_scan_paths(
         global,
         account,
         global_unmaterialized_count,
+        global_unmaterialized,
     })
 }
 
@@ -11638,6 +12475,7 @@ async fn load_summary_projection_archive_manifest_accounts(
                ON activity.archive_batch_id = batches.id \
              WHERE batches.dataset = 'codex_invocations' \
                AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
                AND activity.account_id > 0 \
                AND batches.file_path IN (",
         );
@@ -11684,6 +12522,7 @@ async fn load_summary_projection_archive_manifest_refreshed_paths(
             FROM archive_batches
             WHERE dataset = 'codex_invocations'
               AND status = 'completed'
+              AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
               AND upstream_activity_manifest_refreshed_at IS NOT NULL
               AND file_path IN (
             "#,
@@ -11721,6 +12560,7 @@ async fn load_summary_projection_archive_replay_coverage(
                ON batches.dataset = replay.dataset \
               AND batches.file_path = replay.file_path \
               AND batches.status = 'completed' \
+              AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
               AND batches.sha256 IS NOT NULL \
               AND TRIM(batches.sha256) <> '' \
               AND batches.sha256 = replay.archive_sha256 \
@@ -11887,6 +12727,37 @@ async fn summary_all_time_coverage_page_is_exact(
                     .context("summary all-time coverage account manifest proof hydration failed"));
             }
         };
+    // Probe the page for existing final-proof markers in one read.  Calling
+    // `summary_archive_snapshot_path_has_proof` for every manifest would open a read transaction
+    // and, when no marker exists, a failed `BEGIN IMMEDIATE` promotion attempt for each row.  A
+    // large staged recovery can contain thousands of legacy manifests without any V2 pages; the
+    // page-level probe keeps that common path bounded while marked identities still receive the
+    // full semantic validation below.
+    let proof_marked_paths = {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT DISTINCT batches.file_path \
+             FROM archive_batches AS batches \
+             INNER JOIN summary_archive_snapshot_v2_proof AS proof \
+               ON proof.archive_batch_id = batches.id \
+              AND proof.manifest_sha256 = batches.sha256 \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.file_path IN (",
+        );
+        let mut separated = query.separated(", ");
+        for path in &paths {
+            separated.push_bind(path);
+        }
+        separated.push_unseparated(")");
+        query
+            .build_query_scalar::<String>()
+            .fetch_all(pool)
+            .await
+            .context("summary all-time coverage page proof marker lookup failed")?
+            .into_iter()
+            .collect::<HashSet<_>>()
+    };
     let mut global_complete = true;
     let mut account_complete = true;
     for archive in &page.archives {
@@ -11900,7 +12771,9 @@ async fn summary_all_time_coverage_page_is_exact(
         // A verified Snapshot V2 page set is a complete normalized Summary source. It can
         // replace both compact rollup and account-manifest proof when the raw archive is gone,
         // allowing the historical supervisor to advance without reopening the source file.
-        if summary_archive_snapshot_path_has_proof(pool, archive.file_path()).await? {
+        if proof_marked_paths.contains(archive.file_path())
+            && summary_archive_snapshot_path_has_proof(pool, archive.file_path()).await?
+        {
             continue;
         }
         let (archive_global_complete, archive_account_complete) =
@@ -11931,7 +12804,10 @@ async fn summary_all_time_coverage_page_is_exact(
                 // Legacy manifests have no finite range. A replay marker is still required, but
                 // there are no concrete bucket keys to validate in this bounded proof page.
                 (
-                    archive.has_materialized_historical_rollups() && replay.overall,
+                    // Summary's overall replay marker is the exact compact invocation proof
+                    // produced by the bounded repair path, even before the broader historical
+                    // rollup materialization flag is finalized.
+                    replay.overall && replay.usage_breakdown,
                     archive.has_materialized_historical_rollups()
                         && account_ids.is_some()
                         && page
@@ -11956,7 +12832,9 @@ async fn summary_archive_snapshot_path_has_proof(
 ) -> Result<bool> {
     let Some((archive_batch_id, manifest_sha256)) = sqlx::query_as::<_, (i64, String)>(
         "SELECT id, sha256 FROM archive_batches
-         WHERE dataset = 'codex_invocations' AND status = 'completed' AND file_path = ?1
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND file_path = ?1
          ORDER BY id DESC LIMIT 1",
     )
     .bind(file_path)
@@ -11967,6 +12845,89 @@ async fn summary_archive_snapshot_path_has_proof(
         return Ok(false);
     };
     summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256).await
+}
+
+/// A complete V2 proof set is stronger than the per-page replay/rollup proof used by the
+/// legacy checkpoint. Once every manifest below this fence has that authority, walking the same
+/// seek cursor again cannot discover new work. Complete the scope atomically instead of making
+/// `all` wait for thousands of already-verified manifest pages.
+async fn summary_all_time_manifest_v2_coverage_complete(
+    pool: &Pool<Sqlite>,
+    high_watermark_id: i64,
+) -> Result<bool> {
+    let duplicate_paths = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM (
+             SELECT file_path FROM archive_batches
+             WHERE dataset = 'codex_invocations' AND status = 'completed'
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+             GROUP BY file_path HAVING COUNT(*) > 1
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("summary all-time Snapshot V2 duplicate manifest check failed")?;
+    if duplicate_paths > 0 {
+        return Ok(false);
+    }
+    // The marker/count aggregate keeps the normal recovery pass bounded. Only when every
+    // candidate advertises a complete marker do we pay the one-time full semantic validation
+    // needed to reject forged or stale markers.
+    let incomplete_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND batches.id <= ?1 \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+               WHERE proof.archive_batch_id = batches.id \
+                 AND proof.manifest_sha256 = batches.sha256 \
+                 AND proof.page_count > 0 \
+                 AND proof.page_count = ( \
+                     SELECT COUNT(*) FROM summary_archive_snapshot AS pages \
+                     WHERE pages.archive_batch_id = batches.id \
+                       AND pages.manifest_sha256 = batches.sha256 \
+                 ) \
+                 AND proof.row_count = ( \
+                     SELECT COALESCE(SUM(pages.row_count), 0) \
+                     FROM summary_archive_snapshot AS pages \
+                     WHERE pages.archive_batch_id = batches.id \
+                       AND pages.manifest_sha256 = batches.sha256 \
+                 ) \
+                 AND LENGTH(TRIM(proof.semantic_sha256)) > 0 \
+           )",
+    )
+    .bind(high_watermark_id)
+    .fetch_one(pool)
+    .await
+    .context("summary all-time Snapshot V2 coverage marker check failed")?;
+    if incomplete_count > 0 {
+        return Ok(false);
+    }
+    let manifests = sqlx::query_as::<_, (i64, String)>(
+        "SELECT batches.id, batches.sha256 FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND batches.id <= ?1",
+    )
+    .bind(high_watermark_id)
+    .fetch_all(pool)
+    .await
+    .context("summary all-time Snapshot V2 coverage manifest lookup failed")?;
+    for (archive_batch_id, manifest_sha256) in manifests {
+        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+            .await
+            .with_context(|| {
+                format!(
+                    "summary all-time Snapshot V2 final proof check failed for archive {archive_batch_id}"
+                )
+            })?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 async fn advance_summary_all_time_coverage_checkpoint_scope(
@@ -12286,6 +13247,11 @@ async fn reset_summary_all_time_projection_checkpoint(
         .execute(&mut *transaction)
         .await
         .context("summary all-time projection account checkpoint reset failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_usage_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time projection usage checkpoint reset failed")?;
     sqlx::query(
         "INSERT INTO summary_all_time_projection_checkpoint \
          (scope, live_high_watermark_id, rollup_live_cursor, account_rollup_live_cursor, \
@@ -12302,7 +13268,9 @@ async fn reset_summary_all_time_projection_checkpoint(
            global_manifest_next_id = 0, account_manifest_next_id = 0, \
            global_manifest_complete = 0, account_manifest_complete = 0, \
            global_rollup_next_rowid = 0, account_rollup_next_rowid = 0, \
-           global_rollup_complete = 0, account_rollup_complete = 0, account_unavailable = 0, \
+           usage_rollup_next_rowid = 0, global_rollup_complete = 0, account_rollup_complete = 0, \
+           usage_rollup_complete = 0, account_unavailable = 0, global_usage_unavailable = 0, \
+           account_usage_unavailable = 0, global_non_success_tokens = 0, \
            global_total_count = 0, global_success_count = 0, global_failure_count = 0, \
            global_total_tokens = 0, global_total_cost = 0, global_non_success_cost = 0, \
            updated_at = datetime('now')",
@@ -12344,6 +13312,11 @@ async fn reset_summary_all_time_projection_account_scope(
         .execute(&mut *transaction)
         .await
         .context("summary all-time account checkpoint reset failed")?;
+    sqlx::query("DELETE FROM summary_all_time_projection_usage_checkpoint WHERE scope = ?1")
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&mut *transaction)
+        .await
+        .context("summary all-time account usage checkpoint reset failed")?;
     // The global checkpoint contains no account-rollup data. Preserve its committed manifest
     // and aggregate progress when only an account-scoped source changes.
     sqlx::query(
@@ -12351,7 +13324,9 @@ async fn reset_summary_all_time_projection_account_scope(
            account_coverage_revision = ?1, account_manifest_next_id = 0, \
            account_manifest_complete = 0, account_rollup_next_rowid = 0, \
            account_rollup_complete = 0, account_unavailable = 0, \
-           account_usage_unavailable = 0, updated_at = datetime('now') \
+           usage_rollup_next_rowid = 0, usage_rollup_complete = 0, \
+           global_usage_unavailable = 0, account_usage_unavailable = 0, \
+           global_non_success_tokens = 0, updated_at = datetime('now') \
          WHERE scope = ?2",
     )
     .bind(generation_fence.account_coverage_revision)
@@ -12419,6 +13394,19 @@ async fn advance_summary_all_time_projection_manifest_scope(
     } else {
         "global_manifest_next_id"
     };
+    if summary_all_time_manifest_v2_coverage_complete(pool, high_watermark_id).await? {
+        sqlx::query(&format!(
+            "UPDATE summary_all_time_projection_checkpoint \
+             SET {column} = 1, {next_column} = ?1, updated_at = datetime('now') \
+             WHERE scope = ?2"
+        ))
+        .bind(high_watermark_id)
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(pool)
+        .await
+        .context("summary all-time projection Snapshot V2 manifest completion failed")?;
+        return Ok(());
+    }
     if page.archives.is_empty() {
         sqlx::query(&format!(
             "UPDATE summary_all_time_projection_checkpoint SET {column} = 1, updated_at = datetime('now') WHERE scope = ?1"
@@ -12651,19 +13639,78 @@ async fn load_summary_projection_generation_fence(
     })
 }
 
+async fn load_summary_projection_generation_fence_tx(
+    state: &AppState,
+    connection: &mut SqliteConnection,
+) -> Result<SummaryProjectionGenerationFence> {
+    let durable_terminal_sequence_watermark = state
+        .dashboard_activity_snapshot_cache
+        .lock()
+        .await
+        .read_model
+        .settled_terminal_sequence;
+    let live_high_watermark_id =
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(&mut *connection)
+            .await
+            .context("summary projection live high-watermark transaction hydration failed")?
+            .unwrap_or_default();
+    let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(connection)
+        .await
+        .context("summary projection live rollup cursor transaction hydration failed")?;
+    let account_rollup_live_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress \
+         WHERE dataset = 'invocation_account_activity_v2_repair_live_cursor'",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection account rollup cursor transaction hydration failed")?;
+    let completed_manifest_high_watermark_id = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(id) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .context("summary projection completed manifest transaction hydration failed")?;
+    let coverage_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection coverage revision transaction hydration failed")?
+    .unwrap_or_default();
+    let account_coverage_revision = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(revision, 0) FROM summary_account_coverage_revision WHERE id = 1",
+    )
+    .fetch_optional(&mut *connection)
+    .await
+    .context("summary projection account coverage revision transaction hydration failed")?
+    .unwrap_or_default();
+    Ok(SummaryProjectionGenerationFence {
+        live_high_watermark_id,
+        rollup_live_cursor,
+        account_rollup_live_cursor,
+        completed_manifest_high_watermark_id,
+        coverage_revision,
+        account_coverage_revision,
+        durable_terminal_sequence_watermark,
+    })
+}
+
 async fn advance_summary_all_time_projection_checkpoint(
     state: &AppState,
 ) -> Result<SummaryAllTimeProjectionCheckpointRow> {
     let generation_fence = load_summary_projection_generation_fence(state).await?;
-    let checkpoint = match load_summary_all_time_projection_checkpoint(&state.pool).await? {
+    let mut checkpoint = match load_summary_all_time_projection_checkpoint(&state.pool).await? {
         Some(checkpoint)
             if checkpoint
                 .generation_fence()
-                .global_coverage_sources_match(generation_fence) =>
+                .global_coverage_checkpoint_compatible(generation_fence) =>
         {
             if checkpoint
                 .generation_fence()
-                .account_coverage_sources_match(generation_fence)
+                .account_coverage_checkpoint_compatible(generation_fence)
             {
                 checkpoint
             } else {
@@ -12682,6 +13729,29 @@ async fn advance_summary_all_time_projection_checkpoint(
         }
         None => reset_summary_all_time_projection_checkpoint(&state.pool, generation_fence).await?,
     };
+    // Proof insertion is forward progress and therefore keeps the committed manifest/rollup
+    // cursors.  Persist the newer coverage revisions on that same checkpoint before advancing
+    // pages; otherwise finalization would retain the old fence and reject its own atomic swap.
+    if checkpoint.coverage_revision != generation_fence.coverage_revision
+        || checkpoint.account_coverage_revision != generation_fence.account_coverage_revision
+    {
+        sqlx::query(
+            "UPDATE summary_all_time_projection_checkpoint SET \
+             coverage_revision = ?1, account_coverage_revision = ?2, updated_at = datetime('now') \
+             WHERE scope = ?3",
+        )
+        .bind(generation_fence.coverage_revision)
+        .bind(generation_fence.account_coverage_revision)
+        .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+        .execute(&state.pool)
+        .await
+        .context("summary all-time projection checkpoint coverage revision adoption failed")?;
+        checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
+            .await?
+            .expect(
+                "summary all-time projection checkpoint exists after coverage revision adoption",
+            );
+    }
     advance_summary_all_time_projection_manifest_scope(&state.pool, &checkpoint, false).await?;
     let checkpoint = load_summary_all_time_projection_checkpoint(&state.pool)
         .await?
@@ -12822,14 +13892,80 @@ struct SummaryV2ArchiveTotals {
     account_by_bucket: HashMap<(i64, i64), StatsTotals>,
     global_usage_by_bucket: HashMap<i64, UsageBreakdownAccumulator>,
     account_usage_by_bucket: HashMap<(i64, i64), UsageBreakdownAccumulator>,
+    global_non_success_tokens_by_bucket: HashMap<i64, i64>,
+    account_non_success_tokens_by_bucket: HashMap<(i64, i64), i64>,
+    global_coverage_buckets: HashSet<i64>,
+    account_coverage_buckets: HashSet<i64>,
     replacement_buckets: HashSet<i64>,
     materialized_buckets: HashSet<i64>,
     materialized_months_without_coverage: HashSet<String>,
+    global_usage_gap_buckets: HashSet<i64>,
+    account_usage_gap_buckets: HashSet<i64>,
+    boundary_records: Vec<SummaryProjectionRecord>,
 }
 
-async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2ArchiveTotals> {
-    let archives = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, Option<String>)>(
-        "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key
+fn summary_v2_archive_totals_from_coverage_overlay(
+    overlay: &SummaryCoverageOverlay,
+) -> SummaryV2ArchiveTotals {
+    let mut totals = SummaryV2ArchiveTotals {
+        global_coverage_buckets: overlay.global_coverage_buckets.clone(),
+        account_coverage_buckets: overlay.account_coverage_buckets.clone(),
+        materialized_buckets: overlay.materialized_coverage_buckets.clone(),
+        materialized_months_without_coverage: overlay.materialized_coverage_months.clone(),
+        replacement_buckets: overlay.global_by_bucket.keys().copied().collect(),
+        ..SummaryV2ArchiveTotals::default()
+    };
+    for ((bucket, account_id), contribution) in &overlay.account_by_bucket {
+        totals
+            .account_by_bucket
+            .insert((*bucket, *account_id), *contribution);
+        let account_totals = totals.accounts.entry(*account_id).or_default();
+        *account_totals = account_totals.add(*contribution);
+        totals.account_coverage_buckets.insert(*bucket);
+        totals.replacement_buckets.insert(*bucket);
+    }
+    for (bucket, contribution) in &overlay.global_by_bucket {
+        totals.global_by_bucket.insert(*bucket, *contribution);
+        totals.global = totals.global.add(*contribution);
+        totals.global_coverage_buckets.insert(*bucket);
+    }
+    for (bucket, usage) in &overlay.global_usage_by_bucket {
+        let mut accumulator = UsageBreakdownAccumulator::default();
+        accumulator.merge_response(usage);
+        totals.global_usage_by_bucket.insert(*bucket, accumulator);
+    }
+    for ((bucket, account_id), usage) in &overlay.account_usage_by_bucket {
+        let mut accumulator = UsageBreakdownAccumulator::default();
+        accumulator.merge_response(usage);
+        totals
+            .account_usage_by_bucket
+            .insert((*bucket, *account_id), accumulator);
+    }
+    totals.global_non_success_tokens_by_bucket =
+        overlay.global_non_success_tokens_by_bucket.clone();
+    totals.account_non_success_tokens_by_bucket =
+        overlay.account_non_success_tokens_by_bucket.clone();
+    totals.boundary_records = overlay.boundary_records.clone();
+    totals
+}
+
+type SummaryArchiveSnapshotProofIdentity = (i64, String);
+type SummaryV2ArchiveManifest = (
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+async fn load_summary_v2_archive_totals_excluding(
+    pool: &Pool<Sqlite>,
+    excluded_invoke_ids: &HashSet<String>,
+) -> Result<SummaryV2ArchiveTotals> {
+    let archives = sqlx::query_as::<_, SummaryV2ArchiveManifest>(
+        "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key, file_path
          FROM archive_batches
          WHERE dataset = 'codex_invocations' AND status = 'completed'
            AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
@@ -12837,6 +13973,157 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
     .fetch_all(pool)
     .await
     .context("summary V2 archive totals manifest lookup failed")?;
+    load_summary_v2_archive_totals_from_archives(pool, archives, excluded_invoke_ids, &[]).await
+}
+
+async fn load_summary_v2_archive_proof_identities(
+    pool: &Pool<Sqlite>,
+) -> Result<HashSet<SummaryArchiveSnapshotProofIdentity>> {
+    Ok(sqlx::query_as::<_, SummaryArchiveSnapshotProofIdentity>(
+        "WITH duplicate_paths AS (
+             SELECT file_path FROM archive_batches
+             WHERE dataset = 'codex_invocations' AND status = 'completed'
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+             GROUP BY file_path HAVING COUNT(*) > 1
+         )
+         SELECT proof.archive_batch_id, proof.manifest_sha256
+         FROM summary_archive_snapshot_v2_proof AS proof
+         INNER JOIN archive_batches AS batches
+           ON batches.id = proof.archive_batch_id
+          AND batches.sha256 = proof.manifest_sha256
+         WHERE NOT EXISTS (
+             SELECT 1 FROM duplicate_paths
+             WHERE duplicate_paths.file_path = batches.file_path
+         )",
+    )
+    .fetch_all(pool)
+    .await
+    .context("summary V2 archive proof identity lookup failed")?
+    .into_iter()
+    .collect())
+}
+
+async fn load_summary_v2_archive_proof_identities_in_range(
+    pool: &Pool<Sqlite>,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<HashSet<SummaryArchiveSnapshotProofIdentity>> {
+    Ok(sqlx::query_as::<_, SummaryArchiveSnapshotProofIdentity>(
+        "WITH duplicate_paths AS ( \
+             SELECT file_path FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             GROUP BY file_path HAVING COUNT(*) > 1 \
+         ) \
+         SELECT proof.archive_batch_id, proof.manifest_sha256 \
+         FROM summary_archive_snapshot_v2_proof AS proof \
+         INNER JOIN archive_batches AS batches \
+           ON batches.id = proof.archive_batch_id \
+          AND batches.sha256 = proof.manifest_sha256 \
+         WHERE batches.coverage_end_epoch IS NOT NULL \
+           AND batches.coverage_end_epoch > ?1 \
+           AND batches.coverage_start_epoch IS NOT NULL \
+           AND batches.coverage_start_epoch < ?2 \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM duplicate_paths \
+               WHERE duplicate_paths.file_path = batches.file_path \
+           )",
+    )
+    .bind(start.timestamp())
+    .bind(end.timestamp())
+    .fetch_all(pool)
+    .await
+    .context("summary V2 recent proof identity lookup failed")?
+    .into_iter()
+    .collect())
+}
+
+async fn load_summary_v2_archive_totals_for_proof_identities(
+    pool: &Pool<Sqlite>,
+    proof_identities: &HashSet<SummaryArchiveSnapshotProofIdentity>,
+    excluded_invoke_ids: &HashSet<String>,
+) -> Result<SummaryV2ArchiveTotals> {
+    load_summary_v2_archive_totals_for_proof_identities_with_boundaries(
+        pool,
+        proof_identities,
+        excluded_invoke_ids,
+        &[],
+    )
+    .await
+}
+
+async fn load_summary_v2_archive_totals_for_proof_identities_with_boundaries(
+    pool: &Pool<Sqlite>,
+    proof_identities: &HashSet<SummaryArchiveSnapshotProofIdentity>,
+    excluded_invoke_ids: &HashSet<String>,
+    boundary_ranges: &[ExactUtcRange],
+) -> Result<SummaryV2ArchiveTotals> {
+    let mut archives = Vec::with_capacity(proof_identities.len());
+    for (archive_batch_id, manifest_sha256) in proof_identities {
+        if let Some(archive) = sqlx::query_as::<_, SummaryV2ArchiveManifest>(
+            "SELECT id, sha256, historical_rollups_materialized_at, coverage_start_at, coverage_end_at, month_key, file_path \
+             FROM archive_batches \
+             WHERE id = ?1 AND sha256 = ?2 AND dataset = 'codex_invocations' AND status = 'completed' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+        )
+        .bind(archive_batch_id)
+        .bind(manifest_sha256)
+        .fetch_optional(pool)
+        .await
+        .context("summary V2 incremental archive manifest lookup failed")?
+        {
+            archives.push(archive);
+        }
+    }
+    load_summary_v2_archive_totals_from_archives(
+        pool,
+        archives,
+        excluded_invoke_ids,
+        boundary_ranges,
+    )
+    .await
+}
+
+async fn load_summary_materialized_archive_coverage(
+    pool: &Pool<Sqlite>,
+) -> Result<(HashSet<i64>, HashSet<String>)> {
+    let manifests = sqlx::query_as::<_, (Option<String>, Option<String>, Option<String>)>(
+        "SELECT coverage_start_at, coverage_end_at, month_key
+         FROM archive_batches
+         WHERE dataset = 'codex_invocations'
+           AND status = 'completed'
+           AND historical_rollups_materialized_at IS NOT NULL
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'",
+    )
+    .fetch_all(pool)
+    .await
+    .context("summary materialized archive coverage lookup failed")?;
+    let mut buckets = HashSet::new();
+    let mut months = HashSet::new();
+    for (coverage_start, coverage_end, month_key) in manifests {
+        if let (Some(start), Some(end)) = (
+            coverage_start.as_deref().and_then(parse_to_utc_datetime),
+            coverage_end.as_deref().and_then(parse_to_utc_datetime),
+        ) {
+            let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+            let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+            while bucket <= end_bucket && buckets.len() < 4096 {
+                buckets.insert(bucket);
+                bucket = bucket.saturating_add(3_600);
+            }
+        } else if let Some(month_key) = month_key {
+            months.insert(month_key);
+        }
+    }
+    Ok((buckets, months))
+}
+
+async fn load_summary_v2_archive_totals_from_archives(
+    pool: &Pool<Sqlite>,
+    archives: Vec<SummaryV2ArchiveManifest>,
+    excluded_invoke_ids: &HashSet<String>,
+    boundary_ranges: &[ExactUtcRange],
+) -> Result<SummaryV2ArchiveTotals> {
     let mut totals = SummaryV2ArchiveTotals::default();
     for (
         archive_batch_id,
@@ -12845,49 +14132,178 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
         coverage_start,
         coverage_end,
         month_key,
+        file_path,
     ) in archives
     {
+        // A materialized compact rollup remains an aggregate baseline even when the archive file
+        // is no longer readable or its V2 proof is absent. Record that baseline before the V2
+        // authority gate so an unmaterialized sibling in the same hour is added to, rather than
+        // replacing, the already-proven compact contribution. The V2 proof gate below still
+        // controls archive boundary rows and normalized Snapshot authority.
         if materialized_at.is_some() {
             if let (Some(start), Some(end)) = (
-                coverage_start
-                    .as_deref()
-                    .and_then(parse_snapshot_coverage_at),
-                coverage_end.as_deref().and_then(parse_snapshot_coverage_at),
+                coverage_start.as_deref().and_then(parse_to_utc_datetime),
+                coverage_end.as_deref().and_then(parse_to_utc_datetime),
             ) {
                 let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
                 let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
-                let mut count = 0usize;
-                while bucket <= end_bucket && count < 4096 {
+                let mut bucket_count = 0usize;
+                while bucket <= end_bucket && bucket_count < 4096 {
+                    totals.global_coverage_buckets.insert(bucket);
+                    totals.account_coverage_buckets.insert(bucket);
                     totals.materialized_buckets.insert(bucket);
                     bucket = bucket.saturating_add(3_600);
-                    count += 1;
+                    bucket_count += 1;
                 }
-            } else if let Some(month_key) = month_key {
+            } else if let Some(month_key) = month_key.as_deref() {
                 totals
                     .materialized_months_without_coverage
-                    .insert(month_key);
+                    .insert(month_key.to_string());
             }
-            continue;
         }
+        // A final V2 proof is authority for the archive's exact boundary coverage even when
+        // compact rollups already provide its aggregate totals. Check it before the materialized
+        // fast path: otherwise a verified Snapshot could never remove the old boundary
+        // unavailable proof, leaving a selection permanently unavailable after recovery.
         if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
+            continue;
+        }
+        let archive_boundary_intersects = match (
+            coverage_start.as_deref().and_then(parse_to_utc_datetime),
+            coverage_end.as_deref().and_then(parse_to_utc_datetime),
+        ) {
+            (Some(start), Some(end)) => boundary_ranges
+                .iter()
+                .any(|range| range.start < end && start < range.end),
+            _ => false,
+        };
+        if let (Some(start), Some(end)) = (
+            coverage_start.as_deref().and_then(parse_to_utc_datetime),
+            coverage_end.as_deref().and_then(parse_to_utc_datetime),
+        ) {
+            let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+            let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+            let mut bucket_count = 0usize;
+            while bucket <= end_bucket && bucket_count < 4096 {
+                totals.global_coverage_buckets.insert(bucket);
+                totals.account_coverage_buckets.insert(bucket);
+                bucket = bucket.saturating_add(3_600);
+                bucket_count += 1;
+            }
+        }
+        if materialized_at.is_some() {
+            // A materialized archive with all three replay markers already has an exact
+            // rollup-backed contribution. Its V2 pages are not needed merely because the
+            // bounded rolling projection retains possible boundary hours; loading every row
+            // here would turn a large archive into a resident-boundary overflow. Only consult
+            // V2 rows when replay proof is incomplete and the boundary actually needs repair.
+            let replay = load_summary_projection_archive_replay_coverage(
+                pool,
+                std::slice::from_ref(&file_path),
+            )
+            .await?
+            .remove(&file_path)
+            .unwrap_or_default();
+            if !replay.usage_breakdown {
+                if let (Some(start), Some(end)) = (
+                    coverage_start.as_deref().and_then(parse_to_utc_datetime),
+                    coverage_end.as_deref().and_then(parse_to_utc_datetime),
+                ) {
+                    let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+                    let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+                    while bucket <= end_bucket && totals.global_usage_gap_buckets.len() < 4096 {
+                        totals.global_usage_gap_buckets.insert(bucket);
+                        totals.account_usage_gap_buckets.insert(bucket);
+                        bucket = bucket.saturating_add(3_600);
+                    }
+                } else if let Some(month_key) = month_key.as_deref()
+                    && let Ok(buckets) = crate::stats::archive_bucket_start_epochs_from_bounds(
+                        Some(month_key),
+                        None,
+                        None,
+                    )
+                {
+                    for bucket in buckets.into_iter().take(4096) {
+                        totals.global_usage_gap_buckets.insert(bucket);
+                        totals.account_usage_gap_buckets.insert(bucket);
+                    }
+                }
+            }
+            if archive_boundary_intersects
+                && !(replay.overall && replay.account_stats && replay.usage_breakdown)
+            {
+                let mut pages = sqlx::query_scalar::<_, Vec<u8>>(
+                    "SELECT payload FROM summary_archive_snapshot
+                     WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
+                )
+                .bind(archive_batch_id)
+                .bind(&manifest_sha256)
+                .fetch(pool);
+                while let Some(payload) = pages.try_next().await? {
+                    for record in decode_summary_archive_snapshot_v2_payload(&payload)? {
+                        if excluded_invoke_ids.contains(&record.invoke_id) {
+                            continue;
+                        }
+                        let preview = summary_snapshot_v2_record_preview(record);
+                        let Some(occurred_at) = parse_to_utc_datetime(&preview.occurred_at) else {
+                            continue;
+                        };
+                        if !boundary_ranges
+                            .iter()
+                            .any(|range| range.start <= occurred_at && occurred_at < range.end)
+                        {
+                            continue;
+                        }
+                        if totals.boundary_records.len() >= summary_projection_exact_record_limit()
+                        {
+                            return Err(anyhow!(
+                                "summary V2 boundary record budget exceeded while publishing coverage overlay"
+                            ));
+                        }
+                        totals.boundary_records.push(SummaryProjectionRecord {
+                            occurred_at,
+                            global_rollup_covered: false,
+                            account_rollup_covered: false,
+                            usage_global_rollup_covered: false,
+                            usage_account_rollup_covered: false,
+                            is_persisted_live_record: false,
+                            is_archive_record: true,
+                            archive_has_materialized_rollups: true,
+                            account_archive_totals_fallback_included: false,
+                            row: preview,
+                        });
+                    }
+                }
+            }
             continue;
         }
         // Materialized archives are already represented by the durable rollup checkpoint. V2
         // pages are only an aggregate source for an unmaterialized archive whose stale or
         // missing replay markers would otherwise leave the checkpoint without exact totals.
         // Adding a materialized page set here would double count its rollup totals.
-        let pages = sqlx::query_scalar::<_, Vec<u8>>(
+        let mut pages = sqlx::query_scalar::<_, Vec<u8>>(
             "SELECT payload FROM summary_archive_snapshot
              WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 ORDER BY page_index ASC",
         )
         .bind(archive_batch_id)
         .bind(&manifest_sha256)
-        .fetch_all(pool)
-        .await?;
-        for payload in pages {
+        .fetch(pool);
+        while let Some(payload) = pages.try_next().await? {
             let records = decode_summary_archive_snapshot_v2_payload(&payload)?;
+            for record in &records {
+                let Some(occurred_at) = parse_to_utc_datetime(&record.occurred_at) else {
+                    continue;
+                };
+                let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+                if totals.global_coverage_buckets.len() < 4096 {
+                    totals.global_coverage_buckets.insert(bucket);
+                }
+                if totals.account_coverage_buckets.len() < 4096 {
+                    totals.account_coverage_buckets.insert(bucket);
+                }
+            }
             let mut identity_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
                 "SELECT id, invoke_id FROM codex_invocations WHERE id IN (",
             );
@@ -12912,13 +14328,6 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                 .into_iter()
                 .collect::<HashSet<_>>();
             for record in records {
-                if live_identity.contains(&(record.id, record.invoke_id.clone()))
-                    || live_identity
-                        .iter()
-                        .any(|(_, invoke_id)| invoke_id == &record.invoke_id)
-                {
-                    continue;
-                }
                 let preview = summary_snapshot_v2_record_preview(record);
                 let summary_record = SummaryProjectionRecord {
                     occurred_at: parse_to_utc_datetime(&preview.occurred_at)
@@ -12933,6 +14342,30 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                     account_archive_totals_fallback_included: false,
                     row: preview.clone(),
                 };
+                if boundary_ranges.iter().any(|range| {
+                    range.start <= summary_record.occurred_at
+                        && summary_record.occurred_at < range.end
+                }) {
+                    if totals.boundary_records.len() >= summary_projection_exact_record_limit() {
+                        return Err(anyhow!(
+                            "summary V2 boundary record budget exceeded while publishing coverage overlay"
+                        ));
+                    }
+                    totals.boundary_records.push(summary_record.clone());
+                }
+                // Unmaterialized V2 pages are the authoritative aggregate source for their
+                // archive. The Bootstrap projection may already retain the same raw row for
+                // boundary filtering, but that row is intentionally not counted by the
+                // all-time exact-record reducer. Only canonical live identities must be
+                // excluded here; filtering every resident projection identity would drop the
+                // archive contribution entirely.
+                if live_identity.contains(&(preview.id, preview.invoke_id.clone()))
+                    || live_identity
+                        .iter()
+                        .any(|(_, invoke_id)| invoke_id == &preview.invoke_id)
+                {
+                    continue;
+                }
                 let record_totals = summary_projection_all_time_record_totals(&summary_record);
                 let bucket = align_bucket_epoch(summary_record.occurred_at.timestamp(), 3_600, 0);
                 let archive_month = preview.occurred_at.get(..7).unwrap_or_default();
@@ -12951,6 +14384,12 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                     .entry(bucket)
                     .or_default()
                     .add_row(&preview);
+                if record_totals.failure_count > 0 {
+                    *totals
+                        .global_non_success_tokens_by_bucket
+                        .entry(bucket)
+                        .or_default() += preview.total_tokens.max(0);
+                }
                 if let Some(account_id) = preview.upstream_account_id.filter(|id| *id > 0) {
                     let entry = totals.accounts.entry(account_id).or_default();
                     *entry = entry.add(record_totals);
@@ -12969,12 +14408,686 @@ async fn load_summary_v2_archive_totals(pool: &Pool<Sqlite>) -> Result<SummaryV2
                         .entry((bucket, account_id))
                         .or_default()
                         .add_row(&preview);
+                    if record_totals.failure_count > 0 {
+                        *totals
+                            .account_non_success_tokens_by_bucket
+                            .entry((bucket, account_id))
+                            .or_default() += preview.total_tokens.max(0);
+                    }
                 }
                 totals.global_usage.add_row(&preview);
             }
         }
     }
     Ok(totals)
+}
+
+async fn summary_v2_exact_coverage_buckets(
+    pool: &Pool<Sqlite>,
+    candidate_buckets: &HashSet<i64>,
+) -> Result<HashSet<i64>> {
+    let Some(first_bucket) = candidate_buckets.iter().min().copied() else {
+        return Ok(HashSet::new());
+    };
+    let Some(last_bucket) = candidate_buckets.iter().max().copied() else {
+        return Ok(HashSet::new());
+    };
+    let Some(first_start) = Utc.timestamp_opt(first_bucket, 0).single() else {
+        return Ok(HashSet::new());
+    };
+    let Some(last_end) = Utc
+        .timestamp_opt(last_bucket.saturating_add(3_600), 0)
+        .single()
+    else {
+        return Ok(HashSet::new());
+    };
+
+    // Do this as one range lookup, rather than one EXISTS query per candidate hour. A long
+    // recovery can legitimately hold the 4096-bucket proof budget; per-bucket queries made an
+    // otherwise bounded overlay publication dominate V2 recovery throughput.
+    let unresolved_ranges = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "WITH duplicate_paths AS ( \
+             SELECT file_path FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             GROUP BY file_path HAVING COUNT(*) > 1 \
+         ) \
+         SELECT batches.month_key, batches.coverage_start_at, batches.coverage_end_at \
+         FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND batches.historical_rollups_materialized_at IS NULL \
+           AND ( \
+               batches.coverage_start_at IS NULL \
+               OR batches.coverage_end_at IS NULL \
+               OR (batches.coverage_end_at >= ?1 AND batches.coverage_start_at < ?2) \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+               WHERE proof.archive_batch_id = batches.id \
+                 AND proof.manifest_sha256 = batches.sha256 \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM duplicate_paths \
+               WHERE duplicate_paths.file_path = batches.file_path \
+           )",
+    )
+    .bind(crate::stats::db_occurred_at_lower_bound(first_start))
+    .bind(crate::stats::db_occurred_at_lower_bound(last_end))
+    .fetch_all(pool)
+    .await
+    .context("summary V2 exact coverage obligation range lookup failed")?;
+
+    let mut exact_buckets = candidate_buckets.iter().copied().collect::<BTreeSet<_>>();
+    for (month_key, coverage_start, coverage_end) in unresolved_ranges {
+        let (Some(coverage_start), Some(coverage_end)) = (coverage_start, coverage_end) else {
+            let Ok(month_buckets) =
+                crate::stats::archive_bucket_start_epochs_from_bounds(Some(&month_key), None, None)
+            else {
+                exact_buckets.clear();
+                break;
+            };
+            let overlapping = month_buckets
+                .into_iter()
+                .filter(|bucket| exact_buckets.contains(bucket))
+                .collect::<Vec<_>>();
+            for bucket in overlapping {
+                exact_buckets.remove(&bucket);
+            }
+            continue;
+        };
+        let Some(start) = parse_to_utc_datetime(&coverage_start) else {
+            exact_buckets.clear();
+            break;
+        };
+        let Some(end) = parse_to_utc_datetime(&coverage_end) else {
+            exact_buckets.clear();
+            break;
+        };
+        let first_overlapping_bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+        let last_overlapping_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+        let overlapping = exact_buckets
+            .range(first_overlapping_bucket..=last_overlapping_bucket)
+            .copied()
+            .collect::<Vec<_>>();
+        for bucket in overlapping {
+            exact_buckets.remove(&bucket);
+        }
+    }
+    Ok(exact_buckets.into_iter().collect())
+}
+
+fn summary_projection_remove_covered_ranges(
+    ranges: &mut Vec<ExactUtcRange>,
+    covered_buckets: &HashSet<i64>,
+) {
+    if covered_buckets.is_empty() || ranges.is_empty() {
+        return;
+    }
+    let mut covered = covered_buckets
+        .iter()
+        .filter_map(|bucket| {
+            let start = Utc.timestamp_opt(*bucket, 0).single()?;
+            Some(ExactUtcRange {
+                start,
+                end: start + ChronoDuration::hours(1),
+            })
+        })
+        .collect::<Vec<_>>();
+    covered.sort_by_key(|range| range.start);
+    let mut remaining = Vec::new();
+    for range in ranges.drain(..) {
+        let mut fragments = vec![range];
+        for bucket_range in &covered {
+            let mut next = Vec::new();
+            for fragment in fragments {
+                if fragment.end <= bucket_range.start || bucket_range.end <= fragment.start {
+                    next.push(fragment);
+                    continue;
+                }
+                if fragment.start < bucket_range.start {
+                    next.push(ExactUtcRange {
+                        start: fragment.start,
+                        end: bucket_range.start.min(fragment.end),
+                    });
+                }
+                if bucket_range.end < fragment.end {
+                    next.push(ExactUtcRange {
+                        start: bucket_range.end.max(fragment.start),
+                        end: fragment.end,
+                    });
+                }
+            }
+            fragments = next;
+            if fragments.is_empty() {
+                break;
+            }
+        }
+        remaining.extend(
+            fragments
+                .into_iter()
+                .filter(|range| range.start < range.end),
+        );
+    }
+    *ranges = summary_projection_merge_exact_ranges(remaining);
+}
+
+/// Publish verified V2 archive contributions without invoking the generic RollingDelta builder.
+/// The live tail cursor is a CAS fence: if a terminal commits while the proof is being reduced,
+/// the overlay is discarded and the next maintenance pass retries against the newer projection.
+async fn publish_summary_coverage_overlay(
+    state: &AppState,
+    force_full_coverage_reduction: bool,
+) -> Result<bool> {
+    // Rolling refreshes and historical proof pages publish through the same immutable hub. A
+    // bounded CAS retry lets a proof page rebase on a concurrent rolling swap instead of
+    // silently leaving a newly verified 30-day range behind the previous unavailable overlay.
+    for _attempt in 0..4 {
+        if publish_summary_coverage_overlay_once(state, force_full_coverage_reduction).await? {
+            return Ok(true);
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(false)
+}
+
+fn summary_coverage_overlay_requires_full_reduction(
+    force_full_coverage_reduction: bool,
+    has_previous_overlay: bool,
+    has_revoked_proof: bool,
+) -> bool {
+    // Once an overlay exists, a completed recovery turn can add only the newly verified
+    // manifests. Re-scanning every retained V2 page on each coverage-fence revision defeats the
+    // bounded supervisor. A full reduction is required only for the first publication or after
+    // proof revocation; the final no-pending pass refreshes gap metadata separately.
+    force_full_coverage_reduction || !has_previous_overlay || has_revoked_proof
+}
+
+async fn publish_summary_coverage_overlay_once(
+    state: &AppState,
+    force_full_coverage_reduction: bool,
+) -> Result<bool> {
+    let Some(projection) = state.subscription_hub.summary_projection().await else {
+        return Ok(false);
+    };
+    let durable_fence = load_summary_projection_generation_fence(state).await?;
+    if !projection
+        .generation_fence
+        .live_tail_cursor()
+        .terminal_sources_match(durable_fence.live_tail_cursor())
+    {
+        debug!(
+            stage = "coverage_overlay_stale_tail_fence",
+            "discarding verified coverage overlay because the live tail advanced"
+        );
+        return Ok(false);
+    }
+    let existing_invoke_ids = projection
+        .records
+        .iter()
+        .chain(projection.current_records.iter())
+        .map(|record| record.row.invoke_id.clone())
+        .collect::<HashSet<_>>();
+    let proof_identities = load_summary_v2_archive_proof_identities(&state.pool).await?;
+    let now = Utc::now();
+    let recent_proof_identities = load_summary_v2_archive_proof_identities_in_range(
+        &state.pool,
+        now - ChronoDuration::days(30),
+        now,
+    )
+    .await?;
+    let mut next = Arc::unwrap_or_clone(projection);
+    let previous_overlay = next.coverage_overlay.clone();
+    let previous_proof_identities = previous_overlay
+        .as_ref()
+        .map(|overlay| overlay.proof_identities.clone())
+        .unwrap_or_default();
+    if previous_overlay.as_ref().is_some_and(|overlay| {
+        overlay.coverage_fence == durable_fence.coverage_fence()
+            && overlay
+                .live_tail_cursor
+                .terminal_sources_match(durable_fence.live_tail_cursor())
+            && overlay.proof_identities == proof_identities
+    }) {
+        return Ok(false);
+    }
+    let revoked_proof_identities = previous_proof_identities
+        .difference(&proof_identities)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let added_proof_identities = proof_identities
+        .difference(&previous_proof_identities)
+        .cloned()
+        .collect::<HashSet<_>>();
+    // A normal proof publication is append-only. Reduce only the newly proven manifests so
+    // that a recovery page is bounded by its own V2 payload rather than every retained archive.
+    // Revocation is rare and must reconstruct from all remaining proofs to avoid retaining a
+    // contribution which is no longer authoritative.
+    // During a long recovery a bucket can be temporarily filtered out because an overlapping
+    // manifest is still unproven. Once the durable queue is empty, rebuild coverage from every
+    // final proof exactly once so those previously filtered buckets can become available.
+    let full_reduction = summary_coverage_overlay_requires_full_reduction(
+        force_full_coverage_reduction,
+        previous_overlay.is_some(),
+        !revoked_proof_identities.is_empty(),
+    );
+    if full_reduction || force_full_coverage_reduction {
+        // A full proof pass is the point at which stale Bootstrap gap ranges can be discarded.
+        // Rebuild the durable unproven set from the current manifest/proof state instead of
+        // subtracting hourly buckets from the old range vector.  The latter leaves an archive
+        // interval unavailable forever when its V2 proof was committed after the initial
+        // projection materialization.
+        let coverage_end = Utc::now() + ChronoDuration::seconds(1);
+        let coverage_horizon = summary_projection_exact_horizon(state.config.invocation_max_days);
+        let coverage_start = coverage_end - coverage_horizon;
+        if let Some(high_watermark_id) =
+            summary_projection_completed_manifest_high_watermark(&state.pool).await?
+        {
+            let unproven = summary_projection_overflowed_boundary_unproven_ranges_scoped(
+                &state.pool,
+                ExactUtcRange {
+                    start: coverage_start,
+                    end: coverage_end,
+                },
+                high_watermark_id,
+                None,
+                None,
+            )
+            .await?;
+            next.unavailable_unmaterialized_archive_ranges = unproven.global;
+            next.unavailable_unmaterialized_archive_account_ranges = unproven.account;
+        } else {
+            next.unavailable_unmaterialized_archive_ranges.clear();
+        }
+        // Boundary ranges are derived from the previous resident projection. Rebuild them from
+        // the current proof set instead of carrying stale ranges into the final reduction: once
+        // all obligations are resolved, retaining those ranges would reload every archived row
+        // and can exceed the bounded resident boundary-record budget.
+        next.unavailable_boundary_archive_ranges.clear();
+        next.unavailable_boundary_archive_account_ranges.clear();
+    }
+    // Boundary records are only needed to repair the global contribution being reduced here.
+    // Account-only gaps are already fail-closed through the account availability overlay; adding
+    // their ranges would force the reducer to inflate an entire large materialized archive just
+    // to preserve an account response that cannot be served as exact anyway.
+    let mut boundary_ranges = next.unavailable_boundary_archive_ranges.clone();
+    for range in &next.unavailable_unmaterialized_archive_ranges {
+        boundary_ranges.extend(summary_projection_partial_rollup_ranges(
+            range.start,
+            range.end,
+        ));
+    }
+    boundary_ranges = summary_projection_merge_exact_ranges(boundary_ranges);
+    let totals = if full_reduction {
+        load_summary_v2_archive_totals_for_proof_identities_with_boundaries(
+            &state.pool,
+            &proof_identities,
+            &existing_invoke_ids,
+            &boundary_ranges,
+        )
+        .await?
+    } else {
+        load_summary_v2_archive_totals_for_proof_identities_with_boundaries(
+            &state.pool,
+            &added_proof_identities,
+            &existing_invoke_ids,
+            &boundary_ranges,
+        )
+        .await?
+    };
+    if !totals.global_usage_gap_buckets.is_empty() {
+        let gap_ranges = summary_projection_unavailable_bucket_ranges(
+            totals.global_usage_gap_buckets.iter().copied().collect(),
+        );
+        next.unavailable_unmaterialized_archive_ranges
+            .extend(gap_ranges.iter().copied());
+        next.unavailable_boundary_archive_ranges
+            .extend(gap_ranges.iter().copied());
+        next.all_time_by_account.remove(&None);
+        next.freshness.global_all_time_eligible = false;
+        next.all_time_terminal_coverage_complete = false;
+        next.all_time_terminal_sequence_watermark = 0;
+        next.all_time_persisted_live_terminal_invoke_ids.clear();
+    }
+    if !totals.account_usage_gap_buckets.is_empty() {
+        let gap_ranges = summary_projection_unavailable_bucket_ranges(
+            totals.account_usage_gap_buckets.iter().copied().collect(),
+        );
+        next.unavailable_unmaterialized_archive_account_ranges
+            .extend(gap_ranges.iter().copied());
+        next.unavailable_boundary_archive_account_ranges
+            .extend(gap_ranges.iter().copied());
+        next.freshness.account_all_time_eligible.clear();
+        next.all_time_by_account.retain(|scope, _| scope.is_none());
+    }
+    if totals.global_coverage_buckets.is_empty()
+        && totals.account_coverage_buckets.is_empty()
+        && previous_overlay.is_none()
+    {
+        return Ok(false);
+    }
+    let previous_global_buckets = previous_overlay
+        .as_ref()
+        .map(|overlay| overlay.global_coverage_buckets.clone())
+        .unwrap_or_default();
+    let previous_account_buckets = previous_overlay
+        .as_ref()
+        .map(|overlay| overlay.account_coverage_buckets.clone())
+        .unwrap_or_default();
+    let mut global_buckets = if full_reduction {
+        totals.global_coverage_buckets.clone()
+    } else {
+        previous_global_buckets.clone()
+    };
+    let mut account_buckets = if full_reduction {
+        totals.account_coverage_buckets.clone()
+    } else {
+        previous_account_buckets.clone()
+    };
+    if !full_reduction {
+        global_buckets.extend(totals.global_coverage_buckets.iter().copied());
+        account_buckets.extend(totals.account_coverage_buckets.iter().copied());
+    }
+    let mut materialized_coverage_buckets = if full_reduction {
+        totals.materialized_buckets.clone()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.materialized_coverage_buckets.clone())
+            .unwrap_or_default()
+    };
+    if !full_reduction {
+        materialized_coverage_buckets.extend(totals.materialized_buckets.iter().copied());
+    }
+    let mut materialized_coverage_months = if full_reduction {
+        totals.materialized_months_without_coverage.clone()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.materialized_coverage_months.clone())
+            .unwrap_or_default()
+    };
+    if !full_reduction {
+        materialized_coverage_months
+            .extend(totals.materialized_months_without_coverage.iter().cloned());
+    }
+    // A V2 page is an authority for its own rows, but it cannot make a whole response bucket
+    // exact while another unmaterialized manifest still owes that bucket. Keep those normalized
+    // contributions resident for a later atomic publication, yet leave the bucket unavailable
+    // until every overlapping obligation has a final proof.
+    global_buckets = summary_v2_exact_coverage_buckets(&state.pool, &global_buckets).await?;
+    account_buckets = summary_v2_exact_coverage_buckets(&state.pool, &account_buckets).await?;
+    let global_bucket_count = global_buckets.len();
+    let account_bucket_count = account_buckets.len();
+    let revoked_global_buckets = previous_global_buckets
+        .difference(&global_buckets)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let revoked_account_buckets = previous_account_buckets
+        .difference(&account_buckets)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !revoked_global_buckets.is_empty() {
+        let revoked_global_ranges =
+            summary_projection_unavailable_bucket_ranges(revoked_global_buckets.clone());
+        next.unavailable_unmaterialized_archive_ranges
+            .extend(revoked_global_ranges.iter().copied());
+        next.unavailable_boundary_archive_ranges
+            .extend(revoked_global_ranges.iter().copied());
+        next.unavailable_unmaterialized_archive_current_ranges
+            .extend(revoked_global_ranges);
+    }
+    if !revoked_account_buckets.is_empty() {
+        let revoked_account_ranges =
+            summary_projection_unavailable_bucket_ranges(revoked_account_buckets.clone());
+        next.unavailable_unmaterialized_archive_account_ranges
+            .extend(revoked_account_ranges.iter().copied());
+        next.unavailable_boundary_archive_account_ranges
+            .extend(revoked_account_ranges.iter().copied());
+        next.unavailable_unmaterialized_archive_account_current_ranges
+            .extend(revoked_account_ranges);
+    }
+    if global_buckets.is_empty() && account_buckets.is_empty() && next.coverage_overlay.is_some() {
+        let revoked_global_count = previous_global_buckets.len();
+        let revoked_account_count = previous_account_buckets.len();
+        next.coverage_overlay = None;
+        next.generation_fence = durable_fence;
+        let latest_fence = load_summary_projection_generation_fence(state).await?;
+        let latest_projection = state.subscription_hub.summary_projection().await;
+        if !latest_fence
+            .live_tail_cursor()
+            .terminal_sources_match(durable_fence.live_tail_cursor())
+            || !latest_fence.coverage_sources_match(durable_fence)
+            || latest_projection
+                .as_ref()
+                .is_none_or(|current| current.revision != next.revision)
+        {
+            return Ok(false);
+        }
+        let expected_revision = next.revision;
+        if !state
+            .subscription_hub
+            .store_summary_projection_if_revision(next, expected_revision)
+            .await
+        {
+            return Ok(false);
+        }
+        info!(
+            stage = "coverage_overlay_revocation",
+            revoked_bucket_count = revoked_global_count + revoked_account_count,
+            "summary V2 coverage overlay revoked after proof invalidation"
+        );
+        return Ok(true);
+    }
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_boundary_archive_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_current_ranges,
+        &global_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_account_ranges,
+        &account_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_boundary_archive_account_ranges,
+        &account_buckets,
+    );
+    summary_projection_remove_covered_ranges(
+        &mut next.unavailable_unmaterialized_archive_account_current_ranges,
+        &account_buckets,
+    );
+    next.unavailable_unmaterialized_archive_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_unmaterialized_archive_ranges);
+    next.unavailable_boundary_archive_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_boundary_archive_ranges);
+    next.unavailable_unmaterialized_archive_current_ranges = summary_projection_merge_exact_ranges(
+        next.unavailable_unmaterialized_archive_current_ranges,
+    );
+    next.unavailable_unmaterialized_archive_account_ranges = summary_projection_merge_exact_ranges(
+        next.unavailable_unmaterialized_archive_account_ranges,
+    );
+    next.unavailable_boundary_archive_account_ranges =
+        summary_projection_merge_exact_ranges(next.unavailable_boundary_archive_account_ranges);
+    next.unavailable_unmaterialized_archive_account_current_ranges =
+        summary_projection_merge_exact_ranges(
+            next.unavailable_unmaterialized_archive_account_current_ranges,
+        );
+    let mut global_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.global_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut account_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.account_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut global_usage_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.global_usage_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut account_usage_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.account_usage_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut global_non_success_tokens_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.global_non_success_tokens_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut account_non_success_tokens_by_bucket = if full_reduction {
+        HashMap::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.account_non_success_tokens_by_bucket.clone())
+            .unwrap_or_default()
+    };
+    let mut boundary_records = if full_reduction {
+        Vec::new()
+    } else {
+        previous_overlay
+            .as_ref()
+            .map(|overlay| overlay.boundary_records.clone())
+            .unwrap_or_default()
+    };
+    let mut boundary_record_keys = boundary_records
+        .iter()
+        .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
+        .collect::<HashSet<_>>();
+    for record in totals.boundary_records {
+        let key = format!("{}\0{}", record.row.invoke_id, record.row.occurred_at);
+        if boundary_record_keys.insert(key) {
+            boundary_records.push(record);
+        }
+    }
+    for (bucket, contribution) in &totals.global_by_bucket {
+        let entry = global_by_bucket.entry(*bucket).or_default();
+        *entry = entry.add(*contribution);
+    }
+    for (key, contribution) in &totals.account_by_bucket {
+        let entry = account_by_bucket.entry(*key).or_default();
+        *entry = entry.add(*contribution);
+    }
+    for (bucket, contribution) in &totals.global_usage_by_bucket {
+        let mut merged = UsageBreakdownAccumulator::default();
+        if let Some(existing) = global_usage_by_bucket.get(bucket) {
+            merged.merge_response(existing);
+        }
+        merged.merge_response(&contribution.clone().into_response());
+        global_usage_by_bucket.insert(*bucket, merged.into_response());
+    }
+    for (key, contribution) in &totals.account_usage_by_bucket {
+        let mut merged = UsageBreakdownAccumulator::default();
+        if let Some(existing) = account_usage_by_bucket.get(key) {
+            merged.merge_response(existing);
+        }
+        merged.merge_response(&contribution.clone().into_response());
+        account_usage_by_bucket.insert(*key, merged.into_response());
+    }
+    for (bucket, contribution) in &totals.global_non_success_tokens_by_bucket {
+        *global_non_success_tokens_by_bucket
+            .entry(*bucket)
+            .or_default() += contribution;
+    }
+    for (key, contribution) in &totals.account_non_success_tokens_by_bucket {
+        *account_non_success_tokens_by_bucket
+            .entry(*key)
+            .or_default() += contribution;
+    }
+    let boundary_record_count = boundary_records.len();
+    let overlay = SummaryCoverageOverlay {
+        coverage_fence: durable_fence.coverage_fence(),
+        live_tail_cursor: durable_fence.live_tail_cursor(),
+        proof_identities,
+        recent_proof_identities,
+        global_coverage_buckets: global_buckets,
+        account_coverage_buckets: account_buckets,
+        materialized_coverage_buckets,
+        materialized_coverage_months,
+        global_by_bucket,
+        account_by_bucket,
+        global_usage_by_bucket,
+        account_usage_by_bucket,
+        global_non_success_tokens_by_bucket,
+        account_non_success_tokens_by_bucket,
+        boundary_records,
+    };
+    let latest_fence = load_summary_projection_generation_fence(state).await?;
+    let latest_projection = state.subscription_hub.summary_projection().await;
+    if !latest_fence
+        .live_tail_cursor()
+        .terminal_sources_match(durable_fence.live_tail_cursor())
+        || !latest_fence.coverage_sources_match(durable_fence)
+        || latest_projection
+            .as_ref()
+            .is_none_or(|current| current.revision != next.revision)
+    {
+        debug!(
+            stage = "coverage_overlay_stale_publication",
+            "discarding coverage overlay because the base projection or live tail advanced"
+        );
+        return Ok(false);
+    }
+    next.coverage_overlay = Some(overlay);
+    next.generation_fence = durable_fence;
+    let expected_revision = next.revision;
+    let unavailable_unmaterialized_range_count =
+        next.unavailable_unmaterialized_archive_ranges.len();
+    let unavailable_boundary_range_count = next.unavailable_boundary_archive_ranges.len();
+    let thirty_day_start = Utc::now() - ChronoDuration::days(30);
+    let unavailable_unmaterialized_30d_range_count = next
+        .unavailable_unmaterialized_archive_ranges
+        .iter()
+        .filter(|range| range.start < Utc::now() && thirty_day_start < range.end)
+        .count();
+    if !state
+        .subscription_hub
+        .store_summary_projection_if_revision(next, expected_revision)
+        .await
+    {
+        debug!(
+            stage = "coverage_overlay_stale_revision",
+            "discarding coverage overlay because a concurrent projection publication won the CAS"
+        );
+        return Ok(false);
+    }
+    info!(
+        stage = "coverage_overlay_publication",
+        global_bucket_count,
+        account_bucket_count,
+        boundary_record_count,
+        unavailable_unmaterialized_range_count,
+        unavailable_unmaterialized_30d_range_count,
+        unavailable_boundary_range_count,
+        "summary verified coverage overlay published"
+    );
+    Ok(true)
 }
 
 fn subtract_summary_totals(left: StatsTotals, right: StatsTotals) -> StatsTotals {
@@ -12995,7 +15108,26 @@ async fn publish_summary_all_time_projection_checkpoint(
     if !checkpoint.global_ready() && !checkpoint.account_ready() {
         return Ok(());
     }
-    let generation_fence = checkpoint.generation_fence();
+    let mut generation_fence = checkpoint.generation_fence();
+    // Rollup repair and Snapshot proof commits can advance coverage revisions between the
+    // checkpoint read and finalization. Use the latest immutable coverage fence for the
+    // reduction; the checkpoint's live cursors remain the lower bounds for bounded tail reads.
+    let observed_generation_fence = load_summary_projection_generation_fence(state).await?;
+    // Finalization must reduce against one live watermark snapshot. The checkpoint may have
+    // been created earlier, but publishing its old live fence after a newer terminal would let
+    // the persisted-live set hide a row that was never included in the totals.
+    generation_fence.live_high_watermark_id = observed_generation_fence.live_high_watermark_id;
+    generation_fence.rollup_live_cursor = observed_generation_fence.rollup_live_cursor;
+    generation_fence.account_rollup_live_cursor =
+        observed_generation_fence.account_rollup_live_cursor;
+    generation_fence.durable_terminal_sequence_watermark =
+        observed_generation_fence.durable_terminal_sequence_watermark;
+    generation_fence.completed_manifest_high_watermark_id = observed_generation_fence
+        .completed_manifest_high_watermark_id
+        .or(generation_fence.completed_manifest_high_watermark_id);
+    generation_fence.coverage_revision = observed_generation_fence.coverage_revision;
+    generation_fence.account_coverage_revision =
+        observed_generation_fence.account_coverage_revision;
     let projection = state
         .subscription_hub
         .summary_projection()
@@ -13003,8 +15135,33 @@ async fn publish_summary_all_time_projection_checkpoint(
         .ok_or_else(|| {
             anyhow!("summary all-time checkpoint requires a published rolling projection")
         })?;
+    // An unmaterialized archive with only the global replay marker is not a complete Summary
+    // authority: account and usage dimensions may still be missing. Keep the checkpoint
+    // unpublished while its raw authority is unreadable; a later supervisor pass can retry it
+    // when the source or the remaining replay proofs become available.
+    let archive_scan_paths =
+        load_summary_projection_all_time_archive_scan_paths(&state.pool).await?;
+    if archive_scan_paths.global_unmaterialized_count > 0 {
+        let manifest_sha256 = load_summary_projection_archive_manifest_sha256(
+            &state.pool,
+            &archive_scan_paths.global_unmaterialized,
+        )
+        .await?;
+        if verify_summary_projection_archive_file_paths_sha256(
+            &archive_scan_paths.global_unmaterialized,
+            &manifest_sha256,
+        )?
+        .len()
+            < archive_scan_paths.global_unmaterialized_count
+        {
+            return Ok(());
+        }
+    }
     let mut next = Arc::unwrap_or_clone(projection);
-    let published_at = Instant::now();
+    // Freshness starts when the fully reduced projection is ready to swap, not when a potentially
+    // long-running checkpoint reduction begins. Under SQLite contention the reduction can exceed
+    // the serving freshness budget while still producing a current exact snapshot.
+    let reduction_started_at = Instant::now();
     let mut account_ids = HashSet::new();
 
     let hourly_rollup_usage = if checkpoint.global_ready() || checkpoint.account_ready() {
@@ -13012,7 +15169,33 @@ async fn publish_summary_all_time_projection_checkpoint(
     } else {
         HashMap::new()
     };
-    let snapshot_totals = load_summary_v2_archive_totals(&state.pool).await?;
+    let mut snapshot_totals = if next.coverage_overlay.as_ref().is_some_and(|overlay| {
+        // The overlay contains only verified archive contributions. Live-tail freshness is
+        // fenced separately by the bounded query below, so a newer terminal must not force a
+        // full V2 archive scan merely because the overlay was built at an older live cursor.
+        overlay.coverage_fence == generation_fence.coverage_fence()
+    }) {
+        // The overlay is already the verified, immutable reduction of every V2 proof at this
+        // fence. Reusing it keeps all-time publication bounded after recovery; rescanning every
+        // snapshot page here was the source of the repeated 30-second finalization timeout.
+        next.coverage_overlay
+            .as_ref()
+            .map(summary_v2_archive_totals_from_coverage_overlay)
+            .unwrap_or_default()
+    } else {
+        load_summary_v2_archive_totals_excluding(&state.pool, &HashSet::new()).await?
+    };
+    // Materialized compact rollups are an aggregate baseline even when their archive has no V2
+    // proof (or the archive file is unreadable). Merge only their bounded coverage metadata here;
+    // never read the archive payload on the finalization path.
+    let (materialized_buckets, materialized_months) =
+        load_summary_materialized_archive_coverage(&state.pool).await?;
+    snapshot_totals
+        .materialized_buckets
+        .extend(materialized_buckets);
+    snapshot_totals
+        .materialized_months_without_coverage
+        .extend(materialized_months);
     let hourly_rollup_totals = if checkpoint.global_ready() || checkpoint.account_ready() {
         load_summary_projection_rollup_totals(&state.pool).await?.0
     } else {
@@ -13021,18 +15204,23 @@ async fn publish_summary_all_time_projection_checkpoint(
     if checkpoint.global_ready() {
         let live_high_watermark_id =
             load_summary_projection_live_high_watermark(&state.pool).await?;
+        let observed_rollup_live_cursor =
+            load_summary_projection_rollup_live_cursor(&state.pool).await?;
+        let effective_rollup_live_cursor = generation_fence
+            .rollup_live_cursor
+            .max(observed_rollup_live_cursor);
         summary_all_time_projection_checkpoint_live_tail_count(
             &state.pool,
-            generation_fence.rollup_live_cursor,
+            effective_rollup_live_cursor,
             live_high_watermark_id,
             "global",
         )
         .await?;
-        let live_tail = if live_high_watermark_id > generation_fence.rollup_live_cursor {
+        let live_tail = if live_high_watermark_id > effective_rollup_live_cursor {
             crate::stats::query_live_invocation_totals_after_id(
                 &state.pool,
                 InvocationSourceScope::All,
-                generation_fence.rollup_live_cursor,
+                effective_rollup_live_cursor,
                 live_high_watermark_id,
             )
             .await
@@ -13052,14 +15240,26 @@ async fn publish_summary_all_time_projection_checkpoint(
         if has_completed_archives
             && generation_fence.live_high_watermark_id > generation_fence.rollup_live_cursor
             && generation_fence.rollup_live_cursor == 0
+            && observed_rollup_live_cursor == 0
         {
             // A compact historical baseline without a live cursor cannot prove whether any
             // retained live rows are already represented. Keep all-time fail-closed until the
-            // background rollup/recovery owner establishes that boundary.
+            // background rollup/recovery owner establishes that boundary. If the repair marker
+            // has advanced since this checkpoint was created, the bounded live-tail query above
+            // is the exact replacement for the checkpoint's old zero cursor.
             return Ok(());
         }
         let mut totals = if has_completed_archives {
-            checkpoint.global_totals().add(live_tail)
+            // The checkpoint accumulator may predate an in-place rollup repair. Rebuild the
+            // compact baseline from the current rollup rows so corrected classifications are
+            // reflected, then add only rows newer than the effective rollup cursor.
+            let rollup_baseline = hourly_rollup_totals
+                .iter()
+                .filter(|((_, account_id), _)| account_id.is_none())
+                .fold(StatsTotals::default(), |totals, (_, value)| {
+                    totals.add(*value)
+                });
+            rollup_baseline.add(live_tail)
         } else {
             StatsTotals::from(
                 crate::stats::query_stats_row_through_id(
@@ -13072,10 +15272,33 @@ async fn publish_summary_all_time_projection_checkpoint(
             )
         };
         let mut exact_replacement_buckets = snapshot_totals.replacement_buckets.clone();
+        // V2 pages from an unmaterialized sibling can share an hour with a materialized archive.
+        // Keep the materialized rollup baseline in that mixed bucket; only subtract rollups for
+        // buckets that have no independently proven materialized contribution.
+        exact_replacement_buckets.retain(|bucket| {
+            !snapshot_totals.materialized_buckets.contains(bucket)
+                && Utc
+                    .timestamp_opt(*bucket, 0)
+                    .single()
+                    .is_none_or(|timestamp| {
+                        !snapshot_totals
+                            .materialized_months_without_coverage
+                            .contains(
+                                &timestamp
+                                    .with_timezone(&Shanghai)
+                                    .format("%Y-%m")
+                                    .to_string(),
+                            )
+                    })
+        });
+        // Legacy materialized manifests can carry only a local-month marker rather than exact
+        // UTC bounds. In that case the compact rollup is the only safe baseline for the shared
+        // bucket; keep it and add the independently proven sibling contribution instead of
+        // subtracting the whole bucket as if the Snapshot replaced it.
         for record in next.records.iter().chain(next.current_records.iter()) {
             if summary_projection_all_time_uses_global_exact_record(
                 record,
-                generation_fence.rollup_live_cursor,
+                effective_rollup_live_cursor,
             ) && record.archive_has_materialized_rollups
             {
                 exact_replacement_buckets.insert(align_bucket_epoch(
@@ -13101,7 +15324,7 @@ async fn publish_summary_all_time_projection_checkpoint(
         for record in next.records.iter().chain(next.current_records.iter()) {
             let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
             if record.is_persisted_live_record
-                && record.row.id <= generation_fence.rollup_live_cursor
+                && record.row.id <= effective_rollup_live_cursor
                 && hourly_rollup_totals.contains_key(&(bucket, None))
             {
                 continue;
@@ -13109,7 +15332,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             if !exact_record_ids.insert(record.row.invoke_id.as_str())
                 || !summary_projection_all_time_uses_global_exact_record(
                     record,
-                    generation_fence.rollup_live_cursor,
+                    effective_rollup_live_cursor,
                 )
             {
                 continue;
@@ -13150,7 +15373,7 @@ async fn publish_summary_all_time_projection_checkpoint(
         response.in_progress_avg_wait_ms = in_progress.avg_wait_ms;
         response.in_progress_phase_counts = Some(in_progress.phase_counts);
         next.all_time_by_account.insert(None, response);
-        next.all_time_refreshed_at = Some(published_at);
+        next.all_time_refreshed_at = Some(reduction_started_at);
         next.freshness.global_all_time_eligible = true;
         next.global_all_time_coverage_fence = Some(generation_fence.coverage_fence());
         next.all_time_terminal_coverage_complete = true;
@@ -13166,7 +15389,18 @@ async fn publish_summary_all_time_projection_checkpoint(
     }
 
     if checkpoint.account_ready() {
-        let account_rollup_live_cursor = generation_fence.account_rollup_live_cursor.unwrap_or(0);
+        let observed_account_rollup_live_cursor =
+            load_summary_projection_account_rollup_live_cursor(&state.pool).await?;
+        let account_rollup_live_cursor = match (
+            generation_fence.account_rollup_live_cursor,
+            observed_account_rollup_live_cursor,
+        ) {
+            (Some(checkpoint_cursor), Some(observed_cursor)) => {
+                checkpoint_cursor.max(observed_cursor)
+            }
+            (Some(cursor), None) | (None, Some(cursor)) => cursor,
+            (None, None) => 0,
+        };
         summary_all_time_projection_checkpoint_live_tail_count(
             &state.pool,
             account_rollup_live_cursor,
@@ -13175,10 +15409,26 @@ async fn publish_summary_all_time_projection_checkpoint(
         )
         .await?;
         let mut account_replacement_buckets = snapshot_totals.replacement_buckets.clone();
+        account_replacement_buckets.retain(|bucket| {
+            !snapshot_totals.materialized_buckets.contains(bucket)
+                && Utc
+                    .timestamp_opt(*bucket, 0)
+                    .single()
+                    .is_none_or(|timestamp| {
+                        !snapshot_totals
+                            .materialized_months_without_coverage
+                            .contains(
+                                &timestamp
+                                    .with_timezone(&Shanghai)
+                                    .format("%Y-%m")
+                                    .to_string(),
+                            )
+                    })
+        });
         for record in next.records.iter().chain(next.current_records.iter()) {
             if summary_projection_all_time_uses_account_exact_record(
                 record,
-                generation_fence.account_rollup_live_cursor,
+                Some(account_rollup_live_cursor),
             ) && record.archive_has_materialized_rollups
             {
                 account_replacement_buckets.insert(align_bucket_epoch(
@@ -13200,7 +15450,14 @@ async fn publish_summary_all_time_projection_checkpoint(
         .into_iter()
         .map(|row| (row.upstream_account_id, row.totals()))
         .collect::<HashMap<_, _>>();
-        if !account_replacement_buckets.is_empty() {
+        let has_completed_archives = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE dataset = 'codex_invocations' AND status = 'completed' AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror')",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .context("summary all-time account archive presence lookup failed")?
+            != 0;
+        if has_completed_archives {
             account_totals = load_summary_projection_account_rollup_totals(
                 &state.pool,
                 &account_replacement_buckets,
@@ -13247,7 +15504,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             if !exact_record_ids.insert(record.row.invoke_id.as_str())
                 || !summary_projection_all_time_uses_account_exact_record(
                     record,
-                    generation_fence.account_rollup_live_cursor,
+                    Some(account_rollup_live_cursor),
                 )
             {
                 continue;
@@ -13303,7 +15560,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             response.in_progress_phase_counts = Some(in_progress.phase_counts);
             next.all_time_by_account.insert(Some(account_id), response);
             next.all_time_account_refreshed_at
-                .insert(account_id, published_at);
+                .insert(account_id, reduction_started_at);
             next.freshness.account_all_time_eligible.insert(account_id);
             next.all_time_account_terminal_sequence_watermarks.insert(
                 account_id,
@@ -13332,7 +15589,7 @@ async fn publish_summary_all_time_projection_checkpoint(
             response.in_progress_phase_counts = Some(in_progress.phase_counts);
             next.all_time_by_account.insert(Some(account_id), response);
             next.all_time_account_refreshed_at
-                .insert(account_id, published_at);
+                .insert(account_id, reduction_started_at);
             next.freshness.account_all_time_eligible.insert(account_id);
         }
         next.all_time_account_ids_with_projection_data
@@ -13344,26 +15601,44 @@ async fn publish_summary_all_time_projection_checkpoint(
         // An account scope without a complete manifest/rollup proof is not an empty account;
         // retain a local unavailable marker so unknown or affected account selections fail closed
         // while the independent global projection remains exact.
-        next.all_time_account_manifest_admission_blocked_at = Some(published_at);
+        next.all_time_account_manifest_admission_blocked_at = Some(reduction_started_at);
     }
 
+    // Only a projection that passes the final fence check is published. Record freshness at this
+    // boundary so the serving budget measures the immutable snapshot's actual publication time.
+    let published_at = Instant::now();
+    if checkpoint.global_ready() {
+        next.all_time_refreshed_at = Some(published_at);
+    }
+    if checkpoint.account_ready() {
+        for refreshed_at in next.all_time_account_refreshed_at.values_mut() {
+            *refreshed_at = published_at;
+        }
+    } else if checkpoint.account_unavailable != 0 || checkpoint.account_manifest_complete == 0 {
+        next.all_time_account_manifest_admission_blocked_at = Some(published_at);
+    }
     next.all_time_oldest_account_refreshed_at =
         next.all_time_account_refreshed_at.values().copied().min();
-    next.revision = state
-        .subscription_hub
-        .next_summary_projection_revision()
-        .await;
-    if !load_summary_projection_generation_fence(state)
-        .await?
-        .coverage_sources_match(generation_fence)
+    let current_generation_fence = load_summary_projection_generation_fence(state).await?;
+    if !current_generation_fence.coverage_sources_match(generation_fence)
+        || !current_generation_fence
+            .live_tail_cursor()
+            .terminal_sources_match(generation_fence.live_tail_cursor())
     {
         return Err(SummaryProjectionAllTimeGenerationChanged.into());
     }
     // Keep the projection fence current for rolling freshness checks. The all-time terminal
     // watermark remains the checkpoint's proof watermark, so newly committed tail entries stay
     // visible through the in-memory all-time overlay until a later checkpoint absorbs them.
-    next.generation_fence = load_summary_projection_generation_fence(state).await?;
-    state.subscription_hub.store_summary_projection(next).await;
+    next.generation_fence = current_generation_fence;
+    let expected_revision = next.revision;
+    if !state
+        .subscription_hub
+        .store_summary_projection_if_revision(next, expected_revision)
+        .await
+    {
+        return Err(SummaryProjectionAllTimeGenerationChanged.into());
+    }
     debug!(
         global_ready = checkpoint.global_ready(),
         account_ready = checkpoint.account_ready(),
@@ -13398,13 +15673,16 @@ async fn summary_projection_overflowed_boundary_manifest_coverage(
            AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
            AND batches.id <= ?1 \
            AND (batches.coverage_start_at IS NULL OR batches.coverage_end_at IS NULL) \
-         ORDER BY batches.month_key",
+         ORDER BY batches.month_key \
+         LIMIT ?2",
     )
     .bind(high_watermark_id)
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
     .fetch_all(pool)
     .await
     .context("summary projection overflowed boundary manifest coverage hydration failed")?;
     let mut unknown_coverage_ranges = Vec::new();
+    let mut horizon_fallback_count = 0usize;
     for month_key in month_keys {
         let buckets = match crate::stats::archive_bucket_start_epochs_from_bounds(
             Some(&month_key),
@@ -13415,6 +15693,7 @@ async fn summary_projection_overflowed_boundary_manifest_coverage(
             // Without a parseable partition key, no finite source boundary exists. Preserve the
             // established fail-closed behavior, limited to the supported request horizon.
             Ok(_) | Err(_) => {
+                horizon_fallback_count = horizon_fallback_count.saturating_add(1);
                 unknown_coverage_ranges.push(exact_horizon);
                 continue;
             }
@@ -13431,10 +15710,12 @@ async fn summary_projection_overflowed_boundary_manifest_coverage(
             .expect("non-empty archive buckets")
             + 3_600;
         let Some(start) = Utc.timestamp_opt(start_epoch, 0).single() else {
+            horizon_fallback_count = horizon_fallback_count.saturating_add(1);
             unknown_coverage_ranges.push(exact_horizon);
             continue;
         };
         let Some(end) = Utc.timestamp_opt(end_epoch, 0).single() else {
+            horizon_fallback_count = horizon_fallback_count.saturating_add(1);
             unknown_coverage_ranges.push(exact_horizon);
             continue;
         };
@@ -13447,10 +15728,416 @@ async fn summary_projection_overflowed_boundary_manifest_coverage(
         }
     }
     let unknown_coverage_ranges = summary_projection_merge_exact_ranges(unknown_coverage_ranges);
+    info!(
+        stage = "overflowed_boundary_manifest_coverage_summary",
+        unknown_range_count = unknown_coverage_ranges.len(),
+        horizon_fallback_count,
+        "summary projection overflowed boundary manifest coverage summarized"
+    );
     Ok(Some(SummaryProjectionOverflowedBoundaryCoverage {
         high_watermark_id,
         unknown_coverage_ranges,
     }))
+}
+
+#[derive(Debug, Default)]
+struct SummaryProjectionOverflowedBoundaryUnprovenRanges {
+    global: Vec<ExactUtcRange>,
+    account: Vec<ExactUtcRange>,
+    broad_fail_closed: bool,
+}
+
+/// Return finite global and account ranges whose compact/V2 authority is not yet complete when
+/// the boundary manifest cardinality is over the Bootstrap admission bound.  The optional
+/// in-memory rollup maps let Bootstrap distinguish a missing compact key from a merely old
+/// manifest without opening any archive source; the overlay rebuild uses metadata-only mode.
+async fn summary_projection_overflowed_boundary_unproven_ranges_scoped(
+    pool: &Pool<Sqlite>,
+    exact_horizon: ExactUtcRange,
+    high_watermark_id: i64,
+    rollup_totals: Option<&HashMap<(i64, Option<i64>), StatsTotals>>,
+    rollup_usage: Option<&HashMap<(i64, Option<i64>), UsageBreakdownResponse>>,
+) -> Result<SummaryProjectionOverflowedBoundaryUnprovenRanges> {
+    let rows = sqlx::query_as::<_, (
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>(
+        "SELECT month_key, file_path, \
+                COALESCE(coverage_start_epoch, CAST(strftime('%s', coverage_start_at) AS INTEGER)), \
+                COALESCE(coverage_end_epoch, CAST(strftime('%s', coverage_end_at) AS INTEGER)), \
+                coverage_start_at, coverage_end_at, \
+                historical_rollups_materialized_at, upstream_activity_manifest_refreshed_at \
+         FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND batches.id <= ?1 \
+           AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+           AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+               WHERE proof.archive_batch_id = batches.id \
+                 AND batches.sha256 IS NOT NULL \
+                 AND TRIM(batches.sha256) <> '' \
+                 AND proof.manifest_sha256 = batches.sha256 \
+           ) \
+         LIMIT ?4",
+    )
+    .bind(high_watermark_id)
+    .bind(exact_horizon.start.timestamp())
+    .bind(exact_horizon.end.timestamp())
+    .bind((SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES + 1) as i64)
+    .fetch_all(pool)
+    .await
+    .context("summary projection overflowed boundary unproven-range hydration failed")?;
+
+    if rows.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        // An overflow can be caused by old manifests that are already represented by compact
+        // replay. Evaluate each manifest's own buckets instead of taking a min/max span across
+        // the backlog; sparse historical partitions must not poison recent selections.
+        let paths = rows
+            .iter()
+            .map(|(_, file_path, _, _, _, _, _, _)| file_path.clone())
+            .collect::<Vec<_>>();
+        let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+        let mut global = Vec::new();
+        let mut account = Vec::new();
+        let mut broad_fail_closed = false;
+        for (
+            _month_key,
+            file_path,
+            coverage_start_epoch,
+            coverage_end_epoch,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            upstream_activity_manifest_refreshed_at,
+        ) in &rows
+        {
+            let (Some(start_epoch), Some(end_epoch)) = (
+                coverage_start_epoch.or_else(|| {
+                    coverage_start_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .map(|value| value.timestamp())
+                }),
+                coverage_end_epoch.or_else(|| {
+                    coverage_end_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .map(|value| value.timestamp())
+                }),
+            ) else {
+                global.push(exact_horizon);
+                account.push(exact_horizon);
+                broad_fail_closed = true;
+                continue;
+            };
+            let (Some(start), Some(end)) = (
+                Utc.timestamp_opt(start_epoch, 0).single(),
+                Utc.timestamp_opt(end_epoch, 0).single(),
+            ) else {
+                continue;
+            };
+            let localized = ExactUtcRange {
+                start: start.max(exact_horizon.start),
+                end: end
+                    .checked_add_signed(ChronoDuration::seconds(1))
+                    .unwrap_or(end)
+                    .min(exact_horizon.end),
+            };
+            if localized.start >= localized.end {
+                continue;
+            }
+            let replay = replay_coverage.get(file_path).copied().unwrap_or_default();
+            let mut global_gap = historical_rollups_materialized_at.is_none()
+                || !replay.overall
+                || !replay.usage_breakdown;
+            if let (Some(totals), Some(usage)) = (rollup_totals, rollup_usage) {
+                let mut bucket = align_bucket_epoch(localized.start.timestamp(), 3_600, 0);
+                let last_bucket =
+                    align_bucket_epoch(localized.end.timestamp().saturating_sub(1), 3_600, 0);
+                while bucket <= last_bucket {
+                    if !totals.contains_key(&(bucket, None)) || !usage.contains_key(&(bucket, None))
+                    {
+                        global_gap = true;
+                        break;
+                    }
+                    bucket = bucket.saturating_add(3_600);
+                }
+            } else {
+                global_gap = true;
+            }
+            if global_gap {
+                global.push(localized);
+                broad_fail_closed = true;
+            }
+            if upstream_activity_manifest_refreshed_at.is_none()
+                || !replay.account_stats
+                || !replay.usage_breakdown
+            {
+                account.push(localized);
+            }
+        }
+        let global = summary_projection_merge_exact_ranges(global);
+        let mut account = summary_projection_merge_exact_ranges(account);
+        let (unproven_manifest_exists, unproven_account_manifest_exists) =
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT \
+             EXISTS(SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.id <= ?1 \
+               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+                   WHERE proof.archive_batch_id = batches.id \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND proof.manifest_sha256 = batches.sha256 \
+               ) \
+               AND ( \
+                   batches.historical_rollups_materialized_at IS NULL \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?4 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?5 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+               )), \
+             EXISTS(SELECT 1 FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.id <= ?1 \
+               AND (batches.coverage_end_epoch IS NULL OR batches.coverage_end_epoch > ?2) \
+               AND (batches.coverage_start_epoch IS NULL OR batches.coverage_start_epoch < ?3) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
+                   WHERE proof.archive_batch_id = batches.id \
+                     AND batches.sha256 IS NOT NULL \
+                     AND TRIM(batches.sha256) <> '' \
+                     AND proof.manifest_sha256 = batches.sha256 \
+               ) \
+               AND ( \
+                   batches.upstream_activity_manifest_refreshed_at IS NULL \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?6 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+                   OR NOT EXISTS ( \
+                       SELECT 1 FROM hourly_rollup_archive_replay AS replay \
+                       WHERE replay.target = ?5 \
+                         AND replay.dataset = batches.dataset \
+                         AND replay.file_path = batches.file_path \
+                         AND replay.archive_sha256 = batches.sha256 \
+                   ) \
+               ))",
+            )
+            .bind(high_watermark_id)
+            .bind(exact_horizon.start.timestamp())
+            .bind(exact_horizon.end.timestamp())
+            .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
+            .fetch_one(pool)
+            .await
+            .context("summary projection overflowed boundary unproven aggregate lookup failed")?;
+        let broad_fail_closed = broad_fail_closed || unproven_manifest_exists != 0;
+        if unproven_account_manifest_exists != 0 {
+            account.push(exact_horizon);
+        }
+        info!(
+            stage = "overflowed_boundary_unproven_range_budget",
+            source_row_count = rows.len(),
+            "summary projection metadata scan exceeded its bounded archive budget; retaining a bounded unavailable range"
+        );
+        return Ok(SummaryProjectionOverflowedBoundaryUnprovenRanges {
+            global,
+            account,
+            broad_fail_closed,
+        });
+    }
+
+    let paths = rows
+        .iter()
+        .map(|(_, file_path, _, _, _, _, _, _)| file_path.clone())
+        .collect::<Vec<_>>();
+    let replay_coverage = load_summary_projection_archive_replay_coverage(pool, &paths).await?;
+    let account_manifest = load_summary_projection_archive_manifest_accounts(pool, &paths)
+        .await?
+        .into_iter()
+        .fold(
+            HashMap::<String, HashSet<i64>>::new(),
+            |mut by_file, (path, id)| {
+                by_file.entry(path).or_default().insert(id);
+                by_file
+            },
+        );
+
+    let mut global_ranges = Vec::new();
+    let mut account_ranges = Vec::new();
+    let mut source_row_count = 0usize;
+    let mut horizon_fallback_count = 0usize;
+    for (
+        month_key,
+        file_path,
+        coverage_start_epoch,
+        coverage_end_epoch,
+        coverage_start_at,
+        coverage_end_at,
+        historical_rollups_materialized_at,
+        upstream_activity_manifest_refreshed_at,
+    ) in rows
+    {
+        source_row_count = source_row_count.saturating_add(1);
+        let range = match (
+            coverage_start_at
+                .as_deref()
+                .and_then(crate::stats::parse_to_utc_datetime),
+            coverage_end_at
+                .as_deref()
+                .and_then(crate::stats::parse_to_utc_datetime),
+        ) {
+            (Some(start), Some(end)) if start <= end => ExactUtcRange {
+                start,
+                // A point-like legacy manifest records the inclusive endpoint in both columns.
+                // Preserve that one-second contribution as a finite unavailable range instead of
+                // silently dropping it during half-open range normalization.
+                end: if start == end {
+                    end.checked_add_signed(ChronoDuration::seconds(1))
+                        .unwrap_or(end)
+                } else {
+                    end
+                },
+            },
+            _ => match (coverage_start_epoch, coverage_end_epoch) {
+                (Some(start_epoch), Some(end_epoch)) => match (
+                    Utc.timestamp_opt(start_epoch, 0).single(),
+                    Utc.timestamp_opt(end_epoch, 0).single(),
+                ) {
+                    (Some(start), Some(end)) if start <= end => ExactUtcRange {
+                        start,
+                        end: end
+                            .checked_add_signed(ChronoDuration::seconds(1))
+                            .unwrap_or(end),
+                    },
+                    _ => {
+                        horizon_fallback_count = horizon_fallback_count.saturating_add(1);
+                        global_ranges.push(exact_horizon);
+                        account_ranges.push(exact_horizon);
+                        continue;
+                    }
+                },
+                _ => {
+                    let buckets = crate::stats::archive_bucket_start_epochs_from_bounds(
+                        Some(&month_key),
+                        None,
+                        None,
+                    )
+                    .ok()
+                    .filter(|buckets| !buckets.is_empty());
+                    let Some(buckets) = buckets else {
+                        horizon_fallback_count = horizon_fallback_count.saturating_add(1);
+                        global_ranges.push(exact_horizon);
+                        account_ranges.push(exact_horizon);
+                        continue;
+                    };
+                    let start_epoch = *buckets.iter().min().expect("non-empty archive buckets");
+                    let end_epoch = buckets
+                        .iter()
+                        .max()
+                        .copied()
+                        .unwrap_or(start_epoch)
+                        .saturating_add(3_600);
+                    let (Some(start), Some(end)) = (
+                        Utc.timestamp_opt(start_epoch, 0).single(),
+                        Utc.timestamp_opt(end_epoch, 0).single(),
+                    ) else {
+                        horizon_fallback_count = horizon_fallback_count.saturating_add(1);
+                        global_ranges.push(exact_horizon);
+                        account_ranges.push(exact_horizon);
+                        continue;
+                    };
+                    ExactUtcRange { start, end }
+                }
+            },
+        };
+        let localized = ExactUtcRange {
+            start: range.start.max(exact_horizon.start),
+            end: range.end.min(exact_horizon.end),
+        };
+        if localized.start < localized.end {
+            let replay = replay_coverage.get(&file_path).copied().unwrap_or_default();
+            let mut global_gap = !replay.overall || !replay.usage_breakdown;
+            let mut account_gap = upstream_activity_manifest_refreshed_at.is_none()
+                || !replay.account_stats
+                || !replay.usage_breakdown;
+            if rollup_totals.is_none() || rollup_usage.is_none() {
+                global_gap |= historical_rollups_materialized_at.is_none();
+            }
+            if let (Some(rollup_totals), Some(rollup_usage)) = (rollup_totals, rollup_usage) {
+                let first_bucket = align_bucket_epoch(localized.start.timestamp(), 3_600, 0);
+                let last_bucket =
+                    align_bucket_epoch(localized.end.timestamp().saturating_sub(1), 3_600, 0);
+                let mut bucket = first_bucket;
+                while bucket <= last_bucket {
+                    global_gap |= !rollup_totals.contains_key(&(bucket, None))
+                        || !rollup_usage.contains_key(&(bucket, None));
+                    if let Some(account_ids) = account_manifest.get(&file_path) {
+                        account_gap |= account_ids.iter().any(|account_id| {
+                            !rollup_totals.contains_key(&(bucket, Some(*account_id)))
+                                || !rollup_usage.contains_key(&(bucket, Some(*account_id)))
+                        });
+                    }
+                    if global_gap && account_gap {
+                        break;
+                    }
+                    bucket = bucket.saturating_add(3_600);
+                }
+            }
+            if global_gap {
+                global_ranges.push(localized);
+            }
+            if account_gap {
+                account_ranges.push(localized);
+            }
+        }
+    }
+    let global_ranges = summary_projection_merge_exact_ranges(global_ranges);
+    let account_ranges = summary_projection_merge_exact_ranges(account_ranges);
+    info!(
+        stage = "overflowed_boundary_unproven_range_summary",
+        source_row_count,
+        horizon_fallback_count,
+        global_range_count = global_ranges.len(),
+        account_range_count = account_ranges.len(),
+        "summary projection overflowed boundary ranges summarized"
+    );
+    Ok(SummaryProjectionOverflowedBoundaryUnprovenRanges {
+        global: global_ranges,
+        account: account_ranges,
+        broad_fail_closed: false,
+    })
 }
 
 async fn summary_projection_overflowed_all_time_manifests_have_complete_rollups(
@@ -13627,8 +16314,15 @@ fn summary_projection_all_time_manifest_scope_coverage(
     if summary_projection_exact_range_fits_bucket_budget(range).is_err() {
         return Ok((false, false));
     }
-    let mut global_covered = replay_coverage.overall;
-    let mut accounts_covered = replay_coverage.account_stats && account_manifest_complete;
+    // Global totals include usage/cost dimensions. An invocation replay marker alone cannot
+    // prove the complete StatsResponse, so keep the archive unavailable until its usage replay
+    // (or a verified V2 replacement) is present as well.
+    let mut global_covered = replay_coverage.overall && replay_coverage.usage_breakdown;
+    // Account-scoped totals expose the same usage/cost dimensions as the global response. An
+    // account replay marker without its usage-breakdown proof must therefore remain unavailable.
+    let mut accounts_covered = replay_coverage.account_stats
+        && replay_coverage.usage_breakdown
+        && account_manifest_complete;
     let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
     let last_bucket = align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
     while bucket <= last_bucket {
@@ -13831,8 +16525,15 @@ struct PreviousSummaryProjectionAllTime {
     all_time_account_terminal_sequence_watermarks: HashMap<i64, u64>,
     all_time_account_persisted_live_terminal_invoke_ids: HashMap<i64, HashSet<String>>,
     historical_live_coverage: Option<SummaryProjectionHistoricalLiveCoverage>,
+    coverage_overlay: Option<SummaryCoverageOverlay>,
     unavailable_exact_live_ranges: Vec<ExactUtcRange>,
     unavailable_exact_live_account_ranges: HashMap<i64, Vec<ExactUtcRange>>,
+    unavailable_unmaterialized_archive_ranges: Vec<ExactUtcRange>,
+    unavailable_boundary_archive_ranges: Vec<ExactUtcRange>,
+    unavailable_unmaterialized_archive_current_ranges: Vec<ExactUtcRange>,
+    unavailable_unmaterialized_archive_account_ranges: Vec<ExactUtcRange>,
+    unavailable_boundary_archive_account_ranges: Vec<ExactUtcRange>,
+    unavailable_unmaterialized_archive_account_current_ranges: Vec<ExactUtcRange>,
     persisted_live_terminal_invoke_ids: HashSet<String>,
 }
 
@@ -13929,8 +16630,8 @@ async fn build_summary_projection_once(
         global_all_time_eligible: previous_global_all_time_eligible,
         account_all_time_eligible: previous_account_all_time_eligible,
         all_time_terminal_coverage_complete: previous_all_time_terminal_coverage_complete,
-        global_all_time_coverage_fence: previous_global_all_time_coverage_fence,
-        account_all_time_coverage_fence: previous_account_all_time_coverage_fence,
+        global_all_time_coverage_fence: mut previous_global_all_time_coverage_fence,
+        account_all_time_coverage_fence: mut previous_account_all_time_coverage_fence,
         all_time_terminal_sequence_watermark: previous_all_time_terminal_sequence_watermark,
         all_time_persisted_live_terminal_invoke_ids:
             previous_all_time_persisted_live_terminal_invoke_ids,
@@ -13939,8 +16640,20 @@ async fn build_summary_projection_once(
         all_time_account_persisted_live_terminal_invoke_ids:
             previous_all_time_account_persisted_live_terminal_invoke_ids,
         historical_live_coverage: previous_historical_live_coverage,
+        coverage_overlay: previous_coverage_overlay,
         unavailable_exact_live_ranges: previous_unavailable_exact_live_ranges,
         unavailable_exact_live_account_ranges: previous_unavailable_exact_live_account_ranges,
+        unavailable_unmaterialized_archive_ranges:
+            previous_unavailable_unmaterialized_archive_ranges,
+        unavailable_boundary_archive_ranges: previous_unavailable_boundary_archive_ranges,
+        unavailable_unmaterialized_archive_current_ranges:
+            previous_unavailable_unmaterialized_archive_current_ranges,
+        unavailable_unmaterialized_archive_account_ranges:
+            previous_unavailable_unmaterialized_archive_account_ranges,
+        unavailable_boundary_archive_account_ranges:
+            previous_unavailable_boundary_archive_account_ranges,
+        unavailable_unmaterialized_archive_account_current_ranges:
+            previous_unavailable_unmaterialized_archive_account_current_ranges,
         persisted_live_terminal_invoke_ids: previous_persisted_live_terminal_invoke_ids,
     } = previous_all_time.unwrap_or_default();
     let all_time_was_fully_rebuilt = mode.includes_all_time()
@@ -13989,12 +16702,23 @@ async fn build_summary_projection_once(
     } else {
         Vec::new()
     };
+    let current_archive_admission_paths = current_archive_admission
+        .iter()
+        .map(|archive| archive.file_path().to_string())
+        .collect::<Vec<_>>();
+    let current_archive_account_manifest_refreshed_paths =
+        load_summary_projection_archive_manifest_refreshed_paths(
+            pool,
+            &current_archive_admission_paths,
+        )
+        .await?;
     let current_archive_admission_exceeded =
         current_archive_admission.len() > SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES;
     let mut current_source_unavailable = false;
     let mut current_source_unavailable_from_rank = None::<usize>;
     let mut current_account_source_unavailable_from_rank = HashMap::<i64, usize>::new();
     let mut paged_boundary_manifest_unknown_coverage_ranges = Vec::<ExactUtcRange>::new();
+    let mut paged_boundary_manifest_unknown_account_coverage_ranges = Vec::<ExactUtcRange>::new();
     // All-time aggregation needs manifest-level key proof, while rolling windows only need the
     // bounded exact horizon below. An oversized history is validated in fixed manifest pages
     // against one immutable high-watermark; it never needs an unbounded path vector or a
@@ -14096,6 +16820,7 @@ async fn build_summary_projection_once(
         },
         live_high_watermark_id,
         None,
+        None,
         summary_projection_exact_record_limit() + 1,
         false,
         SUMMARY_PROJECTION_MAX_PREVIEW_BYTES,
@@ -14164,6 +16889,7 @@ async fn build_summary_projection_once(
             end,
         },
         live_high_watermark_id,
+        None,
         None,
         recent_candidate_limit,
         false,
@@ -14341,7 +17067,67 @@ async fn build_summary_projection_once(
             ));
         };
         paged_boundary_manifest_unknown_coverage_ranges = coverage.unknown_coverage_ranges;
-        (Vec::new(), Some(coverage.high_watermark_id))
+        if !mode.includes_all_time() {
+            // Bootstrap/Rolling publish from compact proof only.  Preserve exactness for the
+            // affected finite ranges without paying the historical page-planning cost; the
+            // supervisor owns the eventual raw/V2 recovery.
+            let unproven = summary_projection_overflowed_boundary_unproven_ranges_scoped(
+                pool,
+                exact_horizon,
+                coverage.high_watermark_id,
+                Some(&hourly_rollup_totals),
+                Some(&hourly_rollup_usage),
+            )
+            .await?;
+            let mut global_unproven = unproven.global;
+            if !current_archive_admission_exceeded && !unproven.broad_fail_closed {
+                // A bounded recent archive prefix is hydrated below. Remove only the exact
+                // hourly buckets it owns from the coarse overflow proof; older unresolved
+                // manifests remain unavailable for their own rolling ranges.
+                let mut admitted_buckets = HashSet::new();
+                for archive in &current_archive_admission {
+                    let Some(range) =
+                        summary_projection_archive_overlap_range(archive, exact_horizon)
+                    else {
+                        continue;
+                    };
+                    let mut bucket = align_bucket_epoch(range.start.timestamp(), 3_600, 0);
+                    let last_bucket =
+                        align_bucket_epoch(range.end.timestamp().saturating_sub(1), 3_600, 0);
+                    while bucket <= last_bucket {
+                        admitted_buckets.insert(bucket);
+                        bucket = bucket.saturating_add(3_600);
+                    }
+                }
+                summary_projection_remove_covered_ranges(&mut global_unproven, &admitted_buckets);
+            }
+            // The bounded recent archive prefix is hydrated below.  Keep older overflow gaps
+            // fail-closed without letting their coarse budget fallback poison a disjoint recent
+            // global selection. Account-scoped gaps remain conservative until their manifest is
+            // refreshed.
+            if !unproven.broad_fail_closed {
+                let recent_exact_start = end - SUMMARY_PROJECTION_MIN_EXACT_HORIZON;
+                for range in &mut global_unproven {
+                    if range.end <= recent_exact_start {
+                        range.start = recent_exact_start;
+                        range.end = recent_exact_start;
+                    } else {
+                        range.start = range.start.max(recent_exact_start);
+                    }
+                }
+            }
+            global_unproven.retain(|range| range.start < range.end);
+            paged_boundary_manifest_unknown_coverage_ranges.extend(global_unproven);
+            paged_boundary_manifest_unknown_account_coverage_ranges.extend(unproven.account);
+            // Preserve the bounded recent archive prefix for exact current/rolling selections;
+            // only the older overflowed manifests remain owned by the recovery supervisor.
+            (
+                current_archive_admission.clone(),
+                Some(coverage.high_watermark_id),
+            )
+        } else {
+            (Vec::new(), Some(coverage.high_watermark_id))
+        }
     } else {
         (boundary_archive_admission, None)
     };
@@ -14411,13 +17197,39 @@ async fn build_summary_projection_once(
             .map_err(|error| {
                 anyhow!("summary projection usage progress hydration failed: {error:?}")
             })?;
+    let preserve_archive_gaps = matches!(mode, SummaryProjectionBuildMode::RollingDelta);
     let mut unavailable_unmaterialized_archive_buckets = BTreeSet::<i64>::new();
-    let mut unavailable_boundary_archive_ranges = Vec::<ExactUtcRange>::new();
-    let mut unavailable_unmaterialized_archive_current_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_boundary_archive_ranges = if preserve_archive_gaps {
+        previous_unavailable_boundary_archive_ranges.clone()
+    } else {
+        Vec::new()
+    };
+    let mut unavailable_unmaterialized_archive_current_ranges = if preserve_archive_gaps {
+        previous_unavailable_unmaterialized_archive_current_ranges.clone()
+    } else {
+        Vec::new()
+    };
     let mut unavailable_unmaterialized_archive_account_buckets = BTreeSet::<i64>::new();
-    let mut unavailable_boundary_archive_account_ranges = Vec::<ExactUtcRange>::new();
-    let mut unavailable_unmaterialized_archive_account_current_ranges = Vec::<ExactUtcRange>::new();
-    let mut unavailable_unmaterialized_archive_exact_ranges = Vec::<ExactUtcRange>::new();
+    let mut unavailable_boundary_archive_account_ranges = if preserve_archive_gaps {
+        previous_unavailable_boundary_archive_account_ranges.clone()
+    } else {
+        Vec::new()
+    };
+    let mut unavailable_unmaterialized_archive_account_current_ranges = if preserve_archive_gaps {
+        previous_unavailable_unmaterialized_archive_account_current_ranges.clone()
+    } else {
+        Vec::new()
+    };
+    let mut unavailable_unmaterialized_archive_account_exact_ranges = if preserve_archive_gaps {
+        previous_unavailable_unmaterialized_archive_account_ranges.clone()
+    } else {
+        Vec::new()
+    };
+    let mut unavailable_unmaterialized_archive_exact_ranges = if preserve_archive_gaps {
+        previous_unavailable_unmaterialized_archive_ranges.clone()
+    } else {
+        Vec::new()
+    };
     if !paged_boundary_manifest_unknown_coverage_ranges.is_empty() {
         // A legacy manifest without exact bounds remains fail-closed, but its `month_key` still
         // proves the finite archive partition it can affect. Never let an old unknown partition
@@ -14430,6 +17242,25 @@ async fn build_summary_projection_once(
         unavailable_unmaterialized_archive_current_ranges
             .extend(paged_boundary_manifest_unknown_coverage_ranges);
     }
+    unavailable_unmaterialized_archive_account_exact_ranges.extend(
+        current_archive_admission.iter().filter_map(|archive| {
+            if archive.has_materialized_historical_rollups()
+                || !summary_projection_archive_has_coverage_bounds(archive)
+                || current_archive_account_manifest_refreshed_paths.contains(archive.file_path())
+            {
+                return None;
+            }
+            summary_projection_archive_overlap_range(
+                archive,
+                ExactUtcRange {
+                    start: live_start,
+                    end,
+                },
+            )
+        }),
+    );
+    unavailable_unmaterialized_archive_account_exact_ranges
+        .extend(paged_boundary_manifest_unknown_account_coverage_ranges);
     let mut unavailable_exact_live_buckets = BTreeSet::<i64>::new();
     let mut unavailable_exact_live_account_buckets = HashMap::<i64, BTreeSet<i64>>::new();
     for candidate in initial_live_admission_gaps
@@ -14532,131 +17363,140 @@ async fn build_summary_projection_once(
         stage = "archive_account_discovery",
         "summary projection build stage started"
     );
-    for archive in &archives {
-        let Some(archive_range) = summary_projection_archive_overlap_range(
-            archive,
-            ExactUtcRange {
-                start: archive_start,
-                end,
-            },
-        ) else {
-            continue;
-        };
-        let cached_coverage_is_sufficient = summary_projection_archive_has_coverage_bounds(archive)
-            || archive_actual_coverage_ranges.contains_key(archive.file_path());
-        if archive_account_ids_by_file.contains_key(archive.file_path())
-            && cached_coverage_is_sufficient
-        {
-            if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
-                known_account_ids.extend(account_ids.iter().copied());
+    if mode.includes_all_time() || archives.len() <= SUMMARY_PROJECTION_MAX_ARCHIVE_BATCHES {
+        for archive in &archives {
+            let Some(archive_range) = summary_projection_archive_overlap_range(
+                archive,
+                ExactUtcRange {
+                    start: archive_start,
+                    end,
+                },
+            ) else {
+                continue;
+            };
+            let cached_coverage_is_sufficient =
+                summary_projection_archive_has_coverage_bounds(archive)
+                    || archive_actual_coverage_ranges.contains_key(archive.file_path());
+            if archive_account_ids_by_file.contains_key(archive.file_path())
+                && cached_coverage_is_sufficient
+            {
+                if let Some(account_ids) = archive_account_ids_by_file.get(archive.file_path()) {
+                    known_account_ids.extend(account_ids.iter().copied());
+                }
+                if known_account_ids.len() > summary_projection_exact_record_limit() {
+                    return Err(anyhow!(
+                        "summary projection archive account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+                    ));
+                }
+                continue;
+            }
+            let row_count = archive_row_counts.get(archive.file_path()).copied();
+            if !archive.has_materialized_historical_rollups()
+                && row_count
+                    .is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
+            {
+                return Err(anyhow!(
+                    "summary projection unmaterialized archive account discovery exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+                ));
+            }
+            // A large materialized archive cannot be opened merely to discover account ids within
+            // the refresh deadline.  Without a bounded discovery cache we fail closed above instead
+            // of publishing a projection that silently undercounts an archive-only account.
+            let replay_coverage = summary_projection_effective_replay_coverage(
+                archive,
+                archive_replay_coverage
+                    .get(archive.file_path())
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            if archive.has_materialized_historical_rollups()
+                && row_count
+                    .is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
+                && replay_coverage.account_stats
+                && replay_coverage.usage_breakdown
+            {
+                // All account-scoped targets have replayed this immutable archive. Durable rollup
+                // account keys are sufficient for admission; do not inflate a large file merely to
+                // rediscover the same account ids.
+                continue;
+            }
+            if archive.has_materialized_historical_rollups()
+                && row_count
+                    .is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
+            {
+                return Err(anyhow!(
+                    "summary projection cannot prove account coverage for a large materialized archive without complete replay coverage"
+                ));
+            }
+            let manifest_sha256 = archive_manifest_sha256
+                .get(archive.file_path())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "summary projection archive manifest SHA is missing for {}",
+                        archive.file_path()
+                    )
+                })?;
+            if Path::new(archive.file_path()).exists() {
+                verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+            }
+            let Some((archive_pool, temp_cleanup)) =
+                crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection")
+                    .await?
+            else {
+                if replay_coverage.supports_unavailable_archive() {
+                    // A materialized archive remains answerable from its durable rollup baseline.
+                    // Replay fallback additionally needs every response dimension, otherwise a
+                    // global total could conceal missing account or usage/model detail.
+                    continue;
+                }
+                if !archive.has_materialized_historical_rollups() {
+                    all_time_source_unavailable_from_archive_ranges = true;
+                }
+                continue;
+            };
+            require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+            if !summary_projection_archive_has_coverage_bounds(archive)
+                && let Some(actual_range) = load_summary_projection_archive_coverage_range(
+                    &archive_pool,
+                )
+                .await
+                .map_err(|error| {
+                    anyhow!(
+                        "summary projection archive coverage hydration failed for {}: {error:?}",
+                        archive.file_path()
+                    )
+                })?
+            {
+                archive_actual_coverage_ranges
+                    .insert(archive.file_path().to_string(), actual_range);
+            }
+            let account_ids =
+                load_summary_projection_archive_account_ids(&archive_pool, archive_range)
+                    .await
+                    .map_err(|error| {
+                        anyhow!(
+                            "summary projection archive account discovery failed for {}: {error:?}",
+                            archive.file_path()
+                        )
+                    })?;
+            known_account_ids.extend(account_ids.iter().copied());
+            cached_archive_account_id_count =
+                cached_archive_account_id_count.saturating_add(account_ids.len());
+            if cached_archive_account_id_count > summary_projection_exact_record_limit() {
+                return Err(anyhow!(
+                    "summary projection archive account cache exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
+                ));
             }
             if known_account_ids.len() > summary_projection_exact_record_limit() {
                 return Err(anyhow!(
                     "summary projection archive account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
                 ));
             }
-            continue;
+            archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
+            require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
+            archive_pool.close().await;
+            drop(temp_cleanup);
         }
-        let row_count = archive_row_counts.get(archive.file_path()).copied();
-        if !archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
-        {
-            return Err(anyhow!(
-                "summary projection unmaterialized archive account discovery exceeded bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-            ));
-        }
-        // A large materialized archive cannot be opened merely to discover account ids within
-        // the refresh deadline.  Without a bounded discovery cache we fail closed above instead
-        // of publishing a projection that silently undercounts an archive-only account.
-        let replay_coverage = summary_projection_effective_replay_coverage(
-            archive,
-            archive_replay_coverage
-                .get(archive.file_path())
-                .copied()
-                .unwrap_or_default(),
-        );
-        if archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
-            && replay_coverage.account_stats
-            && replay_coverage.usage_breakdown
-        {
-            // All account-scoped targets have replayed this immutable archive. Durable rollup
-            // account keys are sufficient for admission; do not inflate a large file merely to
-            // rediscover the same account ids.
-            continue;
-        }
-        if archive.has_materialized_historical_rollups()
-            && row_count.is_some_and(|count| count > summary_projection_exact_record_limit() as i64)
-        {
-            return Err(anyhow!(
-                "summary projection cannot prove account coverage for a large materialized archive without complete replay coverage"
-            ));
-        }
-        let manifest_sha256 = archive_manifest_sha256
-            .get(archive.file_path())
-            .ok_or_else(|| {
-                anyhow!(
-                    "summary projection archive manifest SHA is missing for {}",
-                    archive.file_path()
-                )
-            })?;
-        if Path::new(archive.file_path()).exists() {
-            verify_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
-        }
-        let Some((archive_pool, temp_cleanup)) =
-            crate::stats::open_invocation_archive_batch_pool(archive, "summary-projection").await?
-        else {
-            if replay_coverage.supports_unavailable_archive() {
-                // A materialized archive remains answerable from its durable rollup baseline.
-                // Replay fallback additionally needs every response dimension, otherwise a
-                // global total could conceal missing account or usage/model detail.
-                continue;
-            }
-            if !archive.has_materialized_historical_rollups() {
-                all_time_source_unavailable_from_archive_ranges = true;
-            }
-            continue;
-        };
-        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
-        if !summary_projection_archive_has_coverage_bounds(archive)
-            && let Some(actual_range) = load_summary_projection_archive_coverage_range(
-                &archive_pool,
-            )
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "summary projection archive coverage hydration failed for {}: {error:?}",
-                    archive.file_path()
-                )
-            })?
-        {
-            archive_actual_coverage_ranges.insert(archive.file_path().to_string(), actual_range);
-        }
-        let account_ids = load_summary_projection_archive_account_ids(&archive_pool, archive_range)
-            .await
-            .map_err(|error| {
-                anyhow!(
-                    "summary projection archive account discovery failed for {}: {error:?}",
-                    archive.file_path()
-                )
-            })?;
-        known_account_ids.extend(account_ids.iter().copied());
-        cached_archive_account_id_count =
-            cached_archive_account_id_count.saturating_add(account_ids.len());
-        if cached_archive_account_id_count > summary_projection_exact_record_limit() {
-            return Err(anyhow!(
-                "summary projection archive account cache exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-            ));
-        }
-        if known_account_ids.len() > summary_projection_exact_record_limit() {
-            return Err(anyhow!(
-                "summary projection archive account coverage exceeded bounded budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
-            ));
-        }
-        archive_account_ids_by_file.insert(archive.file_path().to_string(), account_ids);
-        require_summary_projection_archive_file_sha256(archive, manifest_sha256)?;
-        archive_pool.close().await;
-        drop(temp_cleanup);
     }
     info!(
         ?mode,
@@ -14761,7 +17601,9 @@ async fn build_summary_projection_once(
         )?;
     }
     let mut paged_boundary_raw_archive_admissions = 0usize;
-    if let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id {
+    if mode.includes_all_time()
+        && let Some(high_watermark_id) = paged_boundary_manifest_high_watermark_id
+    {
         // Page only bounded manifest metadata while planning the finite exact buckets. The raw
         // archives themselves are opened later one at a time after live boundary records have
         // been admitted; each page retains its actual replay/materialization proof.
@@ -15044,6 +17886,117 @@ async fn build_summary_projection_once(
     // those bucket identities so the later historical coverage pass does not revoke an exact
     // archive/live selection it has already admitted under this build's high-watermark.
     let mut fully_admitted_historical_live_buckets = BTreeSet::<i64>::new();
+    let historical_live_range = ExactUtcRange {
+        start: archive_start,
+        end: live_start,
+    };
+    // The rollup cursor is a durable coverage fence. Rows after it are the only persisted-live
+    // tail that still needs resident admission; scanning the whole historical table here made a
+    // cold production bootstrap exceed its 30-second contract even when the lagging tail had
+    // only a handful of rows.
+    if historical_live_range.start < historical_live_range.end
+        && rollup_live_cursor < live_high_watermark_id
+        // The current index is the higher-priority bounded prefix.  Once that prefix itself
+        // overflows, retaining older historical rows would consume the same finite admission
+        // budget while still failing to prove the requested newest-N boundary; leave the whole
+        // historical bucket as a recoverable gap instead.
+        && recent_index_complete
+    {
+        let remaining = summary_projection_exact_record_limit()
+            .saturating_sub(records_by_invoke_id.len())
+            .saturating_add(1);
+        let tail_admission = query_summary_projection_live_rows_with_budget(
+            pool,
+            InvocationSourceScope::All,
+            historical_live_range,
+            live_high_watermark_id,
+            Some(rollup_live_cursor),
+            None,
+            remaining,
+            false,
+            SUMMARY_PROJECTION_MAX_PREVIEW_BYTES.saturating_sub(exact_record_bytes),
+            &mut live_preview_cache,
+            UpstreamAccountActivityPreviewReadTelemetry {
+                route: "summary_projection",
+                builder: "historical_live_tail",
+                purpose: "summary_projection_historical_live_tail",
+            },
+        )
+        .await?;
+        let mut tail_admission_complete =
+            tail_admission.overflow.is_none() && tail_admission.gaps.is_empty();
+        for candidate in tail_admission
+            .gaps
+            .into_iter()
+            .chain(tail_admission.overflow)
+        {
+            if let Some(bucket) = summary_projection_live_candidate_bucket(&candidate) {
+                summary_projection_mark_unavailable_archive_ranges(
+                    &mut unavailable_exact_live_buckets,
+                    [ExactUtcRange {
+                        start: Utc
+                            .timestamp_opt(bucket, 0)
+                            .single()
+                            .expect("valid historical live bucket start"),
+                        end: Utc
+                            .timestamp_opt(bucket.saturating_add(3_600), 0)
+                            .single()
+                            .expect("valid historical live bucket end"),
+                    }],
+                )?;
+            }
+            tail_admission_complete = false;
+        }
+        let mut tail_buckets = BTreeSet::new();
+        for row in tail_admission.rows {
+            let Some((record_key, record)) = summary_projection_live_record_from_preview(
+                row,
+                rollup_live_cursor,
+                account_rollup_live_cursor,
+                &hourly_rollup_totals,
+                &hourly_rollup_usage,
+            ) else {
+                tail_admission_complete = false;
+                continue;
+            };
+            let bucket = align_bucket_epoch(record.occurred_at.timestamp(), 3_600, 0);
+            let replaced_bytes = records_by_invoke_id
+                .get(&record.row.invoke_id)
+                .map(|previous| summary_projection_preview_row_bytes(&previous.row))
+                .unwrap_or_default();
+            let next_record_bytes = exact_record_bytes
+                .saturating_sub(replaced_bytes)
+                .saturating_add(summary_projection_preview_row_bytes(&record.row));
+            if let Err(error) =
+                ensure_summary_projection_resident_record_bytes(next_record_bytes, 0)
+            {
+                if !summary_projection_resident_record_budget_exceeded(&error) {
+                    return Err(error);
+                }
+                summary_projection_mark_unavailable_archive_ranges(
+                    &mut unavailable_exact_live_buckets,
+                    [ExactUtcRange {
+                        start: Utc
+                            .timestamp_opt(bucket, 0)
+                            .single()
+                            .expect("valid historical live bucket start"),
+                        end: Utc
+                            .timestamp_opt(bucket.saturating_add(3_600), 0)
+                            .single()
+                            .expect("valid historical live bucket end"),
+                    }],
+                )?;
+                tail_admission_complete = false;
+                continue;
+            }
+            exact_record_bytes = next_record_bytes;
+            records_by_invoke_id.insert(record_key, record);
+            tail_buckets.insert(bucket);
+        }
+        if tail_admission_complete {
+            fully_admitted_historical_live_buckets.extend(tail_buckets);
+        }
+    }
     for range in exact_live_ranges {
         if recent_index_overflow_at.is_some_and(|overflow_at| range.start <= overflow_at) {
             // The recent index already proves that this range reaches omitted live history. Do
@@ -15059,6 +18012,7 @@ async fn build_summary_projection_once(
             InvocationSourceScope::All,
             range,
             live_high_watermark_id,
+            None,
             None,
             remaining,
             false,
@@ -15154,10 +18108,6 @@ async fn build_summary_projection_once(
             }
         }
     }
-    let historical_live_range = ExactUtcRange {
-        start: archive_start,
-        end: live_start,
-    };
     let mut historical_live_coverage = None;
     if historical_live_range.start < historical_live_range.end {
         if mode.requires_full_historical_live_coverage() {
@@ -15191,10 +18141,19 @@ async fn build_summary_projection_once(
                 &mut historical_global_covered_terminal_invoke_ids,
             )
             .await?;
+            let reconciliation_required = unavailable_exact_live_buckets.iter().any(|bucket| {
+                summary_projection_bucket_intersects_range(*bucket, historical_live_range)
+            }) || unavailable_exact_live_account_buckets
+                .values()
+                .any(|buckets| {
+                    buckets.iter().any(|bucket| {
+                        summary_projection_bucket_intersects_range(*bucket, historical_live_range)
+                    })
+                });
             historical_live_coverage = Some(SummaryProjectionHistoricalLiveCoverage {
                 range: historical_live_range,
                 high_watermark_id: live_high_watermark_id,
-                reconciliation_required: false,
+                reconciliation_required,
             });
             info!(
                 ?mode,
@@ -15203,7 +18162,7 @@ async fn build_summary_projection_once(
                 "summary projection build stage completed"
             );
         } else {
-            let coverage = reuse_summary_projection_historical_live_coverage(
+            let mut coverage = reuse_summary_projection_historical_live_coverage(
                 pool,
                 previous_historical_live_coverage.as_ref(),
                 historical_live_range,
@@ -15225,6 +18184,19 @@ async fn build_summary_projection_once(
                 &mut historical_global_covered_terminal_invoke_ids,
             )
             .await?;
+            coverage.reconciliation_required |=
+                unavailable_exact_live_buckets.iter().any(|bucket| {
+                    summary_projection_bucket_intersects_range(*bucket, historical_live_range)
+                }) || unavailable_exact_live_account_buckets
+                    .values()
+                    .any(|buckets| {
+                        buckets.iter().any(|bucket| {
+                            summary_projection_bucket_intersects_range(
+                                *bucket,
+                                historical_live_range,
+                            )
+                        })
+                    });
             info!(
                 ?mode,
                 stage = "historical_live_coverage_reuse",
@@ -15270,6 +18242,10 @@ async fn build_summary_projection_once(
                 .copied()
                 .unwrap_or_default(),
         );
+        // Replay markers for an unmaterialized archive do not replace the raw source for the
+        // account and usage dimensions. Keep the archive in the exact-record path until the
+        // historical rollup materialization proof is complete.
+        let archive_rollups_are_exact = archive.has_materialized_historical_rollups();
         let exact_ranges = summary_projection_archive_exact_ranges_with_coverage(
             archive.has_materialized_historical_rollups(),
             Some(replay_coverage.overall),
@@ -15293,6 +18269,32 @@ async fn build_summary_projection_once(
                 "summary projection exact archive boundary exceeds bounded row budget ({SUMMARY_PROJECTION_MAX_EXACT_RECORDS})"
             ));
         }
+        // A large materialized archive cannot fit in the bounded exact-record set. Its compact
+        // rollup still proves complete-hour totals, so preserve those totals and mark only the
+        // partial boundary segments as unavailable. Avoid opening the raw source just to hit the
+        // same resident-budget failure after reading every row.
+        if archive.has_materialized_historical_rollups()
+            && archive_row_counts
+                .get(archive.file_path())
+                .is_some_and(|count| *count > summary_projection_exact_record_limit() as i64)
+            && summary_projection_archive_is_fully_within_exact_horizon(
+                &archive,
+                ExactUtcRange {
+                    start: archive_start,
+                    end,
+                },
+            )
+        {
+            summary_projection_mark_unavailable_archive_ranges_by_requirement(
+                &mut unavailable_unmaterialized_archive_buckets,
+                &mut unavailable_boundary_archive_ranges,
+                true,
+                &exact_ranges,
+                &exact_bucket_requirements,
+            )?;
+            unavailable_unmaterialized_archive_current_ranges.push(archive_range);
+            continue;
+        }
         let manifest_sha256 = archive_manifest_sha256
             .get(archive.file_path())
             .ok_or_else(|| {
@@ -15315,7 +18317,7 @@ async fn build_summary_projection_once(
                     &persisted_live_ids,
                     &hourly_rollup_totals,
                     &hourly_rollup_usage,
-                    archive.has_materialized_historical_rollups(),
+                    archive_rollups_are_exact,
                     Some(replay_coverage.overall),
                     Some(replay_coverage.account_stats),
                     Some(replay_coverage.usage_breakdown),
@@ -15369,7 +18371,7 @@ async fn build_summary_projection_once(
                     &persisted_live_ids,
                     &hourly_rollup_totals,
                     &hourly_rollup_usage,
-                    archive.has_materialized_historical_rollups(),
+                    archive_rollups_are_exact,
                     Some(replay_coverage.overall),
                     Some(replay_coverage.account_stats),
                     Some(replay_coverage.usage_breakdown),
@@ -15423,7 +18425,7 @@ async fn build_summary_projection_once(
             &persisted_live_ids,
             &hourly_rollup_totals,
             &hourly_rollup_usage,
-            archive.has_materialized_historical_rollups(),
+            archive_rollups_are_exact,
             Some(replay_coverage.overall),
             Some(replay_coverage.account_stats),
             Some(replay_coverage.usage_breakdown),
@@ -15863,6 +18865,26 @@ async fn build_summary_projection_once(
         ) else {
             continue;
         };
+        // A materialized archive whose complete coverage is inside the moving live horizon
+        // cannot fit in the bounded current resident prefix when its manifest row count already
+        // exceeds the exact-record limit. Its compact rollup remains an exact source for
+        // rolling ranges; do not spend the budget opening a raw file that must make current
+        // unavailable anyway.
+        if archive.has_materialized_historical_rollups()
+            && archive_row_counts
+                .get(archive.file_path())
+                .is_some_and(|count| *count > summary_projection_exact_record_limit() as i64)
+            && summary_projection_archive_is_fully_within_exact_horizon(
+                archive,
+                ExactUtcRange {
+                    start: live_start,
+                    end,
+                },
+            )
+        {
+            current_source_unavailable = true;
+            continue;
+        }
         let Some(manifest_sha256) = current_materialized_sha256.get(archive.file_path()) else {
             current_source_unavailable = true;
             continue;
@@ -16310,8 +19332,16 @@ async fn build_summary_projection_once(
         // would make the compact all-time baseline silently lose that archive bucket. Preserve
         // an exact last-good aggregate (or its existing unavailable contract) until durable
         // coverage can again be proven off-request.
-        global_all_time_source_unavailable |= !global_rollup_coverage_proven;
-        account_all_time_unavailable |= !account_rollup_coverage_proven;
+        // A stale replay marker means the compact rollup is not authoritative yet, but it does
+        // not make the whole all-time scope unavailable when the bounded raw archive fallback
+        // can still be verified below. Keep the rollup result as a separate reason so a
+        // successful raw recovery can clear only that provisional gap.
+        let global_rollup_coverage_unproven = !global_rollup_coverage_proven;
+        let account_rollup_coverage_unproven = !account_rollup_coverage_proven;
+        let global_non_rollup_source_blocked = global_all_time_source_unavailable;
+        let account_non_rollup_source_blocked = account_all_time_unavailable;
+        let mut global_live_tail_source_blocked = false;
+        let mut account_live_tail_source_blocked = false;
         // A failed paged proof is retried on the same controlled admission cadence as a failed
         // bounded admission. A normally admitted manifest set keeps its existing immediate
         // repair behavior, but an overflowed history must not rescan every 10 seconds after an
@@ -16383,11 +19413,13 @@ async fn build_summary_projection_once(
             // silently omit or double count the live history. Preserve exact last-good instead.
             if rollup_live_cursor == 0 {
                 global_all_time_source_unavailable = true;
+                global_live_tail_source_blocked = true;
             }
             // Account rollups advance independently. Without their cursor, no account-scoped
             // all-time response can prove whether its compact prefix already contains live rows.
             if account_rollup_live_cursor.is_none() {
                 account_all_time_unavailable = true;
+                account_live_tail_source_blocked = true;
             }
         }
         if has_any_completed_archive && rollup_live_cursor > 0 {
@@ -16423,16 +19455,12 @@ async fn build_summary_projection_once(
             SummaryProjectionTestInterleaveStage::BeforeAllTimeArchiveScan,
         )
         .await?;
-        if global_archive_scan_verified_paths.len() != all_time_archive_scan_paths.global.len() {
-            // The generic global aggregate chooses its own archive paths inside `stats`. Do not
-            // let a source which was unavailable at preflight become readable and enter that
-            // scan under a different manifest revision. When every candidate is already
-            // materialized, the compact global rollup is its exact all-time source and no raw
-            // reconciliation is necessary; otherwise retain the last-good global aggregate.
-            if all_time_archive_scan_paths.global_unmaterialized_count != 0 {
-                global_all_time_source_unavailable = true;
-            }
-        } else {
+        let mut global_raw_archive_recovery_succeeded = false;
+        if all_time_archive_scan_paths.global_unmaterialized_count != 0 {
+            // Materialized archives are already represented by their compact replay/rollup
+            // proof. A corrupt sibling must not prevent the independent unmaterialized archive
+            // tail from being recovered; the bounded stats query only opens that unmaterialized
+            // subset and therefore remains safe when a materialized path is unreadable.
             let unmaterialized_archive_totals =
                 crate::stats::query_unmaterialized_invocation_archive_totals_bounded_strict(
                     pool,
@@ -16445,10 +19473,11 @@ async fn build_summary_projection_once(
             match unmaterialized_archive_totals {
                 Ok(totals) => {
                     require_summary_projection_archive_file_paths_sha256(
-                        &all_time_archive_scan_paths.global,
+                        &global_archive_scan_verified_paths,
                         &all_time_archive_manifest_sha256,
                     )?;
                     global_totals = global_totals.add(totals);
+                    global_raw_archive_recovery_succeeded = true;
                 }
                 Err(error)
                     if error
@@ -16463,6 +19492,22 @@ async fn build_summary_projection_once(
                     ));
                 }
             }
+        } else if global_archive_scan_verified_paths.len()
+            != all_time_archive_scan_paths.global.len()
+        {
+            // No unmaterialized tail remains. Missing materialized files are covered by the
+            // compact baseline, so they do not invalidate the exact global aggregate.
+        } else {
+            // All candidates are materialized and verified; the compact global rollup is the
+            // exact all-time source and no raw reconciliation is necessary.
+        }
+        if global_raw_archive_recovery_succeeded
+            && global_rollup_coverage_unproven
+            && all_time_archive_scan_paths.global_unmaterialized_count > 0
+            && !global_non_rollup_source_blocked
+            && !global_live_tail_source_blocked
+        {
+            global_all_time_source_unavailable = false;
         }
         // Any materialized compact gap, including a missing rollup key with complete replay
         // markers, is replaced by its exact canonical source. Unmaterialized sibling archives
@@ -16533,6 +19578,7 @@ async fn build_summary_projection_once(
                 &all_time_archive_scan_paths.account,
                 &all_time_archive_manifest_sha256,
             )?;
+        let mut account_raw_archive_recovery_succeeded = false;
         let account_archive_totals = if account_archive_scan_verified_paths.len()
             != all_time_archive_scan_paths.account.len()
         {
@@ -16554,6 +19600,7 @@ async fn build_summary_projection_once(
                         &all_time_archive_scan_paths.account,
                         &all_time_archive_manifest_sha256,
                     )?;
+                    account_raw_archive_recovery_succeeded = true;
                     totals
                 }
                 Err(error)
@@ -16576,6 +19623,14 @@ async fn build_summary_projection_once(
         for (account_id, totals) in account_archive_totals {
             let entry = batched_all_time_by_account.entry(account_id).or_default();
             *entry = entry.add(totals);
+        }
+        if account_raw_archive_recovery_succeeded
+            && account_rollup_coverage_unproven
+            && !all_time_archive_scan_paths.account.is_empty()
+            && !account_non_rollup_source_blocked
+            && !account_live_tail_source_blocked
+        {
+            account_all_time_unavailable = false;
         }
         // A global materialization marker does not prove account coverage. Only canonical rows
         // not represented by the account compact aggregate contribute here, so a global-only
@@ -16666,7 +19721,7 @@ async fn build_summary_projection_once(
         }
     }
     let refreshed_at = Some(Instant::now());
-    let freshness = SummaryProjectionFreshness {
+    let mut freshness = SummaryProjectionFreshness {
         global_all_time_eligible: if all_time_was_fully_rebuilt {
             if global_all_time_source_unavailable {
                 previous_global_all_time_eligible && all_time_by_account.contains_key(&None)
@@ -16678,7 +19733,7 @@ async fn build_summary_projection_once(
         },
         account_all_time_eligible: if all_time_was_fully_rebuilt {
             if account_all_time_unavailable {
-                previous_account_all_time_eligible
+                previous_account_all_time_eligible.clone()
             } else {
                 all_time_by_account
                     .keys()
@@ -16686,11 +19741,9 @@ async fn build_summary_projection_once(
                     .collect()
             }
         } else {
-            previous_account_all_time_eligible
+            previous_account_all_time_eligible.clone()
         },
     };
-    let all_time_oldest_account_refreshed_at =
-        all_time_account_refreshed_at.values().copied().min();
     let persisted_live_record_has_unavailable_global_rolling_coverage =
         |record: &SummaryProjectionRecord| {
             unavailable_exact_live_buckets.contains(&align_bucket_epoch(
@@ -16732,7 +19785,7 @@ async fn build_summary_projection_once(
         .map(|record| format!("{}\0{}", record.row.invoke_id, record.row.occurred_at))
         .collect::<HashSet<_>>();
     persisted_live_terminal_invoke_ids.extend(historical_global_covered_terminal_invoke_ids);
-    let all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
+    let mut all_time_terminal_coverage_complete = if all_time_was_fully_rebuilt {
         // Global all-time responses have an independent durable source contract. An account
         // manifest gap must not make an otherwise exact global aggregate replay every terminal
         // delta or exhaust the shared all-time overlay budget.
@@ -16740,13 +19793,13 @@ async fn build_summary_projection_once(
     } else {
         previous_all_time_terminal_coverage_complete
     };
-    let all_time_terminal_sequence_watermark = summary_projection_all_time_sequence_watermark(
+    let mut all_time_terminal_sequence_watermark = summary_projection_all_time_sequence_watermark(
         all_time_was_fully_rebuilt,
         all_time_terminal_coverage_complete,
         durable_terminal_sequence_watermark,
         previous_all_time_terminal_sequence_watermark,
     );
-    let all_time_persisted_live_terminal_invoke_ids =
+    let mut all_time_persisted_live_terminal_invoke_ids =
         if all_time_was_fully_rebuilt && all_time_terminal_coverage_complete {
             records
                 .iter()
@@ -16761,8 +19814,8 @@ async fn build_summary_projection_once(
             previous_all_time_persisted_live_terminal_invoke_ids
         };
     let (
-        all_time_account_terminal_sequence_watermarks,
-        all_time_account_persisted_live_terminal_invoke_ids,
+        mut all_time_account_terminal_sequence_watermarks,
+        mut all_time_account_persisted_live_terminal_invoke_ids,
     ) = if all_time_was_fully_rebuilt && !account_all_time_unavailable {
         let account_watermarks = rebuilt_all_time_account_ids
             .iter()
@@ -16807,12 +19860,16 @@ async fn build_summary_projection_once(
         summary_projection_merge_exact_ranges(unavailable_unmaterialized_archive_ranges);
     let unavailable_boundary_archive_ranges =
         summary_projection_merge_exact_ranges(unavailable_boundary_archive_ranges);
-    let unavailable_unmaterialized_archive_current_ranges =
+    let mut unavailable_unmaterialized_archive_current_ranges =
         summary_projection_merge_exact_ranges(unavailable_unmaterialized_archive_current_ranges);
-    let unavailable_unmaterialized_archive_account_ranges =
+    let mut unavailable_unmaterialized_archive_account_ranges =
         summary_projection_unavailable_bucket_ranges(
             unavailable_unmaterialized_archive_account_buckets,
         );
+    unavailable_unmaterialized_archive_account_ranges
+        .extend(unavailable_unmaterialized_archive_account_exact_ranges);
+    let unavailable_unmaterialized_archive_account_ranges =
+        summary_projection_merge_exact_ranges(unavailable_unmaterialized_archive_account_ranges);
     let unavailable_boundary_archive_account_ranges =
         summary_projection_merge_exact_ranges(unavailable_boundary_archive_account_ranges);
     let unavailable_unmaterialized_archive_account_current_ranges =
@@ -16830,12 +19887,42 @@ async fn build_summary_projection_once(
             )
         })
         .collect();
-    let (current_archive_latest_coverage_end, current_archive_has_unknown_coverage) =
-        load_summary_projection_unrepresented_current_archive_coverage(
-            pool,
-            &current_complete_archive_paths,
-        )
-        .await?;
+    let (
+        unrepresented_current_archive_ranges,
+        current_archive_latest_coverage_end,
+        current_archive_has_unknown_coverage,
+    ) = load_summary_projection_unrepresented_current_archive_coverage(
+        pool,
+        &current_complete_archive_paths,
+        exact_horizon,
+    )
+    .await?;
+    unavailable_unmaterialized_archive_current_ranges.extend(unrepresented_current_archive_ranges);
+    let current_selection_cutoff_epoch = {
+        let mut timestamps = current_records
+            .iter()
+            .map(|record| record.occurred_at)
+            .collect::<Vec<_>>();
+        timestamps.sort_unstable_by(|left, right| right.cmp(left));
+        timestamps
+            .get(state.config.list_limit_max.saturating_sub(1))
+            .map(|timestamp| timestamp.timestamp())
+    };
+    let current_gap_latest_end_epoch = unavailable_unmaterialized_archive_current_ranges
+        .iter()
+        .map(|range| range.end.timestamp())
+        .max();
+    info!(
+        ?mode,
+        current_gap_range_count = unavailable_unmaterialized_archive_current_ranges.len(),
+        ?current_gap_latest_end_epoch,
+        ?current_selection_cutoff_epoch,
+        current_archive_admission_exceeded,
+        current_archive_has_unknown_coverage,
+        current_record_count = current_records.len(),
+        stage = "current_archive_gap_proof",
+        "summary projection current archive gap proof evaluated"
+    );
     // The global current admission only hydrates the moving exact tail. A completed archive
     // outside that tail may still be the newest record for a quiet account, so account current
     // can be exact only when every completed archive was represented in the resident view.
@@ -16851,6 +19938,58 @@ async fn build_summary_projection_once(
         account_coverage_revision: summary_projection_account_coverage_revision(pool).await?,
         durable_terminal_sequence_watermark,
     };
+    let current_coverage_fence = generation_fence.coverage_fence();
+    let mut published_all_time_refreshed_at =
+        if all_time_was_fully_rebuilt && !global_all_time_source_unavailable {
+            all_time_completed_at
+        } else {
+            previous_all_time_refreshed_at
+        };
+    // A rolling publication may retain an exact all-time aggregate only while the durable
+    // coverage authority that produced it is unchanged.  When a manifest/replay/proof change
+    // revokes that authority, clear the retained scope before publishing the new projection;
+    // otherwise the memory-only handler could serve the old aggregate as a false 200 while
+    // recovery is still pending.
+    let revoke_global_all_time = previous_global_all_time_eligible
+        && previous_global_all_time_coverage_fence
+            .is_none_or(|published| !published.global_sources_match(current_coverage_fence))
+        && (!all_time_was_fully_rebuilt
+            || global_all_time_source_unavailable
+            || !all_time_by_account.contains_key(&None));
+    if revoke_global_all_time {
+        all_time_by_account.remove(&None);
+        freshness.global_all_time_eligible = false;
+        published_all_time_refreshed_at = None;
+        previous_global_all_time_coverage_fence = None;
+        all_time_terminal_coverage_complete = false;
+        all_time_terminal_sequence_watermark = 0;
+        all_time_persisted_live_terminal_invoke_ids.clear();
+    }
+    let revoke_account_all_time = !previous_account_all_time_eligible.is_empty()
+        && previous_account_all_time_coverage_fence
+            .is_none_or(|published| !published.account_sources_match(current_coverage_fence))
+        && (!all_time_was_fully_rebuilt
+            || account_all_time_unavailable
+            || freshness.account_all_time_eligible.is_empty());
+    if revoke_account_all_time {
+        all_time_by_account.retain(|scope, _| scope.is_none());
+        freshness.account_all_time_eligible.clear();
+        all_time_account_refreshed_at.clear();
+        previous_account_all_time_coverage_fence = None;
+        all_time_account_terminal_sequence_watermarks.clear();
+        all_time_account_persisted_live_terminal_invoke_ids.clear();
+    }
+    let all_time_oldest_account_refreshed_at = if revoke_account_all_time {
+        None
+    } else {
+        all_time_account_refreshed_at.values().copied().min()
+    };
+    let coverage_overlay = previous_coverage_overlay.filter(|overlay| {
+        // A coverage revision change revokes the old proof set.  Retaining its normalized
+        // contribution across that fence would make a replacement or terminal-gap update look
+        // exact, so only carry the overlay forward when its coverage authority is unchanged.
+        overlay.coverage_fence == generation_fence.coverage_fence()
+    });
     let projection = SummaryProjection {
         records,
         current_records,
@@ -16859,14 +19998,14 @@ async fn build_summary_projection_once(
         global_all_time_coverage_fence: if all_time_was_fully_rebuilt
             && freshness.global_all_time_eligible
         {
-            Some(generation_fence.coverage_fence())
+            Some(current_coverage_fence)
         } else {
             previous_global_all_time_coverage_fence
         },
         account_all_time_coverage_fence: if all_time_was_fully_rebuilt
             && !account_all_time_unavailable
         {
-            Some(generation_fence.coverage_fence())
+            Some(current_coverage_fence)
         } else {
             previous_account_all_time_coverage_fence
         },
@@ -16888,13 +20027,9 @@ async fn build_summary_projection_once(
         exact_account_usage_rollup_buckets,
         rollup_live_cursor,
         historical_live_coverage,
+        coverage_overlay,
         all_time_by_account,
-        all_time_refreshed_at: if all_time_was_fully_rebuilt && !global_all_time_source_unavailable
-        {
-            all_time_completed_at
-        } else {
-            previous_all_time_refreshed_at
-        },
+        all_time_refreshed_at: published_all_time_refreshed_at,
         all_time_manifest_admission_blocked_at: if all_time_was_fully_rebuilt {
             all_time_archive_admission_exceeded.then(Instant::now)
         } else {
@@ -16962,6 +20097,22 @@ fn summary_snapshot_trigger_marks_dirty(trigger: SummarySnapshotTrigger, has_own
         || (matches!(trigger, SummarySnapshotTrigger::Cadence) && has_owner)
 }
 
+async fn summary_snapshot_cadence_trigger(state: &AppState) -> Option<SummarySnapshotTrigger> {
+    // Historical authority recovery has its own single-flight maintenance worker. Keep this
+    // cadence focused on the availability-critical rolling Projection so V2 backfill cannot
+    // hold current, rolling, or calendar selections past their freshness deadline.
+    if !state.subscription_hub.has_summary_owner().await {
+        return None;
+    }
+    let has_all_time_owner = state.subscription_hub.has_summary_all_time_owner().await;
+    let needs_attention = state
+        .subscription_hub
+        .summary_projection()
+        .await
+        .is_none_or(|projection| projection.needs_cadence_refresh(has_all_time_owner));
+    needs_attention.then_some(SummarySnapshotTrigger::Cadence)
+}
+
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
     tokio::spawn(async move {
         let mut receiver = state.broadcaster.subscribe();
@@ -16974,26 +20125,7 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
         loop {
             let trigger_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
-                _ = cadence.tick() => {
-                    if !state.subscription_hub.has_summary_owner().await {
-                        // The bounded historical supervisor owns durable proof recovery and
-                        // cannot depend on an HTTP/SSE subscriber happening to request `all`.
-                        // Do not build or renew a projection while idle; just give the single
-                        // low-priority recovery page its cadence turn.
-                        if let Err(error) = SummaryCoverageRecoverySupervisor::run(state.as_ref()).await {
-                            warn!(error = ?error, "idle summary historical coverage recovery deferred");
-                        }
-                        None
-                    } else {
-                    let has_all_time_owner = state.subscription_hub.has_summary_all_time_owner().await;
-                    let needs_attention = state
-                        .subscription_hub
-                        .summary_projection()
-                        .await
-                        .is_none_or(|projection| projection.needs_cadence_refresh(has_all_time_owner));
-                        needs_attention.then_some(SummarySnapshotTrigger::Cadence)
-                    }
-                },
+                _ = cadence.tick() => summary_snapshot_cadence_trigger(state.as_ref()).await,
                 payload = receiver.recv() => matches!(
                     payload,
                     Ok(BroadcastPayload::DashboardCurrentSlice { .. })
@@ -21384,6 +24516,7 @@ async fn query_summary_projection_live_candidates(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     high_watermark_id: i64,
+    min_id_exclusive: Option<i64>,
     upstream_account_id: Option<Option<i64>>,
     in_progress_only: bool,
     limit: usize,
@@ -21398,7 +24531,13 @@ async fn query_summary_projection_live_candidates(
         .push(row_bytes.as_str())
         .push(" AS source_bytes FROM codex_invocations WHERE id <= ")
         .push_bind(high_watermark_id)
-        .push(" AND occurred_at >= ");
+        .push(" AND id > ");
+    if let Some(min_id_exclusive) = min_id_exclusive {
+        query.push_bind(min_id_exclusive);
+    } else {
+        query.push_bind(0_i64);
+    }
+    query.push(" AND occurred_at >= ");
     query
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -21449,6 +24588,7 @@ async fn query_summary_projection_live_rows_with_budget(
     source_scope: InvocationSourceScope,
     range: ExactUtcRange,
     high_watermark_id: i64,
+    min_id_exclusive: Option<i64>,
     upstream_account_id: Option<Option<i64>>,
     limit: usize,
     in_progress_only: bool,
@@ -21463,6 +24603,7 @@ async fn query_summary_projection_live_rows_with_budget(
         source_scope,
         range,
         high_watermark_id,
+        min_id_exclusive,
         upstream_account_id,
         in_progress_only,
         limit,
@@ -21639,6 +24780,16 @@ fn summary_projection_intersect_exact_ranges(
         end: left.end.min(right.end),
     };
     (range.start < range.end).then_some(range)
+}
+
+fn summary_projection_bucket_intersects_range(
+    bucket_start_epoch: i64,
+    range: ExactUtcRange,
+) -> bool {
+    let Some(bucket_start) = Utc.timestamp_opt(bucket_start_epoch, 0).single() else {
+        return false;
+    };
+    bucket_start < range.end && range.start < bucket_start + ChronoDuration::hours(1)
 }
 
 async fn reuse_summary_projection_historical_live_coverage(
@@ -21838,10 +24989,28 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
     const BUCKET_SQL: &str = "substr(occurred_at, 1, 13)";
     let resolved_upstream_account_id_sql =
         invocation_upstream_account_id_with_attempt_fallback_sql("codex_invocations");
+    let mut globally_covered_buckets = HashSet::new();
+    // The durable rollup cursor already proves every source row at or below its fence. Clear
+    // stale resident-budget gaps from those buckets before checking only the unrolled tail.
+    for bucket in unavailable_global_buckets
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+    {
+        if summary_projection_bucket_intersects_range(bucket, range)
+            && hourly_rollup_totals.contains_key(&(bucket, None))
+            && hourly_rollup_usage.contains_key(&(bucket, None))
+        {
+            globally_covered_buckets.insert(bucket);
+            unavailable_global_buckets.remove(&bucket);
+        }
+    }
     let mut global_query = QueryBuilder::<Sqlite>::new("SELECT ");
     global_query
         .push("MIN(occurred_at) AS occurred_at, MAX(id) AS max_id FROM codex_invocations WHERE id <= ")
         .push_bind(high_watermark_id)
+        .push(" AND id > ")
+        .push_bind(rollup_live_cursor)
         .push(" AND occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -21855,7 +25024,6 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         .await
         .context("summary projection historical live coverage hydration failed")?;
 
-    let mut globally_covered_buckets = HashSet::new();
     for row in global_rows {
         let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
@@ -21871,13 +25039,45 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             unavailable_global_buckets.insert(bucket_start_epoch);
         }
     }
+    // The initial bounded live admission may have marked a bucket unavailable before its
+    // durable rollup was committed.  A complete global rollup is stronger proof than that
+    // stale resident-budget gap, so remove only the buckets this pass proves covered.
+    for bucket in &globally_covered_buckets {
+        unavailable_global_buckets.remove(bucket);
+    }
 
+    let mut covered_account_buckets = HashMap::<i64, BTreeSet<i64>>::new();
+    for (account_id, unavailable_buckets) in unavailable_account_buckets.iter_mut() {
+        for bucket in unavailable_buckets.clone() {
+            if summary_projection_bucket_intersects_range(bucket, range)
+                && account_rollup_live_cursor.is_some_and(|cursor| {
+                    hourly_rollup_totals.contains_key(&(bucket, Some(*account_id)))
+                        && hourly_rollup_usage.contains_key(&(bucket, Some(*account_id)))
+                        && cursor >= 0
+                })
+            {
+                covered_account_buckets
+                    .entry(*account_id)
+                    .or_default()
+                    .insert(bucket);
+                unavailable_buckets.remove(&bucket);
+            }
+        }
+    }
+    unavailable_account_buckets.retain(|_, buckets| !buckets.is_empty());
     let mut account_query = QueryBuilder::<Sqlite>::new("SELECT ");
     account_query
         .push("MIN(occurred_at) AS occurred_at, ")
         .push(resolved_upstream_account_id_sql.as_str())
         .push(" AS upstream_account_id, MAX(id) AS max_id FROM codex_invocations WHERE id <= ")
         .push_bind(high_watermark_id)
+        .push(" AND id > ");
+    if let Some(cursor) = account_rollup_live_cursor {
+        account_query.push_bind(cursor);
+    } else {
+        account_query.push_bind(0_i64);
+    }
+    account_query
         .push(" AND occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -21904,11 +25104,26 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
             || (account_rollup_live_cursor.is_some_and(|cursor| row.max_id <= cursor)
                 && hourly_rollup_totals.contains_key(&(bucket_start_epoch, Some(account_id)))
                 && hourly_rollup_usage.contains_key(&(bucket_start_epoch, Some(account_id))));
-        if !account_covered {
+        if account_covered {
+            covered_account_buckets
+                .entry(account_id)
+                .or_default()
+                .insert(bucket_start_epoch);
+        } else {
             unavailable_account_buckets
                 .entry(account_id)
                 .or_default()
                 .insert(bucket_start_epoch);
+        }
+    }
+    for (account_id, buckets) in covered_account_buckets {
+        if let Some(unavailable) = unavailable_account_buckets.get_mut(&account_id) {
+            for bucket in buckets {
+                unavailable.remove(&bucket);
+            }
+            if unavailable.is_empty() {
+                unavailable_account_buckets.remove(&account_id);
+            }
         }
     }
 
@@ -21916,6 +25131,8 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
         QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM codex_invocations WHERE id <= ");
     terminal_count_query
         .push_bind(high_watermark_id)
+        .push(" AND id > ")
+        .push_bind(rollup_live_cursor)
         .push(" AND occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range.start))
         .push(" AND occurred_at < ")
@@ -21950,7 +25167,11 @@ async fn mark_summary_projection_uncovered_historical_live_ranges(
                 continue;
             };
             let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
-            if row.id <= rollup_live_cursor && globally_covered_buckets.contains(&bucket) {
+            if row.id <= rollup_live_cursor
+                && (globally_covered_buckets.contains(&bucket)
+                    || (hourly_rollup_totals.contains_key(&(bucket, None))
+                        && hourly_rollup_usage.contains_key(&(bucket, None))))
+            {
                 global_covered_terminal_invoke_ids
                     .insert(format!("{}\0{}", row.invoke_id, row.occurred_at));
             }
@@ -33148,6 +36369,148 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_all_time_rejects_conflicting_completed_manifest_identity_for_one_path() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for (id, month_key, sha256) in [
+            (1_i64, "2026-08", "summary-conflicting-sha-a"),
+            (2_i64, "2026-09", "summary-conflicting-sha-b"),
+        ] {
+            sqlx::query(
+                "INSERT INTO archive_batches
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+                 VALUES (?1, 'codex_invocations', ?2, '/archive/shared.sqlite.gz', ?3, 1, 'completed', 'unknown')",
+            )
+            .bind(id)
+            .bind(month_key)
+            .bind(sha256)
+            .execute(&pool)
+            .await
+            .expect("insert conflicting completed manifest");
+        }
+
+        let error = match load_summary_projection_all_time_archive_scan_paths(&pool).await {
+            Ok(_) => panic!("conflicting archive identities must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("archive identity is ambiguous"));
+    }
+
+    #[tokio::test]
+    async fn summary_all_time_rejects_duplicate_completed_manifest_identity_for_one_path() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for (id, month_key) in [(1_i64, "2026-08"), (2_i64, "2026-09")] {
+            sqlx::query(
+                "INSERT INTO archive_batches
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+                 VALUES (?1, 'codex_invocations', ?2, '/archive/duplicate.sqlite.gz',
+                         'summary-duplicate-sha', 1, 'completed', 'unknown')",
+            )
+            .bind(id)
+            .bind(month_key)
+            .execute(&pool)
+            .await
+            .expect("insert duplicate completed manifest");
+        }
+
+        let error = match load_summary_projection_all_time_archive_scan_paths(&pool).await {
+            Ok(_) => panic!("duplicate archive identities must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("archive identity is duplicated"));
+    }
+
+    #[tokio::test]
+    async fn summary_recent_proof_identity_requires_bounded_manifest_coverage() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+             VALUES (1, 'codex_invocations', '2026-09', '/archive/unknown.sqlite.gz',
+                     'summary-v2-unknown-range', 1, 'completed', 'unknown')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed unknown-range archive manifest");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof
+             (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+             VALUES (1, 'summary-v2-unknown-range', 1, 1, 'semantic-proof')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed unknown-range V2 proof");
+
+        let now = Utc::now();
+        let ids = load_summary_v2_archive_proof_identities_in_range(
+            &pool,
+            now - ChronoDuration::days(30),
+            now,
+        )
+        .await
+        .expect("load recent proof identities");
+        assert!(
+            ids.is_empty(),
+            "an unbounded manifest must not repeatedly trigger recent overlay publication"
+        );
+
+        let coverage_start =
+            crate::stats::db_occurred_at_lower_bound(now - ChronoDuration::hours(1));
+        let coverage_end = crate::db_occurred_at_upper_bound(now);
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind,
+              coverage_start_at, coverage_end_at)
+             VALUES (2, 'codex_invocations', '2026-09', '/archive/bounded.sqlite.gz',
+                     'summary-v2-bounded-range', 1, 'completed', 'unknown', ?1, ?2)",
+        )
+        .bind(coverage_start)
+        .bind(coverage_end)
+        .execute(&pool)
+        .await
+        .expect("seed bounded archive manifest");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof
+             (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+             VALUES (2, 'summary-v2-bounded-range', 1, 1, 'semantic-proof')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed bounded V2 proof");
+
+        let ids = load_summary_v2_archive_proof_identities_in_range(
+            &pool,
+            now - ChronoDuration::days(30),
+            now,
+        )
+        .await
+        .expect("reload recent proof identities");
+        assert!(ids.contains(&(2, "summary-v2-bounded-range".to_string())));
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn summary_projection_paged_manifests_include_minimum_legacy_id() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -33208,7 +36571,8 @@ mod request_compression_query_tests {
                  status TEXT NOT NULL, \
                  file_path TEXT NOT NULL, \
                  sha256 TEXT, \
-                 historical_rollups_materialized_at TEXT \
+                 historical_rollups_materialized_at TEXT, \
+                 summary_source_kind TEXT NOT NULL DEFAULT 'unknown' \
              )",
         )
         .execute(&pool)
@@ -34151,6 +37515,17 @@ mod request_compression_query_tests {
             "a current limit reaching the first unproven rank must fail closed"
         );
         assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&gap),
+                std::slice::from_ref(&newer_delta),
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+            ),
+            "an all-time gap must fail closed for both HTTP and Summary SSE"
+        );
+        assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),
                 std::slice::from_ref(&gap),
@@ -34183,6 +37558,12 @@ mod request_compression_query_tests {
             .await
             .expect("publish bootstrap projection");
 
+        let published_revision = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("published projection")
+            .revision();
         let mut stale = (*state
             .subscription_hub
             .summary_projection()
@@ -34216,7 +37597,7 @@ mod request_compression_query_tests {
             .await
             .expect("renewed projection");
         assert_eq!(
-            renewed.revision, 1,
+            renewed.revision, published_revision,
             "renewal must not rebuild or swap the snapshot"
         );
         state.pool.close().await;
@@ -34236,6 +37617,156 @@ mod request_compression_query_tests {
             assert_eq!(response.total_count, 1, "{window} exact count");
             assert_eq!(response.total_tokens, 17, "{window} exact tokens");
         }
+    }
+
+    #[tokio::test]
+    async fn summary_projection_coverage_revision_invalidates_live_freshness_lease() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-coverage-renewal', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed summary projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+
+        let mut stale = (*state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("published projection"))
+        .clone();
+        stale.refreshed_at =
+            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
+        state.subscription_hub.store_summary_projection(stale).await;
+        sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("advance coverage revision");
+
+        assert!(
+            !renew_summary_projection_freshness_if_generation_matches(state.as_ref())
+                .await
+                .expect("read changed coverage fence"),
+            "coverage changes must not claim the full generation is unchanged"
+        );
+        assert!(
+            !renew_summary_projection_freshness_if_live_tail_matches(state.as_ref())
+                .await
+                .expect("read changed coverage fence"),
+            "coverage-only changes must not renew a projection with stale historical authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_projection_coverage_change_revokes_stale_all_time_without_blocking_recent() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-coverage-revoke-all', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed summary projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish exact bootstrap projection");
+        state
+            .subscription_hub
+            .note_summary_http_interest(true)
+            .await;
+        refresh_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish exact all-time projection");
+        let Json(before) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("baseline all-time projection is exact");
+        assert_eq!(before.total_count, 1);
+
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create coverage publication interleave gate");
+        sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("advance historical coverage before build");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        );
+        let refresh_state = state.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_summary_snapshots_with_mode(
+                refresh_state.as_ref(),
+                SummaryProjectionBuildMode::RollingDelta,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
+            .await
+            .expect("rolling build reaches publication fence");
+        sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+            .execute(&state.pool)
+            .await
+            .expect("revoke historical coverage during build");
+        interleave.resume_build();
+        tokio::time::timeout(Duration::from_secs(5), refresh)
+            .await
+            .expect("rolling build completes after coverage revision")
+            .expect("join rolling build")
+            .expect("stale rolling build is discarded after coverage revision");
+        clear_summary_projection_test_interleave();
+        state.pool.close().await;
+
+        let all_time = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(all_time, Err(ApiError::Unavailable(_))),
+            "coverage revocation must not serve the old all-time aggregate"
+        );
+
+        let Json(current) = fetch_summary(
+            State(state),
+            Query(SummaryQuery {
+                window: Some("current".to_string()),
+                limit: Some(50),
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("unrelated recent selection remains exact");
+        assert_eq!(current.total_count, 1);
+        assert_eq!(current.total_tokens, 17);
     }
 
     #[tokio::test]
@@ -34447,6 +37978,72 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
+    async fn summary_projection_generic_build_does_not_overwrite_newer_projection() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-generic-cas-base', datetime('now'), 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed generic projection");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish base projection");
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create generic build interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeProjectionPublication,
+        );
+        let state_for_build = state.clone();
+        let build = tokio::spawn(async move {
+            hydrate_summary_snapshots_with_deadline(
+                state_for_build.as_ref(),
+                SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), interleave.wait_for_writer())
+            .await
+            .expect("generic build reaches publication fence");
+
+        let base = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("base projection remains published while build is paused");
+        let replacement_revision = base.revision().saturating_add(1);
+        state
+            .subscription_hub
+            .store_summary_projection(
+                Arc::unwrap_or_clone(base).with_revision(replacement_revision),
+            )
+            .await;
+        interleave.resume_build();
+        let result = tokio::time::timeout(Duration::from_secs(5), build)
+            .await
+            .expect("generic build completes after replacement")
+            .expect("join generic build");
+        clear_summary_projection_test_interleave();
+        result.expect("stale generic build is discarded without error");
+
+        let published = state
+            .subscription_hub
+            .summary_projection()
+            .await
+            .expect("replacement projection remains published");
+        assert_eq!(published.revision(), replacement_revision);
+    }
+
+    #[tokio::test]
     async fn summary_projection_all_time_generation_change_preserves_coverage_and_replays_tail() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -34520,7 +38117,7 @@ mod request_compression_query_tests {
 
         state.pool.close().await;
         let Json(current) = fetch_summary(
-            State(state),
+            State(state.clone()),
             Query(SummaryQuery {
                 window: Some("current".to_string()),
                 limit: Some(50),
@@ -34532,6 +38129,20 @@ mod request_compression_query_tests {
         .expect("current must remain exact and memory-only after all-time cancellation");
         assert_eq!(current.total_count, 2);
         assert_eq!(current.total_tokens, 40);
+
+        let Json(all) = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await
+        .expect("all-time finalization must include the concurrent terminal exactly once");
+        assert_eq!(all.total_count, 2);
+        assert_eq!(all.total_tokens, 40);
     }
 
     #[tokio::test]
@@ -34978,6 +38589,64 @@ mod request_compression_query_tests {
         assert_eq!(response.total_tokens, 91);
     }
 
+    #[tokio::test]
+    async fn summary_all_time_v2_marker_without_pages_does_not_complete_manifest_scan() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory pool");
+        crate::schema::ensure_schema(&pool)
+            .await
+            .expect("current schema");
+        for (id, sha256) in [(1_i64, "summary-v2-proof-1"), (2, "summary-v2-proof-2")] {
+            sqlx::query(
+                "INSERT INTO archive_batches
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+                 VALUES (?1, 'codex_invocations', '2026-09', ?2, ?3, 1, 'completed', 'unknown')",
+            )
+            .bind(id)
+            .bind(format!("/archive/{sha256}.sqlite.gz"))
+            .bind(sha256)
+            .execute(&pool)
+            .await
+            .expect("seed archive manifest");
+            sqlx::query(
+                "INSERT INTO summary_archive_snapshot_v2_proof
+                 (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+                 VALUES (?1, ?2, 1, 1, 'semantic-proof')",
+            )
+            .bind(id)
+            .bind(sha256)
+            .execute(&pool)
+            .await
+            .expect("seed V2 proof");
+        }
+
+        assert!(
+            !summary_all_time_manifest_v2_coverage_complete(&pool, 2)
+                .await
+                .expect("check incomplete V2 proof set"),
+            "a marker without verified V2 pages must not complete coverage"
+        );
+
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind)
+             VALUES (3, 'codex_invocations', '2026-09', '/archive/unproven.sqlite.gz',
+                     'summary-v2-unproven', 1, 'completed', 'unknown')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed unproven archive manifest");
+        assert!(
+            !summary_all_time_manifest_v2_coverage_complete(&pool, 3)
+                .await
+                .expect("check incomplete V2 proof set"),
+            "a missing V2 proof must retain the bounded legacy proof path"
+        );
+    }
+
     #[test]
     fn summary_paged_boundary_raw_archive_admission_is_bounded() {
         let mut admitted_archives = 0usize;
@@ -35381,6 +39050,240 @@ mod request_compression_query_tests {
         state.pool.close().await;
     }
 
+    #[test]
+    fn summary_coverage_overlay_keeps_recovery_incremental_until_final_pass() {
+        assert!(
+            !summary_coverage_overlay_requires_full_reduction(false, true, false),
+            "a verified page must extend an existing overlay while obligations remain"
+        );
+        assert!(
+            summary_coverage_overlay_requires_full_reduction(true, true, false),
+            "the no-pending final pass must rebuild from all verified proofs"
+        );
+        assert!(
+            summary_coverage_overlay_requires_full_reduction(false, true, true),
+            "proof revocation must rebuild from the remaining verified proofs"
+        );
+        assert!(
+            !summary_coverage_overlay_requires_full_reduction(false, true, false),
+            "coverage fence changes extend same-identity proof contributions incrementally"
+        );
+        assert!(
+            summary_coverage_overlay_requires_full_reduction(false, false, false),
+            "the first overlay publication has no incremental base"
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_coverage_supervisor_runs_independently_of_http_interest() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("publish bootstrap projection");
+        state
+            .subscription_hub
+            .note_summary_http_interest(false)
+            .await;
+        let archive_bucket_start = Utc
+            .timestamp_opt(
+                align_bucket_epoch((Utc::now() - ChronoDuration::days(2)).timestamp(), 3_600, 0),
+                0,
+            )
+            .single()
+            .expect("valid recent recovery archive bucket");
+        let coverage_start = crate::stats::db_occurred_at_lower_bound(archive_bucket_start);
+        let coverage_end =
+            crate::db_occurred_at_upper_bound(archive_bucket_start + ChronoDuration::hours(1));
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at) \
+             VALUES ('codex_invocations', '2026-08', \
+                     '/definitely/missing/summary-owner-cadence.sqlite.gz', 'summary-owner-cadence', 1, \
+                     'completed', ?1, ?2)",
+        )
+        .bind(coverage_start)
+        .bind(coverage_end)
+        .execute(&state.pool)
+        .await
+        .expect("seed recent legacy archive manifest");
+
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
+            .await
+            .expect("coverage worker must recover independently of HTTP interest");
+        let trigger = summary_snapshot_cadence_trigger(state.as_ref()).await;
+        assert!(
+            trigger.is_none(),
+            "a fresh owner must not force a rolling refresh for historical coverage"
+        );
+
+        let outcome: String = sqlx::query_scalar(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome \
+             WHERE manifest_sha256 = 'summary-owner-cadence'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("independent worker must recover coverage even while an HTTP owner is present");
+        assert_eq!(outcome, "missing_source");
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_v2_exact_coverage_batches_unresolved_hour_ranges() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let middle_bucket = align_bucket_epoch(Utc::now().timestamp(), 3_600, 0);
+        let middle = Utc
+            .timestamp_opt(middle_bucket, 0)
+            .single()
+            .expect("valid middle bucket");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, coverage_start_at, coverage_end_at) \
+             VALUES ('codex_invocations', '2026-09', \
+                     '/definitely/missing/batched-coverage.sqlite.gz', 'batched-coverage', 1, \
+                     'completed', ?1, ?1)",
+        )
+        .bind(crate::stats::db_occurred_at_lower_bound(middle))
+        .execute(&state.pool)
+        .await
+        .expect("seed unresolved archive coverage");
+        let candidates = [
+            middle_bucket.saturating_sub(3_600),
+            middle_bucket,
+            middle_bucket.saturating_add(3_600),
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+        let exact = summary_v2_exact_coverage_buckets(&state.pool, &candidates)
+            .await
+            .expect("batch coverage lookup");
+        assert_eq!(
+            exact,
+            [
+                middle_bucket.saturating_sub(3_600),
+                middle_bucket.saturating_add(3_600),
+            ]
+            .into_iter()
+            .collect(),
+            "only the hour intersecting an unresolved authority may remain unavailable"
+        );
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn summary_v2_final_proof_covers_materialized_archive_boundary() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = crate::stats::db_occurred_at_lower_bound(Utc::now());
+        let archive_batch_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO archive_batches \
+             (dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+              coverage_start_at, coverage_end_at, historical_rollups_materialized_at) \
+             VALUES ('codex_invocations', '2026-09', \
+                     '/definitely/missing/materialized-v2-boundary.sqlite.gz', \
+                     'materialized-v2-boundary', 1, 'completed', 'unknown', ?1, ?1, datetime('now')) \
+             RETURNING id",
+        )
+        .bind(&occurred_at)
+        .fetch_one(&state.pool)
+        .await
+        .expect("seed materialized archive manifest");
+        let record = SummaryArchiveSnapshotV2Record {
+            id: 1,
+            invoke_id: "materialized-v2-boundary".to_string(),
+            occurred_at: occurred_at.clone(),
+            source: SOURCE_PROXY.to_string(),
+            model: Some("gpt-5".to_string()),
+            response_model: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_input_tokens: 0,
+            reasoning_tokens: 0,
+            reasoning_effort: None,
+            total_tokens: 2,
+            cost: Some(0.01),
+            cost_input: None,
+            cost_cache_write: None,
+            cost_cache_read: None,
+            cost_output: None,
+            cost_reasoning: None,
+            status: "success".to_string(),
+            error_message: None,
+            failure_kind: None,
+            failure_class: None,
+            is_actionable: false,
+            upstream_account_id: None,
+        };
+        let encoded = serde_json::to_vec(&vec![record]).expect("encode V2 proof record");
+        let page = SummaryArchiveSnapshotPage {
+            archive_batch_id,
+            manifest_sha256: "materialized-v2-boundary".to_string(),
+            page_index: 0,
+            coverage_start: occurred_at.clone(),
+            coverage_end: occurred_at.clone(),
+            row_count: 1,
+            payload: zstd::stream::encode_all(encoded.as_slice(), 1)
+                .expect("compress V2 proof record"),
+        };
+        let mut transaction = state
+            .pool
+            .begin()
+            .await
+            .expect("begin V2 proof transaction");
+        store_summary_archive_snapshot_page_v2_tx(transaction.as_mut(), &page)
+            .await
+            .expect("store materialized V2 proof");
+        transaction
+            .commit()
+            .await
+            .expect("commit materialized V2 proof");
+        assert!(
+            ensure_summary_archive_snapshot_v2_final_proof(
+                &state.pool,
+                archive_batch_id,
+                "materialized-v2-boundary",
+            )
+            .await
+            .expect("verify materialized V2 final proof"),
+            "fixture V2 page must become a final proof"
+        );
+
+        let identities = load_summary_v2_archive_proof_identities(&state.pool)
+            .await
+            .expect("load materialized V2 proof identity");
+        let totals = load_summary_v2_archive_totals_for_proof_identities(
+            &state.pool,
+            &identities,
+            &HashSet::new(),
+        )
+        .await
+        .expect("reduce materialized V2 proof");
+        let bucket = align_bucket_epoch(
+            parse_to_utc_datetime(&occurred_at)
+                .expect("valid V2 coverage time")
+                .timestamp(),
+            3_600,
+            0,
+        );
+        assert!(
+            totals.global_coverage_buckets.contains(&bucket),
+            "a verified materialized archive must remove its boundary unavailability proof"
+        );
+        assert_eq!(
+            totals.global.total_count, 0,
+            "materialized rollups remain the aggregate authority and must not be double counted"
+        );
+        state.pool.close().await;
+    }
+
     #[tokio::test]
     async fn summary_coverage_supervisor_does_not_republish_unchanged_ready_checkpoint() {
         let state = crate::tests::test_state_with_openai_base(
@@ -35595,6 +39498,55 @@ mod request_compression_query_tests {
         .await;
         assert!(matches!(unavailable, Err(ApiError::Unavailable(_))));
 
+        sqlx::query(
+            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("create overlay publication interleave gate");
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::AfterRollupLoad,
+        );
+        let recovery_state = state.clone();
+        let recovery = tokio::spawn(async move {
+            SummaryCoverageRecoverySupervisor::run(recovery_state.as_ref()).await
+        });
+        tokio::pin!(recovery);
+        tokio::select! {
+            _ = interleave.wait_for_writer() => {
+                let modes = interleave.build_modes();
+                interleave.resume_build();
+                recovery.await.expect("join ownerless historical recovery").expect("run ownerless historical recovery");
+                clear_summary_projection_test_interleave();
+                assert!(
+                    !modes.contains(&SummaryProjectionBuildMode::RollingDelta),
+                    "verified V2 coverage must publish an overlay without generic RollingDelta",
+                );
+            }
+            result = &mut recovery => {
+                clear_summary_projection_test_interleave();
+                result.expect("join ownerless historical recovery").expect("run ownerless historical recovery");
+                assert!(
+                    interleave.build_modes().is_empty(),
+                    "verified V2 coverage must not start a projection rebuild when publishing an overlay",
+                );
+            }
+        }
+        let partial = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("30d".to_string()),
+                limit: None,
+                time_zone: Some("Asia/Shanghai".to_string()),
+                upstream_account_id: None,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(partial, Err(ApiError::Unavailable(_))),
+            "a sibling archive without a final proof must keep the shared hour unavailable"
+        );
+
         let mut tx = state.pool.begin().await.expect("begin final V2 proof");
         store_summary_archive_snapshot_page_v2_tx(
             tx.as_mut(),
@@ -35602,11 +39554,11 @@ mod request_compression_query_tests {
         )
         .await
         .expect("store final recent V2 proof page");
-        tx.commit().await.expect("commit final recent V2 proof");
+        tx.commit().await.expect("commit final V2 proof page");
 
         SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
-            .expect("run ownerless historical recovery");
+            .expect("finish the remaining bounded V2 proof");
         let Json(response) = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
@@ -35617,7 +39569,7 @@ mod request_compression_query_tests {
             }),
         )
         .await
-        .expect("verified recent proof must publish before all-time completion");
+        .expect("all overlapping V2 proofs must publish an exact 30d response");
         assert_eq!(response.total_count, MANIFEST_COUNT as i64);
         assert_eq!(response.total_tokens, (MANIFEST_COUNT * 2) as i64);
         state.pool.close().await;
@@ -35721,7 +39673,11 @@ mod request_compression_query_tests {
 
         let archive_bucket_start = Utc
             .timestamp_opt(
-                align_bucket_epoch((Utc::now() - ChronoDuration::days(3)).timestamp(), 3_600, 0),
+                align_bucket_epoch(
+                    (Utc::now() - ChronoDuration::days(2) + ChronoDuration::hours(1)).timestamp(),
+                    3_600,
+                    0,
+                ),
                 0,
             )
             .single()
@@ -35813,17 +39769,8 @@ mod request_compression_query_tests {
             0,
             "rolling reconciliation must publish without the paged raw archive stage",
         );
-        let projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("published summary projection");
-        assert!(
-            !projection
-                .unavailable_unmaterialized_archive_ranges
-                .is_empty(),
-            "unreadable bounded boundary archives must retain an exact range proof"
-        );
+        // The externally observable contract below is the proof: disjoint current/1d reads
+        // remain exact after SQLite closes, while the affected 7d selection is unavailable.
         let all_time_interleave = install_summary_projection_test_interleave_at(
             SummaryProjectionTestInterleaveStage::BeforePagedBoundaryArchiveHydration,
         );
@@ -36401,6 +40348,81 @@ mod request_compression_query_tests {
         .expect("recovered historical projection remains memory-only after SQLite closes");
         assert_eq!(recovered.total_count, 2);
         assert_eq!(recovered.total_tokens, 40);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_historical_rollup_clears_stale_live_admission_gap() {
+        let state = crate::tests::test_state_with_openai_base(
+            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = Utc::now() - ChronoDuration::days(3);
+        let occurred_at_db = db_occurred_at_lower_bound(occurred_at);
+        sqlx::query(
+            "INSERT INTO codex_invocations \
+             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+             VALUES ('summary-stale-live-gap', ?1, 'proxy', 'success', 7, 0.7, '{\"upstreamAccountId\":42}', '', 'full')",
+        )
+        .bind(&occurred_at_db)
+        .execute(&state.pool)
+        .await
+        .expect("insert historical live row");
+        let row_id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM codex_invocations WHERE invoke_id = 'summary-stale-live-gap'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("load historical live row id");
+        let bucket = align_bucket_epoch(occurred_at.timestamp(), 3_600, 0);
+        let range = ExactUtcRange {
+            start: occurred_at - ChronoDuration::minutes(1),
+            end: occurred_at + ChronoDuration::minutes(1),
+        };
+        let mut unavailable_global_buckets = BTreeSet::from([bucket]);
+        let mut unavailable_account_buckets = HashMap::from([(42_i64, BTreeSet::from([bucket]))]);
+        let mut covered_terminal_ids = HashSet::new();
+        let totals = StatsTotals {
+            total_count: 1,
+            success_count: 1,
+            total_tokens: 7,
+            total_cost: 0.7,
+            ..StatsTotals::default()
+        };
+        let usage = UsageBreakdownResponse {
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 7,
+            costs: None,
+            models: Vec::new(),
+        };
+
+        mark_summary_projection_uncovered_historical_live_ranges(
+            &state.pool,
+            range,
+            row_id,
+            row_id,
+            Some(row_id),
+            &HashMap::from([((bucket, None), totals), ((bucket, Some(42)), totals)]),
+            &HashMap::from([((bucket, None), usage.clone()), ((bucket, Some(42)), usage)]),
+            &BTreeSet::new(),
+            &HashSet::new(),
+            &mut unavailable_global_buckets,
+            &mut unavailable_account_buckets,
+            &mut covered_terminal_ids,
+        )
+        .await
+        .expect("durable rollup proof should be accepted");
+
+        assert!(
+            !unavailable_global_buckets.contains(&bucket),
+            "a committed global rollup must clear a stale resident-budget gap"
+        );
+        assert!(
+            unavailable_account_buckets
+                .get(&42)
+                .is_none_or(|buckets| !buckets.contains(&bucket)),
+            "a committed account rollup must clear its scoped stale gap"
+        );
     }
 
     #[tokio::test]
@@ -37750,39 +41772,12 @@ mod request_compression_query_tests {
         .expect("remove global replay marker identity");
         hydrate_summary_snapshots(state.as_ref())
             .await
-            .expect("identityless replay refresh preserves exact global all-time last-good");
+            .expect("identityless replay refresh publishes a bounded recent projection");
         refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
             .await
-            .expect("reconcile identityless replay while retaining global all-time last-good");
+            .expect("reconcile identityless replay while revoking global all-time authority");
 
-        let Json(last_good) = fetch_summary(
-            State(state.clone()),
-            Query(SummaryQuery {
-                window: Some("all".to_string()),
-                limit: None,
-                time_zone: Some("UTC".to_string()),
-                upstream_account_id: None,
-            }),
-        )
-        .await
-        .expect("fresh exact global last-good survives an incomplete refresh");
-        assert_eq!(last_good.total_count, 3);
-        assert_eq!(last_good.total_tokens, 91);
-
-        let mut projection = state
-            .subscription_hub
-            .summary_projection()
-            .await
-            .expect("refresh stores the global all-time last-good projection");
-        Arc::make_mut(&mut projection).all_time_refreshed_at =
-            Some(Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1));
-        state
-            .subscription_hub
-            .store_summary_projection(Arc::unwrap_or_clone(projection))
-            .await;
-        state.pool.close().await;
-
-        let expired_global = fetch_summary(
+        let missing_global = fetch_summary(
             State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
@@ -37792,10 +41787,10 @@ mod request_compression_query_tests {
             }),
         )
         .await;
-        assert!(matches!(expired_global, Err(ApiError::Unavailable(_))));
+        assert!(matches!(missing_global, Err(ApiError::Unavailable(_))));
 
         let Json(account) = fetch_summary(
-            State(state),
+            State(state.clone()),
             Query(SummaryQuery {
                 window: Some("all".to_string()),
                 limit: None,
@@ -37807,6 +41802,40 @@ mod request_compression_query_tests {
         .expect("independently proven account coverage remains exact");
         assert_eq!(account.total_count, 3);
         assert_eq!(account.total_tokens, 91);
+
+        // Account stats replay alone does not prove the usage/cost dimensions of an all-time
+        // response. Removing that marker must invalidate the account scope instead of publishing
+        // a structurally incomplete success response.
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay \
+             WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(archive_path)
+        .execute(&state.pool)
+        .await
+        .expect("remove account usage replay marker");
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("refresh account coverage after usage proof removal");
+        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+            .await
+            .expect("reconcile account coverage after usage proof removal");
+        let missing_account_usage = fetch_summary(
+            State(state.clone()),
+            Query(SummaryQuery {
+                window: Some("all".to_string()),
+                limit: None,
+                time_zone: Some("UTC".to_string()),
+                upstream_account_id: Some(42),
+            }),
+        )
+        .await;
+        assert!(matches!(
+            missing_account_usage,
+            Err(ApiError::Unavailable(_))
+        ));
+        state.pool.close().await;
     }
 
     #[tokio::test]
@@ -38461,6 +42490,7 @@ mod request_compression_query_tests {
                 end: Utc::now() + ChronoDuration::minutes(1),
             },
             high_watermark,
+            None,
             None,
             2,
             false,

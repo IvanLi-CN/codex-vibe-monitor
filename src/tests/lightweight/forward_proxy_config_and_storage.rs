@@ -2135,6 +2135,78 @@ fn app_config_from_sources_rejects_zero_pool_upstream_responses_total_timeout() 
     );
 }
 
+pub(crate) fn test_runtime_path(name: &str) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"))
+        .join(name)
+}
+
+#[tokio::test]
+async fn ensure_schema_steady_state_does_not_rebuild_large_derived_invocation_state() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema test pool");
+    ensure_schema(&pool).await.expect("seed current schema");
+    sqlx::query("DELETE FROM schema_refresh_migrations")
+        .execute(&pool)
+        .await
+        .expect("simulate an existing database before schema refresh markers");
+
+    sqlx::query("INSERT INTO invocation_in_progress_live (invocation_id, source) VALUES (1, 'xy')")
+        .execute(&pool)
+        .await
+        .expect("seed in-progress derived row");
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_working_set_live (
+            prompt_cache_key, created_at, last_activity_at, sort_anchor_at
+        )
+        VALUES ('steady-state-guard', datetime('now'), datetime('now'), datetime('now'))
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed prompt-cache derived row");
+
+    for (name, table) in [
+        (
+            "trg_test_schema_steady_state_in_progress_guard",
+            "invocation_in_progress_live",
+        ),
+        (
+            "trg_test_schema_steady_state_prompt_cache_guard",
+            "prompt_cache_working_set_live",
+        ),
+    ] {
+        sqlx::query(&format!(
+            "CREATE TRIGGER {name} BEFORE DELETE ON {table} BEGIN SELECT RAISE(ABORT, 'steady-state schema refresh rebuilt a derived table'); END"
+        ))
+        .execute(&pool)
+        .await
+        .expect("install derived-table rebuild guard");
+    }
+
+    ensure_schema(&pool)
+        .await
+        .expect("steady-state schema ensure must not rebuild derived invocation state");
+    let recorded_refreshes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name IN (?1, ?2)",
+    )
+    .bind("prompt_cache_expression_indexes_v1")
+    .bind("invocation_live_projection_v1")
+    .fetch_one(&pool)
+    .await
+    .expect("load adopted schema refresh markers");
+
+    // The guard triggers above fail this test if a second startup clears either derived table.
+    // Existing installations must instead adopt their already-present objects once.
+    assert_eq!(
+        recorded_refreshes, 2,
+        "existing schema objects must be adopted without a destructive refresh"
+    );
+}
+
 pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
@@ -2168,12 +2240,12 @@ pub(crate) fn test_config() -> AppConfig {
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
-        proxy_raw_dir: PathBuf::from("target/proxy-raw-tests"),
+        proxy_raw_dir: test_runtime_path("proxy-raw-tests"),
         proxy_raw_compression: DEFAULT_PROXY_RAW_COMPRESSION,
         proxy_raw_immediate_gzip_bytes: DEFAULT_PROXY_RAW_IMMEDIATE_GZIP_BYTES,
         proxy_raw_hot_secs: DEFAULT_PROXY_RAW_HOT_SECS,
         xray_binary: DEFAULT_XRAY_BINARY.to_string(),
-        xray_runtime_dir: PathBuf::from("target/xray-forward-tests"),
+        xray_runtime_dir: test_runtime_path("xray-forward-tests"),
         forward_proxy_algo: ForwardProxyAlgo::V1,
         max_parallel_polls: 2,
         shared_connection_parallelism: 1,
@@ -2188,7 +2260,7 @@ pub(crate) fn test_config() -> AppConfig {
         retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
         retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
         retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
-        archive_dir: PathBuf::from("target/archive-tests"),
+        archive_dir: test_runtime_path("archive-tests"),
         codex_invocation_archive_layout: DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT,
         codex_invocation_archive_segment_granularity:
             DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY,
