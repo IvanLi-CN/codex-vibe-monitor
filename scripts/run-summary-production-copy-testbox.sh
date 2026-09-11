@@ -14,7 +14,15 @@ path_has_parent_component() {
   return 1
 }
 
+path_is_normalized_absolute() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *//* ]]
+}
+
 source_path="${SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE:?SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE must be under /srv/codex}"
+while [[ "$source_path" != "/" && "$source_path" == */ ]]; do
+  source_path="${source_path%/}"
+done
 runner="${SUMMARY_TESTBOX_RUNNER:-/Users/ivan/.codex/skills/shared-testbox-runner/scripts/run-testbox.sh}"
 testbox="${TESTBOX:-codex-testbox}"
 candidate_sha="${SUMMARY_TESTBOX_COMMIT_SHA:-$(git rev-parse HEAD)}"
@@ -29,10 +37,14 @@ esac
   printf 'project-reason: production copy path contains unsupported shell characters\n' >&2
   exit 64
 }
-! path_has_parent_component "$source_path" || {
-  printf 'project-reason: production copy path contains a parent traversal\n' >&2
+path_is_normalized_absolute "$source_path" || {
+  printf 'project-reason: production copy path must be normalized\n' >&2
   exit 64
 }
+if path_has_parent_component "$source_path"; then
+  printf 'project-reason: production copy path contains a parent traversal\n' >&2
+  exit 64
+fi
 [[ -x "$runner" ]] || {
   printf 'project-reason: shared-testbox runner is unavailable\n' >&2
   exit 64
@@ -100,16 +112,12 @@ for environment_name in \
   [[ -n "$environment_value" ]] || continue
   case "$environment_name" in
     CARGO_HOME|CARGO_TARGET_DIR)
-      if [[ "$environment_value" != /* ]] || path_has_parent_component "$environment_value"; then
+      if ! path_is_normalized_absolute "$environment_value" || path_has_parent_component "$environment_value"; then
         printf 'project-reason: %s must be an absolute path without parent traversal\n' "$environment_name" >&2
         exit 64
       fi
       ;;
     CARGO_NET_OFFLINE)
-      if [[ ! "$environment_value" =~ ^(true|false)$ ]]; then
-        printf 'project-reason: %s must be true or false\n' "$environment_name" >&2
-        exit 64
-      fi
       ;;
     SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS)
       ;;
@@ -229,7 +237,7 @@ wait "$runner_pid"
 status="$?"
 set -e
 runner_pid=""
-grep -E '^(production-copy-bytes=|summary-production-(sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=)' "$runner_log" || true
+grep -E '^(production-copy-bytes=|summary-production-(cache-mode|network-mode|sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=)' "$runner_log" || true
 if [[ "$status" -eq 0 ]]; then
   printf 'production-copy-bytes=%s\n' "$source_meta"
   printf 'summary-production-validation=passed\n'

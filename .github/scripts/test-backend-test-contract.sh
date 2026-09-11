@@ -129,6 +129,15 @@ grep -q 'backend_test_cache_mode=external' <<<"$external_output"
 grep -q "cargo_home=$external_cargo_home" "$contract_record"
 grep -q "cargo_target_dir=$external_target_dir" "$contract_record"
 
+trailing_output="$(env -u CARGO_NET_OFFLINE \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace/" \
+  CARGO_HOME="$external_cargo_home/" \
+  CARGO_TARGET_DIR="$external_target_dir/" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight 2>&1)"
+grep -q 'backend_test_cache_mode=external' <<<"$trailing_output"
+
 : >"$contract_record"
 offline_output="$(env CARGO_NET_OFFLINE=true \
   PATH="$contract_bin:/usr/bin:/bin" \
@@ -152,6 +161,22 @@ expect_failure() {
     exit 1
   }
 }
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight --partition hash:1/2
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE=/ \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME="$tmp_root/cache//nested" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
 expect_failure 64 env \
   PATH="$contract_bin:/usr/bin:/bin" \
   BACKEND_TEST_WORKSPACE="$tmp_dir/../escaped" \

@@ -17,8 +17,29 @@ path_has_parent_component() {
   return 1
 }
 
+path_is_within() {
+  local candidate="$1"
+  local parent="$2"
+  if [[ "$parent" == "/" ]]; then
+    [[ "$candidate" == /* ]]
+  else
+    [[ "$candidate" == "$parent" || "$candidate" == "$parent"/* ]]
+  fi
+}
+
+path_overlaps() {
+  local left="$1"
+  local right="$2"
+  path_is_within "$left" "$right" || path_is_within "$right" "$left"
+}
+
+path_is_normalized_absolute() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *//* ]]
+}
+
 copy_path="${SUMMARY_PRODUCTION_COPY:?SUMMARY_PRODUCTION_COPY is required}"
-[[ "$copy_path" == /* ]] && ! path_has_parent_component "$copy_path" || {
+path_is_normalized_absolute "$copy_path" && ! path_has_parent_component "$copy_path" || {
   printf 'project-reason: staged production copy must be a normalized absolute path\n' >&2
   exit 64
 }
@@ -27,6 +48,10 @@ copy_path="${SUMMARY_PRODUCTION_COPY:?SUMMARY_PRODUCTION_COPY is required}"
   exit 64
 }
 copy_path_input="$copy_path"
+while [[ "$copy_path_input" != "/" && "$copy_path_input" == */ ]]; do
+  copy_path_input="${copy_path_input%/}"
+done
+copy_path="$copy_path_input"
 copy_path="$(cd "$copy_path" && pwd -P)" || {
   printf 'project-reason: staged production copy is not canonical\n' >&2
   exit 64
@@ -35,6 +60,10 @@ copy_path="$(cd "$copy_path" && pwd -P)" || {
   printf 'project-reason: staged production copy is not canonical\n' >&2
   exit 64
 }
+if path_overlaps "$copy_path" "$source_snapshot_root"; then
+  printf 'project-reason: staged production copy must be separate from the source snapshot\n' >&2
+  exit 64
+fi
 if find -P "$copy_path" \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
   printf 'project-reason: staged production copy contains unsupported filesystem entries\n' >&2
   exit 64
@@ -48,22 +77,10 @@ copy_kib="$(du -sk "$copy_path" | awk '{print $1}')"
 copy_bytes=$((copy_kib * 1024))
 printf 'production-copy-bytes=%s\n' "$copy_bytes"
 
-path_is_within() {
-  local candidate="$1"
-  local parent="$2"
-  [[ "$candidate" == "$parent" || "$candidate" == "$parent"/* ]]
-}
-
-path_overlaps() {
-  local left="$1"
-  local right="$2"
-  path_is_within "$left" "$right" || path_is_within "$right" "$left"
-}
-
 canonical_dir_path() {
   local variable_name="$1"
   local raw_path="$2"
-  if [[ "$raw_path" != /* ]] || path_has_parent_component "$raw_path"; then
+  if ! path_is_normalized_absolute "$raw_path" || path_has_parent_component "$raw_path"; then
     printf 'project-reason: %s must be a normalized absolute path without parent components\n' "$variable_name" >&2
     exit 64
   fi
@@ -82,8 +99,15 @@ canonical_dir_path() {
     printf 'project-reason: %s could not be canonicalized\n' "$variable_name" >&2
     exit 64
   }
-  local suffix="${raw_path#"$probe"}"
-  local canonical_path="${canonical_probe%/}${suffix}"
+  local suffix
+  local canonical_path
+  if [[ "$probe" == "/" ]]; then
+    suffix="/${raw_path#/}"
+    canonical_path="$suffix"
+  else
+    suffix="${raw_path#"$probe"}"
+    canonical_path="${canonical_probe%/}${suffix}"
+  fi
   while [[ "$canonical_path" != "/" && "$canonical_path" == */ ]]; do
     canonical_path="${canonical_path%/}"
   done
@@ -109,8 +133,8 @@ ensure_writable_dir() {
 
 tmp_root_input="${TMPDIR:-/tmp}"
 tmp_root="$(canonical_dir_path TMPDIR "$tmp_root_input")"
-if path_overlaps "$tmp_root" "$copy_path"; then
-  printf 'project-reason: temporary directory root must be separate from production copy\n' >&2
+if path_overlaps "$tmp_root" "$copy_path" || path_overlaps "$tmp_root" "$source_snapshot_root"; then
+  printf 'project-reason: temporary directory root must be separate from fixture and source workspaces\n' >&2
   exit 64
 fi
 runtime_dir_input="$(mktemp -d "$tmp_root/summary-production-runtime.XXXXXX")"
@@ -134,11 +158,6 @@ if path_overlaps "$runtime_dir" "$copy_path"; then
   printf 'project-reason: production copy and runtime workspace must be separate\n' >&2
   exit 64
 fi
-if path_overlaps "$copy_path" "$source_snapshot_root"; then
-  printf 'project-reason: staged production copy must be separate from the source snapshot\n' >&2
-  exit 64
-fi
-
 cargo_home_input="${CARGO_HOME:-}"
 target_dir_input="${CARGO_TARGET_DIR:-}"
 cargo_home_external=false

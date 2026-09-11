@@ -16,6 +16,24 @@ expect_failure() {
     exit 1
   }
 }
+expect_failure_message() {
+  local expected_status="$1"
+  local expected_message="$2"
+  shift 2
+  set +e
+  local output
+  output="$("$@" 2>&1)"
+  local status="$?"
+  set -e
+  [[ "$status" -eq "$expected_status" ]] || {
+    printf 'expected exit %s, got %s\n' "$expected_status" "$status" >&2
+    exit 1
+  }
+  grep -Fq "$expected_message" <<<"$output" || {
+    printf 'expected failure output to contain: %s\n' "$expected_message" >&2
+    exit 1
+  }
+}
 
 expect_failure 64 env \
   SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/tmp/not-authorized \
@@ -29,7 +47,7 @@ if grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' "$runner_script" \
   printf 'validation command overrides are not allowed in the production-copy gate\n' >&2
   exit 1
 fi
-grep -Eq 'summary-production-(sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=' "$runner_script"
+grep -Eq 'summary-production-(cache-mode|network-mode|sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=' "$runner_script"
 grep -Fq 'while [[ ! -f /codex-scratch/READY ]]' "$runner_script"
 grep -Fq 'export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy' "$runner_script"
 if grep -Fq 'CARGO_TARGET_DIR=/codex-scratch/target' "$runner_script"; then
@@ -41,6 +59,10 @@ grep -Fq 'SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS' "$runner_script"
 grep -Fq '  CARGO_HOME' "$runner_script"
 grep -Fq '  CARGO_TARGET_DIR' "$runner_script"
+if grep -Fq 'must be true or false' "$runner_script"; then
+  printf 'shared-testbox adapter must pass CARGO_NET_OFFLINE through unchanged\n' >&2
+  exit 1
+fi
 grep -Fq 'recent_ready_deadline_secs="${SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS:-30}"' "$validator_script"
 grep -Fq 'database_path="$copy_path/codex_vibe_monitor.db"' "$validator_script"
 grep -Fq 'archive_dir="$copy_path/archives"' "$validator_script"
@@ -65,7 +87,9 @@ grep -Fq 'summary-production-recovery-telemetry=' "$validator_script"
 grep -Fq 'ansi_pattern = re.compile' "$validator_script"
 tmp_dir="$(mktemp -d)"
 copy_dir="$tmp_dir/production-copy"
-mkdir -p "$copy_dir"
+runtime_root="$tmp_dir/runtime-root"
+mkdir -p "$copy_dir" "$runtime_root"
+copy_dir="$(cd "$copy_dir" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
 ln -s "$tmp_dir" "$tmp_dir/parent-link"
 expect_failure 64 env \
@@ -79,14 +103,26 @@ expect_failure 64 env \
   SUMMARY_PRODUCTION_COPY="$copy_dir" \
   CARGO_HOME="$copy_dir/cargo-home" \
   CARGO_TARGET_DIR="$tmp_dir/target" \
+  TMPDIR="$runtime_root" \
   "$validator_script"
 [[ ! -e "$copy_dir/cargo-home" ]]
-expect_failure 64 env \
+expect_failure_message 64 'temporary directory root must be separate from fixture and source workspaces' env \
   SUMMARY_PRODUCTION_COPY="$copy_dir" \
   TMPDIR="$repo_root" \
   "$validator_script"
-expect_failure 64 env \
+expect_failure_message 64 'temporary directory root must be separate from fixture and source workspaces' env \
+  SUMMARY_PRODUCTION_COPY="$copy_dir/" \
+  TMPDIR="$repo_root" \
+  "$validator_script"
+expect_failure_message 64 'staged production copy must be separate from the source snapshot' env \
   SUMMARY_PRODUCTION_COPY="$repo_root" \
+  TMPDIR="$runtime_root" \
+  "$validator_script"
+expect_failure_message 64 'external Cargo directories must be separate from fixture and runtime workspaces' env \
+  SUMMARY_PRODUCTION_COPY="$copy_dir" \
+  CARGO_HOME="$tmp_dir/external-cargo-home" \
+  CARGO_TARGET_DIR="$repo_root/target" \
+  TMPDIR="$runtime_root" \
   "$validator_script"
 expect_failure 1 env -u SUMMARY_PRODUCTION_COPY \
   "$repo_root/scripts/validate-summary-production-fixture.sh"

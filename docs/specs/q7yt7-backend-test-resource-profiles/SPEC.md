@@ -58,9 +58,10 @@
   - `Backend Tests (Archive / File I/O)`
 - `run-backend-tests.sh` 必须提供稳定 `--profile` 入口，供本地与 CI 复用同一分组真相。
 - `BACKEND_TEST_WORKSPACE` 必须接受任意规范化绝对可写目录；未提供 `CARGO_HOME` 或 `CARGO_TARGET_DIR` 时，runner 必须在该工作区内创建运行级默认目录，显式提供的目录必须与 fixture 工作区及彼此分离。
+- `--partition hash:N/M` 只允许用于 `stateful-sqlite` profile；其他 profile 必须拒绝该输入。
 - `CARGO_NET_OFFLINE` 是调用方输入，runner 必须原样传递给 Cargo，只能输出 online/offline 语义状态，不得替换或推断其值。
 - production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器只能准备 staged copy 和注入标准环境变量。
-- 路径边界必须按 `.`/`..` 组件判断，规范化等价尾斜杠后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
+- 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
 - PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 与第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。

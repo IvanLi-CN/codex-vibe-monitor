@@ -91,6 +91,10 @@ if [[ -n "$partition" ]]; then
     echo "::error::--partition requires 1 <= N <= M." >&2
     exit 64
   fi
+  if [[ "$profile" != stateful-sqlite ]]; then
+    echo "::error::--partition is supported only for the stateful-sqlite profile." >&2
+    exit 64
+  fi
 fi
 
 path_has_parent_component() {
@@ -106,10 +110,19 @@ path_has_parent_component() {
   return 1
 }
 
+path_is_normalized_absolute() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *//* ]]
+}
+
 path_is_within() {
   local candidate="$1"
   local parent="$2"
-  [[ "$candidate" == "$parent" || "$candidate" == "$parent"/* ]]
+  if [[ "$parent" == "/" ]]; then
+    [[ "$candidate" == /* ]]
+  else
+    [[ "$candidate" == "$parent" || "$candidate" == "$parent"/* ]]
+  fi
 }
 
 path_overlaps() {
@@ -121,7 +134,7 @@ path_overlaps() {
 canonical_dir_path() {
   local variable_name="$1"
   local raw_path="$2"
-  if [[ "$raw_path" != /* ]] || path_has_parent_component "$raw_path"; then
+  if ! path_is_normalized_absolute "$raw_path" || path_has_parent_component "$raw_path"; then
     echo "::error::$variable_name must be a normalized absolute path without parent components." >&2
     exit 64
   fi
@@ -140,8 +153,15 @@ canonical_dir_path() {
     echo "::error::$variable_name could not be canonicalized." >&2
     exit 64
   }
-  local suffix="${raw_path#"$probe"}"
-  local canonical_path="${canonical_probe%/}${suffix}"
+  local suffix
+  local canonical_path
+  if [[ "$probe" == "/" ]]; then
+    suffix="/${raw_path#/}"
+    canonical_path="$suffix"
+  else
+    suffix="${raw_path#"$probe"}"
+    canonical_path="${canonical_probe%/}${suffix}"
+  fi
   while [[ "$canonical_path" != "/" && "$canonical_path" == */ ]]; do
     canonical_path="${canonical_path%/}"
   done
