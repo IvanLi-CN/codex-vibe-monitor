@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.5",
+  "base_stable_version": "2.71.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-11T03:07:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ae487c264ea90b12a0087d9f8246addd86e0937a",
+  "pr_number": 911,
+  "pr_title": "fix(summary): publish verified coverage overlays",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.5",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.5",
+  "target_sha": "3dd6c4903ef3446d0976e091fc42a6f70d82f1dd",
+  "type_label": "type:patch"
+}
