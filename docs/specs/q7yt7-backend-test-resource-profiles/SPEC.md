@@ -62,6 +62,7 @@
 - `CARGO_NET_OFFLINE` 是调用方输入，runner 必须原样传递给 Cargo，只能输出 online/offline 语义状态，不得替换或推断其值。
 - production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器可以在 Agent Directory 中同步工作区、准备 staged copy 和注入标准环境变量，但这些路径不属于项目验证器契约。
 - shared-testbox 适配器若启用，必须使用 `CODEX_THREAD_ID` 对应的 `/srv/codex/agents/<CODEX_THREAD_ID>/`，同步仅限 `workspace/` 子目录，并为每次验证使用唯一 run 目录；不得依赖旧 runner skill 或其私有路径。
+- shared-testbox 适配器的 run 标识必须包含每次调用的唯一性区分，即使同一 Agent 在同一秒内重复启动也不得复用 run 目录；清理前必须验证 `runs/` 父目录仍是 Agent Directory 内的真实目录，发现符号链接时不得触碰其目标。
 - 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
 - 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
