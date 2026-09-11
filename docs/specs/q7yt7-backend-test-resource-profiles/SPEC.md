@@ -60,7 +60,8 @@
 - `BACKEND_TEST_WORKSPACE` 必须接受任意规范化绝对可写目录；未提供 `CARGO_HOME` 或 `CARGO_TARGET_DIR` 时，runner 必须在该工作区内创建运行级默认目录，显式提供的目录必须与 fixture 工作区及彼此分离。
 - `--partition hash:N/M` 只允许用于 `stateful-sqlite` profile；其他 profile 必须拒绝该输入。
 - `CARGO_NET_OFFLINE` 是调用方输入，runner 必须原样传递给 Cargo，只能输出 online/offline 语义状态，不得替换或推断其值。
-- production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器只能准备 staged copy 和注入标准环境变量。
+- production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器可以在 Agent Directory 中同步工作区、准备 staged copy 和注入标准环境变量，但这些路径不属于项目验证器契约。
+- shared-testbox 适配器若启用，必须使用 `CODEX_THREAD_ID` 对应的 `/srv/codex/agents/<CODEX_THREAD_ID>/`，同步仅限 `workspace/` 子目录，并为每次验证使用唯一 run 目录；不得依赖旧 runner skill 或其私有路径。
 - 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
 - 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。

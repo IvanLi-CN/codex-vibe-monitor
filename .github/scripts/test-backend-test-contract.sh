@@ -36,6 +36,17 @@ if grep -Fq 'CARGO_HOME:' "$compose_file"; then
   echo 'Compose must not fix the project Cargo home path' >&2
   exit 1
 fi
+for smoke_script in \
+  "$repo_root/scripts/shared-testbox-api-read-smoke" \
+  "$repo_root/scripts/shared-testbox-raw-smoke" \
+  "$repo_root/scripts/shared-testbox-proxy-parallel-smoke"; do
+  grep -Fq '/srv/codex/agents/' "$smoke_script"
+  grep -Fq 'CODEX_THREAD_ID' "$smoke_script"
+  if grep -Eq '/srv/codex/workspaces|REMOTE_BASE=' "$smoke_script"; then
+    echo 'shared-testbox smoke scripts must use the Agent Directory contract' >&2
+    exit 1
+  fi
+done
 
 web_builder_section="$(sed -n '/^FROM oven\/bun:.* AS web-builder$/,/^# Stage 2:/p' "$dockerfile")"
 web_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$web_builder_section" | cut -d: -f1)"

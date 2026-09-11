@@ -42,7 +42,7 @@ Backend test placement follows the resource contract: database-only behavior bel
 - `lefthook` version `2.1.7` or newer must be available outside repo-local `node_modules/.bin` before `bun run hooks:install` or linked-worktree setup.
 - Use `bun run worktree:bootstrap` for manual recovery and `bun run worktree:setup` for locked dependency-surface restoration. The post-checkout hook copies only missing declared resources, never overwrites an existing `.env.local`, and never copies dependency or runtime directories. Automatic recovery may warn without blocking checkout; manual bootstrap returns non-zero when recovery fails.
 - Keep credentials and authentication cookies in ignored `.env.local`. Use `DATABASE_PATH` to select a non-default SQLite file in local or container environments; never commit database files or secrets.
-- Use `$shared-testbox-runner` for Docker/Compose integration tests. Keep remote writes under `/srv/codex/**`, use a unique run/project, and clean only resources created by that run.
+- Use `$shared-testbox` for Docker/Compose integration tests. Work under `/srv/codex/agents/<CODEX_THREAD_ID>/`, use a unique run/project, and clean only resources created by that run; the helper scripts are conveniences, not a project dependency.
 
 ## Code and UI Style
 

@@ -36,19 +36,32 @@ expect_failure_message() {
 }
 
 expect_failure 64 env \
+  CODEX_THREAD_ID=fixture-agent \
   SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/tmp/not-authorized \
   "$repo_root/scripts/run-summary-production-copy-testbox.sh"
 expect_failure 64 env \
+  CODEX_THREAD_ID=fixture-agent \
   SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/srv/codex/example \
-  SUMMARY_TESTBOX_RUNNER=/definitely/missing/runner \
   "$repo_root/scripts/run-summary-production-copy-testbox.sh"
 if grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' "$runner_script" \
-  || grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' "$validator_script"; then
+  || grep -Fq 'SUMMARY_PRODUCTION_VALIDATION_COMMAND' "$validator_script" \
+  || grep -Fq 'shared-testbox-runner' "$runner_script"; then
   printf 'validation command overrides are not allowed in the production-copy gate\n' >&2
   exit 1
 fi
+if grep -Eq '/srv/codex/workspaces|/Users/ivan/.codex/skills/shared-testbox-runner' "$runner_script"; then
+  printf 'shared-testbox adapter must use the Agent Directory contract\n' >&2
+  exit 1
+fi
+grep -Fq 'CODEX_THREAD_ID' "$runner_script"
+grep -Fq '/srv/codex/agents/' "$runner_script"
+grep -Fq 'docker_args=(' "$runner_script"
+grep -Fq 'testbox-sync-worktree' "$runner_script" && {
+  printf 'project adapter must not require the helper transport layer\n' >&2
+  exit 1
+}
 grep -Eq 'summary-production-(cache-mode|network-mode|sqlite|health|startup-phases|window|bootstrap|exactness|overlay|recovery(-telemetry)?|validation)=' "$runner_script"
-grep -Fq 'while [[ ! -f /codex-scratch/READY ]]' "$runner_script"
+grep -Fq 'touch "$run_path/READY"' "$runner_script"
 grep -Fq 'export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy' "$runner_script"
 if grep -Fq 'CARGO_TARGET_DIR=/codex-scratch/target' "$runner_script"; then
   printf 'shared-testbox adapter must not force a Cargo target path\n' >&2
@@ -57,13 +70,13 @@ fi
 grep -Fq 'SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS' "$runner_script"
-grep -Fq '  CARGO_HOME' "$runner_script"
-grep -Fq '  CARGO_TARGET_DIR' "$runner_script"
+grep -Fq 'CARGO_HOME_INPUT' "$runner_script"
+grep -Fq 'CARGO_TARGET_INPUT' "$runner_script"
 grep -Fq 'source_validation_status=' "$runner_script"
 grep -Fq '10|11|12)' "$runner_script"
 grep -Fq 'source validation was unavailable' "$runner_script"
-grep -Fq 'copy_log=""' "$runner_script"
-grep -Fq 'if [[ -n "$copy_log" ]]; then' "$runner_script"
+grep -Fq 'trap cleanup_remote EXIT' "$runner_script"
+grep -Fq 'rm -rf -- "$run_path"' "$runner_script"
 if grep -Fq 'must be true or false' "$runner_script"; then
   printf 'shared-testbox adapter must pass CARGO_NET_OFFLINE through unchanged\n' >&2
   exit 1
@@ -143,15 +156,11 @@ cat >"$fake_bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 exit 255
 EOF
-cat >"$fake_bin/runner" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod +x "$fake_bin/ssh" "$fake_bin/runner"
+chmod +x "$fake_bin/ssh"
 expect_failure_message 75 'source validation was unavailable' env \
   PATH="$fake_bin:/usr/bin:/bin" \
-  SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/srv/codex/example \
-  SUMMARY_TESTBOX_RUNNER="$fake_bin/runner" \
+  CODEX_THREAD_ID=fixture-agent \
+  SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/srv/codex/agents/fixture-agent/example \
   "$runner_script"
 
 printf 'summary-production-copy-testbox-contract=passed\n'

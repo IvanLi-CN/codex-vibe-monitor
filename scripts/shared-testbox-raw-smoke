@@ -14,6 +14,7 @@ Options:
   --testbox HOST       SSH host alias (default: codex-testbox)
   --reuse-image TAG    Skip docker build and reuse an existing remote image tag
   --cleanup            Remove this run directory and image after success
+  CODEX_THREAD_ID      Required Agent Directory identifier for the testbox run
   -h, --help           Show this help message
 USAGE
 }
@@ -48,11 +49,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-  :
-else
-  REPO_ROOT="$(pwd)"
-fi
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo 'current directory must be inside a Git worktree' >&2
+  exit 64
+}
 REPO_ROOT="$(python3 - <<'PY' "$REPO_ROOT"
 import os, sys
 print(os.path.realpath(sys.argv[1]))
@@ -64,12 +64,21 @@ import hashlib, os, sys
 print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:8])
 PY
 )"
+AGENT_ID="${CODEX_THREAD_ID:-}"
+if [[ ! "$AGENT_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo 'CODEX_THREAD_ID must be a safe non-empty testbox agent identifier' >&2
+  exit 64
+fi
+if git -C "$REPO_ROOT" ls-files -s | awk '$1 == "160000" { found=1 } END { exit !found }'; then
+  echo 'submodules must be transferred directly; sync helper only supports ordinary worktrees' >&2
+  exit 64
+fi
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_shared_smoke_${GIT_SHA}"
-REMOTE_BASE="/srv/codex/workspaces/$USER"
 WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
-REMOTE_WORKSPACE="${REMOTE_BASE}/${WORKSPACE_SLUG}"
-REMOTE_RUN="${REMOTE_WORKSPACE}/runs/${RUN_ID}"
+REMOTE_AGENT="/srv/codex/agents/${AGENT_ID}"
+REMOTE_WORKSPACE="${REMOTE_AGENT}/workspace"
+REMOTE_RUN="${REMOTE_AGENT}/runs/${RUN_ID}"
 IMAGE_TAG="${REUSE_IMAGE_TAG}"
 if [ -z "$IMAGE_TAG" ]; then
   IMAGE_TAG_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
@@ -85,17 +94,42 @@ printf '== local repo ==\n%s\n' "$REPO_ROOT"
 printf '== remote run ==\n%s\n' "$REMOTE_RUN"
 printf '== image tag ==\n%s\n' "$IMAGE_TAG"
 
-ssh -o BatchMode=yes "$TESTBOX" "mkdir -p '$REMOTE_RUN'"
-rsync -az --delete \
-  --exclude '.git/' \
-  --exclude 'node_modules/' \
-  --exclude 'target/' \
-  --exclude 'web/node_modules/' \
-  --exclude 'web/dist/' \
-  --exclude 'data/' \
-  "$REPO_ROOT/" "$TESTBOX:$REMOTE_RUN/"
+ssh -o BatchMode=yes "$TESTBOX" bash -s -- "$AGENT_ID" "$REMOTE_WORKSPACE" "$REMOTE_RUN" <<'REMOTE'
+set -euo pipefail
+agent_id="$1"
+workspace="$2"
+run_dir="$3"
+base=/srv/codex/agents
+agent_dir="$base/$agent_id"
+[[ -d "$base" && ! -L "$base" ]]
+if [[ -e "$agent_dir" || -L "$agent_dir" ]]; then
+  [[ -d "$agent_dir" && ! -L "$agent_dir" ]]
+else
+  mkdir -- "$agent_dir"
+fi
+[[ "$(readlink -f -- "$agent_dir")" == "$agent_dir" ]]
+if [[ -e "$workspace" || -L "$workspace" ]]; then
+  [[ -d "$workspace" && ! -L "$workspace" ]]
+else
+  mkdir -- "$workspace"
+fi
+[[ "$(readlink -f -- "$workspace")" == "$workspace" ]]
+find "$workspace" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+mkdir -p -- "$run_dir"
+[[ -d "$run_dir" && ! -L "$run_dir" ]]
+REMOTE
+rsync -az --from0 --files-from=- \
+  "$REPO_ROOT/" "$TESTBOX:$REMOTE_WORKSPACE/" < <(
+  git -C "$REPO_ROOT" ls-files -co --exclude-standard -z |
+    while IFS= read -r -d '' path; do
+      if [[ -e "$REPO_ROOT/$path" || -L "$REPO_ROOT/$path" ]]; then
+        printf '%s\0' "$path"
+      fi
+    done
+)
 
 ssh -o BatchMode=yes "$TESTBOX" env \
+  REMOTE_WORKSPACE="$REMOTE_WORKSPACE" \
   REMOTE_RUN="$REMOTE_RUN" \
   IMAGE_TAG="$IMAGE_TAG" \
   REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
@@ -168,7 +202,7 @@ trap cleanup_remote EXIT
 
 if [ -z "$REUSE_IMAGE_TAG" ]; then
   printf '== build image ==\n'
-  docker build -t "$IMAGE_TAG" --build-arg APP_EFFECTIVE_VERSION="testbox-smoke-$GIT_SHA" "$REMOTE_RUN"
+  docker build -t "$IMAGE_TAG" --build-arg APP_EFFECTIVE_VERSION="testbox-smoke-$GIT_SHA" "$REMOTE_WORKSPACE"
 else
   printf '== reuse image ==\n%s\n' "$IMAGE_TAG"
   docker image inspect "$IMAGE_TAG" >/dev/null
