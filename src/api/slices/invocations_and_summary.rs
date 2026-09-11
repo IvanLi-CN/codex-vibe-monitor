@@ -12727,6 +12727,37 @@ async fn summary_all_time_coverage_page_is_exact(
                     .context("summary all-time coverage account manifest proof hydration failed"));
             }
         };
+    // Probe the page for existing final-proof markers in one read.  Calling
+    // `summary_archive_snapshot_path_has_proof` for every manifest would open a read transaction
+    // and, when no marker exists, a failed `BEGIN IMMEDIATE` promotion attempt for each row.  A
+    // large staged recovery can contain thousands of legacy manifests without any V2 pages; the
+    // page-level probe keeps that common path bounded while marked identities still receive the
+    // full semantic validation below.
+    let proof_marked_paths = {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT DISTINCT batches.file_path \
+             FROM archive_batches AS batches \
+             INNER JOIN summary_archive_snapshot_v2_proof AS proof \
+               ON proof.archive_batch_id = batches.id \
+              AND proof.manifest_sha256 = batches.sha256 \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.file_path IN (",
+        );
+        let mut separated = query.separated(", ");
+        for path in &paths {
+            separated.push_bind(path);
+        }
+        separated.push_unseparated(")");
+        query
+            .build_query_scalar::<String>()
+            .fetch_all(pool)
+            .await
+            .context("summary all-time coverage page proof marker lookup failed")?
+            .into_iter()
+            .collect::<HashSet<_>>()
+    };
     let mut global_complete = true;
     let mut account_complete = true;
     for archive in &page.archives {
@@ -12740,7 +12771,9 @@ async fn summary_all_time_coverage_page_is_exact(
         // A verified Snapshot V2 page set is a complete normalized Summary source. It can
         // replace both compact rollup and account-manifest proof when the raw archive is gone,
         // allowing the historical supervisor to advance without reopening the source file.
-        if summary_archive_snapshot_path_has_proof(pool, archive.file_path()).await? {
+        if proof_marked_paths.contains(archive.file_path())
+            && summary_archive_snapshot_path_has_proof(pool, archive.file_path()).await?
+        {
             continue;
         }
         let (archive_global_complete, archive_account_complete) =
