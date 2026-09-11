@@ -12822,6 +12822,20 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     pool: &Pool<Sqlite>,
     high_watermark_id: i64,
 ) -> Result<bool> {
+    let duplicate_paths = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM (
+             SELECT file_path FROM archive_batches
+             WHERE dataset = 'codex_invocations' AND status = 'completed'
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+             GROUP BY file_path HAVING COUNT(*) > 1
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .context("summary all-time Snapshot V2 duplicate manifest check failed")?;
+    if duplicate_paths > 0 {
+        return Ok(false);
+    }
     // The marker/count aggregate keeps the normal recovery pass bounded. Only when every
     // candidate advertises a complete marker do we pay the one-time full semantic validation
     // needed to reject forged or stale markers.
@@ -12848,14 +12862,6 @@ async fn summary_all_time_manifest_v2_coverage_complete(
                        AND pages.manifest_sha256 = batches.sha256 \
                  ) \
                  AND LENGTH(TRIM(proof.semantic_sha256)) > 0 \
-           ) \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM archive_batches AS duplicate \
-               WHERE duplicate.dataset = 'codex_invocations' \
-                 AND duplicate.status = 'completed' \
-                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
-                 AND duplicate.file_path = batches.file_path \
-                 AND duplicate.id <> batches.id \
            )",
     )
     .bind(high_watermark_id)
@@ -12870,15 +12876,7 @@ async fn summary_all_time_manifest_v2_coverage_complete(
          WHERE batches.dataset = 'codex_invocations' \
            AND batches.status = 'completed' \
            AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
-           AND batches.id <= ?1 \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM archive_batches AS duplicate \
-               WHERE duplicate.dataset = 'codex_invocations' \
-                 AND duplicate.status = 'completed' \
-                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
-                 AND duplicate.file_path = batches.file_path \
-                 AND duplicate.id <> batches.id \
-           )",
+           AND batches.id <= ?1",
     )
     .bind(high_watermark_id)
     .fetch_all(pool)
@@ -13949,18 +13947,20 @@ async fn load_summary_v2_archive_proof_identities(
     pool: &Pool<Sqlite>,
 ) -> Result<HashSet<SummaryArchiveSnapshotProofIdentity>> {
     Ok(sqlx::query_as::<_, SummaryArchiveSnapshotProofIdentity>(
-        "SELECT proof.archive_batch_id, proof.manifest_sha256
+        "WITH duplicate_paths AS (
+             SELECT file_path FROM archive_batches
+             WHERE dataset = 'codex_invocations' AND status = 'completed'
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+             GROUP BY file_path HAVING COUNT(*) > 1
+         )
+         SELECT proof.archive_batch_id, proof.manifest_sha256
          FROM summary_archive_snapshot_v2_proof AS proof
          INNER JOIN archive_batches AS batches
            ON batches.id = proof.archive_batch_id
           AND batches.sha256 = proof.manifest_sha256
          WHERE NOT EXISTS (
-             SELECT 1 FROM archive_batches AS duplicate
-             WHERE duplicate.dataset = 'codex_invocations'
-               AND duplicate.status = 'completed'
-               AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror'
-               AND duplicate.file_path = batches.file_path
-               AND duplicate.id <> batches.id
+             SELECT 1 FROM duplicate_paths
+             WHERE duplicate_paths.file_path = batches.file_path
          )",
     )
     .fetch_all(pool)
@@ -13976,7 +13976,13 @@ async fn load_summary_v2_archive_proof_identities_in_range(
     end: DateTime<Utc>,
 ) -> Result<HashSet<SummaryArchiveSnapshotProofIdentity>> {
     Ok(sqlx::query_as::<_, SummaryArchiveSnapshotProofIdentity>(
-        "SELECT proof.archive_batch_id, proof.manifest_sha256 \
+        "WITH duplicate_paths AS ( \
+             SELECT file_path FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             GROUP BY file_path HAVING COUNT(*) > 1 \
+         ) \
+         SELECT proof.archive_batch_id, proof.manifest_sha256 \
          FROM summary_archive_snapshot_v2_proof AS proof \
          INNER JOIN archive_batches AS batches \
            ON batches.id = proof.archive_batch_id \
@@ -13986,12 +13992,8 @@ async fn load_summary_v2_archive_proof_identities_in_range(
            AND batches.coverage_start_epoch IS NOT NULL \
            AND batches.coverage_start_epoch < ?2 \
            AND NOT EXISTS ( \
-               SELECT 1 FROM archive_batches AS duplicate \
-               WHERE duplicate.dataset = 'codex_invocations' \
-                 AND duplicate.status = 'completed' \
-                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
-                 AND duplicate.file_path = batches.file_path \
-                 AND duplicate.id <> batches.id \
+               SELECT 1 FROM duplicate_paths \
+               WHERE duplicate_paths.file_path = batches.file_path \
            )",
     )
     .bind(start.timestamp())
@@ -14411,7 +14413,13 @@ async fn summary_v2_exact_coverage_buckets(
     // recovery can legitimately hold the 4096-bucket proof budget; per-bucket queries made an
     // otherwise bounded overlay publication dominate V2 recovery throughput.
     let unresolved_ranges = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-        "SELECT batches.month_key, batches.coverage_start_at, batches.coverage_end_at \
+        "WITH duplicate_paths AS ( \
+             SELECT file_path FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+             GROUP BY file_path HAVING COUNT(*) > 1 \
+         ) \
+         SELECT batches.month_key, batches.coverage_start_at, batches.coverage_end_at \
          FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
            AND batches.status = 'completed' \
@@ -14428,12 +14436,8 @@ async fn summary_v2_exact_coverage_buckets(
                  AND proof.manifest_sha256 = batches.sha256 \
            ) \
            AND NOT EXISTS ( \
-               SELECT 1 FROM archive_batches AS duplicate \
-               WHERE duplicate.dataset = 'codex_invocations' \
-                 AND duplicate.status = 'completed' \
-                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
-                 AND duplicate.file_path = batches.file_path \
-                 AND duplicate.id <> batches.id \
+               SELECT 1 FROM duplicate_paths \
+               WHERE duplicate_paths.file_path = batches.file_path \
            )",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(first_start))
