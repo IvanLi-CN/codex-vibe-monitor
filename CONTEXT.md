@@ -751,3 +751,25 @@ _Avoid_: 审计数据库锁, 诊断失败即拒绝请求, 原始上游错误泄�
 **全局本地镜像迁移开关（Globally Mirrored Handoff Switch）**:
 One operator-controlled global setting exposed through the existing settings surface and enabled by default. Disabling restores pre-gate routing without cancelling an in-flight request; that request may still publish current health evidence and a generation-safe sticky mutation, but cannot contribute success evidence after the switch generation changes. Re-enabling starts local verification at `0/3`.
 _Avoid_: 热路径查数据库, 数据库不可用即停流, 按账号模型开关, WebSocket 开关
+
+## Backend Test Isolation
+
+**Source Snapshot**:
+The immutable, run-specific backend-test source tree supplied to the test process. Its host and container path are execution-environment details, not part of the project test contract.
+_Avoid_: writable checkout, shared source tree, cache workspace, runner mount path
+
+**Run-local Fixture Workspace**:
+The disposable writable workspace supplied through `BACKEND_TEST_WORKSPACE` for one backend-test run's SQLite schema templates, archive fixtures, and other mutable test data.
+_Avoid_: Cargo target cache, shared database, durable fixture store, fixed host path
+
+**Persistent Cargo Home**:
+An optional durable `CARGO_HOME` provided by a test execution environment for Cargo registry and Git dependencies. It is separate from every test run's source and fixture data; the project does not prescribe its storage or mount mechanism.
+_Avoid_: source cache, test workspace, target directory, runner cache path
+
+**Persistent Cargo Target Cache**:
+An optional durable `CARGO_TARGET_DIR` provided by a test execution environment for Cargo compilation artifacts. Cargo fingerprints and locks remain the sole validity and concurrency authority; the project does not prescribe its storage or mount mechanism.
+_Avoid_: fixture workspace, shared test database, custom content-addressed cache, runner cache path
+
+**Production-copy Runtime Workspace**:
+The disposable directory created by the production-copy validator for the service process, response captures, logs, and default Cargo directories. It is separate from the staged production copy and from any externally provided Cargo cache.
+_Avoid_: runner scratch path, staged production data, durable cache, source snapshot

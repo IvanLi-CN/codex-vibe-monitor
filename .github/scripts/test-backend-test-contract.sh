@@ -12,22 +12,29 @@ tmp_dir="$(mktemp -d)"
 partition_workspace="/tmp/codex-vibe-monitor-backend-test-contract-${PPID}"
 trap 'rm -rf "${tmp_dir}" "${partition_workspace}"' EXIT
 
+backend_test_stage="$(sed -n '/^FROM rust:1.96.0-bookworm AS backend-test$/,/^# Stage 8:/p' "$dockerfile")"
 grep -q '^FROM rust:1.96.0-bookworm AS backend-test$' "$dockerfile"
 grep -q '^  backend-test:$' "$compose_file"
 grep -q 'target: backend-test' "$compose_file"
 grep -q 'CARGO_NEXTEST_VERSION=0.9.138' "$dockerfile"
 grep -q 'CARGO_NEXTEST_SHA256_AMD64=3793bf0c27607b196f502c39b2108f571de89fcda7586ae6beefa11ee177b216' "$dockerfile"
-grep -q 'rustup component add clippy' "$dockerfile"
+grep -q 'rustup component add clippy rustfmt' "$dockerfile"
 grep -q 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest' "$dockerfile"
 grep -q '^COPY scripts/search-raw ./scripts/search-raw$' "$dockerfile"
-grep -q '^RUN mkdir -p target /srv/app \\$' "$dockerfile"
-grep -q '^    && ln -s /codex-scratch/production-copy /srv/app/data \\$' "$dockerfile"
+grep -q '^RUN mkdir -p target \\$' "$dockerfile"
+if grep -Eq '/codex-scratch|/srv/app/data|CARGO_TARGET_DIR=' <<<"$backend_test_stage"; then
+  echo 'backend-test image must not encode runner-private writable paths' >&2
+  exit 1
+fi
 grep -q '^    && chown 65534:65534 target$' "$dockerfile"
 grep -q 'ENTRYPOINT \["bash", ".github/scripts/run-backend-tests.sh"\]' "$dockerfile"
 grep -q '^    entrypoint: \[\]$' "$compose_file"
 grep -q '^    command: \["sleep", "infinity"\]$' "$compose_file"
 grep -q '^    user: "65534:65534"$' "$compose_file"
-grep -q '^      CARGO_HOME: /tmp/codex-vibe-monitor-backend-test/cargo-home$' "$compose_file"
+if grep -Fq 'CARGO_HOME:' "$compose_file"; then
+  echo 'Compose must not fix the project Cargo home path' >&2
+  exit 1
+fi
 
 web_builder_section="$(sed -n '/^FROM oven\/bun:.* AS web-builder$/,/^# Stage 2:/p' "$dockerfile")"
 web_arg_line="$(grep -n '^ARG APP_EFFECTIVE_VERSION$' <<<"$web_builder_section" | cut -d: -f1)"
@@ -63,21 +70,115 @@ set -e
 [[ "$invalid_partition_rc" == 64 ]]
 grep -q -- '--partition requires 1 <= N <= M' <<<"$invalid_partition_output"
 
-partition_bin="$tmp_dir/partition-bin"
-mkdir -p "$partition_bin"
-cat >"$partition_bin/cargo-nextest" <<'EOF'
+contract_bin="$tmp_dir/contract-bin"
+contract_record="$tmp_dir/contract-record"
+tmp_root="$(cd "$tmp_dir" && pwd -P)"
+default_workspace="$tmp_root/arbitrary-workspace"
+external_cargo_home="$tmp_root/external-cargo-home"
+external_target_dir="$tmp_root/external-target"
+mkdir -p "$contract_bin"
+cat >"$contract_bin/cargo-nextest" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-cat >"$partition_bin/cargo" <<'EOF'
+cat >"$contract_bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+printf 'cargo_home=%s\n' "${CARGO_HOME:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf 'cargo_target_dir=%s\n' "${CARGO_TARGET_DIR:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf 'cargo_net_offline=%s\n' "${CARGO_NET_OFFLINE:-}" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf '%q ' "$@" >>"${BACKEND_CONTRACT_RECORD:?}"
+printf '\n' >>"${BACKEND_CONTRACT_RECORD:?}"
 printf '%q ' "$@"
 printf '\n'
 EOF
-chmod +x "$partition_bin/cargo-nextest" "$partition_bin/cargo"
-partition_output="$(PATH="$partition_bin:/usr/bin:/bin" BACKEND_TEST_WORKSPACE="$partition_workspace" bash "$runner" --profile stateful-sqlite --partition hash:1/2 2>&1)"
+chmod +x "$contract_bin/cargo-nextest" "$contract_bin/cargo"
+partition_output="$(PATH="$contract_bin:/usr/bin:/bin" BACKEND_TEST_WORKSPACE="$partition_workspace" BACKEND_CONTRACT_RECORD="$contract_record" bash "$runner" --profile stateful-sqlite --partition hash:1/2 2>&1)"
 grep -q -- '--partition hash:1/2' <<<"$partition_output"
+grep -q 'backend_test_cache_mode=ephemeral' <<<"$partition_output"
+
+: >"$contract_record"
+default_output="$(env -u CARGO_NET_OFFLINE CARGO_HOME= CARGO_TARGET_DIR= \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight 2>&1)"
+grep -q 'backend_test_network_mode=online' <<<"$default_output"
+grep -q "cargo_home=$default_workspace/cargo-home" "$contract_record"
+grep -q "cargo_target_dir=$default_workspace/target" "$contract_record"
+[[ -d "$default_workspace/cargo-home" && -d "$default_workspace/target" ]]
+
+: >"$contract_record"
+external_output="$(env -u CARGO_NET_OFFLINE \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME="$external_cargo_home" \
+  CARGO_TARGET_DIR="$external_target_dir" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight 2>&1)"
+grep -q 'backend_test_cache_mode=external' <<<"$external_output"
+grep -q "cargo_home=$external_cargo_home" "$contract_record"
+grep -q "cargo_target_dir=$external_target_dir" "$contract_record"
+
+: >"$contract_record"
+offline_output="$(env CARGO_NET_OFFLINE=true \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME="$external_cargo_home" \
+  CARGO_TARGET_DIR="$external_target_dir" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight 2>&1)"
+grep -q 'backend_test_network_mode=offline' <<<"$offline_output"
+grep -q '^cargo_net_offline=true$' "$contract_record"
+
+expect_failure() {
+  local expected="$1"
+  shift
+  set +e
+  "$@" >/dev/null 2>&1
+  local status="$?"
+  set -e
+  [[ "$status" == "$expected" ]] || {
+    echo "expected exit $expected, got $status" >&2
+    exit 1
+  }
+}
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$tmp_dir/../escaped" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME=relative \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_TARGET_DIR="$default_workspace/inside" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME="$external_cargo_home" \
+  CARGO_TARGET_DIR="$external_cargo_home" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$repo_root" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_HOME="$repo_root" \
+  CARGO_TARGET_DIR="$external_target_dir" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
 
 if grep -Fq '^  backend-test-image:' "$ci_main_workflow"; then
   echo 'backend-test image must be outside the CI Main completion path' >&2
@@ -156,12 +257,5 @@ missing_nextest_rc=$?
 set -e
 [[ "$missing_nextest_rc" == 1 ]]
 grep -q 'cargo-nextest is not installed' <<<"$missing_nextest_output"
-
-set +e
-invalid_workspace_output="$(BACKEND_TEST_WORKSPACE=/workspace bash "$runner" --profile lightweight 2>&1)"
-invalid_workspace_rc=$?
-set -e
-[[ "$invalid_workspace_rc" == 64 ]]
-grep -q 'BACKEND_TEST_WORKSPACE must be a path under /tmp' <<<"$invalid_workspace_output"
 
 printf '%s\n' 'test-backend-test-contract: all checks passed'

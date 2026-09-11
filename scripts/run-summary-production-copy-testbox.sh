@@ -75,22 +75,38 @@ cleanup_runner() {
 }
 trap cleanup_runner EXIT
 
-container_command='set -euo pipefail; while [[ ! -f /codex-scratch/READY ]]; do sleep 1; done; export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy; export CARGO_TARGET_DIR=/codex-scratch/target;'
+container_command='set -euo pipefail; while [[ ! -f /codex-scratch/READY ]]; do sleep 1; done; export SUMMARY_PRODUCTION_COPY=/codex-scratch/production-copy;'
 for environment_name in \
+  CARGO_HOME \
+  CARGO_TARGET_DIR \
   CARGO_NET_OFFLINE \
   SUMMARY_PRODUCTION_RECENT_READY_DEADLINE_SECS \
   SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS \
   SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS; do
   environment_value="${!environment_name:-}"
   [[ -n "$environment_value" ]] || continue
-  if [[ "$environment_name" == CARGO_NET_OFFLINE && ! "$environment_value" =~ ^(true|false)$ ]]; then
-    printf 'project-reason: %s must be true or false\n' "$environment_name" >&2
-    exit 64
-  fi
-  if [[ "$environment_name" != CARGO_NET_OFFLINE && "$environment_name" != SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS && ! "$environment_value" =~ ^[0-9]+$ ]]; then
-    printf 'project-reason: %s must be numeric\n' "$environment_name" >&2
-    exit 64
-  fi
+  case "$environment_name" in
+    CARGO_HOME|CARGO_TARGET_DIR)
+      if [[ "$environment_value" != /* || "$environment_value" == *..* ]]; then
+        printf 'project-reason: %s must be an absolute path without parent traversal\n' "$environment_name" >&2
+        exit 64
+      fi
+      ;;
+    CARGO_NET_OFFLINE)
+      if [[ ! "$environment_value" =~ ^(true|false)$ ]]; then
+        printf 'project-reason: %s must be true or false\n' "$environment_name" >&2
+        exit 64
+      fi
+      ;;
+    SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS)
+      ;;
+    *)
+      if [[ ! "$environment_value" =~ ^[0-9]+$ ]]; then
+        printf 'project-reason: %s must be numeric\n' "$environment_name" >&2
+        exit 64
+      fi
+      ;;
+  esac
   printf -v escaped_environment_value '%q' "$environment_value"
   container_command+=" export ${environment_name}=${escaped_environment_value};"
 done

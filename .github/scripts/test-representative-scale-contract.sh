@@ -15,7 +15,7 @@ grep -Fq 'install -m 0755 /tmp/cargo-nextest /usr/local/cargo/bin/cargo-nextest'
 grep -Fq 'ENTRYPOINT ["bash", ".github/scripts/run-backend-tests.sh"]' "$dockerfile"
 grep -Fq 'FIXTURE_CONTRACT_VERSION: &str = "summary-representative-scale-v2"' "$test_file"
 grep -Fq 'summary_representative_scale_acceptance' "$test_file"
-grep -Fq 'cargo nextest run' "$runner"
+grep -Fq 'nextest_args=(nextest run)' "$runner"
 
 set +e
 missing_nextest_output="$({
@@ -31,11 +31,11 @@ grep -Fq 'cargo-nextest is not installed' <<<"$missing_nextest_output"
 set +e
 invalid_workspace_output="$({
   cd "$repo_root"
-  BACKEND_TEST_WORKSPACE=/workspace bash .github/scripts/run-backend-tests.sh --profile lightweight
+  BACKEND_TEST_WORKSPACE=relative bash .github/scripts/run-backend-tests.sh --profile lightweight
 } 2>&1)"
 invalid_workspace_status=$?
 set -e
 test "$invalid_workspace_status" -eq 64
-grep -Fq 'BACKEND_TEST_WORKSPACE must be a path under /tmp' <<<"$invalid_workspace_output"
+grep -Fq 'BACKEND_TEST_WORKSPACE must be a normalized absolute path' <<<"$invalid_workspace_output"
 
 printf 'test-representative-scale-contract: all checks passed\n'
