@@ -179,7 +179,7 @@ cleanup_remote() {
     run_parent="$(dirname "$REMOTE_RUN")"
     if [ -L "$run_parent" ] || [ "$(readlink -f -- "$run_parent")" != "$run_parent" ]; then
       echo "refusing cleanup outside Agent Directory: $run_parent" >&2
-      cleanup_status=1
+      return 1
     fi
     if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
       if [ -d "$REMOTE_RUN/data" ]; then
@@ -189,7 +189,7 @@ cleanup_remote() {
           -R a+rwX "/runs/$RUN_ID/data" >/dev/null 2>&1 || true
       fi
     fi
-    if [ "$cleanup_status" -eq 0 ] && ! rm -rf "$REMOTE_RUN"; then
+    if ! rm -rf "$REMOTE_RUN"; then
       cleanup_status=1
     fi
     if [ -e "$REMOTE_RUN" ]; then
