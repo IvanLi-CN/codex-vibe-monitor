@@ -5787,9 +5787,16 @@ async fn ensure_summary_coverage_revision_schema(pool: &Pool<Sqlite>) -> Result<
             "WHEN (OLD.dataset = 'codex_invocations' OR NEW.dataset = 'codex_invocations') \
                   AND (OLD.id IS NOT NEW.id OR OLD.sha256 IS NOT NEW.sha256 \
                     OR OLD.dataset IS NOT NEW.dataset OR OLD.status IS NOT NEW.status \
+                    OR OLD.month_key IS NOT NEW.month_key OR OLD.day_key IS NOT NEW.day_key \
+                    OR OLD.part_key IS NOT NEW.part_key OR OLD.file_path IS NOT NEW.file_path \
+                    OR OLD.layout IS NOT NEW.layout OR OLD.codec IS NOT NEW.codec \
+                    OR OLD.writer_version IS NOT NEW.writer_version \
+                    OR OLD.summary_source_kind IS NOT NEW.summary_source_kind \
                     OR OLD.row_count IS NOT NEW.row_count \
                     OR OLD.coverage_start_at IS NOT NEW.coverage_start_at \
-                    OR OLD.coverage_end_at IS NOT NEW.coverage_end_at)",
+                    OR OLD.coverage_end_at IS NOT NEW.coverage_end_at \
+                    OR OLD.coverage_start_epoch IS NOT NEW.coverage_start_epoch \
+                    OR OLD.coverage_end_epoch IS NOT NEW.coverage_end_epoch)",
         ),
         (
             "delete",

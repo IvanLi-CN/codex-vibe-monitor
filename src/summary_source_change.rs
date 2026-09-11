@@ -336,6 +336,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
         source_kind,
         manifest_start,
         manifest_end,
+        file_path,
     )) = sqlx::query_as::<
         _,
         (
@@ -346,10 +347,11 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             String,
             Option<String>,
             Option<String>,
+            String,
         ),
     >(
         "SELECT dataset, sha256, row_count, status, COALESCE(summary_source_kind, 'unknown'), \
-             coverage_start_at, coverage_end_at \
+             coverage_start_at, coverage_end_at, file_path \
              FROM archive_batches WHERE id = ?1",
     )
     .bind(archive_batch_id)
@@ -369,6 +371,20 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
         || manifest_row_count < 0
     {
         reject_proof!("manifest_identity_or_status");
+    }
+    let duplicate_path_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM archive_batches
+         WHERE dataset = 'codex_invocations' AND status = 'completed'
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+           AND file_path = ?1 AND id <> ?2",
+    )
+    .bind(&file_path)
+    .bind(archive_batch_id)
+    .fetch_one(&mut *connection)
+    .await
+    .context("check Summary Snapshot manifest path uniqueness")?;
+    if duplicate_path_count > 0 {
+        reject_proof!("duplicate_manifest_path");
     }
     let (page_count, payload_bytes) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) \
@@ -409,6 +425,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
     let mut previous_record_key = None;
     let mut total_rows = 0_i64;
     let mut seen_ids = std::collections::HashSet::new();
+    let mut seen_invoke_ids = std::collections::HashSet::new();
     let mut validated_pages = 0_i64;
     let mut rows = sqlx::query(
         "SELECT page_index, snapshot_sha256, payload, coverage_start, coverage_end, payload_bytes, row_count, format_version \
@@ -476,6 +493,7 @@ pub(crate) async fn summary_archive_snapshot_has_proof_tx(
             }
             previous_record_key = Some(key);
             !seen_ids.insert(record.id)
+                || !seen_invoke_ids.insert(record.invoke_id.clone())
                 || occurred_at < coverage_start
                 || occurred_at > coverage_end
         }) {
@@ -759,7 +777,7 @@ mod tests {
         .await
         .expect("snapshot table");
         sqlx::query(
-            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT, summary_source_kind TEXT NOT NULL DEFAULT 'unknown')",
+            "CREATE TABLE archive_batches (id INTEGER PRIMARY KEY, dataset TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, status TEXT NOT NULL, coverage_start_at TEXT, coverage_end_at TEXT, file_path TEXT NOT NULL DEFAULT '', summary_source_kind TEXT NOT NULL DEFAULT 'unknown')",
         )
         .execute(&pool)
         .await

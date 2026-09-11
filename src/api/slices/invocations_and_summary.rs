@@ -12822,9 +12822,9 @@ async fn summary_all_time_manifest_v2_coverage_complete(
     pool: &Pool<Sqlite>,
     high_watermark_id: i64,
 ) -> Result<bool> {
-    // Final proof creation performs the full page decode, ordering, identity and semantic
-    // validation. Page mutation triggers remove its marker, so coverage completion only needs a
-    // single bounded aggregate check here; never re-open every historical page on every pass.
+    // The marker/count aggregate keeps the normal recovery pass bounded. Only when every
+    // candidate advertises a complete marker do we pay the one-time full semantic validation
+    // needed to reject forged or stale markers.
     let incomplete_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM archive_batches AS batches \
          WHERE batches.dataset = 'codex_invocations' \
@@ -12848,13 +12848,55 @@ async fn summary_all_time_manifest_v2_coverage_complete(
                        AND pages.manifest_sha256 = batches.sha256 \
                  ) \
                  AND LENGTH(TRIM(proof.semantic_sha256)) > 0 \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM archive_batches AS duplicate \
+               WHERE duplicate.dataset = 'codex_invocations' \
+                 AND duplicate.status = 'completed' \
+                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
+                 AND duplicate.file_path = batches.file_path \
+                 AND duplicate.id <> batches.id \
            )",
     )
     .bind(high_watermark_id)
     .fetch_one(pool)
     .await
-    .context("summary all-time Snapshot V2 coverage completion proof failed")?;
-    Ok(incomplete_count == 0)
+    .context("summary all-time Snapshot V2 coverage marker check failed")?;
+    if incomplete_count > 0 {
+        return Ok(false);
+    }
+    let manifests = sqlx::query_as::<_, (i64, String)>(
+        "SELECT batches.id, batches.sha256 FROM archive_batches AS batches \
+         WHERE batches.dataset = 'codex_invocations' \
+           AND batches.status = 'completed' \
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+           AND batches.id <= ?1 \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM archive_batches AS duplicate \
+               WHERE duplicate.dataset = 'codex_invocations' \
+                 AND duplicate.status = 'completed' \
+                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
+                 AND duplicate.file_path = batches.file_path \
+                 AND duplicate.id <> batches.id \
+           )",
+    )
+    .bind(high_watermark_id)
+    .fetch_all(pool)
+    .await
+    .context("summary all-time Snapshot V2 coverage manifest lookup failed")?;
+    for (archive_batch_id, manifest_sha256) in manifests {
+        if !summary_archive_snapshot_has_final_proof(pool, archive_batch_id, &manifest_sha256)
+            .await
+            .with_context(|| {
+                format!(
+                    "summary all-time Snapshot V2 final proof check failed for archive {archive_batch_id}"
+                )
+            })?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 async fn advance_summary_all_time_coverage_checkpoint_scope(
@@ -13826,6 +13868,8 @@ struct SummaryV2ArchiveTotals {
     replacement_buckets: HashSet<i64>,
     materialized_buckets: HashSet<i64>,
     materialized_months_without_coverage: HashSet<String>,
+    global_usage_gap_buckets: HashSet<i64>,
+    account_usage_gap_buckets: HashSet<i64>,
     boundary_records: Vec<SummaryProjectionRecord>,
 }
 
@@ -13905,7 +13949,19 @@ async fn load_summary_v2_archive_proof_identities(
     pool: &Pool<Sqlite>,
 ) -> Result<HashSet<SummaryArchiveSnapshotProofIdentity>> {
     Ok(sqlx::query_as::<_, SummaryArchiveSnapshotProofIdentity>(
-        "SELECT archive_batch_id, manifest_sha256 FROM summary_archive_snapshot_v2_proof",
+        "SELECT proof.archive_batch_id, proof.manifest_sha256
+         FROM summary_archive_snapshot_v2_proof AS proof
+         INNER JOIN archive_batches AS batches
+           ON batches.id = proof.archive_batch_id
+          AND batches.sha256 = proof.manifest_sha256
+         WHERE NOT EXISTS (
+             SELECT 1 FROM archive_batches AS duplicate
+             WHERE duplicate.dataset = 'codex_invocations'
+               AND duplicate.status = 'completed'
+               AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror'
+               AND duplicate.file_path = batches.file_path
+               AND duplicate.id <> batches.id
+         )",
     )
     .fetch_all(pool)
     .await
@@ -13928,7 +13984,15 @@ async fn load_summary_v2_archive_proof_identities_in_range(
          WHERE batches.coverage_end_epoch IS NOT NULL \
            AND batches.coverage_end_epoch > ?1 \
            AND batches.coverage_start_epoch IS NOT NULL \
-           AND batches.coverage_start_epoch < ?2",
+           AND batches.coverage_start_epoch < ?2 \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM archive_batches AS duplicate \
+               WHERE duplicate.dataset = 'codex_invocations' \
+                 AND duplicate.status = 'completed' \
+                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
+                 AND duplicate.file_path = batches.file_path \
+                 AND duplicate.id <> batches.id \
+           )",
     )
     .bind(start.timestamp())
     .bind(end.timestamp())
@@ -14107,6 +14171,31 @@ async fn load_summary_v2_archive_totals_from_archives(
             .await?
             .remove(&file_path)
             .unwrap_or_default();
+            if !replay.usage_breakdown {
+                if let (Some(start), Some(end)) = (
+                    coverage_start.as_deref().and_then(parse_to_utc_datetime),
+                    coverage_end.as_deref().and_then(parse_to_utc_datetime),
+                ) {
+                    let mut bucket = align_bucket_epoch(start.timestamp(), 3_600, 0);
+                    let end_bucket = align_bucket_epoch(end.timestamp(), 3_600, 0);
+                    while bucket <= end_bucket && totals.global_usage_gap_buckets.len() < 4096 {
+                        totals.global_usage_gap_buckets.insert(bucket);
+                        totals.account_usage_gap_buckets.insert(bucket);
+                        bucket = bucket.saturating_add(3_600);
+                    }
+                } else if let Some(month_key) = month_key.as_deref()
+                    && let Ok(buckets) = crate::stats::archive_bucket_start_epochs_from_bounds(
+                        Some(month_key),
+                        None,
+                        None,
+                    )
+                {
+                    for bucket in buckets.into_iter().take(4096) {
+                        totals.global_usage_gap_buckets.insert(bucket);
+                        totals.account_usage_gap_buckets.insert(bucket);
+                    }
+                }
+            }
             if archive_boundary_intersects
                 && !(replay.overall && replay.account_stats && replay.usage_breakdown)
             {
@@ -14337,6 +14426,14 @@ async fn summary_v2_exact_coverage_buckets(
                SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof \
                WHERE proof.archive_batch_id = batches.id \
                  AND proof.manifest_sha256 = batches.sha256 \
+           ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM archive_batches AS duplicate \
+               WHERE duplicate.dataset = 'codex_invocations' \
+                 AND duplicate.status = 'completed' \
+                 AND COALESCE(duplicate.summary_source_kind, 'unknown') <> 'live_mirror' \
+                 AND duplicate.file_path = batches.file_path \
+                 AND duplicate.id <> batches.id \
            )",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(first_start))
@@ -14602,6 +14699,31 @@ async fn publish_summary_coverage_overlay_once(
         )
         .await?
     };
+    if !totals.global_usage_gap_buckets.is_empty() {
+        let gap_ranges = summary_projection_unavailable_bucket_ranges(
+            totals.global_usage_gap_buckets.iter().copied().collect(),
+        );
+        next.unavailable_unmaterialized_archive_ranges
+            .extend(gap_ranges.iter().copied());
+        next.unavailable_boundary_archive_ranges
+            .extend(gap_ranges.iter().copied());
+        next.all_time_by_account.remove(&None);
+        next.freshness.global_all_time_eligible = false;
+        next.all_time_terminal_coverage_complete = false;
+        next.all_time_terminal_sequence_watermark = 0;
+        next.all_time_persisted_live_terminal_invoke_ids.clear();
+    }
+    if !totals.account_usage_gap_buckets.is_empty() {
+        let gap_ranges = summary_projection_unavailable_bucket_ranges(
+            totals.account_usage_gap_buckets.iter().copied().collect(),
+        );
+        next.unavailable_unmaterialized_archive_account_ranges
+            .extend(gap_ranges.iter().copied());
+        next.unavailable_boundary_archive_account_ranges
+            .extend(gap_ranges.iter().copied());
+        next.freshness.account_all_time_eligible.clear();
+        next.all_time_by_account.retain(|scope, _| scope.is_none());
+    }
     if totals.global_coverage_buckets.is_empty()
         && totals.account_coverage_buckets.is_empty()
         && previous_overlay.is_none()
