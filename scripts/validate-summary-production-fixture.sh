@@ -85,7 +85,7 @@ canonical_dir_path() {
     exit 64
   fi
   local probe="$raw_path"
-  while [[ ! -e "$probe" ]]; do
+  while [[ ! -e "$probe" && ! -L "$probe" ]]; do
     [[ "$probe" != "/" ]] || break
     probe="${probe%/*}"
     [[ -n "$probe" ]] || probe="/"

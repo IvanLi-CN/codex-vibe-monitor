@@ -139,7 +139,7 @@ canonical_dir_path() {
     exit 64
   fi
   local probe="$raw_path"
-  while [[ ! -e "$probe" ]]; do
+  while [[ ! -e "$probe" && ! -L "$probe" ]]; do
     [[ "$probe" != "/" ]] || break
     probe="${probe%/*}"
     [[ -n "$probe" ]] || probe="/"
@@ -193,7 +193,7 @@ cargo_target_input="${CARGO_TARGET_DIR:-}"
 cargo_home_external=false
 cargo_target_external=false
 if [[ -z "$cargo_home_input" ]]; then
-  cargo_home="$backend_test_workspace/cargo-home"
+  cargo_home="$(canonical_dir_path CARGO_HOME "$backend_test_workspace/cargo-home")"
   cache_mode="ephemeral"
 else
   cargo_home="$(canonical_dir_path CARGO_HOME "$cargo_home_input")"
@@ -201,7 +201,7 @@ else
   cargo_home_external=true
 fi
 if [[ -z "$cargo_target_input" ]]; then
-  cargo_target_dir="$backend_test_workspace/target"
+  cargo_target_dir="$(canonical_dir_path CARGO_TARGET_DIR "$backend_test_workspace/target")"
 else
   cargo_target_dir="$(canonical_dir_path CARGO_TARGET_DIR "$cargo_target_input")"
   cache_mode="external"
@@ -211,15 +211,14 @@ if path_overlaps "$backend_test_workspace" "$source_snapshot_root"; then
   echo "::error::BACKEND_TEST_WORKSPACE must be separate from the source snapshot." >&2
   exit 64
 fi
-if { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$backend_test_workspace"; } \
+if { [[ "$cargo_home_external" == false ]] && ! path_is_within "$cargo_home" "$backend_test_workspace"; } \
+  || { [[ "$cargo_target_external" == false ]] && ! path_is_within "$cargo_target_dir" "$backend_test_workspace"; } \
+  || path_overlaps "$cargo_home" "$source_snapshot_root" \
+  || path_overlaps "$cargo_target_dir" "$source_snapshot_root" \
+  || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$backend_test_workspace"; } \
   || { [[ "$cargo_target_external" == true ]] && path_overlaps "$cargo_target_dir" "$backend_test_workspace"; } \
-  || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$source_snapshot_root"; } \
-  || { [[ "$cargo_target_external" == true ]] && path_overlaps "$cargo_target_dir" "$source_snapshot_root"; }; then
-  echo "::error::externally provided Cargo directories must be outside BACKEND_TEST_WORKSPACE." >&2
-  exit 64
-fi
-if path_overlaps "$cargo_home" "$cargo_target_dir"; then
-  echo "::error::CARGO_HOME and CARGO_TARGET_DIR must be separate directories." >&2
+  || path_overlaps "$cargo_home" "$cargo_target_dir"; then
+  echo "::error::Cargo directories must remain isolated from the source snapshot, workspace, and each other." >&2
   exit 64
 fi
 ensure_writable_dir BACKEND_TEST_WORKSPACE "$backend_test_workspace"

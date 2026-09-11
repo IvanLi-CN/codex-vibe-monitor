@@ -62,6 +62,7 @@
 - `CARGO_NET_OFFLINE` 是调用方输入，runner 必须原样传递给 Cargo，只能输出 online/offline 语义状态，不得替换或推断其值。
 - production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器只能准备 staged copy 和注入标准环境变量。
 - 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
+- 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
 - PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 与第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。

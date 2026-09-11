@@ -49,6 +49,7 @@ fi
   printf 'project-reason: shared-testbox runner is unavailable\n' >&2
   exit 64
 }
+set +e
 source_meta="$(ssh -o BatchMode=yes -o ConnectTimeout=5 "$testbox" bash -s -- "$source_path" <<'REMOTE'
 set -euo pipefail
 source_path="$1"
@@ -59,10 +60,20 @@ if find -P "$source_path" \( -type l -o -type b -o -type c -o -type p -o -type s
 fi
 du -sb -- "$source_path" | awk '{print $1}'
 REMOTE
-)" || {
-  printf 'project-reason: production copy failed canonical source validation\n' >&2
-  exit 64
-}
+ )"
+source_validation_status="$?"
+set -e
+case "$source_validation_status" in
+  10|11|12)
+    printf 'project-reason: production copy failed canonical source validation\n' >&2
+    exit 64
+    ;;
+  0) ;;
+  *)
+    printf 'shared-testbox-environment: production copy source validation was unavailable\n' >&2
+    exit 75
+    ;;
+esac
 [[ "$source_meta" =~ ^[0-9]+$ ]] || {
   printf 'shared-testbox-environment: production copy size probe was unavailable\n' >&2
   exit 75
@@ -85,6 +96,7 @@ stage_wait_secs="${SUMMARY_TESTBOX_STAGE_WAIT_SECS:-$default_stage_wait_secs}"
 runner_log="$(mktemp "${TMPDIR:-/tmp}/summary-production-run.XXXXXX")"
 runner_pid=""
 copy_pid=""
+copy_log=""
 run_id=""
 scratch_path=""
 cleanup_runner() {
@@ -97,6 +109,9 @@ cleanup_runner() {
     wait "$runner_pid" 2>/dev/null || true
   fi
   rm -f "$runner_log"
+  if [[ -n "$copy_log" ]]; then
+    rm -f "$copy_log"
+  fi
 }
 trap cleanup_runner EXIT
 
@@ -225,6 +240,7 @@ if (( copy_status == 0 )); then
 fi
 copy_pid=""
 rm -f "$copy_log"
+copy_log=""
 if (( copy_status != 0 )); then
   printf 'shared-testbox-environment: production copy staging failed\n' >&2
   kill -TERM "$runner_pid" 2>/dev/null || true

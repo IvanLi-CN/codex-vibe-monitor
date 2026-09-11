@@ -161,6 +161,21 @@ expect_failure() {
     exit 1
   }
 }
+symlink_workspace="$tmp_root/symlink-workspace"
+mkdir -p "$symlink_workspace"
+ln -s "$repo_root" "$symlink_workspace/cargo-home"
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$symlink_workspace" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
+ln -s "$repo_root/does-not-exist" "$symlink_workspace/cargo-target-link"
+expect_failure 64 env \
+  PATH="$contract_bin:/usr/bin:/bin" \
+  BACKEND_TEST_WORKSPACE="$default_workspace" \
+  CARGO_TARGET_DIR="$symlink_workspace/cargo-target-link/nested" \
+  BACKEND_CONTRACT_RECORD="$contract_record" \
+  bash "$runner" --profile lightweight
 expect_failure 64 env \
   PATH="$contract_bin:/usr/bin:/bin" \
   BACKEND_TEST_WORKSPACE="$default_workspace" \

@@ -59,6 +59,11 @@ grep -Fq 'SUMMARY_PRODUCTION_HISTORICAL_READY_DEADLINE_SECS' "$runner_script"
 grep -Fq 'SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS' "$runner_script"
 grep -Fq '  CARGO_HOME' "$runner_script"
 grep -Fq '  CARGO_TARGET_DIR' "$runner_script"
+grep -Fq 'source_validation_status=' "$runner_script"
+grep -Fq '10|11|12)' "$runner_script"
+grep -Fq 'source validation was unavailable' "$runner_script"
+grep -Fq 'copy_log=""' "$runner_script"
+grep -Fq 'if [[ -n "$copy_log" ]]; then' "$runner_script"
 if grep -Fq 'must be true or false' "$runner_script"; then
   printf 'shared-testbox adapter must pass CARGO_NET_OFFLINE through unchanged\n' >&2
   exit 1
@@ -92,8 +97,13 @@ mkdir -p "$copy_dir" "$runtime_root"
 copy_dir="$(cd "$copy_dir" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
 ln -s "$tmp_dir" "$tmp_dir/parent-link"
+ln -s "$repo_root/does-not-exist" "$tmp_dir/dangling-parent"
 expect_failure 64 env \
   SUMMARY_PRODUCTION_COPY="$tmp_dir/parent-link/production-copy" \
+  "$validator_script"
+expect_failure 64 env \
+  SUMMARY_PRODUCTION_COPY="$copy_dir" \
+  TMPDIR="$tmp_dir/dangling-parent/nested" \
   "$validator_script"
 expect_failure 64 env \
   SUMMARY_PRODUCTION_COPY="$copy_dir" \
@@ -126,5 +136,22 @@ expect_failure_message 64 'external Cargo directories must be separate from fixt
   "$validator_script"
 expect_failure 1 env -u SUMMARY_PRODUCTION_COPY \
   "$repo_root/scripts/validate-summary-production-fixture.sh"
+
+fake_bin="$tmp_dir/fake-bin"
+mkdir -p "$fake_bin"
+cat >"$fake_bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+exit 255
+EOF
+cat >"$fake_bin/runner" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fake_bin/ssh" "$fake_bin/runner"
+expect_failure_message 75 'source validation was unavailable' env \
+  PATH="$fake_bin:/usr/bin:/bin" \
+  SUMMARY_TESTBOX_PRODUCTION_COPY_SOURCE=/srv/codex/example \
+  SUMMARY_TESTBOX_RUNNER="$fake_bin/runner" \
+  "$runner_script"
 
 printf 'summary-production-copy-testbox-contract=passed\n'
