@@ -42,6 +42,7 @@
 - `src/api/mod.rs` 中 invocation 列表分页查询的轻量页 id 预选 + 当前页重型投影（保留并复验，不回退）。
 - `src/tests/mod.rs` 中与 100 并行、不再本地 admission reject、raw 异步和长流 in-flight tracking 相关的回归测试。
 - `scripts/shared-testbox-proxy-parallel-smoke` 共享测试机压测脚本与对应的 mock upstream / loadgen harness。
+- shared-testbox smoke 必须使用 `CODEX_THREAD_ID` 对应的 Agent Directory；同步只清理并重建其 `workspace/` 子目录，run 产物和 Compose project 必须按本次任务唯一化，即使同一秒重复启动也不得复用 run 目录；清理前必须拒绝符号链接 `runs/` 父目录，避免删除 Agent Directory 外的目标。
 
 ### Out of scope
 

@@ -1,44 +1,211 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source_snapshot_root="$(cd "$repo_root" && pwd -P)"
+
+path_has_parent_component() {
+  local value="$1"
+  local -a components
+  local component
+  IFS=/ read -r -a components <<<"$value"
+  for component in "${components[@]}"; do
+    if [[ "$component" == .. || "$component" == . ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+path_is_within() {
+  local candidate="$1"
+  local parent="$2"
+  if [[ "$parent" == "/" ]]; then
+    [[ "$candidate" == /* ]]
+  else
+    [[ "$candidate" == "$parent" || "$candidate" == "$parent"/* ]]
+  fi
+}
+
+path_overlaps() {
+  local left="$1"
+  local right="$2"
+  path_is_within "$left" "$right" || path_is_within "$right" "$left"
+}
+
+path_is_normalized_absolute() {
+  local value="$1"
+  [[ "$value" == /* && "$value" != *//* ]]
+}
+
 copy_path="${SUMMARY_PRODUCTION_COPY:?SUMMARY_PRODUCTION_COPY is required}"
+path_is_normalized_absolute "$copy_path" && ! path_has_parent_component "$copy_path" || {
+  printf 'project-reason: staged production copy must be a normalized absolute path\n' >&2
+  exit 64
+}
 [[ -e "$copy_path" && ! -L "$copy_path" ]] || {
   printf 'project-reason: staged production copy is missing or symbolic\n' >&2
   exit 64
 }
-[[ "$(readlink -f -- "$copy_path")" == "$copy_path" ]] || {
+copy_path_input="$copy_path"
+while [[ "$copy_path_input" != "/" && "$copy_path_input" == */ ]]; do
+  copy_path_input="${copy_path_input%/}"
+done
+copy_path="$copy_path_input"
+copy_path="$(cd "$copy_path" && pwd -P)" || {
   printf 'project-reason: staged production copy is not canonical\n' >&2
   exit 64
 }
+[[ "$copy_path" == "$copy_path_input" ]] || {
+  printf 'project-reason: staged production copy is not canonical\n' >&2
+  exit 64
+}
+if path_overlaps "$copy_path" "$source_snapshot_root"; then
+  printf 'project-reason: staged production copy must be separate from the source snapshot\n' >&2
+  exit 64
+fi
 if find -P "$copy_path" \( -type l -o -type b -o -type c -o -type p -o -type s \) -print -quit | grep -q .; then
   printf 'project-reason: staged production copy contains unsupported filesystem entries\n' >&2
   exit 64
 fi
 
-copy_bytes="$(du -sb -- "$copy_path" | awk '{print $1}')"
-[[ "$copy_bytes" =~ ^[0-9]+$ ]] || {
+copy_kib="$(du -sk "$copy_path" | awk '{print $1}')"
+[[ "$copy_kib" =~ ^[0-9]+$ ]] || {
   printf 'project-reason: staged production copy size is unavailable\n' >&2
   exit 64
 }
+copy_bytes=$((copy_kib * 1024))
 printf 'production-copy-bytes=%s\n' "$copy_bytes"
 
-target_dir="${CARGO_TARGET_DIR:-/codex-scratch/target}"
-  runtime_dir="/codex-scratch/summary-production-runtime"
-  # The shared runner mounts the canonical staged copy only beneath
-  # /codex-scratch. Never rely on an image-specific /srv/app layout.
+canonical_dir_path() {
+  local variable_name="$1"
+  local raw_path="$2"
+  if ! path_is_normalized_absolute "$raw_path" || path_has_parent_component "$raw_path"; then
+    printf 'project-reason: %s must be a normalized absolute path without parent components\n' "$variable_name" >&2
+    exit 64
+  fi
+  local probe="$raw_path"
+  while [[ ! -e "$probe" && ! -L "$probe" ]]; do
+    [[ "$probe" != "/" ]] || break
+    probe="${probe%/*}"
+    [[ -n "$probe" ]] || probe="/"
+  done
+  [[ -d "$probe" ]] || {
+    printf 'project-reason: %s parent could not be canonicalized\n' "$variable_name" >&2
+    exit 64
+  }
+  local canonical_probe
+  canonical_probe="$(cd "$probe" && pwd -P)" || {
+    printf 'project-reason: %s could not be canonicalized\n' "$variable_name" >&2
+    exit 64
+  }
+  local suffix
+  local canonical_path
+  if [[ "$probe" == "/" ]]; then
+    suffix="/${raw_path#/}"
+    canonical_path="$suffix"
+  else
+    suffix="${raw_path#"$probe"}"
+    canonical_path="${canonical_probe%/}${suffix}"
+  fi
+  while [[ "$canonical_path" != "/" && "$canonical_path" == */ ]]; do
+    canonical_path="${canonical_path%/}"
+  done
+  if [[ "$canonical_path" == / ]]; then
+    printf 'project-reason: %s must resolve to a non-root directory\n' "$variable_name" >&2
+    exit 64
+  fi
+  printf '%s\n' "$canonical_path"
+}
+
+ensure_writable_dir() {
+  local variable_name="$1"
+  local path="$2"
+  mkdir -p "$path" || {
+    printf 'project-reason: could not create %s directory\n' "$variable_name" >&2
+    exit 64
+  }
+  if [[ ! -d "$path" || ! -w "$path" ]]; then
+    printf 'project-reason: %s must resolve to a writable directory\n' "$variable_name" >&2
+    exit 64
+  fi
+}
+
+tmp_root_input="${TMPDIR:-/tmp}"
+tmp_root="$(canonical_dir_path TMPDIR "$tmp_root_input")"
+if path_overlaps "$tmp_root" "$copy_path" || path_overlaps "$tmp_root" "$source_snapshot_root"; then
+  printf 'project-reason: temporary directory root must be separate from fixture and source workspaces\n' >&2
+  exit 64
+fi
+runtime_dir_input="$(mktemp -d "$tmp_root/summary-production-runtime.XXXXXX")"
+runtime_dir="$(cd "$runtime_dir_input" && pwd -P)"
+service_pid=""
+cleanup_service() {
+  if [[ -n "$service_pid" ]] && kill -0 "$service_pid" 2>/dev/null; then
+    kill -TERM "$service_pid" 2>/dev/null || true
+    wait "$service_pid" 2>/dev/null || true
+  fi
+}
+cleanup_runtime() {
+  cleanup_service
+  if [[ -n "$runtime_dir" && -d "$runtime_dir" ]]; then
+    rm -rf "$runtime_dir"
+  fi
+}
+trap cleanup_runtime EXIT
+
+if path_overlaps "$runtime_dir" "$copy_path"; then
+  printf 'project-reason: production copy and runtime workspace must be separate\n' >&2
+  exit 64
+fi
+cargo_home_input="${CARGO_HOME:-}"
+target_dir_input="${CARGO_TARGET_DIR:-}"
+cargo_home_external=false
+target_dir_external=false
+if [[ -z "$cargo_home_input" ]]; then
+  cargo_home="$runtime_dir/cargo-home"
+else
+  cargo_home="$(canonical_dir_path CARGO_HOME "$cargo_home_input")"
+  cargo_home_external=true
+fi
+if [[ -z "$target_dir_input" ]]; then
+  target_dir="$runtime_dir/target"
+else
+  target_dir="$(canonical_dir_path CARGO_TARGET_DIR "$target_dir_input")"
+  target_dir_external=true
+fi
+if { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$runtime_dir"; } \
+  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$runtime_dir"; } \
+  || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$copy_path"; } \
+  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$copy_path"; } \
+  || { [[ "$cargo_home_external" == true ]] && path_overlaps "$cargo_home" "$source_snapshot_root"; } \
+  || { [[ "$target_dir_external" == true ]] && path_overlaps "$target_dir" "$source_snapshot_root"; }; then
+  printf 'project-reason: external Cargo directories must be separate from fixture and runtime workspaces\n' >&2
+  exit 64
+fi
+if path_overlaps "$cargo_home" "$target_dir"; then
+  printf 'project-reason: CARGO_HOME and CARGO_TARGET_DIR must be separate directories\n' >&2
+  exit 64
+fi
+ensure_writable_dir CARGO_HOME "$cargo_home"
+ensure_writable_dir CARGO_TARGET_DIR "$target_dir"
+export CARGO_HOME="$cargo_home"
+export CARGO_TARGET_DIR="$target_dir"
+cache_mode=ephemeral
+if [[ "$cargo_home_external" == true || "$target_dir_external" == true ]]; then
+  cache_mode=external
+fi
+offline_mode=online
+case "${CARGO_NET_OFFLINE:-}" in
+  1|true|yes) offline_mode=offline ;;
+esac
+printf 'summary-production-cache-mode=%s\n' "$cache_mode"
+printf 'summary-production-network-mode=%s\n' "$offline_mode"
+
   database_path="$copy_path/codex_vibe_monitor.db"
   archive_dir="$copy_path/archives"
   binary_path="$target_dir/debug/codex-vibe-monitor"
   log_path="$runtime_dir/service.log"
-  service_pid=""
-
-  cleanup_service() {
-    if [[ -n "$service_pid" ]] && kill -0 "$service_pid" 2>/dev/null; then
-      kill -TERM "$service_pid" 2>/dev/null || true
-      wait "$service_pid" 2>/dev/null || true
-    fi
-  }
-  trap cleanup_service EXIT
 
   summary_error_class() {
     local response_path="$1"
@@ -66,39 +233,58 @@ target_dir="${CARGO_TARGET_DIR:-/codex-scratch/target}"
   }
 
   summary_bootstrap_stage() {
-    local stage
-    local selected="none"
-    for stage in \
-      rollup_load \
-      live_exact_admission \
-      current_index_admission \
-      boundary_manifest_admission \
-      archive_account_discovery \
-      boundary_manifest_page_planning \
-      historical_live_coverage \
-      boundary_archive_hydration \
-      paged_boundary_archive_hydration \
-      current_archive_admission \
-      runtime_overlay \
-      projection_materialization; do
-      if grep -Fq "stage=\"${stage}\"" "$log_path" \
-        || grep -Fq "stage=${stage}" "$log_path"; then
-        selected="$stage"
-      fi
-    done
-    printf '%s' "$selected"
+    python3 - "$log_path" <<'PY'
+import re
+import sys
+
+known_stages = {
+    "rollup_load",
+    "live_exact_admission",
+    "current_index_admission",
+    "boundary_manifest_admission",
+    "archive_account_discovery",
+    "boundary_manifest_page_planning",
+    "historical_live_coverage",
+    "boundary_archive_hydration",
+    "paged_boundary_archive_hydration",
+    "current_archive_admission",
+    "runtime_overlay",
+    "projection_materialization",
+}
+stage_pattern = re.compile(r"stage=\"?([a-z0-9_]+)\"?")
+selected = "none"
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as log:
+        for line in log:
+            for match in stage_pattern.finditer(line):
+                if match.group(1) in known_stages:
+                    selected = match.group(1)
+except OSError:
+    pass
+print(selected, end="")
+PY
   }
 
   summary_bootstrap_failure_class() {
-    if grep -Fq 'summary projection build exceeded' "$log_path"; then
-      printf 'deadline_exceeded'
-    elif grep -Fq 'summary projection startup hydration deferred because a refresh is already in flight' "$log_path"; then
-      printf 'refresh_coalesced'
-    elif grep -Fq 'summary projection startup hydration failed' "$log_path"; then
-      printf 'build_failed'
-    else
-      printf 'no_failure_log'
-    fi
+    python3 - "$log_path" <<'PY'
+import sys
+
+failure_markers = (
+    ("summary projection build exceeded", "deadline_exceeded"),
+    ("summary projection startup hydration deferred because a refresh is already in flight", "refresh_coalesced"),
+    ("summary projection startup hydration failed", "build_failed"),
+)
+selected = "no_failure_log"
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as log:
+        for line in log:
+            for marker, label in failure_markers:
+                if marker in line:
+                    selected = label
+except OSError:
+    pass
+print(selected, end="")
+PY
   }
 
   summary_startup_phase_diagnostics() {
@@ -128,7 +314,7 @@ PY
     local response_path="$1"
     local window="$2"
     local now_epoch="$3"
-    python3 /workspace/scripts/summary-production-exact-oracle.py \
+    python3 "$repo_root/scripts/summary-production-exact-oracle.py" \
       --database "$database_path" \
       --archives "$archive_dir" \
       --response "$response_path" \
@@ -197,7 +383,7 @@ PY
 
   mkdir -p "$runtime_dir/proxy-raw" "$runtime_dir/xray"
   export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.96.0-x86_64-unknown-linux-gnu}"
-  cargo build --locked --manifest-path /workspace/Cargo.toml --target-dir "$target_dir"
+  cargo build --locked --manifest-path "$repo_root/Cargo.toml" --target-dir "$target_dir"
 
   DATABASE_PATH="$database_path" \
   ARCHIVE_DIR="$archive_dir" \

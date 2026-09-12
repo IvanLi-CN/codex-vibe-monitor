@@ -238,4 +238,4 @@ services:
 - 运维在宿主机上统一通过容器内脚本搜索 raw：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索明文 `*.bin` 和 gzip `*.bin.gz`；若需要正则，改用 `docker exec ai-codex-vibe-monitor search-raw --regex '<pattern>'`，若要扫非默认目录再显式传 `--root`。
 - startup / follow-up maintenance 会在不阻塞 `/health` 的前提下，按固定 batch 与时间预算持续推进 legacy `materialize-historical-rollups`，因此 `historicalRollupBackfill` 默认会自愈；若 backlog 需要立即追平，仍可手工执行 `cargo run -- maintenance materialize-historical-rollups`。
 - 常驻 maintenance 只做 `wal_checkpoint(PASSIVE)` 与 `PRAGMA optimize`；首次真实 cleanup 完成后，再在维护窗口人工执行一次 `VACUUM`。
-- 若要在 shared-testbox 上复现完整的“镜像构建 -> retention cold-compress -> search-raw”链路，可在仓库根目录运行 `scripts/shared-testbox-raw-smoke`；脚本默认会保留远端 run 目录作为排查证据，追加 `--cleanup` 可在成功后删除本次 run 目录与镜像。
+- 若要在 shared-testbox 上复现完整的“镜像构建 -> retention cold-compress -> search-raw”链路，可在仓库根目录运行 `CODEX_THREAD_ID=<task-id> scripts/shared-testbox-raw-smoke`；脚本将工作区同步到 `/srv/codex/agents/<task-id>/workspace`，默认会保留本次 run 目录作为排查证据，追加 `--cleanup` 可在成功后删除本次 run 目录与镜像。

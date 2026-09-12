@@ -57,6 +57,14 @@
   - `Backend Tests (Stateful SQLite)`
   - `Backend Tests (Archive / File I/O)`
 - `run-backend-tests.sh` 必须提供稳定 `--profile` 入口，供本地与 CI 复用同一分组真相。
+- `BACKEND_TEST_WORKSPACE` 必须接受任意规范化绝对可写目录；未提供 `CARGO_HOME` 或 `CARGO_TARGET_DIR` 时，runner 必须在该工作区内创建运行级默认目录，显式提供的目录必须与 fixture 工作区及彼此分离。
+- `--partition hash:N/M` 只允许用于 `stateful-sqlite` profile；其他 profile 必须拒绝该输入。
+- `CARGO_NET_OFFLINE` 是调用方输入，runner 必须原样传递给 Cargo，只能输出 online/offline 语义状态，不得替换或推断其值。
+- production-copy validator 必须只要求 `SUMMARY_PRODUCTION_COPY`，从脚本位置定位仓库和 exact oracle，并自行创建、清理独立的 Runtime Workspace；shared-testbox 适配器可以在 Agent Directory 中同步工作区、准备 staged copy 和注入标准环境变量，但这些路径不属于项目验证器契约。
+- shared-testbox 适配器若启用，必须使用 `CODEX_THREAD_ID` 对应的 `/srv/codex/agents/<CODEX_THREAD_ID>/`，同步仅限 `workspace/` 子目录，并为每次验证使用唯一 run 目录；不得依赖旧 runner skill 或其私有路径。
+- shared-testbox 适配器的 run 标识必须包含每次调用的唯一性区分，即使同一 Agent 在同一秒内重复启动也不得复用 run 目录；清理前必须验证 `runs/` 父目录仍是 Agent Directory 内的真实目录，发现符号链接时不得触碰其目标。
+- 路径边界必须按 `.`/`..` 组件判断，去除等价尾斜杠并拒绝重复分隔符后再做 overlap 检查；合法名称中的 `..` 子串不得被拒绝。
+- 路径规范化必须解析既有符号链接并拒绝悬空符号链接父级；默认 Cargo 目录也必须在创建前完成物理路径隔离检查，不得沿链接写入 source snapshot。
 - `run-backend-tests.sh` 可接受可选 `--archive-file <path>`，从已有 nextest archive 运行同一 profile 过滤；未提供该参数时必须继续用锁定依赖编译并运行。
 - PR 中所有 required jobs 必须以 job `startedAt` 至 `completedAt` 计时，首轮冷 SHA 与第二轮热 SHA 均须 `<= 180s`；required runner 总秒数须不高于 run `31825458818` 的 `80%`。
 - Cargo registry/git 与 `target` cache 必须分离；nextest target cache key 必须同时绑定 `Cargo.lock`、`Cargo.toml` 与 `src/**/*.rs`，并保留仅按 lockfile 的 restore prefix。迁移时可用原三路径集合只读恢复既有 lockfile-only cache 作为 ancestor seed；clippy 不得写入或争用 nextest target namespace。
@@ -87,6 +95,8 @@
 - 需要验证正式时间预算的用例显式清除 retry override；需要验证真实文件语义的用例继续走默认 threshold 与真实文件 fixture。
 - 普通 Stateful test state 的 current-schema template 只能由 runner 的真实 fresh schema 生成，SQLite backup 后的 state 仍使用唯一 shared-memory SQLite 与原有多连接池；不得把 shared-memory serialize/deserialize 或逐条 SQL dump 作为最终测试路径。Archive 的普通 file-DB tests 以唯一文件副本获得 current schema，不得把这一路径扩展到 migration 或真实文件语义测试。
 - archive build/distribution 是可逆实验。若采用 auxiliary producer，quality-gates 必须显式列出它但不得将它加入 GitHub required checks；仅在同一 PR head 的连续两次 CI 同时满足关键路径与总 runner 成本门槛时，才可保留这条 workflow 拓扑。
+- production-copy 验证必须在 staged SQLite 副本内重定位 archive manifest；验证器不得依赖测试机的 `/workspace`、`/codex-scratch` 或镜像 `/srv/app/data` 布局，也不得修改原始生产路径。
+- production-copy 验证器的 Runtime Workspace、`TMPDIR`、外部 Cargo 目录和 staged copy 必须与 source snapshot 分离；backend-test 镜像必须提供 exactness oracle 所需的 Python 运行时。
 
 ### Edge cases / errors
 
@@ -98,19 +108,46 @@
 
 ### 接口清单（Inventory）
 
-| 接口（Name）                                               | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                        | 备注（Notes）              |
-| ---------------------------------------------------------- | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------------------------------ | -------------------------- |
-| `.github/scripts/run-backend-tests.sh --profile <profile>` | cli          | internal      | Modify         | None                     | backend/ci      | local dev, CI PR, CI Main                  | 新增稳定 profile 入口      |
-| `Backend Tests (Lightweight)`                              | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check   |
-| `Backend Tests (Stateful SQLite)`                          | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check   |
-| `Backend Tests (Archive / File I/O)`                       | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check   |
-| `Backend Tests`                                            | workflow-job | external      | Delete         | None                     | ci              | GitHub branch protection, release snapshot | 旧单一 required check 退场 |
+| 接口（Name）                                                 | 类型（Kind） | 范围（Scope） | 变更（Change） | 契约文档（Contract Doc） | 负责人（Owner） | 使用方（Consumers）                        | 备注（Notes）                |
+| ------------------------------------------------------------ | ------------ | ------------- | -------------- | ------------------------ | --------------- | ------------------------------------------ | ---------------------------- |
+| `.github/scripts/run-backend-tests.sh --profile <profile>`   | cli          | internal      | Modify         | None                     | backend/ci      | local dev, CI PR, CI Main                  | 新增稳定 profile 入口        |
+| `Backend Tests (Lightweight)`                                | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check     |
+| `Backend Tests (Stateful SQLite)`                            | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check     |
+| `Backend Tests (Archive / File I/O)`                         | workflow-job | external      | New            | None                     | ci              | GitHub branch protection, release snapshot | 替换旧单一 backend check     |
+| `Backend Tests`                                              | workflow-job | external      | Delete         | None                     | ci              | GitHub branch protection, release snapshot | 旧单一 required check 退场   |
+| `BACKEND_TEST_WORKSPACE` / `CARGO_HOME` / `CARGO_TARGET_DIR` | env          | internal      | Modify         | This section             | backend/ci      | local dev, CI, test adapters               | 运行工作区与可选外部缓存输入 |
+| `SUMMARY_PRODUCTION_COPY`                                    | env          | internal      | New            | This section             | backend/ci      | production-copy validator, test adapters   | staged 副本输入              |
 
 ### 契约文档（按 Kind 拆分）
 
 - `backend-test` image contract is defined by ADR 0007 and the repository
   workflow contract. It provides the project-owned execution environment for
   deterministic backend validation and is not release-snapshot evidence.
+
+### Portable execution inputs
+
+- `BACKEND_TEST_WORKSPACE` is a normalized absolute writable directory for one
+  run's mutable fixtures and default Cargo directories. The project does not
+  require a `/tmp` prefix.
+- `CARGO_HOME` and `CARGO_TARGET_DIR` are optional external cache inputs. When
+  omitted, the runner creates `cargo-home` and `target` siblings inside the
+  run-local workspace. Explicit inputs must be writable, normalized, mutually
+  disjoint, and outside that workspace; the project never removes them.
+- `CARGO_NET_OFFLINE` is passed through unchanged. Diagnostics may report only
+  `online` or `offline` mode and must not include cache paths or schema-template
+  paths.
+
+### Production-copy validation
+
+- The validator consumes `SUMMARY_PRODUCTION_COPY`, resolves the repository root
+  relative to its own script, and invokes the repository's exactness oracle.
+- It creates a disposable Production-copy Runtime Workspace for the service,
+  responses, logs, and default Cargo directories, and removes it on exit after
+  terminating the service. The staged copy is the only fixture data it may
+  mutate, limited to archive-manifest relocation in its SQLite file.
+- A test-machine adapter may stage the copy and expose standard environment
+  variables, but its runner-specific paths are not part of this project
+  contract.
 
 ## Project-owned execution contract
 
@@ -167,6 +204,20 @@
   acceptance runs, Then `current` and supported rolling/calendar selections are
   Exact-Ready within 30 seconds, `all` is exact within 1800 seconds, and the
   complete normalized response matches the independent oracle.
+
+- Given an arbitrary writable run workspace, When the backend runner starts with
+  no explicit Cargo directories, Then it creates separate default Cargo home
+  and target directories inside that workspace and preserves the selected
+  profile/filter/partition contract.
+
+- Given explicit Cargo directories or `CARGO_NET_OFFLINE=true`, When the backend
+  runner starts, Then it accepts only separated writable external directories,
+  passes the offline value unchanged, and emits no cache or template paths.
+
+- Given a canonical staged production copy, When the production-copy validator
+  runs from any checkout path, Then it locates its oracle relative to the
+  script, uses an auto-cleaned Runtime Workspace, and never requires a
+  shared-testbox mount path.
 
 - Given a releasable target SHA, When Release begins publication, Then it uses
   that target's successful CI Main result and runtime-image smoke without
