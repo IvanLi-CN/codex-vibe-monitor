@@ -53,6 +53,19 @@ or returning a partial aggregate would violate the exact Projection contract.
   not finalized again. Global and account all-time aggregates retain their own
   published coverage fences, so a live-tail update cannot make a retained
   aggregate appear current.
+- Live-tail recovery uses the durable `(row_id, invoke_id, occurred_at)` source
+  identity rather than sequence numbers alone. An ACK or restart replay that
+  matches the identity already present in the immutable Projection is absorbed
+  idempotently; a missing identity remains a broad fail-closed proof. A bounded
+  `SummaryLiveTailReconciliationCheckpoint` fixes one target watermark and
+  source cursor under the existing pressure permit. Its CAS publication can
+  retain later committed entries as an overlay and never invokes generic
+  RollingDelta, Bootstrap, full live admission, or archive hydration.
+- Live-tail readiness is exposed only as no-payload diagnostics (reason, stage,
+  gap count, watermark, epoch, and elapsed time). The release gate requires
+  `current`, `1d`, `7d`, and `today` to be exact; `30d` and `all` may be exact or
+  an explicitly historical local unavailable result, but a live-tail gap blocks
+  the candidate.
 - Retryable recent candidates obey their persisted `next_probe_at` eligibility.
   An idle completed backfill checkpoint performs no repeated progress write.
 - Snapshot page progress and coverage authority are separate durable states.

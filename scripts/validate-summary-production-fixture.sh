@@ -232,6 +232,72 @@ printf 'summary-production-network-mode=%s\n' "$offline_mode"
     fi
   }
 
+  summary_historical_local_unavailable() {
+    case "$1" in
+      archive_range_unavailable|account_archive_range_unavailable)
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  }
+
+  # A local unavailable response is a valid result only when durable coverage state proves
+  # that the intersecting obligation is terminal. Pending or retryable recovery must keep the
+  # validator waiting instead of turning a stalled cold start into a false pass.
+  summary_historical_gap_is_proven() {
+    local window="$1"
+    python3 - "$database_path" "$window" <<'PY'
+import datetime as dt
+import sqlite3
+import sys
+
+database_path, window = sys.argv[1:]
+connection = sqlite3.connect(database_path)
+try:
+    tables = {row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    )}
+    if "summary_coverage_obligation" not in tables or "summary_archive_snapshot_v2_proof" not in tables:
+        raise SystemExit(1)
+    now = dt.datetime.now(dt.timezone.utc)
+    start = None if window == "all" else now - dt.timedelta(days=30)
+    rows = connection.execute(
+        "SELECT state, coverage_start, coverage_end "
+        "FROM summary_coverage_obligation AS obligation "
+        "WHERE NOT EXISTS (SELECT 1 FROM summary_archive_snapshot_v2_proof AS proof "
+        "WHERE proof.archive_batch_id = obligation.archive_batch_id "
+        "AND proof.manifest_sha256 = obligation.manifest_sha256)"
+    ).fetchall()
+finally:
+    connection.close()
+
+def parse(value):
+    if not value:
+        return None
+    text = str(value).replace(" ", "T")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+terminal = 0
+for state, coverage_start, coverage_end in rows:
+    lower = parse(coverage_start)
+    upper = parse(coverage_end)
+    if start is not None and lower is not None and upper is not None:
+        if not (lower < now and start < upper):
+            continue
+    if state != "terminal_gap":
+        raise SystemExit(1)
+    terminal += 1
+raise SystemExit(0 if terminal else 1)
+PY
+  }
+
   summary_bootstrap_stage() {
     python3 - "$log_path" <<'PY'
 import re
@@ -314,12 +380,17 @@ PY
     local response_path="$1"
     local window="$2"
     local now_epoch="$3"
-    python3 "$repo_root/scripts/summary-production-exact-oracle.py" \
+    local oracle_output
+    if ! oracle_output="$(python3 "$repo_root/scripts/summary-production-exact-oracle.py" \
       --database "$database_path" \
       --archives "$archive_dir" \
       --response "$response_path" \
       --window "$window" \
-      --now "$now_epoch"
+      --now "$now_epoch" 2>&1)"; then
+      printf 'summary-production-exactness-failure=window=%s\n' "$window"
+      return 1
+    fi
+    printf '%s\n' "$oracle_output"
   }
 
   [[ -f "$database_path" && ! -L "$database_path" ]] || {
@@ -462,10 +533,14 @@ PY
       "${recent_windows[$index]}" "${recent_statuses[$index]}" \
       "${recent_error_classes[$index]}" "$((SECONDS - started_at))"
     if [[ "${recent_statuses[$index]}" == 200 ]]; then
-      summary_validate_exact_response \
+      if ! summary_validate_exact_response \
         "$runtime_dir/summary-${recent_windows[$index]}.response" \
         "${recent_windows[$index]}" \
-        "${recent_oracle_nows[$index]}"
+        "${recent_oracle_nows[$index]}"; then
+        printf 'project-reason: exact oracle rejected recent Summary window=%s\n' \
+          "${recent_windows[$index]}" >&2
+        exit 1
+      fi
     fi
   done
   if [[ "${recent_error_classes[*]}" == *projection_unhydrated* ]]; then
@@ -492,13 +567,20 @@ PY
       break
     fi
     historical_error_class="$(summary_error_class "$historical_response_path")"
+    if summary_historical_local_unavailable "$historical_error_class" \
+      && summary_historical_gap_is_proven 30d; then
+      break
+    fi
     (( SECONDS >= historical_deadline )) && break
     sleep 1
   done
   printf 'summary-production-window=30d status=%s reason=%s elapsed_secs=%s\n' \
     "$historical_status" "$historical_error_class" "$((SECONDS - started_at))"
-  [[ "$historical_status" == 200 ]] && summary_validate_exact_response \
-    "$historical_response_path" 30d "$historical_oracle_now"
+  if [[ "$historical_status" == 200 ]] && ! summary_validate_exact_response \
+      "$historical_response_path" 30d "$historical_oracle_now"; then
+    printf 'project-reason: exact oracle rejected historical Summary window=30d\n' >&2
+    exit 1
+  fi
   recovery_diagnostics() {
     python3 - "$log_path" "$database_path" <<'PY'
 import re
@@ -596,12 +678,15 @@ print(
 PY
   }
   "$recent_ready" || exit 1
-  [[ "$historical_status" == 200 ]] || {
-    printf 'project-reason: historical Summary coverage did not become exact-ready\n' >&2
+  if [[ "$historical_status" != 200 ]] \
+    && { ! summary_historical_local_unavailable "$historical_error_class" \
+      || ! summary_historical_gap_is_proven 30d; }; then
+    printf 'project-reason: historical Summary coverage is neither exact-ready nor a proven local gap\n' >&2
     exit 1
-  }
+  fi
 
   all_status=000
+  all_error_class=projection_unhydrated
   all_response_path="$runtime_dir/summary-all.response"
   all_oracle_now=0
   all_deadline=$((SECONDS + 1800))
@@ -610,15 +695,29 @@ PY
     all_status="$(curl -sS -o "$all_response_path" -w '%{http_code}' --max-time 2 \
       'http://127.0.0.1:18080/api/stats/summary?window=all&limit=50&timeZone=Asia%2FShanghai' || true)"
     [[ "$all_status" == 200 ]] && break
+    all_error_class="$(summary_error_class "$all_response_path")"
+    if summary_historical_local_unavailable "$all_error_class" \
+      && summary_historical_gap_is_proven all; then
+      break
+    fi
     (( SECONDS >= all_deadline )) && break
     sleep 1
   done
-  printf 'summary-production-window=all status=%s elapsed_secs=%s\n' \
-    "$all_status" "$((SECONDS - started_at))"
-  [[ "$all_status" == 200 ]] && summary_validate_exact_response \
-    "$all_response_path" all "$all_oracle_now"
+  [[ "$all_status" == 200 ]] || all_error_class="$(summary_error_class "$all_response_path")"
+  printf 'summary-production-window=all status=%s reason=%s elapsed_secs=%s\n' \
+    "$all_status" "$all_error_class" "$((SECONDS - started_at))"
+  if [[ "$all_status" == 200 ]] && ! summary_validate_exact_response \
+      "$all_response_path" all "$all_oracle_now"; then
+    printf 'project-reason: exact oracle rejected historical Summary window=all\n' >&2
+    exit 1
+  fi
   if [[ "${SUMMARY_PRODUCTION_RECOVERY_DIAGNOSTICS:-}" == "1" ]]; then
     recovery_diagnostics
   fi
-  [[ "$all_status" == 200 ]]
+  if [[ "$all_status" != 200 ]] \
+    && { ! summary_historical_local_unavailable "$all_error_class" \
+      || ! summary_historical_gap_is_proven all; }; then
+    printf 'project-reason: all-time Summary coverage is neither exact-ready nor a proven local gap\n' >&2
+    exit 1
+  fi
 printf 'summary-production-validation=passed\n'

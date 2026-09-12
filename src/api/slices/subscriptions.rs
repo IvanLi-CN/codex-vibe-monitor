@@ -287,6 +287,14 @@ pub(crate) struct DashboardHotTopicHealthSnapshot {
     pub(crate) frame_reused: u64,
     pub(crate) cadence_miss_count: u64,
     pub(crate) reconnect_churn_count: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(crate) summary_live_tail_reason: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(crate) summary_live_tail_stage: String,
+    pub(crate) summary_live_tail_gap_count: u64,
+    pub(crate) summary_live_tail_watermark: u64,
+    pub(crate) summary_live_tail_epoch: u64,
+    pub(crate) summary_live_tail_elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -572,6 +580,7 @@ impl DashboardDeliveryTopologyCounters {
                 frame_reused: counter.frame_reused,
                 cadence_miss_count,
                 reconnect_churn_count: counter.reconnect_churn_count,
+                ..DashboardHotTopicHealthSnapshot::default()
             }
         };
         let current_cadence = projection.current.cadence_miss_count;
@@ -751,6 +760,7 @@ struct SubscriptionHubState {
     // SQLite source descriptors are consumed once per process lifetime. A restart starts at
     // zero and reconstructs the bounded durable tail before any RollingDelta refresh.
     summary_source_change_cursor: u64,
+    summary_live_tail_readiness: SummaryLiveTailReadiness,
     // All-time coverage can lag independently of rolling coverage. Keep its replay budget
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
     summary_terminal_overlay_all_time: VecDeque<DashboardActivityTerminalDelta>,
@@ -776,8 +786,35 @@ struct SubscriptionHubState {
     runtime_topic_recovery_running: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SummaryLiveTailReadiness {
+    pub(crate) reason: String,
+    pub(crate) stage: String,
+    pub(crate) gap_count: u64,
+    pub(crate) watermark: u64,
+    pub(crate) epoch: u64,
+    pub(crate) elapsed_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct SummaryDeltaCursor(pub(crate) u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct SummarySourceIdentity {
+    pub(crate) row_id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+}
+
+impl SummarySourceIdentity {
+    fn from_delta(delta: &DashboardActivityTerminalDelta) -> Option<Self> {
+        delta.persisted_row_id.map(|row_id| Self {
+            row_id,
+            invoke_id: delta.invoke_id.clone(),
+            occurred_at: delta.occurred_at.clone(),
+        })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SummaryDeltaEntry {
@@ -790,9 +827,13 @@ pub(crate) struct SummaryDeltaEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct DeltaGapProof {
     pub(crate) cursor: SummaryDeltaCursor,
+    // A journal cursor and a terminal sequence are different domains. `None` means this proof
+    // was created by source-journal compaction and must not be retired by a terminal watermark.
+    pub(crate) terminal_sequence: Option<u64>,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) occurred_at: String,
     pub(crate) row_id: Option<i64>,
+    pub(crate) invoke_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -818,6 +859,9 @@ struct SummaryDeltaJournal {
     // Keep it in the same bounded resident budget and layer it into rolling reads separately.
     replayed_entries: VecDeque<DashboardActivityTerminalDelta>,
     replayed_bytes: usize,
+    last_reconciled_terminal_watermark: u64,
+    reconciliation_completed: bool,
+    source_compaction_gap: bool,
     overflowed_through_sequence: Option<u64>,
     gap_proofs: VecDeque<DeltaGapProof>,
     gap_proof_budget_exhausted: bool,
@@ -828,7 +872,66 @@ impl SummaryDeltaJournal {
         left: &DashboardActivityTerminalDelta,
         right: &DashboardActivityTerminalDelta,
     ) -> bool {
-        left.invoke_id == right.invoke_id && left.occurred_at == right.occurred_at
+        let (Some(left_row_id), Some(right_row_id)) =
+            (left.persisted_row_id, right.persisted_row_id)
+        else {
+            return false;
+        };
+        left_row_id == right_row_id
+            && left.invoke_id == right.invoke_id
+            && left.occurred_at == right.occurred_at
+    }
+
+    fn contains_conflicting_row_identity(&self, delta: &DashboardActivityTerminalDelta) -> bool {
+        let Some(row_id) = delta.persisted_row_id else {
+            return false;
+        };
+        self.pending
+            .values()
+            .chain(self.entries.iter().map(|entry| &entry.delta))
+            .chain(self.replayed_entries.iter())
+            .any(|existing| {
+                existing.persisted_row_id == Some(row_id)
+                    && !Self::contains_same_identity(existing, delta)
+            })
+    }
+
+    fn compatible_pending_identity(
+        pending: &DashboardActivityTerminalDelta,
+        acknowledged: &DashboardActivityTerminalDelta,
+    ) -> bool {
+        pending.invoke_id == acknowledged.invoke_id
+            && pending.occurred_at == acknowledged.occurred_at
+            && (pending.persisted_row_id.is_none()
+                || acknowledged.persisted_row_id.is_none()
+                || pending.persisted_row_id == acknowledged.persisted_row_id)
+    }
+
+    fn absorb_committed_delta(&mut self, delta: &DashboardActivityTerminalDelta) {
+        if let Some(pending) = self.pending.remove(&delta.terminal_sequence) {
+            self.pending_bytes = self.pending_bytes.saturating_sub(pending.estimated_bytes);
+        }
+        self.entries
+            .retain(|entry| !Self::contains_same_identity(&entry.delta, delta));
+        self.replayed_entries
+            .retain(|entry| !Self::contains_same_identity(entry, delta));
+        self.bytes = self
+            .entries
+            .iter()
+            .map(|entry| entry.delta.estimated_bytes)
+            .sum();
+        self.replayed_bytes = self
+            .replayed_entries
+            .iter()
+            .map(|entry| entry.estimated_bytes)
+            .sum();
+        self.cursor = self.cursor.max(SummaryDeltaCursor(delta.terminal_sequence));
+        self.base_cursor = self
+            .base_cursor
+            .max(SummaryDeltaCursor(delta.terminal_sequence));
+        self.last_reconciled_terminal_watermark = self
+            .last_reconciled_terminal_watermark
+            .max(delta.terminal_sequence);
     }
 
     // Registration happens before the asynchronous SQLite enqueue. Pending entries establish
@@ -845,7 +948,7 @@ impl SummaryDeltaJournal {
                 return true;
             }
             self.overflowed_through_sequence = Some(sequence);
-            self.note_unknown_sequence_gap(sequence);
+            self.note_unknown_terminal_gap(sequence);
             self.note_gap(&delta);
             return false;
         }
@@ -856,7 +959,7 @@ impl SummaryDeltaJournal {
             || sequence <= self.cursor.max(self.base_cursor).0
         {
             self.overflowed_through_sequence = Some(sequence);
-            self.note_unknown_sequence_gap(sequence);
+            self.note_unknown_terminal_gap(sequence);
             self.note_gap(&delta);
             return false;
         }
@@ -917,10 +1020,15 @@ impl SummaryDeltaJournal {
     fn acknowledge_pending(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
         if let Some(pending) = self.pending.remove(&delta.terminal_sequence) {
             self.pending_bytes = self.pending_bytes.saturating_sub(pending.estimated_bytes);
-            if !Self::contains_same_identity(&pending, &delta) {
-                self.overflowed_through_sequence = Some(delta.terminal_sequence);
-                self.note_unknown_sequence_gap(delta.terminal_sequence);
-                self.note_gap(&delta);
+            if !Self::compatible_pending_identity(&pending, &delta)
+                || delta.persisted_row_id.is_none()
+            {
+                if delta.persisted_row_id.is_some() {
+                    self.note_gap(&delta);
+                } else {
+                    self.overflowed_through_sequence = Some(delta.terminal_sequence);
+                    self.note_unknown_terminal_gap(delta.terminal_sequence);
+                }
                 return false;
             }
         }
@@ -928,26 +1036,51 @@ impl SummaryDeltaJournal {
         self.append(delta.clone(), delta.terminal_sequence)
     }
 
-    fn note_unknown_sequence_gap(&mut self, cursor: u64) {
+    fn note_unknown_terminal_gap(&mut self, cursor: u64) {
         self.cursor = self.cursor.max(SummaryDeltaCursor(cursor));
-        // The missing cursor has no durable terminal metadata. Its time, account, and current
-        // rank are therefore unknown, so this proof deliberately applies to every selection
-        // until a generation-fenced reconciliation absorbs it.
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
+            terminal_sequence: Some(cursor),
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
+            invoke_id: None,
         });
+    }
+
+    fn note_unknown_source_cursor_gap(&mut self, cursor: u64) {
+        // A source-journal compaction cursor has no terminal sequence and remains broad until the
+        // source tail is rebuilt.
+        self.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(cursor),
+            terminal_sequence: None,
+            upstream_account_id: None,
+            occurred_at: String::new(),
+            row_id: None,
+            invoke_id: None,
+        });
+        self.source_compaction_gap = true;
+    }
+
+    fn clear_source_compaction_gap(&mut self) {
+        if !self.source_compaction_gap || self.gap_proof_budget_exhausted {
+            return;
+        }
+        self.gap_proofs
+            .retain(|proof| proof.terminal_sequence.is_some());
+        self.source_compaction_gap = false;
+        self.gap_proof_budget_exhausted = false;
     }
 
     fn note_gap(&mut self, delta: &DashboardActivityTerminalDelta) {
         self.cursor = self.cursor.max(SummaryDeltaCursor(delta.terminal_sequence));
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
+            terminal_sequence: Some(delta.terminal_sequence),
             upstream_account_id: delta.upstream_account_id,
             occurred_at: delta.occurred_at.clone(),
             row_id: delta.persisted_row_id,
+            invoke_id: delta.persisted_row_id.map(|_| delta.invoke_id.clone()),
         });
     }
 
@@ -961,9 +1094,11 @@ impl SummaryDeltaJournal {
             self.gap_proofs.clear();
             self.gap_proofs.push_back(DeltaGapProof {
                 cursor: proof.cursor,
+                terminal_sequence: None,
                 upstream_account_id: None,
                 occurred_at: String::new(),
                 row_id: None,
+                invoke_id: None,
             });
             self.gap_proof_budget_exhausted = true;
             return;
@@ -972,7 +1107,11 @@ impl SummaryDeltaJournal {
     }
 
     fn append_replayed(&mut self, delta: DashboardActivityTerminalDelta) -> bool {
-        if self.overflowed_through_sequence.is_some() {
+        if delta.persisted_row_id.is_none() {
+            self.note_unknown_terminal_gap(delta.terminal_sequence);
+            return false;
+        }
+        if self.contains_conflicting_row_identity(&delta) {
             self.note_gap(&delta);
             return false;
         }
@@ -984,6 +1123,10 @@ impl SummaryDeltaJournal {
             .any(|entry| Self::contains_same_identity(entry, &delta))
         {
             return true;
+        }
+        if self.overflowed_through_sequence.is_some() {
+            self.note_gap(&delta);
+            return false;
         }
         let exceeds_count = self
             .entries
@@ -1012,6 +1155,33 @@ impl SummaryDeltaJournal {
     // sequence is a fail-closed gap because it could otherwise replace an exact terminal without
     // a rebuild.
     fn append(&mut self, delta: DashboardActivityTerminalDelta, slice_high_watermark: u64) -> bool {
+        if delta.persisted_row_id.is_none() {
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_terminal_gap(slice_high_watermark);
+            return false;
+        }
+        if self.contains_conflicting_row_identity(&delta) {
+            let expected_next = self.cursor.max(self.base_cursor).0.saturating_add(1);
+            if delta.terminal_sequence != expected_next || slice_high_watermark != expected_next {
+                self.overflowed_through_sequence = Some(slice_high_watermark);
+                self.note_unknown_terminal_gap(slice_high_watermark);
+            }
+            self.note_gap(&delta);
+            return false;
+        }
+        if let Some(existing) = self
+            .entries
+            .iter()
+            .find(|entry| entry.cursor == SummaryDeltaCursor(delta.terminal_sequence))
+        {
+            if Self::contains_same_identity(&existing.delta, &delta) {
+                return true;
+            }
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_terminal_gap(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
         if self.overflowed_through_sequence.is_some() {
             self.overflowed_through_sequence = Some(
                 self.overflowed_through_sequence
@@ -1021,33 +1191,32 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
-        if let Some(existing) = self
-            .entries
+        // A replayed durable identity may be ACKed later by the normal terminal writer. Promote
+        // that exact row into the ordered journal instead of retaining two copies.
+        if self
+            .replayed_entries
             .iter()
-            .find(|entry| entry.cursor == SummaryDeltaCursor(delta.terminal_sequence))
+            .any(|entry| Self::contains_same_identity(entry, &delta))
         {
-            if existing.delta.invoke_id == delta.invoke_id
-                && existing.delta.occurred_at == delta.occurred_at
-                && existing.delta.persisted_row_id == delta.persisted_row_id
-            {
-                return true;
-            }
-            self.overflowed_through_sequence = Some(slice_high_watermark);
-            self.note_unknown_sequence_gap(slice_high_watermark);
-            self.note_gap(&delta);
-            return false;
+            self.replayed_entries
+                .retain(|entry| !Self::contains_same_identity(entry, &delta));
+            self.replayed_bytes = self
+                .replayed_entries
+                .iter()
+                .map(|entry| entry.estimated_bytes)
+                .sum();
         }
         let known_through = self.cursor.max(self.base_cursor);
         if delta.terminal_sequence <= known_through.0 {
             self.overflowed_through_sequence = Some(slice_high_watermark);
-            self.note_unknown_sequence_gap(slice_high_watermark);
+            self.note_unknown_terminal_gap(slice_high_watermark);
             self.note_gap(&delta);
             return false;
         }
         let expected_next = known_through.0.saturating_add(1);
         if delta.terminal_sequence != expected_next {
             self.overflowed_through_sequence = Some(slice_high_watermark);
-            self.note_unknown_sequence_gap(slice_high_watermark);
+            self.note_unknown_terminal_gap(slice_high_watermark);
             self.note_gap(&delta);
             return false;
         }
@@ -1073,6 +1242,105 @@ impl SummaryDeltaJournal {
             delta,
         });
         true
+    }
+
+    fn retain_replayed_for_reconciliation(
+        &mut self,
+        deltas: &[DashboardActivityTerminalDelta],
+        projection: &SummaryProjection,
+        target_terminal_watermark: u64,
+        source_tail_complete: bool,
+    ) -> bool {
+        for delta in deltas {
+            if delta.persisted_row_id.is_some_and(|row_id| {
+                projection.contains_persisted_live_terminal_identity(
+                    row_id,
+                    &delta.invoke_id,
+                    &delta.occurred_at,
+                )
+            }) {
+                continue;
+            }
+            if self
+                .entries
+                .iter()
+                .map(|entry| &entry.delta)
+                .chain(self.replayed_entries.iter())
+                .any(|entry| Self::contains_same_identity(entry, delta))
+            {
+                continue;
+            }
+            let exceeds_count = self
+                .entries
+                .len()
+                .saturating_add(self.replayed_entries.len())
+                .saturating_add(self.pending.len())
+                >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
+            let exceeds_bytes = self
+                .bytes
+                .saturating_add(self.replayed_bytes)
+                .saturating_add(self.pending_bytes)
+                .saturating_add(delta.estimated_bytes)
+                > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
+            if exceeds_count || exceeds_bytes {
+                self.overflowed_through_sequence = Some(
+                    self.overflowed_through_sequence
+                        .unwrap_or_default()
+                        .max(delta.terminal_sequence),
+                );
+                self.note_gap(delta);
+                continue;
+            }
+            self.replayed_bytes = self.replayed_bytes.saturating_add(delta.estimated_bytes);
+            self.replayed_entries.push_back(delta.clone());
+        }
+
+        if !source_tail_complete {
+            return false;
+        }
+        let target_covers_overflow = self
+            .overflowed_through_sequence
+            .is_none_or(|overflowed| target_terminal_watermark >= overflowed);
+        if !target_covers_overflow {
+            return false;
+        }
+        let replayed_identities = self
+            .replayed_entries
+            .iter()
+            .filter_map(SummarySourceIdentity::from_delta)
+            .collect::<HashSet<_>>();
+        self.gap_proofs.retain(|proof| {
+            if proof.row_id.is_none() {
+                // No durable identity means the reconciliation cannot prove which source row
+                // was missing. Keep the broad fail-closed marker until a projection rebuild with
+                // authoritative identities absorbs it; a terminal watermark alone is not proof.
+                return true;
+            }
+            let covered_by_projection = proof.invoke_id.as_deref().is_some_and(|invoke_id| {
+                projection.contains_persisted_live_terminal_identity(
+                    proof.row_id.unwrap_or(i64::MIN),
+                    invoke_id,
+                    &proof.occurred_at,
+                )
+            });
+            !(covered_by_projection
+                || replayed_identities.iter().any(|identity| {
+                    Some(identity.row_id) == proof.row_id
+                        && proof.invoke_id.as_deref() == Some(identity.invoke_id.as_str())
+                        && proof.occurred_at == identity.occurred_at
+                }))
+        });
+        if self.gap_proofs.is_empty() {
+            self.overflowed_through_sequence = None;
+            self.gap_proof_budget_exhausted = false;
+            self.last_reconciled_terminal_watermark = self
+                .last_reconciled_terminal_watermark
+                .max(target_terminal_watermark);
+            self.reconciliation_completed = true;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -1123,13 +1391,26 @@ fn append_summary_all_time_delta(
     {
         *overflowed_through = (*overflowed_through).max(slice_high_watermark);
     }
+    let identity_already_present = delta.persisted_row_id.is_some_and(|row_id| {
+        state
+            .summary_terminal_overlay_all_time
+            .iter()
+            .any(|existing| {
+                existing.persisted_row_id == Some(row_id)
+                    && existing.invoke_id == delta.invoke_id
+                    && existing.occurred_at == delta.occurred_at
+            })
+    });
+    let sequence_already_present = delta.terminal_sequence != 0
+        && state
+            .summary_terminal_overlay_all_time
+            .iter()
+            .any(|existing| existing.terminal_sequence == delta.terminal_sequence);
     if state
         .summary_terminal_overlay_all_time_overflowed_through_sequence
         .is_none()
-        && !state
-            .summary_terminal_overlay_all_time
-            .iter()
-            .any(|existing| existing.terminal_sequence == delta.terminal_sequence)
+        && !identity_already_present
+        && !sequence_already_present
     {
         let exceeds_count =
             state.summary_terminal_overlay_all_time.len() >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
@@ -3618,7 +3899,7 @@ impl SubscriptionHub {
 
     pub(crate) async fn renew_summary_projection_freshness_from_delta_journal(&self) -> bool {
         let state = self.state.lock().await;
-        let Some(projection) = state.summary_projection.as_ref() else {
+        let Some(projection) = state.summary_projection.as_ref().cloned() else {
             return false;
         };
         if state
@@ -3634,9 +3915,7 @@ impl SubscriptionHub {
             .iter()
             .map(|entry| &entry.delta)
             .chain(state.summary_delta_journal.replayed_entries.iter())
-            .any(|delta| {
-                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
-            });
+            .any(|delta| !projection.contains_persisted_live_terminal_delta(delta));
         if !has_unabsorbed_delta {
             return false;
         }
@@ -3649,7 +3928,7 @@ impl SubscriptionHub {
         generation_fence: SummaryProjectionGenerationFence,
     ) -> bool {
         let state = self.state.lock().await;
-        let Some(projection) = state.summary_projection.as_ref() else {
+        let Some(projection) = state.summary_projection.as_ref().cloned() else {
             return false;
         };
         if !projection.coverage_sources_match(generation_fence) {
@@ -3668,9 +3947,7 @@ impl SubscriptionHub {
             .iter()
             .map(|entry| &entry.delta)
             .chain(state.summary_delta_journal.replayed_entries.iter())
-            .any(|delta| {
-                !projection.contains_persisted_live_terminal(&delta.invoke_id, &delta.occurred_at)
-            });
+            .any(|delta| !projection.contains_persisted_live_terminal_delta(delta));
         if !has_unabsorbed_delta {
             return false;
         }
@@ -3678,14 +3955,145 @@ impl SubscriptionHub {
         true
     }
 
+    pub(crate) async fn summary_delta_journal_gap_count(&self) -> usize {
+        self.state
+            .lock()
+            .await
+            .summary_delta_journal
+            .gap_proofs
+            .len()
+    }
+
+    pub(crate) async fn set_summary_live_tail_readiness(
+        &self,
+        readiness: SummaryLiveTailReadiness,
+    ) {
+        self.state.lock().await.summary_live_tail_readiness = readiness;
+    }
+
+    pub(crate) async fn reconcile_summary_delta_tail(
+        &self,
+        deltas: &[DashboardActivityTerminalDelta],
+        target_terminal_watermark: u64,
+        source_tail_complete: bool,
+        expected_projection_revision: u64,
+        expected_generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref().cloned() else {
+            return false;
+        };
+        if projection.revision() != expected_projection_revision
+            || projection.generation_fence() != expected_generation_fence
+        {
+            return false;
+        }
+        state
+            .summary_delta_journal
+            .retain_replayed_for_reconciliation(
+                deltas,
+                projection.as_ref(),
+                target_terminal_watermark,
+                source_tail_complete,
+            )
+    }
+
+    pub(crate) async fn renew_summary_projection_after_live_tail_reconciliation(
+        &self,
+        expected_projection_revision: u64,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if (!state.summary_delta_journal.reconciliation_completed
+            && state
+                .summary_delta_journal
+                .last_reconciled_terminal_watermark
+                == 0)
+            || !state.summary_delta_journal.gap_proofs.is_empty()
+        {
+            return false;
+        }
+        let Some(projection) = state.summary_projection.as_ref().cloned() else {
+            return false;
+        };
+        if projection.revision() != expected_projection_revision {
+            return false;
+        }
+        state.summary_delta_journal.reconciliation_completed = false;
+        state
+            .summary_delta_journal
+            .last_reconciled_terminal_watermark = 0;
+        projection.renew_freshness_from_delta_journal();
+        true
+    }
+
+    pub(crate) async fn renew_summary_projection_after_live_tail_reconciliation_if_generation_matches(
+        &self,
+        expected_projection_revision: u64,
+        expected_generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        if (!state.summary_delta_journal.reconciliation_completed
+            && state
+                .summary_delta_journal
+                .last_reconciled_terminal_watermark
+                == 0)
+            || !state.summary_delta_journal.gap_proofs.is_empty()
+        {
+            return false;
+        }
+        let Some(projection) = state.summary_projection.as_ref().cloned() else {
+            return false;
+        };
+        if projection.revision() != expected_projection_revision
+            || !projection
+                .generation_fence()
+                .coverage_sources_match(expected_generation_fence)
+            || !projection
+                .generation_fence()
+                .live_tail_cursor()
+                .at_or_behind(expected_generation_fence.live_tail_cursor())
+        {
+            return false;
+        }
+        let mut next = Arc::unwrap_or_clone(projection);
+        next.advance_live_tail_fence(expected_generation_fence.live_tail_cursor());
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        next = next.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, next);
+        state.summary_delta_journal.reconciliation_completed = false;
+        state
+            .summary_delta_journal
+            .last_reconciled_terminal_watermark = 0;
+        true
+    }
+
     pub(crate) async fn acknowledge_summary_delta(&self, delta: DashboardActivityTerminalDelta) {
         let mut state = self.state.lock().await;
         let slice_high_watermark = delta.terminal_sequence;
         let account_scoped = delta.upstream_account_id.is_some();
-        if !state
+        let conflicting_identity = state
             .summary_delta_journal
-            .acknowledge_pending(delta.clone())
-        {
+            .contains_conflicting_row_identity(&delta);
+        let absorbed_by_projection = state.summary_projection.as_ref().is_some_and(|projection| {
+            projection.durable_terminal_sequence_watermark() >= delta.terminal_sequence
+                && delta.persisted_row_id.is_some_and(|row_id| {
+                    projection.contains_persisted_live_terminal_identity(
+                        row_id,
+                        &delta.invoke_id,
+                        &delta.occurred_at,
+                    )
+                })
+        });
+        let acknowledged = if absorbed_by_projection {
+            state.summary_delta_journal.absorb_committed_delta(&delta);
+            true
+        } else {
+            state
+                .summary_delta_journal
+                .acknowledge_pending(delta.clone())
+        };
+        if !acknowledged {
             tracing::warn!(
                 pending_terminal_count = state.summary_delta_journal.entries.len(),
                 pending_terminal_bytes = state.summary_delta_journal.bytes,
@@ -3693,7 +4101,12 @@ impl SubscriptionHub {
                 "rolling Summary Delta Journal reached a bounded gap"
             );
         }
-        append_summary_all_time_delta(&mut state, &delta, slice_high_watermark);
+        // A committed row may still be retained in the all-time overlay when its rolling
+        // sequence is outside the contiguous journal (for example after a bounded overflow),
+        // but a conflicting row identity is ambiguous and must never become an exact overlay.
+        if delta.persisted_row_id.is_some() && !conflicting_identity {
+            append_summary_all_time_delta(&mut state, &delta, slice_high_watermark);
+        }
         tracing::debug!(
             stage = "delta_journal_ack",
             entry_count = state.summary_delta_journal.entries.len(),
@@ -3708,15 +4121,51 @@ impl SubscriptionHub {
     // or trigger a full rolling read. Their exact values remain a bounded rolling overlay.
     pub(crate) async fn acknowledge_replayed_summary_delta(
         &self,
-        delta: DashboardActivityTerminalDelta,
+        mut delta: DashboardActivityTerminalDelta,
     ) {
+        // A replay is reconstructed outside the live terminal sequence.  Preserve its durable
+        // identity, but never let a stale process-local sequence make an all-time watermark look
+        // like proof that this row was already absorbed.
+        delta.terminal_sequence = 0;
         let mut state = self.state.lock().await;
-        if !state.summary_delta_journal.append_replayed(delta) {
+        let replayed_delta = delta.clone();
+        let conflicting_identity = state
+            .summary_delta_journal
+            .contains_conflicting_row_identity(&delta);
+        let absorbed_by_projection = state.summary_projection.as_ref().is_some_and(|projection| {
+            delta.persisted_row_id.is_some_and(|row_id| {
+                projection.contains_persisted_live_terminal_identity(
+                    row_id,
+                    &delta.invoke_id,
+                    &delta.occurred_at,
+                )
+            })
+        });
+        let replayed_admitted = if absorbed_by_projection {
+            state.summary_delta_journal.absorb_committed_delta(&delta);
+            false
+        } else if !state.summary_delta_journal.append_replayed(delta) {
             tracing::warn!(
                 replayed_terminal_count = state.summary_delta_journal.replayed_entries.len(),
                 replayed_terminal_bytes = state.summary_delta_journal.replayed_bytes,
                 gap_count = state.summary_delta_journal.gap_proofs.len(),
                 "replayed Summary Delta Journal entry reached a bounded gap"
+            );
+            false
+        } else {
+            true
+        };
+        // Restart replay has no process-local terminal sequence (zero), but it still represents a
+        // committed source row. Keep it in the independent all-time overlay and deduplicate by
+        // the full durable identity rather than by sequence zero.
+        if replayed_delta.persisted_row_id.is_some()
+            && !conflicting_identity
+            && (replayed_admitted || absorbed_by_projection)
+        {
+            append_summary_all_time_delta(
+                &mut state,
+                &replayed_delta,
+                replayed_delta.terminal_sequence,
             );
         }
     }
@@ -3746,7 +4195,22 @@ impl SubscriptionHub {
         let mut state = self.state.lock().await;
         state
             .summary_delta_journal
-            .note_unknown_sequence_gap(cursor);
+            .note_unknown_source_cursor_gap(cursor);
+        if let Some(projection) = state.summary_projection.as_ref() {
+            projection.renew_freshness_from_delta_journal();
+        }
+    }
+
+    pub(crate) async fn clear_summary_source_compaction_gap(&self) {
+        let mut state = self.state.lock().await;
+        state.summary_delta_journal.clear_source_compaction_gap();
+    }
+
+    pub(crate) async fn record_summary_terminal_sequence_gap(&self, sequence: u64) {
+        let mut state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .note_unknown_terminal_gap(sequence);
         if let Some(projection) = state.summary_projection.as_ref() {
             projection.renew_freshness_from_delta_journal();
         }
@@ -3758,17 +4222,16 @@ impl SubscriptionHub {
         upstream_account_id: Option<i64>,
         occurred_at: String,
         row_id: Option<i64>,
+        invoke_id: Option<String>,
     ) {
         let mut state = self.state.lock().await;
-        state.summary_delta_journal.cursor = state
-            .summary_delta_journal
-            .cursor
-            .max(SummaryDeltaCursor(cursor));
         state.summary_delta_journal.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
+            terminal_sequence: None,
             upstream_account_id,
             occurred_at,
             row_id,
+            invoke_id,
         });
         if let Some(projection) = state.summary_projection.as_ref() {
             projection.renew_freshness_from_delta_journal();
@@ -3783,6 +4246,24 @@ impl SubscriptionHub {
         let mut projection = (**projection).clone();
         projection.mark_historical_live_recovery_required();
         state.summary_projection = Some(Arc::new(projection));
+    }
+
+    pub(crate) async fn revoke_summary_projection_stale_coverage(
+        &self,
+        generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(current) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        let mut projection = (**current).clone();
+        if !projection.revoke_stale_all_time_coverage(generation_fence) {
+            return false;
+        }
+        let revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = revision;
+        projection = projection.with_revision(revision);
+        Self::store_summary_projection_locked(&mut state, projection)
     }
     pub(crate) async fn summary_terminal_overlay_identities(&self) -> HashSet<String> {
         let state = self.state.lock().await;
@@ -3883,6 +4364,70 @@ impl SubscriptionHub {
         Self::store_summary_projection_locked(&mut state, projection)
     }
 
+    /// Publish only when the hub revision and historical coverage fence observed by the caller
+    /// still describe the same immutable base. A live terminal may legitimately advance between
+    /// the base projection and coverage finalization: the finalizer reads that bounded tail and
+    /// installs the newer live cursor in the candidate before this CAS. The durable writer
+    /// transaction around the fence read still prevents a coverage mutation from racing the
+    /// swap, while the revision check prevents another in-memory publication from being lost.
+    pub(crate) async fn store_summary_projection_if_revision_and_generation(
+        &self,
+        mut projection: SummaryProjection,
+        expected_revision: u64,
+        expected_generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(current_projection) = state.summary_projection.as_ref() else {
+            if expected_revision != 0 {
+                return false;
+            }
+            return false;
+        };
+        if current_projection.revision() != expected_revision
+            || current_projection.generation_fence().live_tail_cursor()
+                != expected_generation_fence.live_tail_cursor()
+            || !current_projection
+                .generation_fence()
+                .coverage_sources_at_or_behind(expected_generation_fence)
+        {
+            tracing::debug!(
+                current_revision = current_projection.revision(),
+                expected_revision,
+                "discarding summary projection based on an older generation fence"
+            );
+            return false;
+        }
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        projection = projection.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, projection)
+    }
+
+    pub(crate) async fn store_summary_projection_if_revision_and_coverage_generation(
+        &self,
+        mut projection: SummaryProjection,
+        expected_revision: u64,
+        expected_generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(current_projection) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        let current_fence = current_projection.generation_fence();
+        if current_projection.revision() != expected_revision
+            || !current_fence.coverage_sources_match(expected_generation_fence)
+            || !current_fence
+                .live_tail_cursor()
+                .at_or_behind(expected_generation_fence.live_tail_cursor())
+        {
+            return false;
+        }
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        projection = projection.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, projection)
+    }
+
     fn store_summary_projection_locked(
         state: &mut SubscriptionHubState,
         projection: SummaryProjection,
@@ -3918,14 +4463,45 @@ impl SubscriptionHub {
             .cursor
             .max(state.summary_delta_journal.base_cursor);
         state.summary_delta_journal.entries.retain(|entry| {
-            !projection
-                .contains_persisted_live_terminal(&entry.delta.invoke_id, &entry.delta.occurred_at)
+            !projection.contains_persisted_live_terminal_delta(&entry.delta)
+                && !entry.delta.persisted_row_id.is_some_and(|row_id| {
+                    projection.contains_global_rollup_covered_live_terminal_identity(
+                        row_id,
+                        &entry.delta.invoke_id,
+                        &entry.delta.occurred_at,
+                    ) || projection.contains_global_all_time_covered_live_terminal_identity(
+                        row_id,
+                        &entry.delta.invoke_id,
+                        &entry.delta.occurred_at,
+                    ) && projection.global_rollup_covers_live_terminal_identity(
+                        row_id,
+                        &entry.delta.occurred_at,
+                    )
+                })
         });
         state
             .summary_delta_journal
             .replayed_entries
             .retain(|entry| {
-                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
+                !projection.contains_persisted_live_terminal_delta(entry)
+                    // A compact global rollup identity proves this row is represented by the
+                    // rolling projection as well.  An all-time overlay identity alone does not:
+                    // finalization may absorb a replay for `all` while current/rolling still
+                    // need the exact row from this bounded journal.
+                    && !entry.persisted_row_id.is_some_and(|row_id| {
+                        projection.contains_global_rollup_covered_live_terminal_identity(
+                            row_id,
+                            &entry.invoke_id,
+                            &entry.occurred_at,
+                        ) || projection.contains_global_all_time_covered_live_terminal_identity(
+                            row_id,
+                            &entry.invoke_id,
+                            &entry.occurred_at,
+                        ) && projection.global_rollup_covers_live_terminal_identity(
+                            row_id,
+                            &entry.occurred_at,
+                        )
+                    })
             });
         state.summary_delta_journal.bytes = state
             .summary_delta_journal
@@ -3939,29 +4515,24 @@ impl SubscriptionHub {
             .iter()
             .map(|entry| entry.estimated_bytes)
             .sum();
-        if state
-            .summary_delta_journal
-            .overflowed_through_sequence
-            .is_some_and(|overflowed_through| {
-                projection.durable_terminal_sequence_watermark() >= overflowed_through
-            })
-        {
-            state.summary_delta_journal.overflowed_through_sequence = None;
-            state.summary_delta_journal.gap_proofs.clear();
-            state.summary_delta_journal.gap_proof_budget_exhausted = false;
-            tracing::info!(
-                durable_terminal_sequence_watermark =
-                    projection.durable_terminal_sequence_watermark(),
-                "summary terminal overlay recovered after a durable projection refresh"
-            );
-        }
+        // A durable watermark alone does not identify which proof was absorbed. Gap retirement
+        // is performed by the identity-aware reconciliation path below; keeping unknown proofs
+        // here prevents a late generic publication from clearing an unrelated selection.
         state.summary_terminal_overlay_all_time.retain(|delta| {
-            !projection.all_time_terminal_scope_covers(
+            let identity_covered = projection.all_time_terminal_delta_scope_covers(
                 delta.upstream_account_id,
+                delta.persisted_row_id,
                 &delta.invoke_id,
                 &delta.occurred_at,
                 delta.terminal_sequence,
-            )
+            );
+            // Restart-replayed rows intentionally carry sequence zero because the original
+            // process-local sequence is not durable.  A terminal watermark cannot prove that a
+            // sequence-zero row was absorbed; only its full durable identity may retire it.
+            let global_watermark_covered = delta.terminal_sequence > 0
+                && projection.all_time_terminal_coverage_complete()
+                && projection.all_time_terminal_scope_covers(None, "", "", delta.terminal_sequence);
+            !(identity_covered || global_watermark_covered)
         });
         state.summary_terminal_overlay_all_time_bytes = state
             .summary_terminal_overlay_all_time
@@ -4007,10 +4578,24 @@ impl SubscriptionHub {
         // the exact row identity.  Broad proofs (without a row id) remain fail-closed until their
         // generation watermark is explicitly absorbed.
         state.summary_delta_journal.gap_proofs.retain(|proof| {
-            proof
-                .row_id
-                .is_none_or(|row_id| !projection.contains_persisted_live_terminal_by_row_id(row_id))
+            let Some(row_id) = proof.row_id else {
+                return true;
+            };
+            let Some(invoke_id) = proof.invoke_id.as_deref() else {
+                return true;
+            };
+            !projection.contains_persisted_live_terminal_identity(
+                row_id,
+                invoke_id,
+                &proof.occurred_at,
+            )
         });
+        if state.summary_delta_journal.gap_proofs.is_empty()
+            && !state.summary_delta_journal.source_compaction_gap
+        {
+            state.summary_delta_journal.overflowed_through_sequence = None;
+            state.summary_delta_journal.gap_proof_budget_exhausted = false;
+        }
         state.summary_projection = Some(Arc::new(projection));
         true
     }
@@ -4079,9 +4664,7 @@ impl SubscriptionHub {
             .iter()
             .map(|entry| &entry.delta)
             .chain(state.summary_delta_journal.replayed_entries.iter())
-            .filter(|entry| {
-                !projection.contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
-            })
+            .filter(|entry| !projection.contains_persisted_live_terminal_delta(entry))
             .cloned()
             .collect();
         Some(SummaryRollingDeltaSnapshot {
@@ -4165,8 +4748,9 @@ impl SubscriptionHub {
                 .summary_terminal_overlay_all_time
                 .iter()
                 .filter(|delta| {
-                    !projection.all_time_terminal_scope_covers(
+                    !projection.all_time_terminal_delta_scope_covers(
                         upstream_account_id,
+                        delta.persisted_row_id,
                         &delta.invoke_id,
                         &delta.occurred_at,
                         delta.terminal_sequence,
@@ -4181,10 +4765,7 @@ impl SubscriptionHub {
                 .iter()
                 .map(|entry| &entry.delta)
                 .chain(state.summary_delta_journal.replayed_entries.iter())
-                .filter(|entry| {
-                    !projection
-                        .contains_persisted_live_terminal(&entry.invoke_id, &entry.occurred_at)
-                })
+                .filter(|entry| !projection.contains_persisted_live_terminal_delta(entry))
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -4204,8 +4785,9 @@ impl SubscriptionHub {
                                 &delta.occurred_at,
                             ))
                             || (all_time
-                                && projection.all_time_terminal_scope_covers(
+                                && projection.all_time_terminal_delta_scope_covers(
                                     upstream_account_id,
+                                    delta.persisted_row_id,
                                     &delta.invoke_id,
                                     &delta.occurred_at,
                                     delta.terminal_sequence,
@@ -4384,8 +4966,20 @@ impl SubscriptionHub {
             }
             recovery
         };
-        self.dashboard_topology_counters
-            .hot_topic_health(projection, recovery)
+        let readiness = {
+            let guard = self.state.lock().await;
+            guard.summary_live_tail_readiness.clone()
+        };
+        let mut health = self
+            .dashboard_topology_counters
+            .hot_topic_health(projection, recovery);
+        health.summary.summary_live_tail_reason = readiness.reason;
+        health.summary.summary_live_tail_stage = readiness.stage;
+        health.summary.summary_live_tail_gap_count = readiness.gap_count;
+        health.summary.summary_live_tail_watermark = readiness.watermark;
+        health.summary.summary_live_tail_epoch = readiness.epoch;
+        health.summary.summary_live_tail_elapsed_ms = readiness.elapsed_ms;
+        health
     }
 
     pub(crate) fn dashboard_delivery_has_degraded_signal(&self) -> bool {
@@ -10582,7 +11176,10 @@ pub(crate) fn apply_dashboard_terminal_slice_to_summary_response(
         .map(|(start, end)| ExactUtcRange { start, end });
     for delta in &slice.deltas {
         if !terminal_delta_matches_source_scope(delta, source_scope)
-            || delta.terminal_sequence <= *terminal_sequence
+            // Replayed durable rows deliberately use sequence zero because their original
+            // process-local sequence is not trustworthy after restart.  Their full source
+            // identity is the dedupe key, so they must still be applied to range responses.
+            || (delta.terminal_sequence != 0 && delta.terminal_sequence <= *terminal_sequence)
             || upstream_account_id
                 .is_some_and(|account_id| delta.upstream_account_id != Some(account_id))
             || range.is_some_and(|range| !terminal_delta_is_within_range(delta, range))
@@ -11836,7 +12433,13 @@ impl SubscriptionTopic {
                             &query,
                             state.config.list_limit_max as i64,
                             !matches!(summary_window, SummaryWindow::All)
-                                && (!pending_terminal_deltas.is_empty() || !gaps.is_empty()),
+                                && crate::summary_delta_affects_selection(
+                                    projection.as_ref(),
+                                    &pending_terminal_deltas,
+                                    &summary_window,
+                                    reporting_tz,
+                                    *upstream_account_id,
+                                ),
                         )?;
                         let current_selection =
                             if let SummaryWindow::Current(limit) = &summary_window {
@@ -14185,10 +14788,11 @@ mod tests {
         first.invoke_id = "summary-delta-journal-first".to_string();
         first.status = Some("success".to_string());
         first.live_phase = None;
-        let first = apply_dashboard_activity_terminal_record(state.as_ref(), &first)
+        let mut first = apply_dashboard_activity_terminal_record(state.as_ref(), &first)
             .await
             .terminal_delta
             .expect("accept first terminal delta");
+        first.persisted_row_id = Some(1);
         let mut skipped = first.clone();
         skipped.invoke_id = "summary-delta-journal-skipped".to_string();
         skipped.terminal_sequence = first.terminal_sequence.saturating_add(2);
@@ -14214,6 +14818,147 @@ mod tests {
             "the later conflicting ACK retains its bounded recovery cursor"
         );
         assert_eq!(journal.overflowed_through_sequence, Some(3));
+    }
+
+    #[test]
+    fn summary_delta_source_cursor_gap_does_not_advance_terminal_cursor() {
+        let mut journal = SummaryDeltaJournal::default();
+
+        journal.note_unknown_source_cursor_gap(99);
+
+        assert_eq!(journal.cursor, SummaryDeltaCursor(0));
+        let proof = journal
+            .gap_proofs
+            .front()
+            .expect("source compaction retains a broad proof");
+        assert_eq!(proof.cursor, SummaryDeltaCursor(99));
+        assert_eq!(proof.terminal_sequence, None);
+    }
+
+    #[tokio::test]
+    async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 9_100_001;
+        record.invoke_id = "summary-live-tail-absorbed".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        let mut delta = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+            .await
+            .terminal_delta
+            .expect("materialize terminal delta");
+        delta.persisted_row_id = Some(record.id);
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.append(delta.clone(), delta.terminal_sequence));
+        journal.absorb_committed_delta(&delta);
+        assert!(journal.entries.is_empty());
+        assert!(journal.replayed_entries.is_empty());
+        assert!(journal.gap_proofs.is_empty());
+        assert_eq!(journal.cursor, SummaryDeltaCursor(delta.terminal_sequence));
+
+        // A replay of the exact durable identity must be idempotent while the swap is in flight.
+        assert!(journal.append_replayed(delta.clone()));
+        assert!(journal.append_replayed(delta));
+        assert_eq!(journal.replayed_entries.len(), 1);
+        assert!(journal.gap_proofs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_replayed_identity_after_restart_is_idempotent() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 9_100_002;
+        record.invoke_id = "summary-live-tail-replayed".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        let mut delta = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+            .await
+            .terminal_delta
+            .expect("materialize replay delta");
+        delta.persisted_row_id = Some(record.id);
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.append_replayed(delta.clone()));
+        assert!(journal.append_replayed(delta.clone()));
+        assert_eq!(journal.replayed_entries.len(), 1);
+        assert!(!SummaryDeltaJournal::contains_same_identity(
+            &delta,
+            &DashboardActivityTerminalDelta {
+                persisted_row_id: None,
+                ..delta.clone()
+            }
+        ));
+        journal.absorb_committed_delta(&delta);
+        assert!(journal.replayed_entries.is_empty());
+        assert!(journal.gap_proofs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_replayed_identity_then_ack_is_not_duplicated() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+        record.id = 9_100_004;
+        record.invoke_id = "summary-live-tail-replayed-ack".to_string();
+        record.status = Some("success".to_string());
+        record.live_phase = None;
+        let mut replay = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+            .await
+            .terminal_delta
+            .expect("materialize replay delta");
+        replay.persisted_row_id = Some(record.id);
+        replay.terminal_sequence = 0;
+        let mut ack = replay.clone();
+        ack.terminal_sequence = 1;
+
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.append_replayed(replay));
+        assert!(journal.append(ack, 1));
+        assert_eq!(journal.replayed_entries.len(), 0);
+        assert_eq!(journal.entries.len(), 1);
+        assert!(journal.gap_proofs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_projection_conflicting_row_identity_remains_fail_closed() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+        let mut first = dashboard_runtime_topology_live_record(&occurred_at);
+        first.id = 9_100_003;
+        first.invoke_id = "summary-live-tail-conflict-a".to_string();
+        first.status = Some("success".to_string());
+        first.live_phase = None;
+        let mut first = apply_dashboard_activity_terminal_record(state.as_ref(), &first)
+            .await
+            .terminal_delta
+            .expect("materialize first terminal delta");
+        first.persisted_row_id = Some(9_100_003);
+
+        let mut conflicting = first.clone();
+        conflicting.invoke_id = "summary-live-tail-conflict-b".to_string();
+        let mut journal = SummaryDeltaJournal::default();
+        assert!(journal.append_replayed(first));
+        assert!(!journal.append_replayed(conflicting));
+        assert_eq!(journal.gap_proofs.len(), 1);
+        assert_eq!(
+            journal.gap_proofs.front().and_then(|proof| proof.row_id),
+            Some(9_100_003)
+        );
     }
 
     #[tokio::test]
@@ -14280,6 +15025,7 @@ mod tests {
             let mut delta = template.clone();
             delta.invoke_id = format!("summary-delta-capacity-{sequence}");
             delta.terminal_sequence = sequence;
+            delta.persisted_row_id = Some(sequence as i64);
             assert!(
                 journal.append(delta, sequence),
                 "the bounded journal must admit its exact configured capacity"
@@ -14288,6 +15034,7 @@ mod tests {
         let mut overflow = template;
         overflow.invoke_id = "summary-delta-capacity-overflow".to_string();
         overflow.terminal_sequence = SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 + 1;
+        overflow.persisted_row_id = Some(SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as i64 + 1);
         assert!(
             !journal.append(overflow, SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS as u64 + 1),
             "the first entry beyond capacity must not become an exact delta"

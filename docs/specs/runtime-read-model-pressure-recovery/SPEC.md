@@ -127,6 +127,16 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。新的 archive 在 raw source cleanup 前还必须持久化当前 manifest identity 对应的压缩 Summary Archive Snapshot V2、coverage proof 与 SHA；V1 仅可作为 legacy backfill 输入，绝不构成 cleanup authority。任何 Snapshot 压力或失败都保留 authoritative archive 并留下可恢复 checkpoint。
 - All-time coverage uses independent global and account scope versions across manifest, archive replay and verified Snapshot V2 proof. Archive rollup materialization advances those versions through its replay proof; ordinary hot/live rollup writes advance only the independent live-tail cursor and bounded overlay. They do not invalidate a completed historical checkpoint or trigger full live admission. Only a changed historical coverage input restarts its affected scope, and an unknown impact remains fail-closed.
 - Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 fail-closed proof，直至 generation-fenced durable reconciliation 吸收该缺口。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
+- Summary live-tail reconciliation MUST key absorption and proof retirement by
+  the durable `(row_id, invoke_id, occurred_at)` identity. An ACK or restart
+  replay already represented by the immutable Projection is idempotently
+  discarded; a descriptor without `row_id` remains broad fail-closed. The
+  versioned live-tail checkpoint fixes a base revision and target watermark,
+  obtains the existing pressure permit, reconstructs bounded `400`-ID/`64 MiB`
+  pages, and publishes with a generation-fenced CAS while retaining later tail
+  entries as an overlay. It MUST NOT call generic RollingDelta, Bootstrap, full
+  live admission, or archive hydration. Readiness telemetry is no-payload; the
+  release gate requires exact recent windows and rejects any live-tail gap.
 - Summary Source Change Journal 的 normal terminal path 必须复用既有批量 source transaction，不得增加额外 transaction、connection 或 request-time read。descriptor/proof 写入失败时 source transaction 不得静默提交；journal WAL bytes、commit latency、lock retry、compaction 和 bounded reconstruction 必须有脱敏 telemetry，并作为 representative-scale acceptance 的容量门。
 - Summary Archive Snapshot 必须只包含重建既有精确 `StatsResponse` 所需的规范化字段，禁止 raw text 与 preview payload。V2 proof 必须验证 page 顺序、manifest identity/SHA、coverage、row count 与语义解码；Snapshot 存放在主 SQLite，按 archive 的受限压缩 page 写入；HTTP/SSE 只读取已发布 Projection。Legacy Snapshot Backfill 必须 seek-paged、低优先级、可中断且持久化 cursor；可读取 legacy source 自动回填，缺失或不可读的唯一 authority 保持有限 range-local unavailable。
 - Legacy Snapshot Backfill records a per-(archive batch, manifest SHA) disposition, retry probe, failure class and next page/row seek key without payload. A valid V2 proof can be adopted without opening raw source; an invalid or missing proof is rebuilt only from a SHA-matching readable authority. Deadline, pressure or write failure retains the raw authority and leaves the uncommitted cursor unchanged; a committed page is resumed rather than replayed from the archive start.
