@@ -1690,6 +1690,14 @@ pub(crate) async fn flush_dashboard_network_socket_minute_rollups(
         return Ok(0);
     }
 
+    let Some(_write_permit) =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+    else {
+        dashboard_network_speed_cache.restore_completed_socket_minute_rows(rows);
+        return Ok(0);
+    };
+
     let mut tx = pool.begin().await?;
     if let Err(err) = upsert_dashboard_network_socket_minute_rows_tx(tx.as_mut(), &rows).await {
         let _ = tx.rollback().await;
@@ -2049,5 +2057,36 @@ mod tests {
 
         assert!(cache.should_keep_dashboard_activity_live_stream(fixed_utc(700)));
         assert!(!cache.should_keep_dashboard_activity_live_stream(fixed_utc(900)));
+    }
+
+    #[tokio::test]
+    async fn minute_rollup_restores_rows_when_p1_is_active() {
+        let cache = DashboardNetworkSpeedCache::new(fixed_utc(0));
+        cache.record_request_bytes(
+            "invoke-rollup",
+            "2026-07-15 12:00:00",
+            Some(7),
+            Some("api.openai.com"),
+            42,
+            fixed_utc(60),
+        );
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        let p1 = coordinator
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+            .await;
+
+        let flushed = flush_dashboard_network_socket_minute_rollups(&pool, &cache, fixed_utc(120))
+            .await
+            .expect("P2 rollup should defer while P1 is active");
+
+        assert_eq!(flushed, 0);
+        let restored = cache.drain_completed_socket_minute_rows(fixed_utc(120));
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].upload_bytes, 42);
+        drop(p1);
     }
 }

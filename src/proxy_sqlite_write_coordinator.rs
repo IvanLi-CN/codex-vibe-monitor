@@ -40,6 +40,33 @@ pub(crate) struct ProxySqliteWriteCoordinatorSnapshot {
     pub(crate) maintenance_waiter_count: usize,
     pub(crate) maintenance_fairness_admission_count: u64,
     pub(crate) direct_write_bypass_count: u64,
+    pub(crate) write_admission: ProxySqliteWriteAdmissionSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxySqliteWriteAdmissionSnapshot {
+    pub(crate) p1_terminal: ProxySqliteWriteClassAdmissionSnapshot,
+    pub(crate) interactive_proxy: ProxySqliteWriteClassAdmissionSnapshot,
+    pub(crate) p2_derived: ProxySqliteWriteClassAdmissionSnapshot,
+    pub(crate) maintenance_retention: ProxySqliteWriteClassAdmissionSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProxySqliteWriteClassAdmissionSnapshot {
+    pub(crate) admission_count: u64,
+    pub(crate) total_wait_ms: u64,
+    pub(crate) max_wait_ms: u64,
+}
+
+impl ProxySqliteWriteClassAdmissionSnapshot {
+    fn record(&mut self, wait: Duration) {
+        let wait_ms = wait.as_millis().min(u128::from(u64::MAX)) as u64;
+        self.admission_count = self.admission_count.saturating_add(1);
+        self.total_wait_ms = self.total_wait_ms.saturating_add(wait_ms);
+        self.max_wait_ms = self.max_wait_ms.max(wait_ms);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +79,7 @@ struct CoordinatorState {
     maintenance_fairness_admissions: u64,
     last_maintenance_fairness_admission: Option<Instant>,
     direct_write_bypass_count: u64,
+    write_admission: ProxySqliteWriteAdmissionSnapshot,
 }
 
 impl CoordinatorState {
@@ -70,6 +98,19 @@ impl CoordinatorState {
             ProxySqliteWriteClass::InteractiveProxy => self.interactive_waiters -= 1,
             ProxySqliteWriteClass::P2Derived => self.p2_waiters -= 1,
             ProxySqliteWriteClass::MaintenanceRetention => self.maintenance_waiters -= 1,
+        }
+    }
+
+    fn record_admission(&mut self, class: ProxySqliteWriteClass, wait: Duration) {
+        match class {
+            ProxySqliteWriteClass::P1Terminal => self.write_admission.p1_terminal.record(wait),
+            ProxySqliteWriteClass::InteractiveProxy => {
+                self.write_admission.interactive_proxy.record(wait)
+            }
+            ProxySqliteWriteClass::P2Derived => self.write_admission.p2_derived.record(wait),
+            ProxySqliteWriteClass::MaintenanceRetention => {
+                self.write_admission.maintenance_retention.record(wait)
+            }
         }
     }
 
@@ -169,11 +210,13 @@ impl ProxySqliteWriteCoordinator {
                     state.decrement(class);
                     waiter.registered = false;
                     state.active = Some(class);
+                    let lock_wait = requested_at.elapsed();
+                    state.record_admission(class, lock_wait);
                     return ProxySqliteWritePermit {
                         coordinator: self.clone(),
                         class,
                         coordinated: true,
-                        lock_wait: requested_at.elapsed(),
+                        lock_wait,
                         notify_background_eligibility: true,
                         fairness_admission: false,
                     };
@@ -205,11 +248,13 @@ impl ProxySqliteWriteCoordinator {
             return None;
         }
         state.active = Some(class);
+        let lock_wait = requested_at.elapsed();
+        state.record_admission(class, lock_wait);
         Some(ProxySqliteWritePermit {
             coordinator: self.clone(),
             class,
             coordinated: true,
-            lock_wait: requested_at.elapsed(),
+            lock_wait,
             notify_background_eligibility: true,
             fairness_admission: false,
         })
@@ -257,6 +302,8 @@ impl ProxySqliteWriteCoordinator {
                     state.decrement(class);
                     waiter.registered = false;
                     state.active = Some(class);
+                    let lock_wait = requested_at.elapsed();
+                    state.record_admission(class, lock_wait);
                     if fairness_admission {
                         state.maintenance_fairness_admissions =
                             state.maintenance_fairness_admissions.saturating_add(1);
@@ -266,7 +313,7 @@ impl ProxySqliteWriteCoordinator {
                         coordinator: self.clone(),
                         class,
                         coordinated: true,
-                        lock_wait: requested_at.elapsed(),
+                        lock_wait,
                         notify_background_eligibility: true,
                         fairness_admission,
                     };
@@ -316,6 +363,7 @@ impl ProxySqliteWriteCoordinator {
             maintenance_waiter_count: state.maintenance_waiters,
             maintenance_fairness_admission_count: state.maintenance_fairness_admissions,
             direct_write_bypass_count: state.direct_write_bypass_count,
+            write_admission: state.write_admission.clone(),
         }
     }
 
@@ -430,6 +478,15 @@ pub(crate) fn proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoordinato
 }
 
 #[cfg(test)]
+pub(crate) fn test_proxy_sqlite_write_coordinator() -> Arc<ProxySqliteWriteCoordinator> {
+    Arc::new(ProxySqliteWriteCoordinator {
+        coordinated: true,
+        state: Mutex::new(CoordinatorState::default()),
+        notify: Notify::new(),
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -452,11 +509,7 @@ mod tests {
 
     #[tokio::test]
     async fn p1_is_admitted_before_waiting_interactive_and_p2_work() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator
             .acquire(ProxySqliteWriteClass::InteractiveProxy)
             .await;
@@ -483,12 +536,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admission_snapshot_records_each_write_class_wait() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+
+        let p1 = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+        drop(p1);
+        let maintenance = coordinator
+            .acquire_maintenance(Duration::from_secs(1))
+            .await;
+        drop(maintenance);
+
+        let snapshot = coordinator.snapshot().await;
+        assert_eq!(snapshot.write_admission.p1_terminal.admission_count, 1);
+        assert_eq!(
+            snapshot
+                .write_admission
+                .maintenance_retention
+                .admission_count,
+            1
+        );
+        assert!(snapshot.write_admission.p1_terminal.max_wait_ms <= 1_000);
+        assert!(snapshot.write_admission.maintenance_retention.max_wait_ms <= 1_000);
+    }
+
+    #[tokio::test]
     async fn cancelled_waiter_releases_priority_registration() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator
             .acquire(ProxySqliteWriteClass::InteractiveProxy)
             .await;
@@ -512,11 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn p2_try_acquire_defers_without_registering_a_waiter_or_blocking_p1() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator
             .acquire(ProxySqliteWriteClass::InteractiveProxy)
             .await;
@@ -542,12 +611,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn p2_try_acquire_defers_while_p1_is_active() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let p1 = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+
+        assert!(
+            coordinator
+                .try_acquire(ProxySqliteWriteClass::P2Derived)
+                .is_none()
+        );
+        assert_eq!(coordinator.snapshot().await.p2_waiter_count, 0);
+        drop(p1);
+    }
+
+    #[tokio::test]
     async fn maintenance_fairness_admits_one_waiter_after_its_deadline() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
         let maintenance = tokio::spawn({
             let coordinator = coordinator.clone();
@@ -582,11 +661,7 @@ mod tests {
 
     #[tokio::test]
     async fn maintenance_fairness_never_overtakes_a_queued_p1() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
         let maintenance = tokio::spawn({
             let coordinator = coordinator.clone();
@@ -622,11 +697,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoking_a_fairness_admission_does_not_spend_the_token() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator.acquire(ProxySqliteWriteClass::P2Derived).await;
         let maintenance = tokio::spawn({
             let coordinator = coordinator.clone();
@@ -659,11 +730,7 @@ mod tests {
 
     #[tokio::test]
     async fn retention_write_scheduler_lock_and_cancel_releases_maintenance_waiter() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
         let maintenance = tokio::spawn({
             let coordinator = coordinator.clone();
@@ -686,11 +753,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellable_maintenance_admission_releases_waiter_immediately() {
-        let coordinator = Arc::new(ProxySqliteWriteCoordinator {
-            coordinated: true,
-            state: Mutex::new(CoordinatorState::default()),
-            notify: Notify::new(),
-        });
+        let coordinator = test_proxy_sqlite_write_coordinator();
         let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
         let cancel = CancellationToken::new();
         let waiter = tokio::spawn({

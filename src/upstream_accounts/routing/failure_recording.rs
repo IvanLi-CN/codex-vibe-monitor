@@ -309,7 +309,7 @@ async fn record_pool_route_success_inner(
     // must still run when a newer account-level failure makes the account
     // update stale.
     let model_route_recovered = if let Some(attempt_id) = attempt_id {
-        record_model_route_success_from_attempt(
+        record_model_route_success_from_attempt_admitted(
             pool,
             account_id,
             attempt_id,
@@ -1067,13 +1067,14 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
     }
     if !api_key_temporary_http_failure && let Some(attempt_id) = attempt_id {
-        record_model_route_failure_from_attempt(
+        record_model_route_failure_from_attempt_with_start_admitted(
             pool,
             account_id,
             attempt_id,
             status,
             Some(error_message),
             Some(classification.failure_kind),
+            None,
         )
         .await?;
     }

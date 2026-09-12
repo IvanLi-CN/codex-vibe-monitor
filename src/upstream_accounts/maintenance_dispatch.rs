@@ -187,6 +187,14 @@ async fn reconcile_legacy_upstream_rejected_cooldowns(
         if cooldown_until <= now {
             continue;
         }
+        let Some(_write_permit) =
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator().try_acquire(
+                crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+            )
+        else {
+            debug!("upstream account cooldown reconciliation deferred by runtime write admission");
+            break;
+        };
         let update_result = sqlx::query(
             r#"
             UPDATE pool_upstream_accounts

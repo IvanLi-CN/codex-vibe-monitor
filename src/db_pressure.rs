@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Error;
 use once_cell::sync::Lazy;
+use serde::Serialize;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::warn;
 
@@ -31,10 +32,49 @@ pub(crate) struct DbPressureGate {
     pressure_cooldown: Duration,
     pressure_until_epoch_ms: AtomicU64,
     pressure_events: AtomicU64,
+    sqlite_busy_events: AtomicU64,
+    sqlite_locked_events: AtomicU64,
+    pool_acquire_timeout_events: AtomicU64,
+    last_error_class: AtomicU64,
     background_skips: AtomicU64,
     eligibility: Arc<DbPressureEligibility>,
     #[cfg(test)]
     bypass_for_test_global: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DbPressureErrorClass {
+    SqliteBusy,
+    SqliteLocked,
+    PoolAcquireTimeout,
+}
+
+impl DbPressureErrorClass {
+    fn as_atomic(self) -> u64 {
+        match self {
+            Self::SqliteBusy => 1,
+            Self::SqliteLocked => 2,
+            Self::PoolAcquireTimeout => 3,
+        }
+    }
+
+    fn from_atomic(value: u64) -> Option<Self> {
+        match value {
+            1 => Some(Self::SqliteBusy),
+            2 => Some(Self::SqliteLocked),
+            3 => Some(Self::PoolAcquireTimeout),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SqliteBusy => "sqlite_busy",
+            Self::SqliteLocked => "sqlite_locked",
+            Self::PoolAcquireTimeout => "pool_acquire_timeout",
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -112,11 +152,16 @@ impl DbBackgroundPermit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DbPressureSnapshot {
     pub(crate) pressure_cooldown_remaining_ms: u64,
     pub(crate) pressure_events: u64,
+    pub(crate) sqlite_busy_events: u64,
+    pub(crate) sqlite_locked_events: u64,
+    pub(crate) pool_acquire_timeout_events: u64,
+    pub(crate) last_error_class: Option<DbPressureErrorClass>,
     pub(crate) background_skips: u64,
 }
 
@@ -128,6 +173,10 @@ impl DbPressureGate {
             pressure_cooldown,
             pressure_until_epoch_ms: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
+            sqlite_busy_events: AtomicU64::new(0),
+            sqlite_locked_events: AtomicU64::new(0),
+            pool_acquire_timeout_events: AtomicU64::new(0),
+            last_error_class: AtomicU64::new(0),
             background_skips: AtomicU64::new(0),
             eligibility: Arc::new(DbPressureEligibility::default()),
             #[cfg(test)]
@@ -355,10 +404,24 @@ impl DbPressureGate {
     }
 
     pub(crate) fn record_error(&self, task: &'static str, err: &Error) -> bool {
-        if !is_db_pressure_error(err) {
+        let Some(error_class) = classify_db_pressure_error(err) else {
             return false;
+        };
+        match error_class {
+            DbPressureErrorClass::SqliteBusy => {
+                self.sqlite_busy_events.fetch_add(1, Ordering::Relaxed);
+            }
+            DbPressureErrorClass::SqliteLocked => {
+                self.sqlite_locked_events.fetch_add(1, Ordering::Relaxed);
+            }
+            DbPressureErrorClass::PoolAcquireTimeout => {
+                self.pool_acquire_timeout_events
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
-        self.record_pressure(task, "sqlite_or_pool_pressure");
+        self.last_error_class
+            .store(error_class.as_atomic(), Ordering::Release);
+        self.record_pressure(task, error_class.as_str());
         true
     }
 
@@ -407,13 +470,67 @@ impl DbPressureGate {
                 .load(Ordering::Acquire)
                 .saturating_sub(now_ms),
             pressure_events: self.pressure_events.load(Ordering::Relaxed),
+            sqlite_busy_events: self.sqlite_busy_events.load(Ordering::Relaxed),
+            sqlite_locked_events: self.sqlite_locked_events.load(Ordering::Relaxed),
+            pool_acquire_timeout_events: self.pool_acquire_timeout_events.load(Ordering::Relaxed),
+            last_error_class: DbPressureErrorClass::from_atomic(
+                self.last_error_class.load(Ordering::Acquire),
+            ),
             background_skips: self.background_skips.load(Ordering::Relaxed),
         }
     }
 }
 
 pub(crate) fn is_db_pressure_error(err: &Error) -> bool {
-    crate::is_sqlite_lock_error(err) || is_pool_acquire_timeout_error(err)
+    classify_db_pressure_error(err).is_some()
+}
+
+pub(crate) fn classify_db_pressure_error(err: &Error) -> Option<DbPressureErrorClass> {
+    if is_pool_acquire_timeout_error(err) {
+        return Some(DbPressureErrorClass::PoolAcquireTimeout);
+    }
+
+    let has_sqlite_code = |codes: &[&str]| {
+        err.chain().any(|cause| {
+            let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
+                return false;
+            };
+            let sqlx::Error::Database(database_error) = sqlx_err else {
+                return false;
+            };
+            database_error
+                .code()
+                .as_deref()
+                .is_some_and(|code| codes.contains(&code))
+        })
+    };
+    if has_sqlite_code(&["6", "SQLITE_LOCKED"]) {
+        return Some(DbPressureErrorClass::SqliteLocked);
+    }
+    if has_sqlite_code(&["5", "SQLITE_BUSY"]) {
+        return Some(DbPressureErrorClass::SqliteBusy);
+    }
+
+    let message = err
+        .chain()
+        .map(|cause| cause.to_string().to_ascii_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if message.contains("database table is locked")
+        || message.contains("database is locked")
+        || message.contains("sqlite_locked")
+        || message.contains("(code: 6)")
+    {
+        return Some(DbPressureErrorClass::SqliteLocked);
+    }
+    if message.contains("database is busy")
+        || message.contains("sqlite_busy")
+        || message.contains("(code: 5)")
+    {
+        return Some(DbPressureErrorClass::SqliteBusy);
+    }
+
+    crate::is_sqlite_lock_error(err).then_some(DbPressureErrorClass::SqliteLocked)
 }
 
 fn is_pool_acquire_timeout_error(err: &Error) -> bool {
@@ -704,5 +821,39 @@ mod tests {
     fn db_pressure_error_detects_pool_acquire_timeout() {
         let err = anyhow!("pool timed out while waiting for an open connection");
         assert!(is_db_pressure_error(&err));
+    }
+
+    #[test]
+    fn db_pressure_error_classification_is_visible_in_the_snapshot() {
+        let gate = DbPressureGate::new(1, Duration::ZERO);
+        let busy = anyhow!("database is busy");
+        let locked = anyhow!("database is locked");
+        let pool_timeout = anyhow!("pool timed out while waiting for an open connection");
+
+        assert_eq!(
+            classify_db_pressure_error(&busy),
+            Some(DbPressureErrorClass::SqliteBusy)
+        );
+        assert_eq!(
+            classify_db_pressure_error(&locked),
+            Some(DbPressureErrorClass::SqliteLocked)
+        );
+        assert_eq!(
+            classify_db_pressure_error(&pool_timeout),
+            Some(DbPressureErrorClass::PoolAcquireTimeout)
+        );
+
+        assert!(gate.record_error("test_busy", &busy));
+        assert!(gate.record_error("test_locked", &locked));
+        assert!(gate.record_error("test_pool", &pool_timeout));
+
+        let snapshot = gate.snapshot();
+        assert_eq!(snapshot.sqlite_busy_events, 1);
+        assert_eq!(snapshot.sqlite_locked_events, 1);
+        assert_eq!(snapshot.pool_acquire_timeout_events, 1);
+        assert_eq!(
+            snapshot.last_error_class,
+            Some(DbPressureErrorClass::PoolAcquireTimeout)
+        );
     }
 }
