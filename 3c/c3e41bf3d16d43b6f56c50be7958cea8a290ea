@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.71.6",
+  "base_stable_version": "2.71.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-09-12T13:27:33Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.71.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "12fc0573781c60c4b1ab5710cb7f98752c92bcb0",
+  "pr_number": 920,
+  "pr_title": "fix(summary): recover live-tail coverage safely",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.71.6",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.71.6",
+  "target_sha": "3cc3e41bf3d16d43b6f56c50be7958cea8a290ea",
+  "type_label": "type:patch"
+}
