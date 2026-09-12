@@ -44,13 +44,13 @@ def source_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         "occurred_at",
         "source",
         "status",
-        "total_tokens",
-        "cost",
     }
     if not required.issubset(columns):
         missing = ",".join(sorted(required - columns))
         raise RuntimeError(f"codex_invocations is missing required columns: {missing}")
     optional = [
+        "total_tokens",
+        "cost",
         "error_message",
         "failure_kind",
         "failure_class",
@@ -177,7 +177,6 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
                 previous_end: dt.datetime | None = None
                 previous_key: tuple[dt.datetime, int] | None = None
                 seen_ids: set[int] = set()
-                seen_invokes: set[str] = set()
                 for expected_page, page in enumerate(pages):
                     page_index, page_row_count, payload, coverage_start, coverage_end, snapshot_sha, payload_bytes, format_version = page
                     if int(page_index) != expected_page or int(format_version) != 2:
@@ -201,12 +200,14 @@ def load_rows(database: Path, archive_root: Path) -> list[dict[str, Any]]:
                         key = (occurred, int(record.get("id") or 0))
                         if previous_key is not None and key < previous_key:
                             raise RuntimeError("V2 final proof record order is invalid")
-                        if int(record.get("id") or 0) in seen_ids or str(record.get("invoke_id")) in seen_invokes:
-                            raise RuntimeError("V2 final proof contains duplicate identity")
+                        # `codex_invocations` permits the same invoke_id at different
+                        # occurred_at values (UNIQUE(invoke_id, occurred_at)); row id is
+                        # the authoritative identity used by the service proof validator.
+                        if int(record.get("id") or 0) in seen_ids:
+                            raise RuntimeError("V2 final proof contains duplicate row identity")
                         if occurred < start or occurred > end:
                             raise RuntimeError("V2 final proof record coverage is invalid")
                         seen_ids.add(int(record.get("id") or 0))
-                        seen_invokes.add(str(record.get("invoke_id")))
                         previous_key = key
                     previous_end = end
                     rows.extend(decoded)

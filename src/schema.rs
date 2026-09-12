@@ -4008,6 +4008,25 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS summary_live_tail_reconciliation_checkpoint (
+            scope TEXT PRIMARY KEY,
+            format_version INTEGER NOT NULL DEFAULT 1,
+            recovery_epoch INTEGER NOT NULL DEFAULT 0,
+            base_projection_revision INTEGER NOT NULL DEFAULT 0,
+            target_terminal_watermark INTEGER NOT NULL DEFAULT 0,
+            target_source_cursor INTEGER NOT NULL DEFAULT 0,
+            next_source_cursor INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'idle',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure Summary live-tail reconciliation checkpoint table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_archive_snapshot (
             archive_batch_id INTEGER NOT NULL,
             manifest_sha256 TEXT NOT NULL,

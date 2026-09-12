@@ -159,6 +159,31 @@ the committed terminal tail that `RollingDelta` can reconstruct without
 re-reading historical archive pages.
 _Avoid_: archive coverage fence, request-time cursor, raw-source replay
 
+**Summary Source Identity**:
+The durable identity of one live terminal contribution: `(row_id, invoke_id,
+occurred_at)`. ACKs and restart replays with the same identity are idempotent
+after an immutable Projection swap. A source change without a durable row ID
+cannot retire a gap proof and remains broad fail-closed until bounded
+reconciliation proves its scope.
+_Avoid_: invoke/time-only identity, sequence-only replay, guessed absorption
+
+**Summary Live-Tail Reconciliation Checkpoint**:
+The versioned, durable progress record for one bounded live-tail repair. It
+binds the base Projection revision, recovery epoch, fixed terminal watermark,
+source descriptor cursor, and state. A worker reconstructs at most the existing
+`400`-ID/`64 MiB` page under the database-pressure permit, publishes with a
+generation-fenced CAS, and retains post-target committed entries as an overlay.
+It never falls back to generic `RollingDelta`, Bootstrap, full live admission,
+or archive hydration.
+_Avoid_: moving target rebuild, cursor-only freshness, request-time repair
+
+**Live-Tail Readiness**:
+The no-payload health classification for the current tail: `exact`,
+`reconciling`, `live_tail_gap`, or `pressure_deferred`, together with gap
+count, target watermark, epoch, stage, and elapsed time. It is diagnostic only;
+HTTP and SSE continue to read the immutable Projection and availability overlay.
+_Avoid_: health endpoint as a readiness bypass, payload telemetry
+
 **Historical Summary Coverage Recovery Supervisor**:
 The single off-request owner for AllTime checkpoint pages and Legacy Summary
 Snapshot V2 backfill. It prioritizes pages intersecting the current 30-day
