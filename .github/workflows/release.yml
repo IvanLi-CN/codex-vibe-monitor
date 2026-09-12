@@ -669,6 +669,129 @@ jobs:
 
             core.notice(`Created GitHub Release for tag ${tag}`)
 
+      - name: Verify published release surfaces
+        uses: actions/github-script@v9
+        env:
+          RELEASE_JSON: ${{ runner.temp }}/release-publication.json
+          TAG_TARGET_SHA_FILE: ${{ runner.temp }}/release-tag-target-sha.txt
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+        with:
+          script: |
+            const fs = require('fs')
+            const { owner, repo } = context.repo
+            const tag = process.env.RELEASE_TAG
+            const expectedPrerelease = process.env.RELEASE_PRERELEASE === 'true'
+            const expectedSha = process.env.TARGET_SHA
+
+            if (!tag || !expectedSha) {
+              core.setFailed('Release verification is missing tag or target SHA')
+              return
+            }
+
+            const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag })
+            if (release.data.tag_name !== tag || release.data.draft || release.data.prerelease !== expectedPrerelease) {
+              core.setFailed(`Published GitHub Release metadata does not match ${tag}`)
+              return
+            }
+            if (!release.data.html_url || !release.data.published_at) {
+              core.setFailed(`GitHub Release ${tag} is missing publication metadata`)
+              return
+            }
+
+            let object = (await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` })).data.object
+            for (let depth = 0; object.type === 'tag' && depth < 4; depth += 1) {
+              object = (await github.rest.git.getTag({ owner, repo, tag_sha: object.sha })).data.object
+            }
+            if (object.type !== 'commit' || object.sha !== expectedSha) {
+              core.setFailed(`Git tag ${tag} does not resolve to ${expectedSha}`)
+              return
+            }
+
+            fs.writeFileSync(process.env.RELEASE_JSON, JSON.stringify(release.data))
+            fs.writeFileSync(process.env.TAG_TARGET_SHA_FILE, `${object.sha}\n`)
+            core.notice(`Verified GitHub Release ${tag} and tag target ${object.sha}`)
+
+      - name: Verify final release image manifests
+        shell: bash
+        env:
+          RELEASE_JSON: ${{ runner.temp }}/release-publication.json
+          TAG_TARGET_SHA_FILE: ${{ runner.temp }}/release-tag-target-sha.txt
+          RELEASE_TAG: ${{ needs.release-meta.outputs.release_tag }}
+          RELEASE_PRERELEASE: ${{ needs.release-meta.outputs.release_prerelease }}
+          TARGET_SHA: ${{ needs.release-meta.outputs.target_sha }}
+          APP_EFFECTIVE_VERSION: ${{ needs.release-meta.outputs.app_effective_version }}
+          TAGS_CSV: ${{ needs.release-meta.outputs.tags_csv }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "${RELEASE_JSON}" ] || [ ! -s "${TAG_TARGET_SHA_FILE}" ]; then
+            echo "Release metadata verification did not produce its proof files." >&2
+            exit 1
+          fi
+
+          manifest_args=()
+          image_label_args=()
+          index=0
+          IFS=',' read -r -a tags <<< "${TAGS_CSV}"
+          for tag in "${tags[@]}"; do
+            [[ -z "${tag}" ]] && continue
+            manifest_file="${RUNNER_TEMP}/release-manifest-${index}.json"
+            verified=false
+            for attempt in 1 2 3 4 5; do
+              if docker buildx imagetools inspect "${tag}" --raw >"${manifest_file}" 2>"${RUNNER_TEMP}/release-manifest-${index}.err"; then
+                verified=true
+                break
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                echo "Final release image manifest is unavailable: ${tag}" >&2
+                exit 1
+              fi
+              sleep "$((attempt * 3))"
+            done
+            if [ "${verified}" != true ]; then
+              echo "Final release image manifest verification failed: ${tag}" >&2
+              exit 1
+            fi
+            if ! RAW_JSON="$(<"${manifest_file}")" REQUIRED_PLATFORMS="${PLATFORMS}" \
+              python3 ./.github/scripts/verify_manifest_platforms.py "${tag}" >/dev/null; then
+              echo "Final release image platform proof failed: ${tag}" >&2
+              exit 1
+            fi
+            manifest_args+=(--manifest-proof "${tag}|${manifest_file}")
+            IFS=',' read -r -a platforms <<< "${PLATFORMS}"
+            for platform in "${platforms[@]}"; do
+              label_file="${RUNNER_TEMP}/release-label-${index}.json"
+              if ! docker pull --platform "${platform}" "${tag}" \
+                >"${RUNNER_TEMP}/release-pull-${index}.log" \
+                2>"${RUNNER_TEMP}/release-pull-${index}.err"; then
+                echo "Final release image is unavailable for ${tag} (${platform})" >&2
+                exit 1
+              fi
+              if ! docker image inspect --format '{{json .Config.Labels}}' "${tag}" >"${label_file}"; then
+                echo "Final release image labels are unavailable for ${tag} (${platform})" >&2
+                exit 1
+              fi
+              image_label_args+=(--image-label-proof "${tag}|${platform}|${label_file}")
+              index=$((index + 1))
+            done
+          done
+
+          prerelease_args=()
+          if [ "${RELEASE_PRERELEASE}" = true ]; then
+            prerelease_args+=(--release-prerelease)
+          fi
+          python3 ./.github/scripts/verify_release_publication.py \
+            --release-json "${RELEASE_JSON}" \
+            --tag-target-sha "$(<"${TAG_TARGET_SHA_FILE}")" \
+            --release-tag "${RELEASE_TAG}" \
+            --target-sha "${TARGET_SHA}" \
+            --app-effective-version "${APP_EFFECTIVE_VERSION}" \
+            "${prerelease_args[@]}" \
+            --tags-csv "${TAGS_CSV}" \
+            "${manifest_args[@]}" \
+            "${image_label_args[@]}"
+
       - name: Resolve next pending release target
         if: github.event_name != 'workflow_dispatch'
         id: next-pending
