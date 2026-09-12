@@ -4045,11 +4045,22 @@ impl SubscriptionHub {
             return false;
         };
         if projection.revision() != expected_projection_revision
-            || projection.generation_fence() != expected_generation_fence
+            || !projection
+                .generation_fence()
+                .coverage_sources_match(expected_generation_fence)
+            || !projection
+                .generation_fence()
+                .live_tail_cursor()
+                .at_or_behind(expected_generation_fence.live_tail_cursor())
         {
             return false;
         }
-        projection.renew_freshness_from_delta_journal();
+        let mut next = Arc::unwrap_or_clone(projection);
+        next.advance_live_tail_fence(expected_generation_fence.live_tail_cursor());
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        next = next.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, next);
         state.summary_delta_journal.reconciliation_completed = false;
         state
             .summary_delta_journal
@@ -4392,6 +4403,31 @@ impl SubscriptionHub {
         Self::store_summary_projection_locked(&mut state, projection)
     }
 
+    pub(crate) async fn store_summary_projection_if_revision_and_coverage_generation(
+        &self,
+        mut projection: SummaryProjection,
+        expected_revision: u64,
+        expected_generation_fence: SummaryProjectionGenerationFence,
+    ) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(current_projection) = state.summary_projection.as_ref() else {
+            return false;
+        };
+        let current_fence = current_projection.generation_fence();
+        if current_projection.revision() != expected_revision
+            || !current_fence.coverage_sources_match(expected_generation_fence)
+            || !current_fence
+                .live_tail_cursor()
+                .at_or_behind(expected_generation_fence.live_tail_cursor())
+        {
+            return false;
+        }
+        let next_revision = state.summary_projection_revision.saturating_add(1);
+        state.summary_projection_revision = next_revision;
+        projection = projection.with_revision(next_revision);
+        Self::store_summary_projection_locked(&mut state, projection)
+    }
+
     fn store_summary_projection_locked(
         state: &mut SubscriptionHubState,
         projection: SummaryProjection,
@@ -4437,6 +4473,9 @@ impl SubscriptionHub {
                         row_id,
                         &entry.delta.invoke_id,
                         &entry.delta.occurred_at,
+                    ) && projection.global_rollup_covers_live_terminal_identity(
+                        row_id,
+                        &entry.delta.occurred_at,
                     )
                 })
         });
@@ -4457,6 +4496,9 @@ impl SubscriptionHub {
                         ) || projection.contains_global_all_time_covered_live_terminal_identity(
                             row_id,
                             &entry.invoke_id,
+                            &entry.occurred_at,
+                        ) && projection.global_rollup_covers_live_terminal_identity(
+                            row_id,
                             &entry.occurred_at,
                         )
                     })

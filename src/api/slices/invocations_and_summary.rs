@@ -7708,6 +7708,20 @@ impl SummaryLiveTailCursor {
         self.rollup_live_cursor == other.rollup_live_cursor
             && self.account_rollup_live_cursor == other.account_rollup_live_cursor
     }
+
+    pub(crate) fn at_or_behind(self, other: Self) -> bool {
+        self.live_high_watermark_id <= other.live_high_watermark_id
+            && self.rollup_live_cursor <= other.rollup_live_cursor
+            && match (
+                self.account_rollup_live_cursor,
+                other.account_rollup_live_cursor,
+            ) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(current), Some(expected)) => current <= expected,
+            }
+            && self.durable_terminal_sequence_watermark <= other.durable_terminal_sequence_watermark
+    }
 }
 
 impl SummaryProjectionGenerationFence {
@@ -7971,6 +7985,15 @@ impl SummaryProjection {
 
     pub(crate) fn generation_fence(&self) -> SummaryProjectionGenerationFence {
         self.generation_fence
+    }
+
+    pub(crate) fn advance_live_tail_fence(&mut self, live_tail: SummaryLiveTailCursor) {
+        self.generation_fence.live_high_watermark_id = live_tail.live_high_watermark_id;
+        self.generation_fence.rollup_live_cursor = live_tail.rollup_live_cursor;
+        self.generation_fence.account_rollup_live_cursor = live_tail.account_rollup_live_cursor;
+        self.generation_fence.durable_terminal_sequence_watermark =
+            live_tail.durable_terminal_sequence_watermark;
+        self.durable_terminal_sequence_watermark = live_tail.durable_terminal_sequence_watermark;
     }
 
     pub(crate) fn with_revision(mut self, revision: u64) -> Self {
@@ -14550,6 +14573,52 @@ async fn publish_summary_projection_with_durable_fence(
     Ok(true)
 }
 
+async fn publish_summary_projection_with_durable_coverage_fence(
+    state: &AppState,
+    projection: SummaryProjection,
+    expected_revision: u64,
+    expected_generation_fence: SummaryProjectionGenerationFence,
+) -> Result<bool> {
+    let mut transaction = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("begin Summary durable-coverage publication transaction")?;
+    let current_generation_fence =
+        load_summary_projection_generation_fence_tx(state, transaction.as_mut()).await?;
+    if !current_generation_fence.coverage_sources_match(expected_generation_fence)
+        || !current_generation_fence
+            .live_tail_cursor()
+            .at_or_behind(expected_generation_fence.live_tail_cursor())
+    {
+        transaction
+            .rollback()
+            .await
+            .context("rollback stale Summary durable-coverage publication")?;
+        return Ok(false);
+    }
+    let published = state
+        .subscription_hub
+        .store_summary_projection_if_revision_and_coverage_generation(
+            projection,
+            expected_revision,
+            expected_generation_fence,
+        )
+        .await;
+    if !published {
+        transaction
+            .rollback()
+            .await
+            .context("rollback stale Summary durable-coverage projection CAS")?;
+        return Ok(false);
+    }
+    transaction
+        .commit()
+        .await
+        .context("commit Summary durable-coverage publication transaction")?;
+    Ok(true)
+}
+
 async fn advance_summary_all_time_projection_checkpoint(
     state: &AppState,
 ) -> Result<SummaryAllTimeProjectionCheckpointRow> {
@@ -15557,12 +15626,9 @@ async fn publish_summary_coverage_overlay_once(
         } else {
             next.unavailable_unmaterialized_archive_ranges.clear();
         }
-        // Boundary ranges are derived from the previous resident projection. Rebuild them from
-        // the current proof set instead of carrying stale ranges into the final reduction: once
-        // all obligations are resolved, retaining those ranges would reload every archived row
-        // and can exceed the bounded resident boundary-record budget.
-        next.unavailable_boundary_archive_ranges.clear();
-        next.unavailable_boundary_archive_account_ranges.clear();
+        // Preserve boundary gaps until the verified proof buckets below explicitly cover them.
+        // A compact archive can still lack one response dimension (such as usage replay), so
+        // clearing these ranges here would turn an under-proven historical response into 200.
     }
     // Boundary records are only needed to repair the global contribution being reduced here.
     // Account-only gaps are already fail-closed through the account availability overlay; adding
@@ -15618,9 +15684,16 @@ async fn publish_summary_coverage_overlay_once(
         next.freshness.account_all_time_eligible.clear();
         next.all_time_by_account.retain(|scope, _| scope.is_none());
     }
+    let has_unavailable_coverage = !next.unavailable_unmaterialized_archive_ranges.is_empty()
+        || !next.unavailable_boundary_archive_ranges.is_empty()
+        || !next
+            .unavailable_unmaterialized_archive_account_ranges
+            .is_empty()
+        || !next.unavailable_boundary_archive_account_ranges.is_empty();
     if totals.global_coverage_buckets.is_empty()
         && totals.account_coverage_buckets.is_empty()
         && previous_overlay.is_none()
+        && !has_unavailable_coverage
     {
         return Ok(false);
     }
@@ -16575,7 +16648,7 @@ async fn publish_summary_all_time_projection_checkpoint(
     // visible through the in-memory all-time overlay until a later checkpoint absorbs them.
     next.generation_fence = current_generation_fence;
     let expected_revision = next.revision;
-    if !publish_summary_projection_with_durable_fence(
+    if !publish_summary_projection_with_durable_coverage_fence(
         state,
         next,
         expected_revision,
