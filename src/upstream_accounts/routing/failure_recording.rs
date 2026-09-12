@@ -674,10 +674,13 @@ async fn record_pool_route_success_capability_observations(
     image_intent: ImageIntent,
     codex_imagegen_rewrite: Option<&Value>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
@@ -687,7 +690,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.chat_completions_endpoint {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
@@ -697,7 +700,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.image_endpoint {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
@@ -707,7 +710,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.response_image_tool {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
@@ -717,7 +720,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if requirements.standalone_search {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
@@ -727,7 +730,7 @@ async fn record_pool_route_success_capability_observations(
         .await?;
     }
     if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::CodexImagegen,
@@ -781,6 +784,19 @@ pub(crate) async fn claim_codex_imagegen_supported_retest_override(
 }
 
 pub(crate) async fn record_capability_observation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    axis: UpstreamCapabilityAxis,
+    capability: CapabilitySupport,
+    reason: Option<&str>,
+) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_capability_observation_admitted(pool, account_id, axis, capability, reason).await
+}
+
+pub(crate) async fn record_capability_observation_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
     axis: UpstreamCapabilityAxis,
@@ -946,7 +962,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
@@ -959,7 +975,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_chat_completions_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
@@ -972,7 +988,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_image_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
@@ -985,7 +1001,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_response_image_tool_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
@@ -998,7 +1014,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_standalone_search_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation(
+        record_capability_observation_admitted(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
@@ -1797,6 +1813,18 @@ pub(crate) async fn record_account_selected(state: &AppState, account_id: i64) {
 }
 
 pub(crate) async fn record_compact_support_observation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_compact_support_observation_admitted(pool, account_id, status, reason).await
+}
+
+pub(crate) async fn record_compact_support_observation_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
     status: &str,
