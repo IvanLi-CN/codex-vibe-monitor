@@ -76,10 +76,21 @@ pub(crate) async fn fetch_summary_from_memory_snapshot(
     hydrate_summary_snapshots(state.as_ref())
         .await
         .map_err(ApiError::from)?;
-    if params.window.as_deref() == Some("all") {
-        refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+    if matches!(params.window.as_deref(), Some("all" | "30d")) {
+        // Historical authority is produced by the maintenance supervisor, never by the
+        // request-side memory-only handler. Test fixtures that exercise `all` must drive the
+        // same background owner before asserting the published response.
+        SummaryCoverageRecoverySupervisor::run(state.as_ref())
             .await
             .map_err(ApiError::from)?;
+        if params.window.as_deref() == Some("all") {
+            refresh_summary_snapshots_with_mode(
+                state.as_ref(),
+                SummaryProjectionBuildMode::AllTime,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        }
     }
 
     fetch_summary(State(state), Query(params)).await

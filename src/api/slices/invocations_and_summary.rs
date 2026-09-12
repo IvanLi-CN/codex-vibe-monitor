@@ -7718,6 +7718,22 @@ impl SummaryProjectionGenerationFence {
         self.global_coverage_sources_match(other) && self.account_coverage_sources_match(other)
     }
 
+    /// Coverage publication may advance an older in-memory projection to a newer durable proof
+    /// fence. It must never move backwards or overwrite a projection based on a newer fence.
+    pub(crate) fn coverage_sources_at_or_behind(self, other: Self) -> bool {
+        let manifest_high_watermark_is_compatible = match (
+            self.completed_manifest_high_watermark_id,
+            other.completed_manifest_high_watermark_id,
+        ) {
+            (None, _) => true,
+            (Some(current), Some(expected)) => current <= expected,
+            (Some(_), None) => false,
+        };
+        manifest_high_watermark_is_compatible
+            && self.coverage_revision <= other.coverage_revision
+            && self.account_coverage_revision <= other.account_coverage_revision
+    }
+
     fn global_coverage_sources_match(self, other: Self) -> bool {
         self.completed_manifest_high_watermark_id == other.completed_manifest_high_watermark_id
             && self.coverage_revision == other.coverage_revision
@@ -8415,6 +8431,17 @@ impl SummaryProjection {
     ) -> bool {
         self.persisted_live_terminal_invoke_ids
             .contains(&format!("{invoke_id}\0{occurred_at}"))
+            || self
+                .persisted_live_terminal_invoke_ids
+                .iter()
+                .any(|identity| {
+                    identity
+                        .split_once('\0')
+                        .and_then(|(_, remainder)| remainder.split_once('\0'))
+                        .is_some_and(|(identity_occurred_at, identity_invoke_id)| {
+                            identity_occurred_at == occurred_at && identity_invoke_id == invoke_id
+                        })
+                })
     }
 
     pub(crate) fn durable_terminal_sequence_watermark(&self) -> u64 {
@@ -8492,6 +8519,17 @@ impl SummaryProjection {
                     && record.row.invoke_id == invoke_id
                     && record.row.occurred_at == occurred_at
             })
+    }
+
+    pub(crate) fn contains_global_all_time_covered_live_terminal_identity(
+        &self,
+        row_id: i64,
+        invoke_id: &str,
+        occurred_at: &str,
+    ) -> bool {
+        self.all_time_persisted_live_terminal_invoke_ids.contains(
+            &summary_projection_source_identity_key(row_id, invoke_id, occurred_at),
+        )
     }
 
     pub(crate) fn global_rollup_covers_live_terminal_identity(
@@ -8692,6 +8730,31 @@ impl SummaryProjection {
         if unavailable_account_archive_range_affects_query {
             return Err(ApiError::unavailable(anyhow!(
                 "summary projection account archive source is unavailable for the requested range"
+            )));
+        }
+        // A completed archive changes the historical input generation even when no bounded
+        // archive-range proof was materialized into the rolling projection yet.  Do not let a
+        // retained last-good rolling snapshot (or an empty projection) answer a historical
+        // selection while that authority is still pending.  This is deliberately scoped to
+        // archive-backed windows and leaves current/short recent windows available when their
+        // own live/rollup proof is independent.
+        let historical_archive_coverage_pending = range.is_some_and(|(start, end)| {
+            !self.freshness.global_all_time_eligible
+                && self
+                    .generation_fence
+                    .completed_manifest_high_watermark_id
+                    .is_some()
+                && self.coverage_overlay.is_none()
+                // The durable historical-authority gate is required for the 30-day boundary
+                // (and `all`, which is handled separately). Shorter rolling windows continue to
+                // use their own exact bucket/live-tail proofs; rejecting every range beyond the
+                // 48-hour live horizon here would turn valid 7-day archive-backed selections into
+                // false unavailable responses before their bounded rolling proof is consulted.
+                && end - start >= ChronoDuration::days(30)
+        });
+        if historical_archive_coverage_pending {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary projection historical archive coverage is not yet proven for the requested range"
             )));
         }
         if range.is_none()
@@ -11306,6 +11369,32 @@ async fn summary_all_time_checkpoint_publication_required(
         return Ok(true);
     };
     let coverage_fence = checkpoint.generation_fence().coverage_fence();
+    // Historical readiness is independent from the live tail. A completed checkpoint can
+    // remain coverage-compatible while new committed rows arrive after its rollup cursor. In
+    // that case the finalizer must run again so the bounded live-tail query folds those rows into
+    // the all-time aggregate; otherwise the rolling projection advances its fence while the
+    // retained all-time response stays one or more rows behind indefinitely.
+    let durable_live_tail = load_summary_projection_generation_fence(state)
+        .await?
+        .live_tail_cursor();
+    let checkpoint_live_tail = checkpoint.generation_fence().live_tail_cursor();
+    if checkpoint.global_ready()
+        && (durable_live_tail.live_high_watermark_id > checkpoint_live_tail.live_high_watermark_id
+            || durable_live_tail.rollup_live_cursor > checkpoint_live_tail.rollup_live_cursor
+            || durable_live_tail.durable_terminal_sequence_watermark
+                > checkpoint_live_tail.durable_terminal_sequence_watermark)
+    {
+        return Ok(true);
+    }
+    if checkpoint.account_ready()
+        && (durable_live_tail.live_high_watermark_id > checkpoint_live_tail.live_high_watermark_id
+            || durable_live_tail.account_rollup_live_cursor
+                > checkpoint_live_tail.account_rollup_live_cursor
+            || durable_live_tail.durable_terminal_sequence_watermark
+                > checkpoint_live_tail.durable_terminal_sequence_watermark)
+    {
+        return Ok(true);
+    }
     if checkpoint.global_ready()
         && (!projection.freshness.global_all_time_eligible
             || projection
@@ -13970,6 +14059,40 @@ async fn reset_summary_all_time_projection_account_scope(
         .ok_or_else(|| anyhow!("summary all-time account checkpoint disappeared after reset"))
 }
 
+async fn advance_summary_all_time_projection_checkpoint_live_fence(
+    pool: &Pool<Sqlite>,
+    generation_fence: SummaryProjectionGenerationFence,
+) -> Result<()> {
+    // Record the live boundary only after the immutable Projection CAS succeeds. The update is
+    // monotonic so a concurrent terminal or rollup repair cannot move a committed checkpoint
+    // backwards between publication and this durable progress marker.
+    sqlx::query(
+        "UPDATE summary_all_time_projection_checkpoint SET \
+           live_high_watermark_id = MAX(live_high_watermark_id, ?1), \
+           rollup_live_cursor = MAX(rollup_live_cursor, ?2), \
+           account_rollup_live_cursor = CASE \
+             WHEN ?3 IS NULL THEN account_rollup_live_cursor \
+             WHEN account_rollup_live_cursor IS NULL THEN ?3 \
+             ELSE MAX(account_rollup_live_cursor, ?3) END, \
+           durable_terminal_sequence_watermark = MAX(durable_terminal_sequence_watermark, ?4), \
+           updated_at = datetime('now') \
+         WHERE scope = ?5",
+    )
+    .bind(generation_fence.live_high_watermark_id)
+    .bind(generation_fence.rollup_live_cursor)
+    .bind(generation_fence.account_rollup_live_cursor)
+    .bind(
+        generation_fence
+            .durable_terminal_sequence_watermark
+            .min(i64::MAX as u64) as i64,
+    )
+    .bind(SUMMARY_ALL_TIME_PROJECTION_CHECKPOINT_SCOPE)
+    .execute(pool)
+    .await
+    .context("summary all-time projection checkpoint live fence advance failed")?;
+    Ok(())
+}
+
 async fn advance_summary_all_time_projection_manifest_scope(
     pool: &Pool<Sqlite>,
     checkpoint: &SummaryAllTimeProjectionCheckpointRow,
@@ -16462,6 +16585,11 @@ async fn publish_summary_all_time_projection_checkpoint(
     {
         return Err(SummaryProjectionAllTimeGenerationChanged.into());
     }
+    // The immutable projection now contains the bounded tail through this fence. Persist the
+    // live boundary only after the CAS succeeds so a failed/stale publication never skips rows;
+    // a later supervisor pass can retry from the previous committed checkpoint.
+    advance_summary_all_time_projection_checkpoint_live_fence(&state.pool, generation_fence)
+        .await?;
     debug!(
         global_ready = checkpoint.global_ready(),
         account_ready = checkpoint.account_ready(),

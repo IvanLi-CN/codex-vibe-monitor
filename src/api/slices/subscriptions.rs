@@ -4373,9 +4373,11 @@ impl SubscriptionHub {
             return false;
         };
         if current_projection.revision() != expected_revision
+            || current_projection.generation_fence().live_tail_cursor()
+                != expected_generation_fence.live_tail_cursor()
             || !current_projection
                 .generation_fence()
-                .coverage_sources_match(expected_generation_fence)
+                .coverage_sources_at_or_behind(expected_generation_fence)
         {
             tracing::debug!(
                 current_revision = current_projection.revision(),
@@ -4431,6 +4433,10 @@ impl SubscriptionHub {
                         row_id,
                         &entry.delta.invoke_id,
                         &entry.delta.occurred_at,
+                    ) || projection.contains_global_all_time_covered_live_terminal_identity(
+                        row_id,
+                        &entry.delta.invoke_id,
+                        &entry.delta.occurred_at,
                     )
                 })
         });
@@ -4445,6 +4451,10 @@ impl SubscriptionHub {
                     // need the exact row from this bounded journal.
                     && !entry.persisted_row_id.is_some_and(|row_id| {
                         projection.contains_global_rollup_covered_live_terminal_identity(
+                            row_id,
+                            &entry.invoke_id,
+                            &entry.occurred_at,
+                        ) || projection.contains_global_all_time_covered_live_terminal_identity(
                             row_id,
                             &entry.invoke_id,
                             &entry.occurred_at,
@@ -4538,6 +4548,12 @@ impl SubscriptionHub {
                 &proof.occurred_at,
             )
         });
+        if state.summary_delta_journal.gap_proofs.is_empty()
+            && !state.summary_delta_journal.source_compaction_gap
+        {
+            state.summary_delta_journal.overflowed_through_sequence = None;
+            state.summary_delta_journal.gap_proof_budget_exhausted = false;
+        }
         state.summary_projection = Some(Arc::new(projection));
         true
     }
