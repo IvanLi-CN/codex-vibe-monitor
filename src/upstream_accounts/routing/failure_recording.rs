@@ -1482,9 +1482,10 @@ pub(crate) async fn record_pool_route_transport_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt_or_invoke(pool, None, invoke_id, false, true).await;
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    complete_priority_handoff_from_attempt_or_invoke_admitted(pool, None, invoke_id, false, true)
         .await;
     record_pool_route_transport_failure_admitted(
         pool,
@@ -1507,9 +1508,10 @@ pub(crate) async fn record_pool_route_transport_failure_for_model(
     invoke_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt_or_invoke(pool, None, invoke_id, false, true).await;
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    complete_priority_handoff_from_attempt_or_invoke_admitted(pool, None, invoke_id, false, true)
         .await;
     record_pool_route_transport_failure_admitted(
         pool,
@@ -1599,11 +1601,13 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
-        .await;
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
+    complete_priority_handoff_from_attempt_or_invoke_admitted(
+        pool, attempt_id, invoke_id, false, true,
+    )
+    .await;
     record_pool_route_transport_failure_admitted(
         pool,
         account_id,
