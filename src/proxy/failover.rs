@@ -2105,6 +2105,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             };
             let same_account_retry_index = i64::from(same_account_attempt) + 1;
             let attempt_started_at_utc = Utc::now();
+            let attempt_observed_at = format_utc_iso_precise(attempt_started_at_utc);
             let connect_started = Instant::now();
             let attempt_started_at: String;
             let attempt_index: i64;
@@ -3591,13 +3592,15 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         Some(route_error_message.as_str()),
                     );
                     if let Some(observation) = compact_support_observation.as_ref()
-                        && let Err(observation_err) = record_compact_support_observation(
-                            &state.pool,
-                            account.account_id,
-                            observation.status,
-                            observation.reason.as_deref(),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_compact_support_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                observation.status,
+                                observation.reason.as_deref(),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3616,14 +3619,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             status,
                             Some(route_error_message.as_str()),
                         ) == CapabilitySupport::Unsupported
-                        && let Err(observation_err) = record_capability_observation(
-                            &state.pool,
-                            account.account_id,
-                            UpstreamCapabilityAxis::ResponseEndpoint,
-                            CapabilitySupport::Unsupported,
-                            Some(route_error_message.as_str()),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_capability_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                UpstreamCapabilityAxis::ResponseEndpoint,
+                                CapabilitySupport::Unsupported,
+                                Some(route_error_message.as_str()),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3636,14 +3641,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             status,
                             Some(route_error_message.as_str()),
                         ) == CapabilitySupport::Unsupported
-                        && let Err(observation_err) = record_capability_observation(
-                            &state.pool,
-                            account.account_id,
-                            UpstreamCapabilityAxis::ChatCompletionsEndpoint,
-                            CapabilitySupport::Unsupported,
-                            Some(route_error_message.as_str()),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_capability_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                UpstreamCapabilityAxis::ChatCompletionsEndpoint,
+                                CapabilitySupport::Unsupported,
+                                Some(route_error_message.as_str()),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3656,14 +3663,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             status,
                             Some(route_error_message.as_str()),
                         ) == CapabilitySupport::Unsupported
-                        && let Err(observation_err) = record_capability_observation(
-                            &state.pool,
-                            account.account_id,
-                            UpstreamCapabilityAxis::ImageEndpoint,
-                            CapabilitySupport::Unsupported,
-                            Some(route_error_message.as_str()),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_capability_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                UpstreamCapabilityAxis::ImageEndpoint,
+                                CapabilitySupport::Unsupported,
+                                Some(route_error_message.as_str()),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3676,14 +3685,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             status,
                             Some(route_error_message.as_str()),
                         ) == CapabilitySupport::Unsupported
-                        && let Err(observation_err) = record_capability_observation(
-                            &state.pool,
-                            account.account_id,
-                            UpstreamCapabilityAxis::ResponseImageTool,
-                            CapabilitySupport::Unsupported,
-                            Some(route_error_message.as_str()),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_capability_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                UpstreamCapabilityAxis::ResponseImageTool,
+                                CapabilitySupport::Unsupported,
+                                Some(route_error_message.as_str()),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3696,14 +3707,16 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             status,
                             Some(route_error_message.as_str()),
                         ) == CapabilitySupport::Unsupported
-                        && let Err(observation_err) = record_capability_observation(
-                            &state.pool,
-                            account.account_id,
-                            UpstreamCapabilityAxis::StandaloneSearch,
-                            CapabilitySupport::Unsupported,
-                            Some(route_error_message.as_str()),
-                        )
-                        .await
+                        && let Err(observation_err) =
+                            record_capability_observation_with_observed_at(
+                                &state.pool,
+                                account.account_id,
+                                UpstreamCapabilityAxis::StandaloneSearch,
+                                CapabilitySupport::Unsupported,
+                                Some(route_error_message.as_str()),
+                                Some(&attempt_observed_at),
+                            )
+                            .await
                     {
                         warn!(
                             account_id = account.account_id,
@@ -3841,12 +3854,13 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     );
                 }
                 if codex_imagegen_upstream_incompatible
-                    && let Err(observation_err) = record_capability_observation(
+                    && let Err(observation_err) = record_capability_observation_with_observed_at(
                         &state.pool,
                         account.account_id,
                         UpstreamCapabilityAxis::CodexImagegen,
                         CapabilitySupport::Unsupported,
                         Some(route_error_message.as_str()),
+                        Some(&attempt_observed_at),
                     )
                     .await
                 {
@@ -3982,13 +3996,15 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     );
                 }
                 if let Some(observation) = compact_support_observation.as_ref()
-                    && let Err(observation_err) = record_compact_support_observation(
-                        &state.pool,
-                        account.account_id,
-                        observation.status,
-                        observation.reason.as_deref(),
-                    )
-                    .await
+                    && let Err(observation_err) =
+                        record_compact_support_observation_with_observed_at(
+                            &state.pool,
+                            account.account_id,
+                            observation.status,
+                            observation.reason.as_deref(),
+                            Some(&attempt_observed_at),
+                        )
+                        .await
                 {
                     warn!(
                         account_id = account.account_id,
@@ -4665,11 +4681,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             let compact_support_observation =
                 classify_compact_support_observation(original_uri, Some(status), None);
             if let Some(observation) = compact_support_observation.as_ref()
-                && let Err(observation_err) = record_compact_support_observation(
+                && let Err(observation_err) = record_compact_support_observation_with_observed_at(
                     &state.pool,
                     account.account_id,
                     observation.status,
                     observation.reason.as_deref(),
+                    Some(&attempt_observed_at),
                 )
                 .await
             {

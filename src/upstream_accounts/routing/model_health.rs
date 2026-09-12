@@ -1507,6 +1507,19 @@ pub(crate) async fn persist_priority_handoff_event(
     model: &str,
     reason_code: &str,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    persist_priority_handoff_event_admitted(pool, account_id, attempt_id, model, reason_code).await
+}
+
+pub(crate) async fn persist_priority_handoff_event_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    attempt_id: Option<i64>,
+    model: &str,
+    reason_code: &str,
+) -> Result<()> {
     let (action, result) = match reason_code {
         PRIORITY_HANDOFF_SUCCEEDED_REASON => (
             UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED,

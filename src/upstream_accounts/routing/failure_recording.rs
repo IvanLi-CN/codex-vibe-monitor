@@ -553,6 +553,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     record_pool_route_success_capability_observations(
         pool,
         account_id,
+        request_started_at_utc,
         endpoint,
         image_intent,
         codex_imagegen_rewrite,
@@ -606,6 +607,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     record_pool_route_success_capability_observations(
         &state.pool,
         account_id,
+        request_started_at_utc,
         endpoint,
         image_intent,
         codex_imagegen_rewrite,
@@ -660,6 +662,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
     record_pool_route_success_capability_observations(
         pool,
         account_id,
+        request_started_at_utc,
         endpoint,
         image_intent,
         None,
@@ -670,6 +673,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
 async fn record_pool_route_success_capability_observations(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
     endpoint: &str,
     image_intent: ImageIntent,
     codex_imagegen_rewrite: Option<&Value>,
@@ -677,65 +681,72 @@ async fn record_pool_route_success_capability_observations(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
+    let observed_at = format_utc_iso_precise(request_started_at_utc);
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     if requirements.response_endpoint {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ResponseEndpoint.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
     if requirements.chat_completions_endpoint {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ChatCompletionsEndpoint.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
     if requirements.image_endpoint {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ImageEndpoint.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
     if requirements.response_image_tool {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::ResponseImageTool.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
     if requirements.standalone_search {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::StandaloneSearch.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
     if crate::codex_imagegen_audit_has_canonical_namespace(codex_imagegen_rewrite) {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::CodexImagegen,
             CapabilitySupport::Supported,
             Some(UpstreamCapabilityAxis::CodexImagegen.success_reason()),
+            Some(&observed_at),
         )
         .await?;
     }
@@ -750,6 +761,16 @@ pub(crate) enum CodexImagegenRetestClaim {
 }
 
 pub(crate) async fn claim_codex_imagegen_supported_retest_override(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<CodexImagegenRetestClaim> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    claim_codex_imagegen_supported_retest_override_admitted(pool, account_id).await
+}
+
+pub(crate) async fn claim_codex_imagegen_supported_retest_override_admitted(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<CodexImagegenRetestClaim> {
@@ -790,10 +811,30 @@ pub(crate) async fn record_capability_observation(
     capability: CapabilitySupport,
     reason: Option<&str>,
 ) -> Result<()> {
+    record_capability_observation_with_observed_at(pool, account_id, axis, capability, reason, None)
+        .await
+}
+
+pub(crate) async fn record_capability_observation_with_observed_at(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    axis: UpstreamCapabilityAxis,
+    capability: CapabilitySupport,
+    reason: Option<&str>,
+    observed_at: Option<&str>,
+) -> Result<()> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
-    record_capability_observation_admitted(pool, account_id, axis, capability, reason).await
+    record_capability_observation_admitted_with_observed_at(
+        pool,
+        account_id,
+        axis,
+        capability,
+        reason,
+        observed_at,
+    )
+    .await
 }
 
 pub(crate) async fn record_capability_observation_admitted(
@@ -803,10 +844,27 @@ pub(crate) async fn record_capability_observation_admitted(
     capability: CapabilitySupport,
     reason: Option<&str>,
 ) -> Result<()> {
+    record_capability_observation_admitted_with_observed_at(
+        pool, account_id, axis, capability, reason, None,
+    )
+    .await
+}
+
+pub(crate) async fn record_capability_observation_admitted_with_observed_at(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    axis: UpstreamCapabilityAxis,
+    capability: CapabilitySupport,
+    reason: Option<&str>,
+    observed_at: Option<&str>,
+) -> Result<()> {
     if matches!(capability, CapabilitySupport::Unknown) {
         return Ok(());
     }
-    let now_iso = format_utc_iso(Utc::now());
+    let observed_at = observed_at
+        .map(str::to_owned)
+        .unwrap_or_else(|| format_utc_iso_precise(Utc::now()));
+    let updated_at = format_utc_iso_precise(Utc::now());
     let api_key_only_filter = if matches!(axis, UpstreamCapabilityAxis::StandaloneSearch) {
         " AND kind = 'api_key_codex'"
     } else {
@@ -818,8 +876,11 @@ pub(crate) async fn record_capability_observation_admitted(
         SET {observed_column} = ?2,
             {observed_at_column} = ?3,
             {reason_column} = ?4,
-            updated_at = ?3
+            updated_at = ?5
         WHERE id = ?1{api_key_only_filter}
+          AND ({observed_at_column} IS NULL
+               OR julianday({observed_at_column}) IS NULL
+               OR julianday({observed_at_column}) <= julianday(?3))
         "#,
         observed_column = axis.observed_column(),
         observed_at_column = axis.observed_at_column(),
@@ -829,11 +890,28 @@ pub(crate) async fn record_capability_observation_admitted(
     sqlx::query(&statement)
         .bind(account_id)
         .bind(capability.as_str())
-        .bind(&now_iso)
+        .bind(&observed_at)
         .bind(reason)
+        .bind(&updated_at)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+async fn attempt_observation_timestamp(
+    pool: &Pool<Sqlite>,
+    attempt_id: Option<i64>,
+) -> Option<String> {
+    let attempt_id = attempt_id?;
+    let started_at = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT started_at FROM pool_upstream_request_attempts WHERE id = ?1",
+    )
+    .bind(attempt_id)
+    .fetch_optional(pool)
+    .await
+    .ok()?
+    .flatten()?;
+    parse_to_utc_datetime(&started_at).map(format_utc_iso_precise)
 }
 
 pub(crate) async fn record_pool_route_http_failure(
@@ -939,6 +1017,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
+    let observed_at = attempt_observation_timestamp(pool, attempt_id).await;
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
@@ -962,12 +1041,13 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseEndpoint,
             CapabilitySupport::Unsupported,
             Some(error_message),
+            observed_at.as_deref(),
         )
         .await?;
     }
@@ -975,12 +1055,13 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_chat_completions_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ChatCompletionsEndpoint,
             CapabilitySupport::Unsupported,
             Some(error_message),
+            observed_at.as_deref(),
         )
         .await?;
     }
@@ -988,12 +1069,13 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_image_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ImageEndpoint,
             CapabilitySupport::Unsupported,
             Some(error_message),
+            observed_at.as_deref(),
         )
         .await?;
     }
@@ -1001,12 +1083,13 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_response_image_tool_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::ResponseImageTool,
             CapabilitySupport::Unsupported,
             Some(error_message),
+            observed_at.as_deref(),
         )
         .await?;
     }
@@ -1014,18 +1097,19 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         && classify_standalone_search_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
-        record_capability_observation_admitted(
+        record_capability_observation_admitted_with_observed_at(
             pool,
             account_id,
             UpstreamCapabilityAxis::StandaloneSearch,
             CapabilitySupport::Unsupported,
             Some(error_message),
+            observed_at.as_deref(),
         )
         .await?;
     }
     if route_http_failure_is_retryable_responses_overload(status, error_message) {
         if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-            complete_priority_handoff_from_attempt_or_invoke(
+            complete_priority_handoff_from_attempt_or_invoke_admitted(
                 pool, attempt_id, invoke_id, false, true,
             )
             .await;
@@ -1043,7 +1127,11 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             .await?;
             return Ok(false);
         }
-        return record_pool_route_retryable_overload_failure_inner(
+        complete_priority_handoff_from_attempt_or_invoke_admitted(
+            pool, attempt_id, invoke_id, false, true,
+        )
+        .await;
+        return record_pool_route_retryable_overload_failure_admitted(
             pool,
             account_id,
             sticky_key,
@@ -1066,7 +1154,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     } else {
         false
     };
-    complete_priority_handoff_from_attempt_or_invoke(
+    complete_priority_handoff_from_attempt_or_invoke_admitted(
         pool,
         attempt_id,
         invoke_id,
@@ -1304,6 +1392,25 @@ async fn record_pool_route_retryable_overload_failure_inner(
 ) -> Result<()> {
     complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
         .await;
+    record_pool_route_retryable_overload_failure_admitted(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+    )
+    .await
+}
+
+async fn record_pool_route_retryable_overload_failure_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+) -> Result<()> {
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
@@ -1346,12 +1453,18 @@ pub(crate) async fn record_pool_route_transport_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
-    record_pool_route_transport_failure_inner(
+    complete_priority_handoff_from_attempt_or_invoke(pool, None, invoke_id, false, true).await;
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_pool_route_transport_failure_admitted(
         pool,
         account_id,
         sticky_key,
         error_message,
         invoke_id,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        None,
         None,
     )
     .await
@@ -1365,6 +1478,33 @@ pub(crate) async fn record_pool_route_transport_failure_for_model(
     invoke_id: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
+    complete_priority_handoff_from_attempt_or_invoke(pool, None, invoke_id, false, true).await;
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_pool_route_transport_failure_admitted(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        None,
+        model,
+    )
+    .await
+}
+
+async fn record_pool_route_transport_failure_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    failure_kind: &str,
+    attempt_id: Option<i64>,
+    model: Option<&str>,
+) -> Result<()> {
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
@@ -1374,54 +1514,12 @@ pub(crate) async fn record_pool_route_transport_failure_for_model(
             account_id,
             sticky_key,
             error_message,
-            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
-            StatusCode::BAD_GATEWAY,
-            invoke_id,
-            None,
-            model,
-        )
-        .await?;
-        return Ok(());
-    }
-    record_pool_route_transport_failure_inner(
-        pool,
-        account_id,
-        sticky_key,
-        error_message,
-        invoke_id,
-        None,
-    )
-    .await
-}
-
-async fn record_pool_route_transport_failure_inner(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-    sticky_key: Option<&str>,
-    error_message: &str,
-    invoke_id: Option<&str>,
-    attempt_id: Option<i64>,
-) -> Result<()> {
-    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
-        .await;
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-    let account = load_upstream_account_row(pool, account_id)
-        .await?
-        .ok_or_else(|| anyhow!("account not found"))?;
-    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
-            pool,
-            account_id,
-            sticky_key,
-            error_message,
-            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            failure_kind,
             UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
             StatusCode::BAD_GATEWAY,
             invoke_id,
             attempt_id,
+            model,
         )
         .await?;
         return Ok(());
@@ -1432,7 +1530,7 @@ async fn record_pool_route_transport_failure_inner(
         UPSTREAM_ACCOUNT_STATUS_ACTIVE,
         sticky_key,
         error_message,
-        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        failure_kind,
         UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
         StatusCode::BAD_GATEWAY,
         5,
@@ -1474,31 +1572,18 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
 ) -> Result<()> {
     complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
         .await;
-    let account = load_upstream_account_row(pool, account_id)
-        .await?
-        .ok_or_else(|| anyhow!("account not found"))?;
-    if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
-            pool,
-            account_id,
-            sticky_key,
-            error_message,
-            failure_kind,
-            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
-            StatusCode::BAD_GATEWAY,
-            invoke_id,
-            attempt_id,
-        )
-        .await?;
-        return Ok(());
-    }
-    record_pool_route_transport_failure_inner(
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_pool_route_transport_failure_admitted(
         pool,
         account_id,
         sticky_key,
         error_message,
         invoke_id,
+        failure_kind,
         attempt_id,
+        None,
     )
     .await
 }
@@ -1818,10 +1903,28 @@ pub(crate) async fn record_compact_support_observation(
     status: &str,
     reason: Option<&str>,
 ) -> Result<()> {
+    record_compact_support_observation_with_observed_at(pool, account_id, status, reason, None)
+        .await
+}
+
+pub(crate) async fn record_compact_support_observation_with_observed_at(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    status: &str,
+    reason: Option<&str>,
+    observed_at: Option<&str>,
+) -> Result<()> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
-    record_compact_support_observation_admitted(pool, account_id, status, reason).await
+    record_compact_support_observation_admitted_with_observed_at(
+        pool,
+        account_id,
+        status,
+        reason,
+        observed_at,
+    )
+    .await
 }
 
 pub(crate) async fn record_compact_support_observation_admitted(
@@ -1830,13 +1933,28 @@ pub(crate) async fn record_compact_support_observation_admitted(
     status: &str,
     reason: Option<&str>,
 ) -> Result<()> {
+    record_compact_support_observation_admitted_with_observed_at(
+        pool, account_id, status, reason, None,
+    )
+    .await
+}
+
+pub(crate) async fn record_compact_support_observation_admitted_with_observed_at(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    status: &str,
+    reason: Option<&str>,
+    observed_at: Option<&str>,
+) -> Result<()> {
     if !matches!(
         status,
         COMPACT_SUPPORT_STATUS_SUPPORTED | COMPACT_SUPPORT_STATUS_UNSUPPORTED
     ) {
         return Ok(());
     }
-    let now_iso = format_utc_iso(Utc::now());
+    let observed_at = observed_at
+        .map(str::to_owned)
+        .unwrap_or_else(|| format_utc_iso_precise(Utc::now()));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -1844,11 +1962,14 @@ pub(crate) async fn record_compact_support_observation_admitted(
             compact_support_observed_at = ?3,
             compact_support_reason = ?4
         WHERE id = ?1
+          AND (compact_support_observed_at IS NULL
+               OR julianday(compact_support_observed_at) IS NULL
+               OR julianday(compact_support_observed_at) <= julianday(?3))
         "#,
     )
     .bind(account_id)
     .bind(status)
-    .bind(now_iso)
+    .bind(observed_at)
     .bind(reason)
     .execute(pool)
     .await?;
