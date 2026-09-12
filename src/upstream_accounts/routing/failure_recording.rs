@@ -901,17 +901,22 @@ pub(crate) async fn record_capability_observation_admitted_with_observed_at(
 async fn attempt_observation_timestamp(
     pool: &Pool<Sqlite>,
     attempt_id: Option<i64>,
-) -> Option<String> {
-    let attempt_id = attempt_id?;
+) -> Result<Option<String>> {
+    let Some(attempt_id) = attempt_id else {
+        return Ok(None);
+    };
     let started_at = sqlx::query_scalar::<_, Option<String>>(
         "SELECT started_at FROM pool_upstream_request_attempts WHERE id = ?1",
     )
     .bind(attempt_id)
     .fetch_optional(pool)
     .await
-    .ok()?
-    .flatten()?;
-    parse_to_utc_datetime(&started_at).map(format_utc_iso_precise)
+    .map_err(anyhow::Error::from)?
+    .flatten();
+    Ok(started_at
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .map(format_utc_iso_precise))
 }
 
 pub(crate) async fn record_pool_route_http_failure(
@@ -1017,7 +1022,21 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
-    let observed_at = attempt_observation_timestamp(pool, attempt_id).await;
+    let (observed_at, capability_observation_allowed) = match attempt_id {
+        None => (None, true),
+        Some(attempt_id) => match attempt_observation_timestamp(pool, Some(attempt_id)).await {
+            Ok(Some(observed_at)) => (Some(observed_at), true),
+            Ok(None) => (None, false),
+            Err(error) => {
+                warn!(
+                    attempt_id,
+                    error = %error,
+                    "failed to load attempt timestamp; skipping capability observation"
+                );
+                (None, false)
+            }
+        },
+    };
     let requirements =
         RequestCapabilityRequirements::from_endpoint_and_image_intent(endpoint, image_intent);
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
@@ -1037,7 +1056,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         invoke_id,
         priority_handoff_cooldown,
     );
-    if requirements.response_endpoint
+    if capability_observation_allowed
+        && requirements.response_endpoint
         && classify_response_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
@@ -1051,7 +1071,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         )
         .await?;
     }
-    if requirements.chat_completions_endpoint
+    if capability_observation_allowed
+        && requirements.chat_completions_endpoint
         && classify_chat_completions_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
@@ -1065,7 +1086,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         )
         .await?;
     }
-    if requirements.image_endpoint
+    if capability_observation_allowed
+        && requirements.image_endpoint
         && classify_image_endpoint_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
@@ -1079,7 +1101,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         )
         .await?;
     }
-    if requirements.response_image_tool
+    if capability_observation_allowed
+        && requirements.response_image_tool
         && classify_response_image_tool_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
@@ -1093,7 +1116,8 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
         )
         .await?;
     }
-    if requirements.standalone_search
+    if capability_observation_allowed
+        && requirements.standalone_search
         && classify_standalone_search_capability_observation(status, Some(error_message))
             == CapabilitySupport::Unsupported
     {
@@ -1371,6 +1395,9 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     record_pool_route_retryable_overload_failure_inner(
         pool,
         account_id,
@@ -1390,8 +1417,10 @@ async fn record_pool_route_retryable_overload_failure_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
-    complete_priority_handoff_from_attempt_or_invoke(pool, attempt_id, invoke_id, false, true)
-        .await;
+    complete_priority_handoff_from_attempt_or_invoke_admitted(
+        pool, attempt_id, invoke_id, false, true,
+    )
+    .await;
     record_pool_route_retryable_overload_failure_admitted(
         pool,
         account_id,
@@ -1596,6 +1625,9 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
     record_pool_route_retryable_overload_failure_inner(
         pool,
         account_id,
