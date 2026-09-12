@@ -11426,6 +11426,19 @@ async fn summary_all_time_checkpoint_publication_required(
     {
         return Ok(true);
     }
+    // A ready checkpoint can outlive the immutable all-time snapshot it produced.  This is
+    // especially visible when a large staged recovery keeps the supervisor busy for longer than
+    // the serving freshness budget: the coverage fence is still valid, but retaining the old
+    // response would make the next request fail closed without scheduling a bounded finalization.
+    // Re-enter the finalizer only for the affected scope; fresh ready projections remain no-ops.
+    if checkpoint.global_ready()
+        && projection.freshness.global_all_time_eligible
+        && projection
+            .all_time_refreshed_at
+            .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+    {
+        return Ok(true);
+    }
     if checkpoint.account_ready() {
         if projection
             .account_all_time_coverage_fence
@@ -11446,6 +11459,10 @@ async fn summary_all_time_checkpoint_publication_required(
                 .freshness
                 .account_all_time_eligible
                 .contains(account_id)
+                || projection
+                    .all_time_account_refreshed_at
+                    .get(account_id)
+                    .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
         }) {
             return Ok(true);
         }
@@ -40495,6 +40512,7 @@ mod request_compression_query_tests {
             .store_summary_projection(SummaryProjection {
                 global_all_time_coverage_fence: Some(current_fence),
                 account_all_time_coverage_fence: Some(current_fence),
+                all_time_refreshed_at: Some(Instant::now()),
                 generation_fence: checkpoint.generation_fence(),
                 freshness: SummaryProjectionFreshness {
                     global_all_time_eligible: true,
@@ -40508,6 +40526,28 @@ mod request_compression_query_tests {
                 .await
                 .expect("compare current all-time coverage fence"),
             "an unchanged all-time coverage fence must not repeat finalization"
+        );
+        state
+            .subscription_hub
+            .store_summary_projection(SummaryProjection {
+                global_all_time_coverage_fence: Some(current_fence),
+                account_all_time_coverage_fence: Some(current_fence),
+                all_time_refreshed_at: Some(
+                    Instant::now() - SUMMARY_SNAPSHOT_MAX_STALE - Duration::from_secs(1),
+                ),
+                generation_fence: checkpoint.generation_fence(),
+                freshness: SummaryProjectionFreshness {
+                    global_all_time_eligible: true,
+                    ..SummaryProjectionFreshness::default()
+                },
+                ..SummaryProjection::default()
+            })
+            .await;
+        assert!(
+            summary_all_time_checkpoint_publication_required(state.as_ref(), &checkpoint)
+                .await
+                .expect("compare stale all-time snapshot freshness"),
+            "a ready checkpoint with an expired all-time snapshot must re-enter bounded finalization"
         );
         state.pool.close().await;
     }
